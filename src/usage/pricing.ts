@@ -10,13 +10,25 @@
 import models from "./models.json";
 import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider-type";
 import { lookup } from "../shared/records";
-import type { UsageCounts } from "../core/types";
+import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
 import { type ProviderType, reportsCost } from "../shared/providers";
 
 interface Price {
   input?: number;
   output?: number;
+  /**
+   * What an input token of one modality costs, where it is priced apart from
+   * text, as an embedding model's are. Absent means it bills at `input`.
+   */
+  image_input?: number;
+  audio_input?: number;
+  video_input?: number;
+  /**
+   * What a generated image token costs, where the model's text output costs
+   * less. Absent means every output token bills at `output`.
+   */
+  image_output?: number;
   cached_input?: number;
   cache_write?: number;
   per_minute?: number;
@@ -42,6 +54,7 @@ interface Price {
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
+  modalityTokens?: ModalityTokens;
   /**
    * Set when the response reported a duration and no token counts, so its
    * zeroed counters are absent rather than a measured zero. Only a transcription
@@ -171,6 +184,65 @@ export function reportsPricedMeasure(
   return usage.durationOnly !== true;
 }
 
+const INPUT_RATES = { image: "image_input", audio: "audio_input", video: "video_input" } as const;
+const OUTPUT_RATES = { image: "image_output" } as const;
+
+/** The modalities a model prices apart on one side, with their rates. */
+function modalityRates(
+  price: Price,
+  fields: Partial<Record<Modality, keyof Price>>,
+): [Modality, number][] {
+  return (Object.entries(fields) as [Modality, keyof Price][]).flatMap(([modality, field]) => {
+    const rate = price[field];
+    return typeof rate === "number" ? [[modality, rate] as [Modality, number]] : [];
+  });
+}
+
+/**
+ * What one side's tokens cost when the model prices some modalities apart from
+ * text. Each modality the response counted bills at its own rate and the rest
+ * at `base`. Tokens it did not account for, and a whole side it did not break
+ * down, bill at the highest rate the model has, rather than let an image or a
+ * recording pass at the text price and escape the budget it should consume.
+ *
+ * Gemini counts a modality over the whole prompt, cached part included, so the
+ * modality tokens are taken out of `tokens`, unknown ones first, and never
+ * exceed it.
+ */
+function sideCost(
+  tokens: number,
+  base: number,
+  rates: [Modality, number][],
+  counts: ModalityCounts | undefined,
+): number {
+  if (rates.length === 0) return tokens * base;
+  const highest = Math.max(base, ...rates.map(([, rate]) => rate));
+  if (!counts) return tokens * highest;
+  const unknown = Math.min(tokens, counts.unknown ?? 0);
+  let rest = tokens - unknown;
+  let cost = unknown * highest;
+  for (const [modality, rate] of rates) {
+    const billed = Math.min(rest, counts[modality] ?? 0);
+    cost += billed * rate;
+    rest -= billed;
+  }
+  return cost + rest * base;
+}
+
+/**
+ * Whether a model's price depends on what its requests were made of, so a
+ * usage figure with no modality record cannot be priced exactly.
+ */
+export function pricesModalities(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
+  return price !== undefined
+    && (modalityRates(price, INPUT_RATES).length > 0 || modalityRates(price, OUTPUT_RATES).length > 0);
+}
+
 export function computeCost(
   provider: ProviderType,
   model: string,
@@ -198,9 +270,9 @@ export function computeCost(
     ? (price.long_cache_write ?? price.cache_write ?? inputPrice)
     : (price.cache_write ?? inputPrice);
   return (
-    usage.inputTokens * inputPrice +
+    sideCost(usage.inputTokens, inputPrice, modalityRates(price, INPUT_RATES), usage.modalityTokens?.input) +
     usage.cachedInputTokens * cachedPrice +
     usage.cacheWriteTokens * cacheWritePrice +
-    usage.outputTokens * outputPrice
+    sideCost(usage.outputTokens, outputPrice, modalityRates(price, OUTPUT_RATES), usage.modalityTokens?.output)
   ) / 1_000_000;
 }

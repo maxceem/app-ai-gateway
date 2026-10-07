@@ -27,6 +27,7 @@ Specialized models
 | --- | --- | --- | --- | --- |
 | ChatGPT | chat-latest | $5.00 | $0.50 | $30.00 |
 | Codex | gpt-5.3-codex | $1.75 | $0.175 | $14.00 |
+| Embedding | text-embedding-3-small | $0.02 | - | - |
 | Moderation | omni-moderation-latest | Free | - | - |
 
 ### Grouped Pricing Table data

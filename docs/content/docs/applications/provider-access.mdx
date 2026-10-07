@@ -68,6 +68,31 @@ this is refused with `403 max_output_tokens_exceeded`, and a request that does
 not name an output limit gets this value injected. Transcription routes ignore
 the cap.
 
+## Embeddings
+
+Embedding requests are not among the default inference endpoints, so allow
+their path explicitly. Give it `"clamp": "none"`: an embedding has no output to
+cap, and injecting a limit into its body would make the provider refuse it.
+
+```json
+"openai": {
+  "allowed_paths": ["v1/responses", { "path": "v1/embeddings", "clamp": "none" }],
+  "allowed_models": []
+},
+"gemini": {
+  "allowed_paths": [
+    "v1beta/models/{model}:generateContent",
+    { "path": "v1beta/models/{model}:embedContent", "clamp": "none" }
+  ],
+  "allowed_models": []
+}
+```
+
+Gemini Embedding 2 bills images, audio and video at their own rates, above the
+text rate. `embedContent` reports what each request contained, so call it there:
+a response that does not say, such as one from the OpenAI-compatible endpoint, is
+billed entirely at the video rate.
+
 ## When a provider is missing
 
 An app may name a provider you have since deleted or never added. The app's

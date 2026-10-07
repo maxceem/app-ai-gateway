@@ -10,6 +10,10 @@ import models from "../src/usage/models.json";
 export interface ShippedRates {
   input: number;
   output: number;
+  image_input: number;
+  audio_input: number;
+  video_input: number;
+  image_output: number;
   cached_input: number;
   cache_write: number;
   per_minute: number;

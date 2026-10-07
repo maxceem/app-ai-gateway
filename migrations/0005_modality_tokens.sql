@@ -1,0 +1,1 @@
+ALTER TABLE `app_usage_event` ADD `modality_tokens` text;

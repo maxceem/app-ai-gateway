@@ -14,6 +14,10 @@ export const PRICE_FIELDS = [
   "cached_input",
   "cache_write",
   "output",
+  "image_input",
+  "audio_input",
+  "video_input",
+  "image_output",
   "long_input",
   "long_cached_input",
   "long_cache_write",
@@ -97,6 +101,10 @@ export function effectivePrice(price) {
     output: round6(price.output),
     cached_input: round6(price.cached_input ?? price.input),
     cache_write: round6(price.cache_write ?? price.input),
+    image_input: round6(price.image_input ?? price.input),
+    audio_input: round6(price.audio_input ?? price.input),
+    video_input: round6(price.video_input ?? price.input),
+    image_output: round6(price.image_output ?? price.output),
   };
   if (price.long_context_threshold !== undefined) {
     const longInput = price.long_input ?? price.input;

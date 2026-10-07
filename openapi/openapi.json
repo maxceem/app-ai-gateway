@@ -10353,7 +10353,7 @@
                     },
                     "unpriced_events": {
                       "type": "integer",
-                      "description": "Dry-run only: matched events whose serving instance can no longer price them."
+                      "description": "Dry-run only: matched events whose serving instance can no longer price them, or that predate the modality breakdown their model's price depends on."
                     },
                     "unpriced_cost_usd": {
                       "type": "number"
@@ -10847,6 +10847,22 @@
                             },
                             "output": {
                               "type": "number"
+                            },
+                            "image_input": {
+                              "type": "number",
+                              "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                            },
+                            "audio_input": {
+                              "type": "number",
+                              "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                            },
+                            "video_input": {
+                              "type": "number",
+                              "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                            },
+                            "image_output": {
+                              "type": "number",
+                              "description": "USD per 1M generated image tokens, where they cost more than text output."
                             },
                             "cached_input": {
                               "type": "number"

@@ -873,7 +873,7 @@ export const UsageRepriceResponseSchema = z.object({
     description: "Matched events that carried no readable usage, and so were repriced to the zero their zero counts imply while keeping whatever cost_source they had. A non-zero number means the month contains spend nothing could meter, which repricing cannot fix and must not appear to have fixed.",
   }),
   unpriced_events: z.number().int().meta({
-    description: "Dry-run only: matched events whose serving instance can no longer price them.",
+    description: "Dry-run only: matched events whose serving instance can no longer price them, or that predate the modality breakdown their model's price depends on.",
   }),
   unpriced_cost_usd: z.number(),
   previous_cost_usd: z.number(),
@@ -884,6 +884,18 @@ export const UsageRepriceResponseSchema = z.object({
 export const ModelPriceSchema = z.object({
   input: z.number().optional(),
   output: z.number().optional(),
+  image_input: z.number().optional().meta({
+    description: "USD per 1M image input tokens, where they are priced apart from text input.",
+  }),
+  audio_input: z.number().optional().meta({
+    description: "USD per 1M audio input tokens, where they are priced apart from text input.",
+  }),
+  video_input: z.number().optional().meta({
+    description: "USD per 1M video input tokens, where they are priced apart from text input.",
+  }),
+  image_output: z.number().optional().meta({
+    description: "USD per 1M generated image tokens, where they cost more than text output.",
+  }),
   cached_input: z.number().optional(),
   cache_write: z.number().optional(),
   per_minute: z.number().optional(),

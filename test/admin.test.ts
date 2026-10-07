@@ -416,6 +416,53 @@ describe("admin API", () => {
     expect(stale?.n).toBe(0);
   });
 
+  it("reprices generated image tokens at the image rate", async () => {
+    const appId = "admin-reprice-image";
+    await seedApp(appId);
+    const insert = (modalityTokens: string | null) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, modality_tokens, cost_usd, status
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'gemini', 'gemini-nano-banana-2.1',
+                 'gemini/v1beta/models/gemini-nano-banana-2.1:generateContent', 12, 0, 0, 1130, ?, 0, 'ok')`,
+    ).bind(appId, modalityTokens).run();
+    await insert(JSON.stringify({ output: { image: 1120 } }));
+    // No breakdown was reported, so every output token bills as an image.
+    await insert("{}");
+    const month = new Date().toISOString().slice(0, 7);
+    const reprice = (apply: boolean) => exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "gemini", model: "gemini-nano-banana-2.1", month, apply }),
+      },
+    );
+    const applied = await reprice(true);
+    expect(applied.status).toBe(200);
+    const rows = await env.DB.prepare(
+      "SELECT cost_usd FROM app_usage_event WHERE app_id = ? ORDER BY id",
+    ).bind(appId).all<{ cost_usd: number }>();
+    const banana = shippedRates("gemini", "gemini-nano-banana-2.1");
+    expect(rows.results[0]?.cost_usd)
+      .toBeCloseTo((12 * banana.input + 10 * banana.output + 1120 * banana.image_output) / 1e6, 12);
+    expect(rows.results[1]?.cost_usd)
+      .toBeCloseTo((12 * banana.input + 1130 * banana.image_output) / 1e6, 12);
+
+    // A row from before modality records were kept says nothing about its
+    // tokens, so it is neither guessed at nor charged the highest rate.
+    await insert(null);
+    const dryRun = await reprice(false);
+    expect(dryRun.status).toBe(200);
+    await expect(dryRun.json()).resolves.toMatchObject({ matched_events: 2, unpriced_events: 1 });
+    const refused = await reprice(true);
+    expect(refused.status).toBe(400);
+    await expect(refused.text()).resolves.toContain("predate the modality record");
+  });
+
   /**
    * The other half, and the one that matters more. An unresolved event with
    * *no* readable counts is spend nothing could measure — an unreadable

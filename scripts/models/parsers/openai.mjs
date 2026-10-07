@@ -2,7 +2,8 @@
 //
 // Three tables are read: "Standard pricing data" (not Batch, Flex, Fast or
 // Ultrafast), the Standard table of the specialized models, where the Codex
-// models live, and the transcription models.
+// and embedding models live, and the transcription models. An embedding model
+// generates nothing, so its missing output price is 0.
 
 import { ParseError, decimal, findLine, findNextLine, put, readTable } from "../price.mjs";
 
@@ -92,7 +93,12 @@ export function parseOpenai(text, { wanted }) {
       continue;
     }
     const where = `specialized models, ${id}`;
-    const [input, cachedInput, output] = row.slice(2).map((value) => cell(value, where));
+    const [input, cachedInput, listedOutput] = row.slice(2).map((value) => cell(value, where));
+    const embedding = row[0] === "Embedding";
+    if (embedding && (cachedInput !== undefined || listedOutput !== undefined)) {
+      throw new ParseError(`${where}: an embedding model with a cached or output price`);
+    }
+    const output = embedding ? 0 : listedOutput;
     if (input === undefined || output === undefined) {
       throw new ParseError(`${where}: no input or output price`);
     }

@@ -44,6 +44,26 @@ export interface GatewayIdentity {
   apiKeyId?: string;
 }
 
+/** A modality a model may price apart from text. */
+export type Modality = "image" | "audio" | "video";
+
+/**
+ * Tokens of each non-text modality on one side of a request, and `unknown`
+ * for those the response did not account for; text is the rest.
+ */
+export type ModalityCounts = Partial<Record<Modality | "unknown", number>>;
+
+/**
+ * What a response said its prompt and its answer were made of. A side is
+ * present only where the response broke that side down by modality: absent
+ * means it did not say, not that it was all text, and so does `unknown`.
+ * `computeCost` in `src/usage/pricing.ts` says what either is billed as.
+ */
+export interface ModalityTokens {
+  input?: ModalityCounts;
+  output?: ModalityCounts;
+}
+
 export interface UsageCounts {
   inputTokens: number;
   cachedInputTokens: number;
