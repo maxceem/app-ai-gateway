@@ -1,3 +1,4 @@
+import { localSessionBackend } from '../src/realtime/local-backend';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
@@ -63,7 +64,7 @@ async function withSockets(run: (input: { coordinator: SessionCoordinator; socke
   await runInDurableObject(stub, async (instance, state) => {
     const pair = new WebSocketPair(); pair[0].accept({ allowHalfOpen: true });
     pair[0].addEventListener('message', event => { const frame = JSON.parse(String(event.data)) as JsonObject; if (frame.type === 'session.update') pair[0].send(JSON.stringify(ack)); });
-    const coordinator = new SessionCoordinator(runtimeEnv, state, bootstrap, headers);
+    const coordinator = new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers);
     Reflect.set(instance, "coordinator", coordinator);
     const response = await coordinator.start(pair[1]); const socket = response.webSocket!; const next = frames(socket); socket.accept({ allowHalfOpen: true });
     await next('session.updated');
@@ -73,6 +74,30 @@ async function withSockets(run: (input: { coordinator: SessionCoordinator; socke
 }
 
 describe('realtime failure boundaries', () => {
+  it.each(['billing_request_quota_exceeded', 'app_budget_exhausted'] as const)('active admitted generation survives idle maintenance %s race', async code => {
+    await withSockets(async ({ coordinator, socket, next, upstream }) => {
+      let entered!: () => void; let release!: () => void;
+      const pending = new Promise<void>(resolve => { entered = resolve; });
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const backend = Reflect.get(coordinator, 'backend') as import('../src/realtime/backend').SessionBackend;
+      backend.maintain = async (_bootstrap, _app, active) => { expect(active).toBe(false); entered(); await gate; throw new GatewayError(429, code, 'Exhausted'); };
+      const maintenance = Reflect.apply(Reflect.get(coordinator, 'maintain'), coordinator, []) as Promise<void>;
+      await pending;
+      let dispatched!: () => void; const admission = new Promise<void>(resolve => { dispatched = resolve; });
+      upstream.addEventListener('message', event => {
+        if ((JSON.parse(String(event.data)) as JsonObject).type === 'response.create') {
+          upstream.send(JSON.stringify({ type: 'response.created', response: { id: 'race-response' } })); dispatched();
+        }
+      });
+      socket.send(JSON.stringify({ type: 'response.create', event_id: 'maintenance-race' }));
+      await admission;
+      release(); await maintenance;
+      upstream.send(JSON.stringify({ type: 'response.done', response: { id: 'race-response', status: 'completed', usage } }));
+      expect((await next('response.done')).type).toBe('response.done');
+      expect(coordinator.journal.generations()[0]?.stage).toBe('settled');
+    });
+  });
+
   it.each(['user', 'app'] as const)('setup alarm waits for a delayed %s acquire before releasing capacity and deleting the journal', async scope => {
     const { bootstrap, headers } = await setup(); const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
     let entered!: () => void; let release!: () => void;
@@ -94,7 +119,7 @@ describe('realtime failure boundaries', () => {
     await runInDurableObject(stub, async (instance, state) => {
       const pair = new WebSocketPair(); pair[0].accept({ allowHalfOpen: true }); let dispatches = 0;
       pair[0].addEventListener('message', () => { dispatches++; });
-      const coordinator = new SessionCoordinator(runtimeEnv, state, bootstrap, headers); Reflect.set(instance, 'coordinator', coordinator);
+      const coordinator = new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers); Reflect.set(instance, 'coordinator', coordinator);
       const start = coordinator.start(pair[1]).then(() => null, error => error as unknown);
       await pending;
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_001);
@@ -122,7 +147,7 @@ describe('realtime failure boundaries', () => {
       const providerFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
         entered(); await gate; return new Response(null, { status: 101, webSocket: pair[1] });
       });
-      const coordinator = new SessionCoordinator(env, state, bootstrap, headers); Reflect.set(instance, 'coordinator', coordinator);
+      const coordinator = new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers); Reflect.set(instance, 'coordinator', coordinator);
       const start = coordinator.start().then(() => null, error => error as unknown);
       await pending;
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_001);
@@ -141,15 +166,15 @@ describe('realtime failure boundaries', () => {
       const journal = new SessionJournal(state.storage); journal.open(bootstrap);
       const expiry = Date.now() + 60_000;
       for (const name of ['release:user', 'release:app'] as const) journal.saveTask(name, { attempts: 12, due: Date.now() + 3_600_000, complete: false, expiresAt: expiry });
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(releases).toBe(0); expect(await state.storage.getAlarm()).toBe(expiry);
       // A new coordinator retains the earlier expiry, not another seven days.
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(releases).toBe(0); expect(await state.storage.getAlarm()).toBe(expiry);
       for (const name of ['release:user', 'release:app'] as const) {
         const task = journal.task(name); task.expiresAt = Date.now() - 1; journal.saveTask(name, task);
       }
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(releases).toBe(0); expect(await state.storage.getAlarm()).toBeNull();
       expect(state.storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('session_metadata', 'generations', 'recovery_tasks')").toArray()).toEqual([]);
     });
@@ -232,18 +257,18 @@ describe('realtime failure boundaries', () => {
       const g = generation(bootstrap); journal.settle(g, settledEvent(g, 'interrupted', true));
       const item = journal.outbox()[0]!; const due = Date.now() + 3_600_000; item.due = due;
       state.storage.sql.exec('UPDATE usage_outbox SET json = ? WHERE id = ?', JSON.stringify(item), item.id);
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(releases.size).toBe(2); expect(journal.task('release:user').complete).toBe(true);
       expect(await state.storage.getAlarm()).toBe(journal.task('release:app').due);
       // Successful release is never repeated, and failed release respects its own deadline.
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect([...releases.values()]).toEqual([1, 1]);
       const task = journal.task('release:app'); task.due = Date.now() - 1; journal.saveTask('release:app', task); failApp = false;
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(releases.get(bootstrap.appId)).toBe(2);
       expect(releases.get(`${bootstrap.appId}:realtime:key:${bootstrap.identity.apiKeyId}`)).toBe(1);
       expect(await state.storage.getAlarm()).toBe(due);
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect([...releases.values()]).toEqual([1, 2]); expect(await state.storage.getAlarm()).toBe(due);
       await state.storage.deleteAlarm();
     });
@@ -256,15 +281,15 @@ describe('realtime failure boundaries', () => {
       const journal = new SessionJournal(state.storage); journal.open(bootstrap);
       const g = generation(bootstrap, 'admitting'); g.claim = { admissionId: g.id, periodId: 'unknown', periodEnd: '2026-11-01T00:00:00Z', limit: 1 }; journal.save(g);
       journal.saveTask('admission', { attempts: 11, due: Date.now() - 1, complete: false });
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(receipts).toBe(1);
       const task = journal.task('admission'); expect(task.attempts).toBe(12);
       expect(task.due - Date.now()).toBeGreaterThan(3_590_000); expect(await state.storage.getAlarm()).toBe(task.due);
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(receipts).toBe(1); expect(await state.storage.getAlarm()).toBe(task.due);
       // Retention expiry takes precedence over the backoff deadline.
       g.at = Date.now() - 7 * 86_400_000 + 1000; journal.save(g);
-      await new SessionCoordinator(runtimeEnv, state, bootstrap, headers).alarm();
+      await new SessionCoordinator(localSessionBackend(runtimeEnv, promise => state.waitUntil(promise)), state, bootstrap, headers).alarm();
       expect(await state.storage.getAlarm()).toBe(g.at + 7 * 86_400_000);
       await state.storage.deleteAlarm();
     });
@@ -482,7 +507,7 @@ describe('realtime failure boundaries', () => {
       const journal = new SessionJournal(state.storage); journal.open(bootstrap);
       const g = generation(bootstrap, 'admitting'); g.claim = { periodId: 'p', periodEnd: '2026-11-01T00:00:00Z', limit: 1, admissionId: g.id };
       journal.save(g); await env.ORG_QUOTA.getByName(bootstrap.organizationId).admit(g.claim);
-      const coordinator = new SessionCoordinator(env, state, bootstrap, headers); await coordinator.recover();
+      const coordinator = new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers); await coordinator.recover();
       const recovered = journal.generations()[0]!; expect(recovered.stage).toBe('settled');
       expect(recovered.event.row).toMatchObject({ costSource: 'unresolved', completionStatus: 'interrupted' });
       await coordinator.recover(); expect(journal.outbox()).toHaveLength(1);
@@ -493,7 +518,7 @@ describe('realtime failure boundaries', () => {
     const { bootstrap, headers } = await setup(); const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
     await runInDurableObject(stub, async (_instance, state) => {
       const journal = new SessionJournal(state.storage); journal.open(bootstrap); journal.save(generation(bootstrap, 'prepared')); journal.save(generation(bootstrap, 'admitting'));
-      await new SessionCoordinator(env, state, bootstrap, headers).recover(); expect(journal.outbox()).toHaveLength(0);
+      await new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers).recover(); expect(journal.outbox()).toHaveLength(0);
     });
   });
   it('unknown claim receipts remain pending for read-only reconciliation', async () => {
@@ -501,7 +526,7 @@ describe('realtime failure boundaries', () => {
     await runInDurableObject(stub, async (_instance, state) => {
       const journal = new SessionJournal(state.storage); journal.open(bootstrap); const g = generation(bootstrap, 'admitting');
       g.claim = { admissionId: g.id, periodId: 'unknown', periodEnd: '2026-11-01T00:00:00Z', limit: 1 }; journal.save(g);
-      await new SessionCoordinator(env, state, bootstrap, headers).recover(); expect(journal.generations()[0]?.stage).toBe('admitting'); expect(journal.outbox()).toHaveLength(0);
+      await new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers).recover(); expect(journal.generations()[0]?.stage).toBe('admitting'); expect(journal.outbox()).toHaveLength(0);
     });
   });
   it('cancelled/incomplete attempts retain observed usage and original admission month', async () => {
@@ -535,5 +560,53 @@ describe('realtime failure boundaries', () => {
     expect(adapter.client({ realtimeInput: { activityStart: {} } }, manual)[0]?.kind).toBe('generate');
     expect(adapter.client({ realtimeInput: { audio: { data: 'AAAA', mimeType: 'audio/pcm;rate=16000' } } }, { ...manual, active: true })[0]?.kind).toBe('forward');
     expect(() => new GeminiAdapter('candidate', 1024).client({ setup: { ...frame.setup, tools: [] } }, manual)).toThrow();
+  });
+});
+
+describe('release admission acknowledgement ordering', () => {
+  it('metered claim waits for durable acknowledgement and a rejected acknowledgement never claims', async () => {
+    const runtimeEnv = hostedEnv(); const { bootstrap } = await setup(); const application = await loadApp(runtimeEnv, bootstrap.appId);
+    application.config.limits.per_app.requests.per_day = null;
+    const backend = localSessionBackend(runtimeEnv, () => {});
+    let claim!: NonNullable<Generation['claim']>; let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+    const id = crypto.randomUUID();
+    const pending = backend.admit(bootstrap, application, testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), id, Date.now(), async value => { claim = value!; entered(); await gate; }, () => true);
+    await started;
+    expect(await runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId).usage(claim.periodId)).toBe(0);
+    expect(await backend.receipt(bootstrap, id)).toBeNull();
+    release(); await pending;
+    expect(await runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId).usage(claim.periodId)).toBe(1);
+    expect(await backend.receipt(bootstrap, id)).toMatchObject({ allowed: true });
+    const refused = crypto.randomUUID();
+    await expect(backend.admit(bootstrap, application, testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), refused, Date.now(), () => { throw new Error('session closed'); }, () => true)).rejects.toThrow('session closed');
+    expect(await backend.receipt(bootstrap, refused)).toBeNull();
+    expect(await runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId).usage(claim.periodId)).toBe(1);
+  });
+  it('an HTTP stream completes and settles once while realtime routing is promoted twice', async () => {
+    const runtimeEnv = hostedEnv(); const { bootstrap, headers } = await setup();
+    let finish!: () => void;
+    const first = 'event: response.output_text.delta\ndata: {"delta":"hello"}\n\n';
+    const terminal = 'event: response.completed\ndata: {"response":{"model":"gpt-realtime","usage":{"input_tokens":2,"output_tokens":1}}}\n\n';
+    const provider = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(first));
+      finish = () => { controller.enqueue(new TextEncoder().encode(terminal)); controller.close(); };
+    } }), { headers: { 'content-type': 'text/event-stream' } }));
+    try {
+      const ctx = createExecutionContext();
+      const response = await gateway.fetch(new Request(`https://gateway.test/v1/apps/${bootstrap.appId}/proxy/${bootstrap.providerSlug}/v1/responses`, {
+        method: 'POST', headers: { ...Object.fromEntries(headers), 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-realtime', input: 'hello', stream: true }),
+      }), runtimeEnv, ctx);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toBe(first);
+      for (let i = 0; i < 2; i++) {
+        const id = crypto.randomUUID();
+        await env.DB.prepare('INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(?,?,?,1,?)').bind(id, id, 'wss://release.test', Date.now()).run();
+        await env.DB.prepare('UPDATE gateway_release_state SET active_realtime_id=?,promotion_at=? WHERE singleton=1').bind(id, Date.now()).run();
+      }
+      finish(); expect(new TextDecoder().decode((await reader.read()).value)).toBe(terminal); expect((await reader.read()).done).toBe(true);
+      await waitOnExecutionContext(ctx);
+      expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM app_usage_event WHERE app_id=?').bind(bootstrap.appId).first())?.n).toBe(1);
+    } finally { provider.mockRestore(); }
   });
 });

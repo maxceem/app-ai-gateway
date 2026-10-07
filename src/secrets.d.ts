@@ -5,6 +5,8 @@ interface Env {
   JWT_SECRET: string;
   BETTER_AUTH_SECRET: string;
   DEPLOYMENT_ID?: string;
+  // Injected by the release engine, never shown in the setup form.
+  GATEWAY_BUILD_ID?: string;
   CLI_CONSOLE_ORIGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -67,6 +69,8 @@ declare namespace Cloudflare {
     JWT_SECRET: string;
     BETTER_AUTH_SECRET: string;
   DEPLOYMENT_ID?: string;
+  // Injected by the release engine, never shown in the setup form.
+  GATEWAY_BUILD_ID?: string;
   CLI_CONSOLE_ORIGIN?: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;

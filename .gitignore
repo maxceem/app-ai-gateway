@@ -6,6 +6,7 @@ node_modules/
 !.dev.vars.example
 # Deployment profiles: private overlays and the files generated from them.
 /wrangler.*.jsonc
+!/wrangler.realtime.jsonc
 /docs/wrangler.*.jsonc
 .env
 .env.*

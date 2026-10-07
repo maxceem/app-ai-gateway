@@ -1,3 +1,8 @@
+import { prepareRealtime } from '../src/realtime/serve';
+import { remoteSessionBackend, safeBackendCall } from '../src/realtime/remote-backend';
+import { requireRealtimeAdmission } from '../src/realtime/releases';
+import { testAttribution } from './helpers';
+import { localSessionBackend } from '../src/realtime/local-backend';
 import type { OrgQuota } from '../src/do/OrgQuota';
 import type { UserLimiter } from '../src/do/UserLimiter';
 import { env } from 'cloudflare:workers';
@@ -16,7 +21,7 @@ import { loadApp } from '../src/core/app-records';
 import { authenticateRequest } from '../src/client-auth/client-auth';
 import { requireProvider } from '../src/providers/provider-store';
 import { computeCost } from '../src/usage/pricing';
-import { persistUsageEventAcknowledged } from '../src/usage/usage-record';
+import { buildUsageEvent, persistUsageEventAcknowledged } from '../src/usage/usage-record';
 import { REALTIME_LIMITS } from '../src/realtime/limits';
 import { frameBytes } from '../src/realtime/transport';
 import { parseAppConfig } from '../src/shared/app-config';
@@ -192,8 +197,8 @@ function collector(socket: WebSocket) {
   it('ordinary GET returns 426 before auth, URL credentials and forged metadata cannot open a session', async () => {
     const url = 'https://gateway.test/v1/apps/no-app/realtime/openai?model=gpt-realtime';
     expect((await app.fetch(new Request(url), env)).status).toBe(426);
-    expect((await app.fetch(new Request(url + '&key=secret', { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(400);
-    expect((await app.fetch(new Request(url, { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(401);
+    expect((await app.fetch(new Request(url + '&key=secret', { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(409);
+    expect((await app.fetch(new Request(url, { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(409);
   });
   it('workerd native sockets serve twenty attempts and persist twenty stable rows', async () => {
     const { bootstrap, headers } = await seeded();
@@ -217,7 +222,7 @@ function collector(socket: WebSocket) {
           upstream[0].send(JSON.stringify({ type: 'response.done', response: { id: responseId, status: 'completed', usage } }));
         }
       });
-      const coordinator = new SessionCoordinator(env, state, bootstrap, headers);
+      const coordinator = new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers);
       Reflect.set(instance, "coordinator", coordinator);
       const response = await coordinator.start(upstream[1]); expect(response.status).toBe(101);
       const socket = response.webSocket!; const next = collector(socket); socket.accept({ allowHalfOpen: true });
@@ -253,3 +258,62 @@ function collector(socket: WebSocket) {
     if (measured) console.info('REALTIME_SOAK', JSON.stringify(measured));
   }, soak ? 150_000 : 20_000);
 });
+
+describe('immutable realtime release boundaries', () => {
+  it('discovery plus ten opens charges separate bounded counters', async () => {
+    const { bootstrap, headers } = await seeded();
+    const request = new Request(`https://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}?model=gpt-realtime`, { headers });
+    for (let index = 0; index < 10; index++) {
+      await prepareRealtime(env, request, bootstrap.appId, bootstrap.providerSlug, bootstrap.origin, 'realtime_discover');
+      await prepareRealtime(env, request, bootstrap.appId, bootstrap.providerSlug, bootstrap.origin);
+    }
+    await expect(prepareRealtime(env, request, bootstrap.appId, bootstrap.providerSlug, bootstrap.origin)).rejects.toMatchObject({ status: 429 });
+    await prepareRealtime(env, request, bootstrap.appId, bootstrap.providerSlug, bootstrap.origin, 'realtime_discover');
+  });
+  it('awaits a real service-binding acknowledgement before completing admission', async () => {
+    const { bootstrap } = await seeded();
+    const application = await loadApp(env, bootstrap.appId);
+    const backend = remoteSessionBackend(env.TEST_REALTIME_BACKEND);
+    let acknowledged = false;
+    await backend.admit(bootstrap, application, testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), crypto.randomUUID(), Date.now(), async claim => {
+      expect(claim).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 20)); acknowledged = true;
+    }, () => true);
+    expect(acknowledged).toBe(true);
+    let transientCalls = 0;
+    await expect(backend.admit(bootstrap, application, testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), crypto.randomUUID(), Date.now(), () => {
+      transientCalls++; throw Object.assign(new Error('private transient detail'), { retryable: true, overloaded: true });
+    }, () => true)).rejects.toMatchObject({ message: 'Realtime backend unavailable', retryable: true, overloaded: true });
+    expect(transientCalls).toBe(1); // Admission remains non-retryable even on transient failure.
+
+    await expect(backend.admit(bootstrap, application, testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), crypto.randomUUID(), Date.now(), () => { throw new Error('closed'); }, () => true)).rejects.toThrow();
+  });
+  it('retries explicitly transient safe calls, preserves public errors, never retries policy', async () => {
+    let calls = 0;
+    expect(await safeBackendCall(async () => {
+      calls++; if (calls < 3) throw Object.assign(new Error('private failure'), { retryable: true });
+      return { ok: true, value: 'ready' };
+    })).toBe('ready');
+    expect(calls).toBe(3);
+    calls = 0;
+    await expect(safeBackendCall(async () => { calls++; return { ok: false, error: { status: 429, code: 'app_rate_limited', message: 'Wait', headers: { 'Retry-After': '30' }, data: { scope: 'app' } } }; })).rejects.toMatchObject({ status: 429, code: 'app_rate_limited', headers: { 'Retry-After': '30' }, data: { scope: 'app' } });
+    expect(calls).toBe(1);
+  });
+  it('rejects candidates and expired retirement for new opens while permitting existing maintenance', async () => {
+    const { bootstrap, headers } = await seeded(); const id = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(?,?,?,1,?)').bind(id, id, 'wss://release.test', Date.now()).run();
+    await expect(requireRealtimeAdmission(env.DB, id)).rejects.toMatchObject({ status: 409 });
+    await env.DB.prepare('UPDATE gateway_release_state SET active_realtime_id=?,promotion_at=? WHERE singleton=1').bind(id, Date.now()).run();
+    await requireRealtimeAdmission(env.DB, id);
+    await env.DB.prepare('UPDATE realtime_release SET retired_at=? WHERE id=?').bind(Date.now() - 60_001, id).run();
+    await expect(requireRealtimeAdmission(env.DB, id)).rejects.toMatchObject({ status: 409 });
+    const backend = remoteSessionBackend(env.TEST_REALTIME_BACKEND);
+    const access = await backend.revalidate(bootstrap, headers);
+    await backend.maintain(bootstrap, access.app, false);
+    await backend.persist(buildEventForReleaseTest(bootstrap));
+  });
+});
+function buildEventForReleaseTest(b: Bootstrap) {
+  return buildUsageEvent({ organizationId: b.organizationId, identity: b.identity, attribution: testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), appVersion: null,
+    status: 'ok', latencyMs: 1, contentType: 'application/json', observed: null, eventId: crypto.randomUUID(), createdAt: new Date().toISOString() });
+}

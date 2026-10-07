@@ -1,25 +1,19 @@
 import type { AppRecord } from '../core/types';
 import { GatewayError } from '../core/errors';
 import { log } from '../core/log';
-import { cachedAppUserBlocked } from '../client-auth/user-status';
-import { billingQuota } from '../billing/quota';
-import { requireActiveBilling } from '../billing/gateway';
-import { monthlyBudgetMicrousd } from '../shared/app-config';
-import { monthlySpendMicrousd } from '../usage/app-usage-accounting';
-import { authenticatedAccess } from '../execution/authenticated-access';
-import { admitGeneration } from '../execution/admission';
-import { requireProvider, type ResolvedProvider } from '../providers/provider-store';
-import { resolveDeployment } from '../policy/deployment';
+import type { ResolvedProvider } from '../providers/provider-store';
 import { DIRECT_ROUTE } from '../providers/route-adapters';
-import { buildUsageEvent, persistUsageEventAcknowledged, markUsageApiKeyUsed, type AttemptAttribution, type UsageEvent } from '../usage/usage-record';
+import { buildUsageEvent, type AttemptAttribution, type UsageEvent } from '../usage/usage-record';
 import { computeCost } from '../usage/pricing';
 import { realtimePolicy } from './policy';
-import { REALTIME_LIMITS as L } from './limits';
+import { REALTIME_LIMITS as L, REALTIME_MAX_SESSION_SECONDS } from './limits';
 import { SessionJournal } from './journal';
 import { Mailbox, close, frameBytes, send } from './transport';
 import { protocolAdapter, upstreamRequest } from './upstream';
 import { id, object, invalid } from './protocols/validation';
 import type { AdapterEffect, Bootstrap, CompletionStatus, Generation, JsonObject, ProtocolAdapter } from './types';
+
+import type { SessionBackend } from './backend';
 
 export class SessionCoordinator {
   private app: AppRecord | null = null;
@@ -59,21 +53,13 @@ export class SessionCoordinator {
   private authHeaders: Headers;
   readonly journal: SessionJournal;
 
-  constructor(private env: Env, private ctx: DurableObjectState, readonly bootstrap: Bootstrap, headers: Headers) {
+  constructor(private backend: SessionBackend, private ctx: DurableObjectState, readonly bootstrap: Bootstrap, headers: Headers) {
     this.authHeaders = new Headers(headers);
     this.journal = new SessionJournal(ctx.storage);
     this.mailbox = new Mailbox(() => this.terminate(new GatewayError(413, 'payload_too_large', 'Realtime queue limit exceeded'), 1009), error => this.fail(error));
   }
 
   private live(): boolean { return !this.terminating && !this.closed && Date.now() < this.expiresAt && Date.now() < this.leaseExpiry - L.leaseSafetyMs; }
-  private userLeaseKey(): string {
-    const identity = this.bootstrap.identity;
-    return identity.userId === null
-      ? `${identity.appId}:realtime:key:${identity.apiKeyId}`
-      : `${identity.appId}:${identity.userId}`;
-  }
-  private userLimiter() { return this.env.USER_LIMITER.getByName(this.userLeaseKey()); }
-  private appLimiter() { return this.env.USER_LIMITER.getByName(this.bootstrap.appId); }
 
   async start(testUpstream?: WebSocket): Promise<Response> {
     if (this.journal.metadata()) throw new GatewayError(409, 'conflict', 'A realtime object cannot be reopened');
@@ -81,7 +67,7 @@ export class SessionCoordinator {
     const app = this.app!;
     this.openedAt = Date.now();
     this.lastActivity = this.openedAt;
-    this.expiresAt = Math.min(this.openedAt + app.config.realtime.max_session_seconds * 1000, this.bootstrap.identity.expiresAt ?? Infinity);
+    this.expiresAt = Math.min(this.openedAt + Math.min(app.config.realtime.max_session_seconds, REALTIME_MAX_SESSION_SECONDS) * 1000, this.bootstrap.identity.expiresAt ?? Infinity);
     this.journal.open(this.bootstrap);
     let finishStarting!: () => void;
     this.starting = new Promise<void>(resolve => { finishStarting = resolve; });
@@ -89,10 +75,10 @@ export class SessionCoordinator {
       // Schedule crash recovery before external effects. Leases expire independently in their owners.
       await this.ctx.storage.setAlarm(this.openedAt + L.setupMs);
       this.requireStarting();
-      const user = await this.userLimiter().acquireSession(this.bootstrap.sessionId, app.config.realtime.max_concurrent_sessions_per_identity);
+      const user = await this.backend.capacity(this.bootstrap, 'user', 'acquire', app.config.realtime.max_concurrent_sessions_per_identity);
       if (!user.allowed) throw new GatewayError(429, 'realtime_session_limit', 'Realtime identity capacity exceeded');
       this.requireStarting();
-      const application = await this.appLimiter().acquireSession(this.bootstrap.sessionId, app.config.realtime.max_concurrent_sessions);
+      const application = await this.backend.capacity(this.bootstrap, 'app', 'acquire', app.config.realtime.max_concurrent_sessions);
       if (!application.allowed) throw new GatewayError(429, 'realtime_session_limit', 'Realtime app capacity exceeded');
       this.leaseExpiry = Math.min(user.expiresAt, application.expiresAt);
       this.requireStarting();
@@ -131,21 +117,18 @@ export class SessionCoordinator {
 
   private async revalidate(): Promise<void> {
     const b = this.bootstrap;
-    const access = await authenticatedAccess({ env: this.env, deployment: resolveDeployment(this.env, b.origin), appId: b.appId, headers: this.authHeaders, providerSlug: b.providerSlug });
-    if (access.app.organizationId !== b.organizationId || JSON.stringify(access.identity) !== JSON.stringify(b.identity)) throw new GatewayError(401, 'auth_required', 'Realtime identity changed');
-    const authentication = JSON.stringify(access.app.config.authentication);
+    const { app, provider } = await this.backend.revalidate(b, this.authHeaders);
+    const authentication = JSON.stringify(app.config.authentication);
     if (this.authPolicy !== null && authentication !== this.authPolicy) throw new GatewayError(401, 'auth_required', 'Realtime authentication policy changed; reconnect');
-    if (b.identity.userId !== null && await cachedAppUserBlocked(this.env.DB, b.appId, b.identity.userId)) throw new GatewayError(403, 'auth_required', 'User is blocked');
-    const provider = await requireProvider(this.env, b.organizationId, b.providerSlug);
     if (this.provider && provider.secret !== this.provider.secret) throw new GatewayError(403, 'provider_not_configured', 'Realtime provider credential changed; reconnect');
     if (provider.id !== b.providerId) throw new GatewayError(403, 'provider_not_configured', 'Realtime provider identity changed');
-    const policy = realtimePolicy(access.app, provider, b.requestedModel);
+    const policy = realtimePolicy(app, provider, b.requestedModel);
     if (policy.model !== b.model || policy.protocol !== b.protocol) throw new GatewayError(403, 'model_not_allowed', 'Realtime model policy changed');
     if (this.app) {
       const previous = realtimePolicy(this.app, this.provider!, b.requestedModel);
       if (policy.outputCap < previous.outputCap) throw new GatewayError(403, 'max_output_tokens_exceeded', 'Realtime output policy changed; reconnect');
     }
-    this.authPolicy = authentication; this.app = access.app; this.provider = provider;
+    this.authPolicy = authentication; this.app = app; this.provider = provider;
   }
 
   private attach(socket: WebSocket, source: 'client' | 'server'): void {
@@ -266,10 +249,9 @@ export class SessionCoordinator {
     this.active = generation; this.journal.save(generation);
     generation.stage = 'admitting'; this.journal.save(generation);
     try {
-      await admitGeneration({ env: this.env, deployment: resolveDeployment(this.env, this.bootstrap.origin), billingCache: new Map(), app, identity: this.bootstrap.identity,
-        attribution, endpointSlug: null, appVersion: this.bootstrap.appVersion, admissionId: generationId, now: at, freshSpend: true,
-        waitUntil: promise => this.ctx.waitUntil(promise), mayContinue: () => this.live(),
-        beforeClaim: claim => { generation.claim = claim; this.journal.save(generation); } });
+      await this.backend.admit(this.bootstrap, app, attribution, generationId, at,
+        claim => { if (!this.live()) throw new GatewayError(409, 'conflict', 'Session ended during admission'); generation.claim = claim; this.journal.save(generation); },
+        () => this.live());
       // Persist acceptance even if disconnect occurred during the claim RPC. It was counted.
       generation.stage = 'admitted'; this.journal.save(generation);
       if (!this.live()) return;
@@ -283,7 +265,7 @@ export class SessionCoordinator {
         if (generation.claim) {
           // An RPC can fail after committing. Read only; never resend the trigger.
           let receipt;
-          try { receipt = await this.env.ORG_QUOTA.getByName(app.organizationId).receipt(generation.id); } catch { /* alarm will reconcile */ }
+          try { receipt = await this.backend.receipt(this.bootstrap, generation.id); } catch { /* alarm will reconcile */ }
           if (receipt?.allowed) generation.stage = 'admitted';
           else if (receipt) generation.stage = 'refused';
         } else generation.stage = 'refused';
@@ -346,7 +328,7 @@ export class SessionCoordinator {
       }
       if (task.due > Date.now()) return;
       try {
-        await (scope === 'user' ? this.userLimiter() : this.appLimiter()).releaseSession(this.bootstrap.sessionId);
+        await this.backend.capacity(this.bootstrap, scope === 'user' ? 'user' : 'app', 'release');
         task.complete = true; this.journal.saveTask(name, task);
       } catch { this.journal.retryTask(name, task); }
     })).then(() => {}).finally(() => { this.releasing = null; });
@@ -365,9 +347,8 @@ export class SessionCoordinator {
       }
       if (item.due > Date.now()) { complete = false; continue; }
       try {
-        const result = await persistUsageEventAcknowledged(this.env, item.event);
+        await this.backend.persist(item.event);
         this.journal.acknowledged(item.id);
-        if (result === 'stored') this.ctx.waitUntil(markUsageApiKeyUsed(this.env, item.event));
       }
       catch { this.journal.retry(item); complete = false; log('error', 'realtime_usage_retry', { sessionId: this.bootstrap.sessionId, eventId: item.id }); }
     }
@@ -387,7 +368,7 @@ export class SessionCoordinator {
       if (generation.stage === 'admitting') {
         if (task.due > Date.now() && Date.now() - generation.at < L.outboxRetentionMs) { pending = true; continue; }
         try {
-          const receipt = await this.env.ORG_QUOTA.getByName(this.bootstrap.organizationId).receipt(generation.id);
+          const receipt = await this.backend.receipt(this.bootstrap, generation.id);
           if (!receipt) {
             if (Date.now() - generation.at < L.outboxRetentionMs) { pending = true; continue; }
             log('error', 'realtime_admission_accounting_gap', { sessionId: this.bootstrap.sessionId, generationId: generation.id });
@@ -408,23 +389,14 @@ export class SessionCoordinator {
   private async maintain(): Promise<void> {
     if (!this.live()) return;
     await this.revalidate();
-    // Read-only availability checks: maintenance never spends inference counters.
-    const quota = await billingQuota(resolveDeployment(this.env, this.bootstrap.origin), this.env, this.bootstrap.organizationId, new Map());
-    requireActiveBilling(quota.access);
-    if (!this.active && quota.kind === 'metered' && await this.env.ORG_QUOTA.getByName(this.bootstrap.organizationId).usage(quota.period.periodId) >= quota.limit && !this.active) {
-      throw new GatewayError(429, 'billing_request_quota_exceeded', 'Request allowance exhausted');
-    }
-    const month = new Date().toISOString().slice(0, 7);
-    for (const userKey of [null, this.bootstrap.identity.userId]) {
-      const scope = userKey === null ? this.app!.config.limits.per_app : this.app!.config.limits.per_user;
-      const budget = monthlyBudgetMicrousd(scope);
-      if (!this.active && budget !== null && await monthlySpendMicrousd(this.env.DB, { appId: this.bootstrap.appId, userKey }, month) >= budget && !this.active) {
-        throw new GatewayError(429, 'app_budget_exhausted', 'Application spending budget exhausted');
-      }
-      if (this.bootstrap.identity.userId === null) break;
+    try { await this.backend.maintain(this.bootstrap, this.app!, this.active !== null); }
+    catch (error) {
+      // Admission can complete while maintenance awaits remote availability.
+      // Its own checks already authorized the active generation to finish.
+      if (!(this.active && error instanceof GatewayError && ['billing_request_quota_exceeded', 'app_budget_exhausted'].includes(error.code))) throw error;
     }
     if (!this.live()) return;
-    const [user, app] = await Promise.all([this.userLimiter().renewSession(this.bootstrap.sessionId), this.appLimiter().renewSession(this.bootstrap.sessionId)]);
+    const [user, app] = await Promise.all([this.backend.capacity(this.bootstrap, 'user', 'renew'), this.backend.capacity(this.bootstrap, 'app', 'renew')]);
     if (!this.live() || !user.allowed || !app.allowed) throw new GatewayError(429, 'realtime_session_limit', 'Realtime capacity lease expired');
     this.leaseExpiry = Math.min(user.expiresAt, app.expiresAt); this.nextMaintenance = Date.now() + L.revalidateMs;
   }

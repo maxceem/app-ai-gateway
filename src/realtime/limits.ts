@@ -1,4 +1,5 @@
 /** Finite application bounds; these are not provider/platform limits. */
+export const REALTIME_MAX_SESSION_SECONDS = 1800;
 export const REALTIME_LIMITS = {
   clientFrameBytes: 256 * 1024, providerFrameBytes: 1024 * 1024,
   queuedBytes: 1024 * 1024, queuedEvents: 256,

@@ -19,7 +19,8 @@ import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
-import { serveRealtime } from "./realtime/serve";
+import { serveRealtime, discoverRealtime } from "./realtime/serve";
+import { REALTIME_BACKEND_CONTRACT } from "./realtime/backend";
 import { RealtimeSession } from "./do/RealtimeSession";
 import { INFERENCE_ROUTES } from "./contracts/inference-routes";
 import { OrgQuota } from "./do/OrgQuota";
@@ -37,6 +38,8 @@ import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
 
+export { RealtimeBackend } from "./realtime/rpc";
+
 export { EndpointRateLimiter, OrgQuota, UserLimiter, RealtimeSession };
 
 type AppEnv = {
@@ -48,11 +51,14 @@ const app = new Hono<AppEnv>();
 
 app.use("*", requestScope);
 
-app.get("/v1/healthz", (c) => c.json({
-  ok: true,
-  service: "app-ai-gateway",
-  vault: vaultStatus(c.env),
-} satisfies HealthResponse));
+app.get("/v1/healthz", async (c) => {
+  c.header("Cache-Control", "no-store");
+  const state = await c.env.DB.prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1").first<{ active_realtime_id: string | null }>();
+  await c.env.ORG_QUOTA.getByName("__deployment_health__").usage("health");
+  return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env),
+    buildId: c.env.GATEWAY_BUILD_ID ?? "development", ready: state !== null && vaultStatus(c.env) === "ok" && Boolean(c.env.USER_LIMITER && c.env.ENDPOINT_RATE_LIMITER),
+    backendContract: REALTIME_BACKEND_CONTRACT, realtimeReleaseId: state?.active_realtime_id ?? null } satisfies HealthResponse);
+});
 
 /**
  * Keeps the operator surface off the host application clients call.
@@ -142,6 +148,7 @@ app.route("/v1/apps/:app/auth", authRoutes);
 // answered before a body is read or a credential checked.
 app.all(INFERENCE_ROUTES.proxyProviderRequest, serveProxy);
 app.all(INFERENCE_ROUTES.connectRealtime, serveRealtime);
+app.get(INFERENCE_ROUTES.discoverRealtime, discoverRealtime);
 app.post(INFERENCE_ROUTES.callNamedEndpoint, serveEndpoint);
 
 app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);

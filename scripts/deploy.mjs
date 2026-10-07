@@ -1,3 +1,4 @@
+import { deployCheckout } from './seamless-root.mjs';
 // Deploys the gateway Worker.
 //
 //   pnpm run deploy                    # the tracked wrangler.jsonc, as one-click deploy uses it
@@ -26,22 +27,27 @@ import {
 
 function parseArguments(argv) {
   const { profile, rest } = takeProfileArgument(argv);
-  if (rest.length > 0) {
+  const action = rest[0] === "cleanup" ? "cleanup" : rest[0] === "rollback" ? "rollback" : "deploy";
+  const rollbackId = action === "rollback" ? rest[1] : undefined;
+  if (rest.length > (action === "deploy" ? 0 : action === "rollback" ? 2 : 1) || action === "rollback" && !rollbackId) {
     throw new Error(`Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>]`);
   }
-  return { profile };
+  return { profile, action, rollbackId };
 }
 
 let profile;
 let config;
+let configPath;
+let action;
+let rollbackId;
 let configArgs = [];
 let deploymentId;
 let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
 function prepare(argv) {
-  ({ profile } = parseArguments(argv));
-  ({ config, configArgs } = resolveWranglerConfig(profile));
+  ({ profile, action, rollbackId } = parseArguments(argv));
+  ({ config, configArgs, configPath } = resolveWranglerConfig(profile));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
   const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};
@@ -57,7 +63,7 @@ function readDeployedIds() {
   if (result.status !== 0) {
     // Cloudflare's specific Worker-not-found code. Authentication, network and
     // other lookup failures must never be interpreted as a fresh installation.
-    if (/\[code: 10007\]/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) return [];
+    if (/\[code: (?:10007|10090)\]/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) return [];
     throw new Error("Unable to inspect the deployed identity; check Wrangler authentication and retry");
   }
   return deploymentVersionIds(result.stdout).map((id) => {
@@ -67,7 +73,7 @@ function readDeployedIds() {
 }
 
 function wrangler(args, options = {}) {
-  const result = spawnSync(wranglerBin, [...args, ...configArgs, ...(args[0] === "deploy" ? ["--var", `DEPLOYMENT_ID:${deploymentId}`] : [])], {
+  const result = spawnSync(wranglerBin, [...args, ...(args.includes("--config") ? [] : configArgs), ...(args[0] === "deploy" ? ["--var", `DEPLOYMENT_ID:${deploymentId}`] : [])], {
     cwd: projectRoot,
     encoding: "utf8",
     env: process.env,
@@ -184,16 +190,24 @@ function applyMigrations() {
   return true;
 }
 
-function deploy() {
+async function deploy() {
   if (profile) console.log(`Deploying with the "${profile}" profile.`);
-  ensureDeploymentSecrets();
-  const deployedWhileProvisioning = applyMigrations();
-  if (!deployedWhileProvisioning) wrangler(["deploy"]);
+  await deployCheckout({ config, configPath, deploymentId, action, rollbackId,
+    prepare: async (path, options) => { if (path) configArgs = ['--config', path]; if (action === 'deploy') { if (options?.initial) wrangler(['deploy', '--config', path]); ensureDeploymentSecrets(); return applyMigrations(); } },
+    bootstrap: async path => {
+      configArgs = ['--config', path];
+      const probe = wrangler(['d1', 'execute', 'DB', '--remote', '--command', 'SELECT 1', '--json'], { capture: true, allowFailure: true });
+      if (probe.status === 0) return;
+      if (!databaseNeedsProvisioning(probe)) throw new Error('Unable to inspect D1 before acquiring deployment lease');
+      console.log('First installation: provisioning the primary Worker and D1 before acquiring the release lease. Retry this command if interrupted.');
+      wrangler(['deploy', '--config', path]);
+    },
+  });
 }
 
 try {
   prepare(process.argv.slice(2));
-  deploy();
+  await deploy();
 } catch (error) {
   console.error("");
   console.error(error instanceof Error ? error.message : String(error));

@@ -1,3 +1,4 @@
+import { REALTIME_MAX_SESSION_SECONDS } from '../realtime/limits.ts';
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import {
@@ -429,7 +430,7 @@ export const AppConfigSchema = z.object({
   }).strict().prefault({}),
   realtime: z.object({
     enabled: z.boolean().default(false),
-    max_session_seconds: z.number().int().positive().max(1800).default(1800),
+    max_session_seconds: z.number().int().positive().max(REALTIME_MAX_SESSION_SECONDS).default(REALTIME_MAX_SESSION_SECONDS),
     max_concurrent_sessions: z.number().int().positive().max(100).default(10),
     max_concurrent_sessions_per_identity: z.number().int().positive().max(10).default(2),
   }).strict().prefault({}),

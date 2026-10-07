@@ -64,7 +64,7 @@ export interface AdmissionInput {
   admissionId?: string;
   now?: number;
   freshSpend?: boolean;
-  beforeClaim?: (input: import("../do/OrgQuota").QuotaAdmissionInput | null) => void;
+  beforeClaim?: (input: import("../do/OrgQuota").QuotaAdmissionInput | null) => void | Promise<void>;
   mayContinue?: () => boolean;
   appVersion: string | null;
   waitUntil: (promise: Promise<unknown>) => void;
@@ -234,7 +234,8 @@ export async function admitGeneration(
   // touched at all, so neither pays for a count nothing enforces.
   if (quota.kind === "unmetered") {
     ensureLive();
-    input.beforeClaim?.(null);
+    await input.beforeClaim?.(null);
+    ensureLive();
     return finish();
   }
 
@@ -246,7 +247,8 @@ export async function admitGeneration(
     admissionId: input.admissionId,
   };
   ensureLive();
-  input.beforeClaim?.(claim);
+  await input.beforeClaim?.(claim);
+  ensureLive();
   const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit(claim);
   const durationMs = finish();
   if (!admission.allowed) {

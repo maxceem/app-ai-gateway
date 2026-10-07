@@ -67,6 +67,10 @@ export const HealthResponseSchema = z.object({
   ok: z.literal(true),
   service: z.literal("app-ai-gateway"),
   vault: z.enum(["ok", "misconfigured"]),
+  buildId: z.string(),
+  ready: z.boolean(),
+  backendContract: z.number(),
+  realtimeReleaseId: z.string().nullable(),
 });
 
 export const ConsoleCapabilitiesResponseSchema = z.object({

@@ -207,28 +207,38 @@ public actor AppAIGatewayClient {
         )
     }
 
-    /// A fresh provider-native conversation. Reconnecting never replays a generation.
-    public func realtimeURL(provider: String, model: String) throws -> URL {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        let host = components.host ?? ""
-        if components.scheme == "https" {
-            components.scheme = "wss"
-        } else if components.scheme == "http" && (host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]") {
-            components.scheme = "ws"
-        } else {
-            throw URLError(.unsupportedURL)
+    /// Discovers the current immutable release for a fresh conversation.
+    public func realtimeURL(provider: String, model: String) async throws -> URL {
+        let base = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        let host = base?.host ?? ""
+        let local = host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+        guard base?.user == nil, base?.password == nil, base?.fragment == nil,
+              base?.scheme == "https" || (base?.scheme == "http" && local), !model.isEmpty else { throw URLError(.unsupportedURL) }
+        var connection = URLComponents(url: baseURL.appending(path: "v1/apps/\(appID)/realtime/\(provider)/connection"), resolvingAgainstBaseURL: false)!
+        connection.queryItems = [URLQueryItem(name: "model", value: model)]
+        var request = try await authorizedRequest(url: connection.url!, method: "GET")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+            throw GatewayError(code: GatewayErrorCode(rawValue: envelope?.error.code ?? "unknown") ?? .unknown,
+                message: envelope?.error.message ?? "Realtime discovery failed", statusCode: http.statusCode,
+                data: envelope?.error.data ?? [:], retryAfter: GatewayError.retryAfter(from: http))
         }
-        guard components.user == nil, components.password == nil, !model.isEmpty else { throw URLError(.badURL) }
-        let origin = components.url!
-        var result = URLComponents(url: origin.appending(path: "v1/apps/\(appID)/realtime/\(provider)"), resolvingAgainstBaseURL: false)!
-        result.queryItems = [URLQueryItem(name: "model", value: model)]
-        result.fragment = nil
-        guard let url = result.url else { throw URLError(.badURL) }
+        struct Connection: Decodable { let url: String }
+        let discovery = try JSONDecoder().decode(Connection.self, from: data)
+        guard let discovered = URLComponents(string: discovery.url), let url = discovered.url,
+              discovered.user == nil, discovered.password == nil, discovered.fragment == nil,
+              discovered.host?.isEmpty == false else { throw URLError(.badURL) }
+        let discoveredHost = discovered.host ?? ""
+        let discoveredLocal = discoveredHost == "localhost" || discoveredHost.hasSuffix(".localhost") || discoveredHost == "127.0.0.1" || discoveredHost == "::1" || discoveredHost == "[::1]"
+        guard discovered.scheme == "wss" || (discovered.scheme == "ws" && local && discoveredLocal) else { throw URLError(.unsupportedURL) }
         return url
     }
 
-    public func realtimeURL(provider: ProviderSlug, model: String) throws -> URL {
-        try realtimeURL(provider: provider.rawValue, model: model)
+    public func realtimeURL(provider: ProviderSlug, model: String) async throws -> URL {
+        try await realtimeURL(provider: provider.rawValue, model: model)
     }
 
     /// Pass this request to URLSession.webSocketTask(with:). Each admitted response consumes one request.

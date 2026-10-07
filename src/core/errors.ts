@@ -205,8 +205,9 @@ export function errorResponse(
   code: ErrorCode,
   message: string,
   headers?: HeadersInit,
+  data?: GatewayErrorData,
 ): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), {
+  return new Response(JSON.stringify({ error: { code, message, ...(data === undefined ? {} : { data }) } }), {
     status,
     headers: { "content-type": "application/json; charset=UTF-8", ...headers },
   });

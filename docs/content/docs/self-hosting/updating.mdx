@@ -85,6 +85,62 @@ changes there before deploying.
 Console build variables such as `VITE_POSTHOG_KEY` are read when the console
 is built, so a change to one of them also needs a deploy.
 
+## Release promotion and established sessions
+
+The button, checkout deploy command, and CLI share the same release sequence:
+build and check the artifacts, acquire one deployment lease, apply compatible
+migrations, deploy the stable gateway at 100%, verify its exact build and
+required storage bindings, create or reuse an immutable realtime Worker,
+verify it, and atomically promote the URL new connections discover. Updates
+keep the selected gateway name, database, and deployment identity.
+
+An update that fails preparation or health verification keeps the previous
+realtime pointer. Retry the same command after fixing the reported failure.
+Overlapping updates are refused while a deployment holds the lease; an
+interrupted deployment's lease expires after ten minutes. The first checkout
+installation may provision the gateway and database before it can acquire this
+lease. It establishes its deployment identity before creating secrets, so an
+interrupted first installation can retry against that same identity.
+
+An existing older gateway without `DEPLOYMENT_ID` cannot report a verifiable
+release version. First establish a stable plain-text `DEPLOYMENT_ID` on that
+reviewed supported deployment using its existing deployment method, then retry.
+Never change an established identity.
+
+Retired realtime Workers refuse new sessions after 60 seconds and retain
+established sessions and pending usage recovery. They are kept for the maximum
+30-minute session, that admission grace, seven days of recovery, and one hour
+of margin. Expired releases are cleaned up on subsequent deployments. An idle
+installation retains them until you deploy again or run cleanup:
+
+```sh
+agw deployment cleanup
+# From a checkout:
+pnpm run deploy cleanup --profile prod
+```
+
+Deployment output reports the previous main version and recorded build ID.
+To return to a retained compatible deployment, use that build ID:
+
+```sh
+agw deployment rollback --release-id PREVIOUS-BUILD-ID
+# From a checkout:
+pnpm run deploy rollback PREVIOUS-BUILD-ID --profile prod
+```
+
+Rollback restores the recorded main version and realtime routing together,
+reactivates the old realtime release, and restarts retirement eligibility for
+the release it replaces. It never rolls back database data. Missing releases
+or incompatible backend, schema, or Durable Object lifecycle declarations stop
+rollback. Keep the deployment configuration and vault key backed up securely.
+Use these commands instead of independently rolling back a Worker in the
+dashboard, which does not coordinate realtime routing.
+
+`/v1/healthz` reports the main build ID, current realtime release ID, backend
+contract, and readiness. Health checks use no AI provider and consume no app
+request allowance. HTTP API URLs stay stable; in-progress HTTP streams are
+still subject to Cloudflare's own deployment and network behavior.
+
 ## Database migrations
 
 Migrations live in the `migrations` directory and are applied by the deploy
@@ -107,6 +163,12 @@ running the command twice is harmless.
   depend on, and never edit a migration that has been applied.
 </Callout>
 
+Keep migrations additive while a retired realtime runtime may still call the
+stable gateway. Expand the schema and backend contract first; remove old fields
+or methods only after all retained runtimes and recovery work are gone. The
+release compatibility declarations are reviewed by contributors, not inferred
+by a SQL parser, so they do not prove an arbitrary custom migration safe.
+
 A safe routine for a release that includes migrations:
 
 1. Read the new files under `migrations` and confirm they only add what the
@@ -120,8 +182,8 @@ A safe routine for a release that includes migrations:
 
 v0.4.0 changed the database layout and cannot update an existing v0.3.0 or
 earlier gateway in place. `agw deployment update` refuses such an update and
-changes nothing. A button or Wrangler deployment has no such guard, so do not
-point one at v0.4.0. Deploy v0.4.0 as a fresh gateway instead, and recreate
+changes nothing. Current button and checkout releases check the deployed version before updating. Do not
+point an older deployment script at v0.4.0. Deploy v0.4.0 as a fresh gateway instead, and recreate
 your apps, keys and provider credentials there. If you
 need help moving data from an existing installation,
 [open an issue on GitHub](https://github.com/maxceem/app-ai-gateway/issues).

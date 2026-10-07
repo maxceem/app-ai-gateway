@@ -6,14 +6,24 @@ description: Provider-native realtime conversations with generation admission, b
 Enable **Realtime sessions** in your app's settings to use a supported OpenAI
 model. Existing apps have realtime disabled.
 
-Use your provider instance's slug:
+Discover a release-specific connection URL using your provider instance's slug:
 
 ```text
-GET wss://api.appaigateway.com/v1/apps/{app}/realtime/{provider}?model=gpt-realtime
+GET https://api.appaigateway.com/v1/apps/{app}/realtime/{provider}/connection?model=gpt-realtime
 Authorization: Bearer <your gateway token or app API key>
 X-App-Version: <your app version>
-Upgrade: websocket
 ```
+
+The JSON response contains `url` and `releaseId`. Open that `wss://` URL with
+`Upgrade: websocket` and the same authentication headers. Discover again for
+every new conversation. The stable gateway's WebSocket path returns a
+`conflict` response asking for discovery.
+
+Established sessions remain on their immutable release through ordinary gateway
+updates. New connections move to the promoted release; a previously discovered
+URL accepts opens for at most 60 seconds after retirement. If it refuses,
+discover again. This preserves conversations during ordinary releases; network
+failures, runtime failures, and client disconnects still end a conversation.
 
 Use `X-App-Version` with gateway tokens, and your configured end-user header for
 API keys that identify users. Credentials in query parameters, cookies, or
@@ -161,3 +171,8 @@ Credentials come from an ignored local environment file. Use
 stored keys, provide `CF_ACCOUNT_ID`, `CF_GATEWAY_NAME`, and `CF_GATEWAY_API_KEY`.
 The scripts issue short-lived credentials over HTTP, then use the official
 provider WebSocket endpoint. This option is confined to the test scripts.
+
+The Swift SDK discovers the URL automatically in `authorizedRealtimeRequest`.
+`realtimeURL` is also asynchronous and performs authenticated discovery. Both
+reject insecure public URLs, URL credentials, and fragments. Local development
+uses `ws://` only when both gateway and connection hosts are loopback hosts.

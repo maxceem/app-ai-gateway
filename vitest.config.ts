@@ -16,6 +16,7 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.jsonc", environment: "local" },
         miniflare: {
+          serviceBindings: { TEST_REALTIME_BACKEND: { name: "app-ai-gateway", entrypoint: "RealtimeBackend" } },
           bindings: {
             REALTIME_SOAK: process.env.REALTIME_SOAK ?? "",
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",

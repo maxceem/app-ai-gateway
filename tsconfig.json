@@ -13,8 +13,8 @@
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-pool-workers/types", "node"],
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-pool-workers/types", "node", "./realtime-configuration.d.ts"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "worker-configuration.d.ts", "realtime-configuration.d.ts"]
 }

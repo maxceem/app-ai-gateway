@@ -43,6 +43,14 @@ run(process.execPath, [
   "--outdir",
   join(out, "worker"),
 ]);
+run(process.execPath, [resolve(root, "cli/node_modules/wrangler/bin/wrangler.js"), "deploy", "--dry-run", "--config", "wrangler.realtime.jsonc", "--outdir", join(out, "realtime")]);
+await rm(join(out, "realtime/worker.js.map"), { force: true });
+await rm(join(out, "realtime/README.md"), { force: true });
+const realtimeConfig = parse(await readFile(resolve(root, "wrangler.realtime.jsonc"), "utf8"));
+delete realtimeConfig.$schema;
+realtimeConfig.main = "./realtime/worker.js";
+realtimeConfig.no_bundle = true;
+await writeFile(join(out, "wrangler.realtime.json"), JSON.stringify(realtimeConfig, null, 2));
 await rm(join(out, "worker/index.js.map"), { force: true });
 await rm(join(out, "worker/README.md"), { force: true });
 await cp(resolve(root, "console/dist"), join(out, "console"), {

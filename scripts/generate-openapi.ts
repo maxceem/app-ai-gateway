@@ -11,7 +11,7 @@ await mkdir(outputDirectory, { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(document, null, 2)}\n`);
 console.log(`Generated ${outputPath}`);
 
-const routes = Object.fromEntries(["connectRealtime", "proxyProviderRequest", "callNamedEndpoint"].map(name => {
+const routes = Object.fromEntries(["discoverRealtime", "connectRealtime", "proxyProviderRequest", "callNamedEndpoint"].map(name => {
   const spec = CATALOG[name as keyof typeof CATALOG];
   return [name, spec.path.replace(/\{path\}/gu, "*").replace(/\{(\w+)\}/gu, ":$1")];
 }));

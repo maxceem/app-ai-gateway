@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { localSessionBackend } from '../realtime/local-backend';
 import { SessionCoordinator } from '../realtime/session';
 import { SessionJournal } from '../realtime/journal';
 import type { Bootstrap } from '../realtime/types';
@@ -15,14 +16,14 @@ export class RealtimeSession extends DurableObject<Env> {
   override async fetch(request: Request): Promise<Response> {
     if (this.coordinator || new SessionJournal(this.ctx.storage).metadata()) throw new GatewayError(409, 'conflict', 'Realtime session cannot be reopened');
     const bootstrap = parseBootstrap(request.headers.get('x-realtime-bootstrap'));
-    this.coordinator = new SessionCoordinator(this.env, this.ctx, bootstrap, request.headers);
+    this.coordinator = new SessionCoordinator(localSessionBackend(this.env, promise => this.ctx.waitUntil(promise)), this.ctx, bootstrap, request.headers);
     return this.coordinator.start();
   }
   override async alarm(): Promise<void> {
     if (!this.coordinator) {
       const bootstrap = new SessionJournal(this.ctx.storage).metadata();
       if (!bootstrap) { await this.ctx.storage.deleteAll(); return; }
-      this.coordinator = new SessionCoordinator(this.env, this.ctx, bootstrap, new Headers());
+      this.coordinator = new SessionCoordinator(localSessionBackend(this.env, promise => this.ctx.waitUntil(promise)), this.ctx, bootstrap, new Headers());
     }
     await this.coordinator.alarm();
   }

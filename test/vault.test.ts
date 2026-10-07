@@ -159,6 +159,10 @@ describe("secret vault validation", () => {
       ok: true,
       service: "app-ai-gateway",
       vault: "misconfigured",
+      buildId: "development",
+      ready: false,
+      backendContract: 1,
+      realtimeReleaseId: null,
     });
   });
 });
