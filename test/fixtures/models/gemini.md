@@ -85,3 +85,30 @@ contextual understanding. **Text input and output** is priced the same as
 | Output price | Not available | $12.00 (text and thinking) $120.00 (images) Equivalent to $0.134 per 1K/2K image^\*\*^ and $0.24 per 4K image^\*\*^ |
 | Grounding with Google Search^\*\*\*^ | Not available^\*\*\*\*^ | 5,000 free search requests per month (shared across all Gemini 3.x models), then $14 per 1,000 requests. |
 | Used to improve our products | [Yes](https://ai.google.dev/gemini-api/terms) | [No](https://ai.google.dev/gemini-api/terms) |
+
+## Gemini 3.8 Flash TTS
+
+*[`gemini-3.8-flash-tts`](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts)*
+
+### Standard
+
+|   | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.50 (text) through December 31, 2026. $1.00 (text) starting January 1, 2027. |
+| Output price | Free of charge | $9.00 (audio) through December 31, 2026. $18.00 (audio) starting January 1, 2027. Equivalent to $0.00225 per 10s audio^\*^ through December 31, 2026. Equivalent to $0.0045 per 10s audio^\*^ starting January 1, 2027. |
+| Context caching price | Free of charge | $0.125 (input caching) through December 31, 2026. $0.25 (input caching) starting January 1, 2027. $0.50 / 1,000,000 tokens per hour (storage price) through December 31, 2026. $1.00 / 1,000,000 tokens per hour (storage price) starting January 1, 2027. |
+| Used to improve our products | [Yes](https://ai.google.dev/gemini-api/terms) | [No](https://ai.google.dev/gemini-api/terms) |
+
+## Gemini Embedding 2
+
+*[`gemini-embedding-2`](https://ai.google.dev/gemini-api/docs/models/gemini-embedding-2)*
+
+### Standard
+
+|   | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Text input price | Free of charge | $0.20 |
+| Image input price | Free of charge | $0.45 ($0.00012 per image) |
+| Audio input price | Free of charge | $6.50 ($0.00016 per second) |
+| Video input price | Free of charge | $12.00 ($0.00079 per frame) |
+| Used to improve our products | [Yes](https://ai.google.dev/gemini-api/terms) | [No](https://ai.google.dev/gemini-api/terms) |

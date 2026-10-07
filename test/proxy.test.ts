@@ -1486,6 +1486,95 @@ describe("provider-native proxy", () => {
     expect(row?.auth_method).toBe("attest");
   });
 
+  it("records a Gemini image model's image tokens and bills them at its image rate", async () => {
+    const appId = "proxy-gemini-image";
+    await seedApp(appId, { proxy: { gemini: { allowed_paths: [], allowed_models: [] }, model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
+      usageMetadata: {
+        promptTokenCount: 12,
+        candidatesTokenCount: 1130,
+        candidatesTokensDetails: [
+          { modality: "TEXT", tokenCount: 10 },
+          { modality: "IMAGE", tokenCount: 1120 },
+        ],
+      },
+    }));
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/models/gemini-nano-banana-2.1:generateContent",
+      body: { contents: [] },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT output_tokens, modality_tokens, cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ output_tokens: number; modality_tokens: string | null; cost_usd: number; cost_source: string }>();
+    const banana = shippedRates("gemini", "gemini-nano-banana-2.1");
+    expect(row).toMatchObject({ output_tokens: 1130, cost_source: "computed" });
+    expect(JSON.parse(row!.modality_tokens!)).toEqual({ output: { image: 1120 } });
+    expect(row?.cost_usd).toBeCloseTo(
+      (12 * banana.input + 10 * banana.output + 1120 * banana.image_output) / 1e6,
+      12,
+    );
+  });
+
+  it.each([
+    {
+      provider: "openai",
+      path: "v1/embeddings",
+      requestPath: "openai/v1/embeddings",
+      body: { model: "text-embedding-3-small", input: "hello" },
+      model: "text-embedding-3-small",
+      answer: { object: "list", data: [], usage: { prompt_tokens: 800, total_tokens: 800 } },
+      cost: (rates: ReturnType<typeof shippedRates>) => (800 * rates.input) / 1e6,
+    },
+    {
+      provider: "gemini",
+      path: "v1beta/models/{model}:embedContent",
+      requestPath: "gemini/v1beta/models/gemini-embedding-2:embedContent",
+      body: { content: { parts: [{ text: "hello" }] } },
+      model: "gemini-embedding-2",
+      answer: {
+        embedding: { values: [0.1] },
+        usageMetadata: {
+          promptTokenCount: 300,
+          promptTokenDetails: [{ modality: "TEXT", tokenCount: 100 }, { modality: "IMAGE", tokenCount: 200 }],
+        },
+      },
+      cost: (rates: ReturnType<typeof shippedRates>) => (100 * rates.input + 200 * rates.image_input) / 1e6,
+    },
+  ] as const)("meters $model embeddings through an explicitly allowed path", async (testCase) => {
+    const appId = `proxy-embeddings-${testCase.provider}`;
+    await seedApp(appId, {
+      proxy: {
+        [testCase.provider]: { allowed_paths: [{ path: testCase.path, clamp: "none" }], allowed_models: [] },
+        model_rewrites: {},
+      },
+    });
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(testCase.answer));
+
+    const response = await proxyRequest({ appId, token, path: testCase.requestPath, body: testCase.body });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT model, cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ model: string; cost_usd: number; cost_source: string }>();
+    expect(row).toMatchObject({ model: testCase.model, cost_source: "computed" });
+    expect(row?.cost_usd).toBeCloseTo(testCase.cost(shippedRates(testCase.provider, testCase.model)), 12);
+  });
+
   it("forwards an unrewritten JSON body as the text the client sent", async () => {
     // No output cap, so nothing has a reason to rewrite the body at all.
     await seedApp("proxy-json-passthrough", {

@@ -15,7 +15,7 @@ import { type ObservedText, wholeBody } from "./body-observer";
 import { EMPTY_USAGE, type UsageObservation } from "./pricing";
 import { costReport } from "../providers/provider-type";
 import { asRecord } from "../shared/records";
-import type { UsageCounts } from "../core/types";
+import type { Modality, ModalityCounts, UsageCounts } from "../core/types";
 import type { ProviderType } from "../shared/providers";
 import type { ApiStyle } from "../shared/capabilities";
 
@@ -95,21 +95,74 @@ function anthropicUsage(value: unknown): UsageCounts | null {
   };
 }
 
-function geminiUsage(value: unknown): UsageCounts | null {
+/**
+ * Gemini's modality names, as the ones a price can tell apart. A PDF is read
+ * as page images, and is priced as one rather than at the cheaper text rate.
+ */
+const GEMINI_MODALITIES = new Map<unknown, Modality>([
+  ["IMAGE", "image"],
+  ["DOCUMENT", "image"],
+  ["AUDIO", "audio"],
+  ["VIDEO", "video"],
+]);
+
+/**
+ * One side of a Gemini usage object broken down by modality; undefined where
+ * it gives no breakdown. Only what a breakdown accounts for is believed: a
+ * modality nobody priced, and whatever the entries fall short of `total` by,
+ * is counted `unknown` rather than taken to be text.
+ */
+function geminiModalities(details: unknown, total: number): ModalityCounts | undefined {
+  if (!Array.isArray(details)) return undefined;
+  const counts: ModalityCounts = {};
+  let accounted = 0;
+  for (const detail of details) {
+    const entry = asRecord(detail);
+    if (!entry) continue;
+    const tokens = numberAt(entry, "tokenCount");
+    accounted += tokens;
+    if (entry.modality === "TEXT") continue;
+    const modality = GEMINI_MODALITIES.get(entry.modality) ?? "unknown";
+    counts[modality] = (counts[modality] ?? 0) + tokens;
+  }
+  if (accounted < total) counts.unknown = (counts.unknown ?? 0) + total - accounted;
+  return counts;
+}
+
+function geminiUsage(value: unknown): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
   const usage = asRecord(root.usageMetadata);
   if (!usage) return null;
-  if (!countsAny(usage, ["promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount"])) {
+  if (
+    !countsAny(usage, [
+      "promptTokenCount",
+      "cachedContentTokenCount",
+      "candidatesTokenCount",
+      "thoughtsTokenCount",
+    ])
+  ) {
     return null;
   }
   const promptTotal = numberAt(usage, "promptTokenCount");
   const cached = numberAt(usage, "cachedContentTokenCount");
+  const candidates = numberAt(usage, "candidatesTokenCount");
+  const thoughts = numberAt(usage, "thoughtsTokenCount");
+  // `promptTokenDetails` is how an embedding answer spells it.
+  const input = geminiModalities(usage.promptTokensDetails ?? usage.promptTokenDetails, promptTotal);
+  // Thinking is text even where the candidates are not broken down, so it is
+  // never billed at an image rate for want of a breakdown.
+  const output = geminiModalities(usage.candidatesTokensDetails, candidates)
+    ?? (thoughts > 0 ? { unknown: candidates } : undefined);
   return {
     inputTokens: Math.max(0, promptTotal - cached),
     cachedInputTokens: cached,
     cacheWriteTokens: 0,
-    outputTokens: numberAt(usage, "candidatesTokenCount"),
+    // Thinking is not part of the candidates, and Gemini bills it as output.
+    outputTokens: candidates + thoughts,
+    ...((input || output) && {
+      modalityTokens: { ...(input && { input }), ...(output && { output }) },
+    }),
   };
 }
 

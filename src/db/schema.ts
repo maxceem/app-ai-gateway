@@ -12,7 +12,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { AuthMethod } from "../core/types";
+import type { AuthMethod, ModalityTokens } from "../core/types";
 import type { CredentialSource } from "../shared/capabilities";
 import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
 import type { AppConfig } from "../shared/app-config";
@@ -341,6 +341,14 @@ export const appUsageEvent = sqliteTable(
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
+    /**
+     * What the response said the prompt and the answer were made of, as JSON
+     * `{ input?: { image?, audio?, video?, unknown? }, output?: { … } }`, kept
+     * so a model that prices a modality apart reprices exactly. `{}` where the
+     * response broke neither side down; null only on rows recorded before the
+     * column existed.
+     */
+    modalityTokens: text("modality_tokens", { mode: "json" }).$type<ModalityTokens>(),
     costUsd: real("cost_usd").notNull().default(0),
     /**
      * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a

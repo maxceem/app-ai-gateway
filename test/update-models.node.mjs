@@ -52,7 +52,7 @@ function replaceOnce(text, from, to) {
 
 test("openai: reads the standard, specialized and transcription tables", () => {
   const text = fixture("openai.md");
-  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-4o-transcribe", "Whisper"];
+  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "Whisper"];
   const prices = parse(parseOpenai, text, wanted);
   assert.deepEqual(prices.get("gpt-5.6-sol"), {
     input: 4,
@@ -77,6 +77,8 @@ test("openai: reads the standard, specialized and transcription tables", () => {
   assert.deepEqual(prices.get("gpt-5.4-mini"), { input: 0.75, output: 4.5, cached_input: 0.075 });
   // The standard specialized table, not the Fast one below it.
   assert.deepEqual(prices.get("gpt-5.3-codex"), { input: 1.75, output: 14, cached_input: 0.175 });
+  // An embedding generates nothing, so its missing output price is 0.
+  assert.deepEqual(prices.get("text-embedding-3-small"), { input: 0.02, output: 0 });
   assert.deepEqual(prices.get("gpt-4o-transcribe"), { input: 2.5, output: 10 });
   assert.deepEqual(prices.get("Whisper"), { per_minute: 0.006 });
   // Listed but not read, so unknown cells such as "Free" do not matter.
@@ -125,7 +127,7 @@ test("anthropic: fails on a changed header or price grammar", () => {
 
 test("gemini: reads dated, long-context and per-modality prices", () => {
   const text = fixture("gemini.md");
-  const wanted = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-2.5-flash"];
+  const wanted = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-2.5-flash", "gemini-3-pro-image"];
   const prices = parse(parseGemini, text, wanted);
   assert.deepEqual(prices.get("gemini-3.6-flash"), {
     input: 0.75,
@@ -150,8 +152,37 @@ test("gemini: reads dated, long-context and per-modality prices", () => {
   assert.deepEqual(prices.get("gemini-3.1-pro-preview"), pro);
   assert.deepEqual(prices.get("gemini-3.1-pro-preview-customtools"), pro);
   assert.deepEqual(prices.get("gemini-2.5-flash"), { input: 0.3, output: 2.5, cached_input: 0.03 });
-  // An image model's cells are not a token grammar, and are not read.
-  assert.equal(prices.get("gemini-3-pro-image"), null);
+  // Generated images bill at their own output rate; the per-image restatements are dropped.
+  assert.deepEqual(prices.get("gemini-3-pro-image"), { input: 2, output: 12, image_output: 120 });
+});
+
+test("gemini: reads a speech model's dated per-modality prices", () => {
+  const prices = parse(parseGemini, fixture("gemini.md"), ["gemini-3.8-flash-tts"]);
+  // Audio is all a speech model outputs, so its audio price is every output token's.
+  assert.deepEqual(prices.get("gemini-3.8-flash-tts"), {
+    input: 0.5,
+    output: 9,
+    cached_input: 0.125,
+    upcoming: [
+      { date: "2027-01-01", field: "input", value: 1 },
+      { date: "2027-01-01", field: "output", value: 18 },
+      { date: "2027-01-01", field: "cached_input", value: 0.25 },
+    ],
+  });
+});
+
+test("gemini: reads an embedding model's per-modality input rows", () => {
+  const text = fixture("gemini.md");
+  const prices = parse(parseGemini, text, ["gemini-embedding-2"]);
+  assert.deepEqual(prices.get("gemini-embedding-2"), {
+    input: 0.2,
+    output: 0,
+    image_input: 0.45,
+    audio_input: 6.5,
+    video_input: 12,
+  });
+  assertFails(parseGemini, replaceOnce(text, "| Text input price |", "| Text price |"), ["gemini-embedding-2"], /no input or output row/);
+  assertFails(parseGemini, replaceOnce(text, "$0.45 ($0.00012 per image)", "$0.45 (or $0.00012 per image)"), ["gemini-embedding-2"], /unknown price format/);
 });
 
 test("gemini: a dated price switches on its day", () => {
@@ -165,7 +196,20 @@ test("gemini: a dated price switches on its day", () => {
 
 test("gemini: fails on an unknown cell, a changed header or a dated gap", () => {
   const text = fixture("gemini.md");
-  assertFails(parseGemini, text, ["gemini-3-pro-image"], /unknown price format/);
+  assertFails(parseGemini, replaceOnce(text, "$120.00 (images)", "$120.00 (images) $60.00 (image)"), ["gemini-3-pro-image"], /two image prices/);
+  assertFails(parseGemini, replaceOnce(text, "$120.00 (images)", "$120.00 (video)"), ["gemini-3-pro-image"], /not metered/);
+  assertFails(
+    parseGemini,
+    replaceOnce(text, "$18.00 (audio) starting", "$18.00 (text) starting"),
+    ["gemini-3.8-flash-tts"],
+    /different modalities/,
+  );
+  assertFails(
+    parseGemini,
+    replaceOnce(text, "and $0.24 per 4K image^\\*\\*^ |", "and $0.24 per 4K image through December 31, 2026. |"),
+    ["gemini-3-pro-image"],
+    /unknown price format/,
+  );
   assertFails(parseGemini, replaceOnce(text, "| $1.50 |", "| $1.50 per million |"), ["gemini-3.5-flash"], /unknown price format/);
   assertFails(
     parseGemini,
@@ -375,6 +419,10 @@ test("effective prices follow computeCost's fallbacks", () => {
       output: 2,
       cached_input: 0.1,
       cache_write: 1,
+      image_input: 1,
+      audio_input: 1,
+      video_input: 1,
+      image_output: 2,
       long_input: 2,
       long_output: 2,
       long_cached_input: 0.1,
@@ -383,6 +431,12 @@ test("effective prices follow computeCost's fallbacks", () => {
   );
   assert.ok(!samePrice({ input: 1, output: 2 }, { input: 1, output: 2, long_context_threshold: 1000 }));
   assert.deepEqual(compare({ input: 1, output: 2 }, { input: 1, cached_input: 1, output: 2 }), { edits: [] });
+  // An image rate the catalog cannot bill would under-charge every generated image.
+  assert.equal(compare({ input: 1, output: 2 }, { input: 1, output: 2, image_output: 30 }).problem, "field");
+  assert.deepEqual(
+    compare({ input: 1, output: 2, image_output: 30 }, { input: 1, output: 2, image_output: 40 }),
+    { edits: [{ field: "image_output", from: 30, to: 40 }] },
+  );
 });
 
 const page = (entries) => ({ prices: new Map(Object.entries(entries)) });

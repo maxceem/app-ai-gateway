@@ -4,7 +4,7 @@ import type { UsageRepriceRequest } from "../contracts/schemas";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
-import { computeCost, hasTokenModelPrice } from "../usage/pricing";
+import { computeCost, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -54,6 +54,7 @@ export async function repriceAppUsage(
       cachedInputTokens: appUsageEvent.cachedInputTokens,
       cacheWriteTokens: appUsageEvent.cacheWriteTokens,
       outputTokens: appUsageEvent.outputTokens,
+      modalityTokens: appUsageEvent.modalityTokens,
       costUsd: appUsageEvent.costUsd,
       pricing: providerTable.pricing,
     })
@@ -93,15 +94,21 @@ export async function repriceAppUsage(
   // Every row was selected by the requested provider type, so that is the type
   // each one is priced as.
   for (const row of rows) {
-    const costUsd = hasTokenModelPrice(provider, model, row.pricing)
-      ? computeCost(provider, model, row, row.pricing)
+    // A row recorded before modality records were kept says nothing about what
+    // its tokens were. Where the price depends on that, any figure would be a
+    // guess, and the highest-rate one could multiply a text request's cost.
+    const unrecorded = row.modalityTokens === null && pricesModalities(provider, model, row.pricing);
+    const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded
+      ? computeCost(provider, model, { ...row, modalityTokens: row.modalityTokens ?? undefined }, row.pricing)
       : null;
     if (costUsd === null) {
       if (apply) {
         throw new GatewayError(
           400,
           "invalid_request",
-          `No token price is configured for ${provider}/${model}`,
+          unrecorded
+            ? `Some ${provider}/${model} events predate the modality record its price needs, so they cannot be repriced`
+            : `No token price is configured for ${provider}/${model}`,
         );
       }
       skipped.push({ id: row.id, previousCostUsd: row.costUsd });
@@ -183,7 +190,7 @@ export async function repriceAppUsage(
      * repricing cannot fix and must not appear to have fixed.
      */
     unmetered_events: repriced.filter((row) => !row.metered).length,
-    /** Dry-run only: matched events whose serving instance can no longer price them. */
+    /** Dry-run only: matched events that cannot be priced now, by their serving instance or for want of a modality breakdown. */
     unpriced_events: skipped.length,
     unpriced_cost_usd: skipped.reduce((total, row) => total + row.previousCostUsd, 0),
     previous_cost_usd: previousCostUsd,

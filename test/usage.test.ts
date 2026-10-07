@@ -121,6 +121,178 @@ describe("usage extraction", () => {
     });
   });
 
+  it("bills Gemini thinking tokens as output", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 10, thoughtsTokenCount: 30 },
+      }),
+      "application/json",
+      "gemini_native",
+    );
+    expect(usage).toEqual({
+      inputTokens: 40,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 40,
+      // The candidates are not broken down, but the thinking is known to be text.
+      modalityTokens: { output: { unknown: 10 } },
+    });
+  });
+
+  it("bills an image model's thinking as text when its candidates are not broken down", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1120, thoughtsTokenCount: 1000 },
+      }),
+      "application/json",
+      "gemini_native",
+    );
+    const pro = shippedRates("gemini", "gemini-3-pro-image");
+    expect(computeCost("gemini", "gemini-3-pro-image", usage)).toBeCloseTo(
+      (12 * pro.input + 1000 * pro.output + 1120 * pro.image_output) / 1e6,
+      12,
+    );
+  });
+
+  it.each([
+    ["an empty breakdown", [], 1000],
+    ["a breakdown with no token counts", [{ modality: "TEXT" }], 1000],
+    ["a modality no price names", [{ modality: "MODALITY_UNSPECIFIED", tokenCount: 1000 }], 1000],
+    ["a breakdown that falls short of the total", [{ modality: "TEXT", tokenCount: 400 }], 600],
+  ])("bills what %s does not account for at the highest rate", (_name, details, unaccounted) => {
+    const usage = extracted(
+      JSON.stringify({ usageMetadata: { promptTokenCount: 1000, promptTokenDetails: details } }),
+      "application/json",
+      "other",
+    );
+    const embedding = shippedRates("gemini", "gemini-embedding-2");
+    expect(computeCost("gemini", "gemini-embedding-2", usage)).toBeCloseTo(
+      ((1000 - unaccounted) * embedding.input + unaccounted * embedding.video_input) / 1e6,
+      12,
+    );
+  });
+
+  it("bills generated Gemini image tokens at the image rate", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 12,
+          candidatesTokenCount: 1130,
+          thoughtsTokenCount: 50,
+          candidatesTokensDetails: [
+            { modality: "TEXT", tokenCount: 10 },
+            { modality: "IMAGE", tokenCount: 1120 },
+          ],
+        },
+      }),
+      "application/json",
+      "gemini_native",
+    );
+    expect(usage).toEqual({
+      inputTokens: 12,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1180,
+      modalityTokens: { output: { image: 1120 } },
+    });
+    const banana = shippedRates("gemini", "gemini-nano-banana-2.1");
+    expect(computeCost("gemini", "gemini-nano-banana-2.1", usage)).toBeCloseTo(
+      (12 * banana.input + 60 * banana.output + 1120 * banana.image_output) / 1e6,
+      12,
+    );
+    // A text model has no image rate, so the same tokens are all output.
+    const flash = shippedRates("gemini", "gemini-3.5-flash");
+    expect(computeCost("gemini", "gemini-3.5-flash", usage)).toBeCloseTo(
+      (12 * flash.input + 1180 * flash.output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills output with no modality breakdown at an image model's image rate", () => {
+    const usage = extracted(
+      JSON.stringify({ usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1120 } }),
+      "application/json",
+      "gemini_native",
+    );
+    expect(usage.modalityTokens).toBeUndefined();
+    const banana = shippedRates("gemini", "gemini-nano-banana-2.1");
+    expect(computeCost("gemini", "gemini-nano-banana-2.1", usage)).toBeCloseTo(
+      (12 * banana.input + 1120 * banana.image_output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills a Gemini embedding's input per modality, PDFs as images", () => {
+    const usage = extracted(
+      JSON.stringify({
+        embedding: { values: [0.1, 0.2] },
+        usageMetadata: {
+          promptTokenCount: 1000,
+          promptTokenDetails: [
+            { modality: "TEXT", tokenCount: 100 },
+            { modality: "IMAGE", tokenCount: 200 },
+            { modality: "DOCUMENT", tokenCount: 50 },
+            { modality: "AUDIO", tokenCount: 250 },
+            { modality: "VIDEO", tokenCount: 400 },
+          ],
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+      modalityTokens: { input: { image: 250, audio: 250, video: 400 } },
+    });
+    const embedding = shippedRates("gemini", "gemini-embedding-2");
+    expect(computeCost("gemini", "gemini-embedding-2", usage)).toBeCloseTo(
+      (100 * embedding.input + 250 * embedding.image_input + 250 * embedding.audio_input
+        + 400 * embedding.video_input) / 1e6,
+      12,
+    );
+    // Without a breakdown nothing says the input was text, so it bills at the highest rate.
+    const unbroken = { ...usage, modalityTokens: undefined };
+    expect(computeCost("gemini", "gemini-embedding-2", unbroken)).toBeCloseTo(
+      (1000 * embedding.video_input) / 1e6,
+      12,
+    );
+    // A text model prices no modality apart, so the same breakdown changes nothing.
+    const flash = shippedRates("gemini", "gemini-3.5-flash");
+    expect(computeCost("gemini", "gemini-3.5-flash", usage)).toBeCloseTo((1000 * flash.input) / 1e6, 12);
+  });
+
+  it("bills an OpenAI embedding's input tokens", () => {
+    const usage = extracted(
+      JSON.stringify({ object: "list", data: [], usage: { prompt_tokens: 800, total_tokens: 800 } }),
+      "application/json",
+      "other",
+    );
+    const small = shippedRates("openai", "text-embedding-3-small");
+    expect(computeCost("openai", "text-embedding-3-small", usage)).toBeCloseTo((800 * small.input) / 1e6, 12);
+  });
+
+  it("bills Gemini speech output at the speech model's output rate", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 20,
+          candidatesTokenCount: 250,
+          candidatesTokensDetails: [{ modality: "AUDIO", tokenCount: 250 }],
+        },
+      }),
+      "application/json",
+      "gemini_native",
+    );
+    const tts = shippedRates("gemini", "gemini-3.8-flash-tts");
+    expect(computeCost("gemini", "gemini-3.8-flash-tts", usage)).toBeCloseTo(
+      (20 * tts.input + 250 * tts.output) / 1e6,
+      12,
+    );
+  });
+
   it("extracts OpenAI-style usage from a streamed Gemini compatibility response", () => {
     const usage = extracted(
       [
@@ -1119,7 +1291,7 @@ describe("the shipped price catalog", () => {
         if (entry.per_minute !== undefined || entry.per_hour !== undefined) continue;
         // Per-1M units: a $3/1M model is `3`, not `0.000003` and not `300`.
         // Nothing real sits outside this band, and both mistakes leave it.
-        for (const field of ["input", "output", "cached_input", "cache_write"]) {
+        for (const field of ["input", "output", "image_input", "audio_input", "video_input", "image_output", "cached_input", "cache_write"]) {
           const value = entry[field] as number | undefined;
           if (value === undefined || value === 0) continue;
           expect([where, field, value > 0.001 && value < 1000])
