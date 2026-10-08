@@ -238,5 +238,9 @@
   {
     "key": "together/together/Tev1-4B-experimental: not added",
     "reason": "Unsupported public pricing: chat models, together/Tev1-4B-experimental: \"Free\" is not a price"
+  },
+  {
+    "key": "anthropic/claude-sonnet-4-5: threshold differs",
+    "reason": "The lists keep the 200,000-token threshold of the retired 1M-context beta. Anthropic now gives Claude Sonnet 4.5 a 200k-token context window and a single price, so no prompt crosses a threshold."
   }
 ]

@@ -125,6 +125,25 @@ test("anthropic: fails on a changed header or price grammar", () => {
   assertFails(parseAnthropic, replaceOnce(text, "## Model pricing", "## Models"), wanted, /missing/);
 });
 
+test("anthropic: pairs prompt-length rows into long-context prices", () => {
+  const text = fixture("anthropic.md");
+  const wanted = ["claude-haiku-5-5"];
+  assert.deepEqual(parse(parseAnthropic, text, wanted).get("claude-haiku-5-5"), {
+    input: 0.1,
+    cached_input: 0.01,
+    cache_write: 0.125,
+    output: 0.5,
+    long_context_threshold: 100000,
+    long_input: 0.5,
+    long_cached_input: 0.05,
+    long_cache_write: 0.625,
+    long_output: 2.5,
+  });
+  assert.equal(parse(parseAnthropic, text, ["claude-haiku-4-5"]).get("claude-haiku-5-5"), null);
+  assertFails(parseAnthropic, replaceOnce(text, "(for prompts over 100,000 tokens)", "(for prompts over 200,000 tokens)"), wanted, /long-context row/);
+  assertFails(parseAnthropic, replaceOnce(text, "(for prompts up to 100,000 tokens)", "(for prompts over 100,000 tokens)"), wanted, /without its base row/);
+});
+
 test("gemini: reads dated, long-context and per-modality prices", () => {
   const text = fixture("gemini.md");
   const wanted = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-2.5-flash", "gemini-3-pro-image"];
