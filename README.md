@@ -30,14 +30,16 @@ Anthropic, Gemini or whichever provider you use.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/maxceem/app-ai-gateway)
 
-A Cloudflare account is all you need. The deployment form asks for one value:
+A Cloudflare account is all you need. The deployment form asks for two values:
 
 | Variable | How to obtain it |
 | --- | --- |
 | `SECRET_VAULT_LOCAL_KEK_V1` | Run `openssl rand -base64 32`. It encrypts the provider keys you add later in the console, so back it up — losing it makes them unreadable. |
+| `ALLOWED_REGISTRATION_EMAILS` | A comma-separated list of emails that can register on your deployment. |
 
-Everything else is provisioned for you. When the deployment finishes, open the
-console, create the first account, and add your provider keys.
+Leave the other fields at their defaults; everything else is provisioned for
+you. When the deployment finishes, open the console, register with an email you
+listed, and add your provider keys.
 
 ## Local development
 
