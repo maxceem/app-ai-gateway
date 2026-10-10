@@ -44,13 +44,18 @@ jobs:
           MODEL_REVIEW_API_URL: ${{ vars.MODEL_REVIEW_API_URL }}
           MODEL_REVIEW_MODEL: ${{ vars.MODEL_REVIEW_MODEL }}
         run: |
+          # One date for the prices and the title, even across midnight UTC.
+          today=$(date -u +%F)
           set +e
-          node scripts/update-models.mjs --review "$RUNNER_TEMP/model-review.json" --overrides "$RUNNER_TEMP/model-overrides.json" --report "$RUNNER_TEMP/models.md"
+          node scripts/update-models.mjs --review "$RUNNER_TEMP/model-review.json" --overrides "$RUNNER_TEMP/model-overrides.json" --report "$RUNNER_TEMP/models.md" --title "$RUNNER_TEMP/title.txt" --today "$today"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ -f "$RUNNER_TEMP/models.md" ]; then
             cat "$RUNNER_TEMP/models.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "$RUNNER_TEMP/title.txt" ]; then
+            echo "title=$(cat "$RUNNER_TEMP/title.txt")" >> "$GITHUB_OUTPUT"
           fi
       - name: Update this PR
         id: pr
@@ -59,8 +64,8 @@ jobs:
         with:
           branch: automation/update-models
           base: main
-          title: Update the model catalog
-          commit-message: Update the model catalog
+          title: ${{ steps.models.outputs.title }}
+          commit-message: ${{ steps.models.outputs.title }}
           body-path: ${{ runner.temp }}/models.md
           add-paths: |
             src/usage/models.json
