@@ -172,6 +172,26 @@ describe("usage extraction", () => {
     );
   });
 
+  it("reads Mistral's billed audio seconds beside its transcription tokens", () => {
+    const usage = extracted(
+      JSON.stringify({
+        model: "voxtral-mini-latest",
+        text: "hello",
+        language: "en",
+        usage: { prompt_tokens: 4, completion_tokens: 10, total_tokens: 14, prompt_audio_seconds: 12 },
+      }),
+      "application/json",
+      "audio_transcription",
+    );
+    expect(usage).toEqual({
+      inputTokens: 4,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 10,
+      audioSeconds: 12,
+    });
+  });
+
   it("bills generated Gemini image tokens at the image rate", () => {
     const usage = extracted(
       JSON.stringify({
@@ -1430,6 +1450,27 @@ describe("large response bodies", () => {
       outputTokens: 6240,
       modalityTokens: { input: { image: 1310 } },
     });
+  });
+
+  it("prices a long verbose transcription by the duration at its head", async () => {
+    // Groq's verbose_json states its duration before the segments, which a
+    // long recording grows past both windows; the tail carries no usage at all.
+    const segment = { id: 0, start: 0, end: 1, text: "lorem ipsum ".repeat(20), tokens: [1, 2, 3] };
+    const text = JSON.stringify({
+      task: "transcribe",
+      language: "english",
+      duration: 7200,
+      text: "lorem ipsum",
+      segments: Array.from({ length: Math.ceil(SIX_MB / JSON.stringify(segment).length) }, () => segment),
+    });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "groq", "direct", "audio_transcription").usage;
+    expect(usage).toMatchObject({ audioSeconds: 7200, durationOnly: true });
+    expect(computeCost("groq", "whisper-large-v3", usage!)).toBeCloseTo(
+      (7200 / 3600) * shippedRates("groq", "whisper-large-v3").per_hour,
+      12,
+    );
   });
 
   it("prices a 6 MB Anthropic stream from both of its ends", async () => {

@@ -223,7 +223,10 @@ function nonNegativeNumber(value: unknown): number | null {
 function audioUsage(value: unknown): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
-  const seconds = nonNegativeNumber(asRecord(root.usage)?.seconds)
+  const usage = asRecord(root.usage);
+  // Mistral names the billed audio `prompt_audio_seconds`, beside its tokens.
+  const seconds = nonNegativeNumber(usage?.seconds)
+    ?? nonNegativeNumber(usage?.prompt_audio_seconds)
     ?? nonNegativeNumber(root.duration);
   const tokens = openAiUsage(root);
   if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
@@ -389,6 +392,14 @@ const TAIL_USAGE_KEYS = ["usage", "usageMetadata"] as const;
 const TAIL_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/gu;
 
 /**
+ * The same key, read off the head instead: the first one, because a verbose
+ * transcription states its top-level `duration` before the segments and words
+ * that can push it out of the tail window. Inside a string of content the key's
+ * quotes are escaped, so a transcript that says "duration" never matches.
+ */
+const HEAD_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/u;
+
+/**
  * A synthetic document carrying whatever usage the tail of a truncated JSON
  * body still holds. Every shape this file prices reports at the end of the
  * document, so the last such key is the one that counts; `null` means the
@@ -483,8 +494,12 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    const document = tailUsageDocument(body.tail);
-    return documentValues(document ? [document] : []);
+    const document = tailUsageDocument(body.tail) ?? {};
+    if (document.duration === undefined) {
+      const duration = HEAD_DURATION.exec(body.head)?.[1];
+      if (duration !== undefined) document.duration = Number(duration);
+    }
+    return documentValues(Object.keys(document).length > 0 ? [document] : []);
   }
   try {
     const parsed = JSON.parse(body.head) as unknown;

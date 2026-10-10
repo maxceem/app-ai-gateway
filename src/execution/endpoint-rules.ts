@@ -110,7 +110,7 @@ export function endpointAttemptRequest(
   if (prepared.form) {
     const form = formWithModel(prepared.form, wireModel);
     // The plan already dropped a target no format could price this for.
-    const format = meteredTranscriptionFormat(provider, form.get("response_format"));
+    const format = meteredTranscriptionFormat(provider, form);
     if (format && format !== "refuse") form.set("response_format", format.send);
     body = form;
   } else {
@@ -196,7 +196,7 @@ export async function resolveEndpointAttempts(
     }
     // A transcription this target would answer in plain text cannot be priced,
     // which is the same as no price at all.
-    if (prepared.form && meteredTranscriptionFormat(entry.type, prepared.form.get("response_format")) === "refuse") {
+    if (prepared.form && meteredTranscriptionFormat(entry.type, prepared.form) === "refuse") {
       if (primary) throw unmeteredTranscriptionFormat(entry.type);
       continue;
     }

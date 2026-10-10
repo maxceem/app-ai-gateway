@@ -15,6 +15,7 @@ import { clampOutput } from "./protocols.ts";
 import { costReport } from "./provider-type.ts";
 import type { ResolvedRoute } from "./route-adapters.ts";
 import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
+import { lookup } from "../shared/records.ts";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 
@@ -91,15 +92,37 @@ export function formWithModel(source: FormData, model: string): FormData {
  */
 export function meteredTranscriptionFormat(
   provider: ProviderType,
-  requested: FormDataEntryValue | null,
+  form: FormData,
 ): { send: string } | "refuse" | null {
   const formats = providerDescriptor(provider).transcriptionFormats;
   if (!formats) return null;
-  if (requested !== null && typeof requested !== "string") return "refuse";
-  const format = requested ?? formats.default;
+  // Two formats would leave the provider to pick one, and nothing says which.
+  const requested = form.getAll("response_format");
+  if (requested.length > 1) return "refuse";
+  const [named] = requested;
+  if (named !== undefined && typeof named !== "string") return "refuse";
+  const format = named ?? formats.default;
   if (formats.metered.includes(format)) return null;
-  const upgrade = formats.upgrades?.[format];
+  const upgrade = lookup(formats.upgrades, format);
   return upgrade ? { send: upgrade } : "refuse";
+}
+
+/**
+ * Whether a multipart body names its model more than once. Pricing reads the
+ * first value, and a provider that read another would run a model nobody
+ * priced, so such a form is refused rather than forwarded with both.
+ */
+export function namesModelTwice(form: FormData): boolean {
+  return form.getAll("model").length > 1;
+}
+
+/**
+ * Whether this provider type's transcriptions are judged by their format,
+ * which only a multipart form names where {@link meteredTranscriptionFormat}
+ * can read it: a JSON body to the same path would pass unjudged.
+ */
+export function judgesTranscriptionFormat(provider: ProviderType): boolean {
+  return providerDescriptor(provider).transcriptionFormats !== undefined;
 }
 
 /** The answer to a transcription format {@link meteredTranscriptionFormat} refuses. */

@@ -668,6 +668,22 @@ describe("custom endpoints", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("refuses a transcription endpoint request naming two formats", async () => {
+    const appId = "endpoint-transcribe-two-formats";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const form = new FormData();
+    form.append("response_format", "json");
+    form.append("response_format", "text");
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+    const response = await endpointRequest({ appId, slug: "transcribe", token, body: form });
+
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("routes an xAI transcription endpoint to the grok speech-to-text path", async () => {
     const appId = "endpoint-xai-stt";
     await seedApp(appId, {
