@@ -387,6 +387,9 @@ test("anthropic deprecations: a promise is not a date, a retirement is", () => {
   assert.deepEqual(dates.get("claude-opus-4-1-20250805"), { date: "2026-08-05" });
   // The catalog names aliases; the table names the snapshot behind them.
   assert.equal(sourceId(SOURCES.anthropic.deprecations, "claude-opus-4-5"), "claude-opus-4-5-20251101");
+  // A routed model is priced as its replacement but keeps its own deprecation row.
+  assert.equal(sourceId(SOURCES.gemini.official, "gemini-3.7-flash"), "gemini-3.8-flash");
+  assert.equal(sourceId(SOURCES.gemini.deprecations, "gemini-3.7-flash"), "gemini-3.7-flash");
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Current state |", "| State         |"), wanted, /header changed/);
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Active        | N/A               | Not sooner than June 9, 2027", "| Active        | N/A               | Soon                        "), wanted, /active model/);
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Retired       |", "| Sunset        |"), wanted, /unknown state/);

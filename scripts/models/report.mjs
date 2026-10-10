@@ -85,7 +85,7 @@ export function renderReport(decision) {
   if (decision.attention.length > 0) {
     attention =
       "## ❌ Needs your attention\n\n" +
-      "These items fail the workflow and need a manual fix. Merging this pull request does not resolve them.\n\n" +
+      "These items need a manual fix. Merging this pull request does not resolve them.\n\n" +
       list(decision.attention, (item) => `${escape(item.text)} — ${code(item.key)}`) +
       "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
