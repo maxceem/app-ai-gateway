@@ -13,6 +13,7 @@ import { lookup } from "../shared/records";
 import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
 import { type ProviderType, reportsCost } from "../shared/providers";
+import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 
 interface Price {
   input?: number;
@@ -138,13 +139,17 @@ export function hasTokenModelPrice(
  * allowed to proxy. Two ways to know what it costs: a local price for the
  * canonical model, or a route that reports its own cost per request. Neither
  * means the spend would be invisible, and an invisible spend is a limit bypass.
+ * `style` is the request's API, or `null` on a configuration write that has
+ * none yet — see `routeCostReport`.
  */
 export function isBillable(
   provider: ProviderType,
+  route: ProviderRoute | null,
+  style: ApiStyle | null,
   model: string,
   overrides?: ProviderPricing | null,
 ): boolean {
-  return reportsCost(provider) || hasModelPrice(provider, model, overrides);
+  return reportsCost(provider, route, style) || hasModelPrice(provider, model, overrides);
 }
 
 /**

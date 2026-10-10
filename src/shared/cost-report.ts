@@ -31,6 +31,12 @@ export interface ProviderReport {
  */
 export interface CostReport {
   /**
+   * The APIs whose responses carry this report. Any other API of the same type
+   * bills on a local price like a type that reports nothing, so an unpriced
+   * model is refused there rather than proxied into an event nothing priced.
+   */
+  styles: readonly ApiStyle[];
+  /**
    * Headers this integration needs on every request for the report to be
    * complete. Merged with the descriptor's own {@link ProviderDescriptor.requestHeaders} by
    * `providerRequestHeaders`, so the sanitizer strips a client's version of them
@@ -43,6 +49,21 @@ export interface CostReport {
    * the values of a stream in any order and the answer is the same.
    */
   read(value: Record<string, unknown>, report: ProviderReport): boolean;
+  /**
+   * Whether a report already holds everything {@link read} can ever write, so
+   * a scan may stop. Declared per integration because what each one reports
+   * differs: a scan that waited for a field its provider never sends would
+   * parse every chunk of every stream.
+   */
+  settled(report: ProviderReport): boolean;
+  /**
+   * Whether the response, not the route's configuration, says whose credential
+   * paid. True only for an aggregator: the organization's key always pays the
+   * aggregator itself, and the question the event answers is whose key paid
+   * for the inference behind it. A provider that reports only what it charged
+   * leaves the route's configured credential source standing.
+   */
+  readsCredentialSource: boolean;
   /**
    * A same-protocol request rewrite this integration needs, if any — the kind
    * model rewrites and output caps already are, never a conversion between
@@ -123,7 +144,7 @@ function reportedByok(root: Record<string, unknown>, usage: Record<string, unkno
 }
 
 /**
- * OpenRouter's per-request self-report, the only one shipped today.
+ * OpenRouter's per-request self-report.
  *
  * No `mutateBody`: OpenRouter documents accounting as always on — "no
  * additional parameters are required" — and lists `usage.include` under
@@ -136,9 +157,19 @@ function reportedByok(root: Record<string, unknown>, usage: Record<string, unkno
  * shared proxy path.
  */
 export const OPENROUTER_COST_REPORT: CostReport = {
+  // Only chat completions carry `usage.cost`, which is why it is the only
+  // style the provider type offers at all.
+  styles: ["chat_completions"],
   // Which host actually served a request is opt-in per request; without this
   // header the response names no serving provider at all.
   requestHeaders: { "x-openrouter-metadata": "enabled" },
+  // `credentialSource` is deliberately not required: it is a claim that is
+  // simply absent on a non-BYOK request, so waiting for it would mean walking
+  // every chunk of every stream. The response that carries it carries the cost
+  // too.
+  settled: (report) =>
+    report.costUsd !== null && report.servedProvider !== null && report.servedModel !== null,
+  readsCredentialSource: true,
   read(root, report) {
     let said = false;
     const usage = asRecord(root.usage);
@@ -176,6 +207,43 @@ export const OPENROUTER_COST_REPORT: CostReport = {
   },
 };
 
+/** xAI's billing unit: `cost_in_usd_ticks` counts ten-billionths of a dollar. */
+const XAI_TICKS_PER_USD = 10_000_000_000;
+
+/**
+ * xAI's per-request self-report: `usage.cost_in_usd_ticks`, which its cost
+ * tracking documentation defines as the amount actually billed, after every
+ * applicable discount. Chat Completions, Responses, image generation and video
+ * generation all carry it, and it is the only measure an image response has at
+ * all — xAI bills images per image, and reports no token counts for them.
+ *
+ * Read where each API puts its `usage`: at the root of a Chat Completions or
+ * image answer and of a whole Responses object, and under `response` on the
+ * `response.completed` event that closes a Responses stream. A Chat
+ * Completions stream reports it in the final chunk, the one that carries usage.
+ *
+ * Cost only: xAI is the counterparty that served the request, so there is no
+ * serving host or upstream credential for a response to name.
+ */
+export const XAI_COST_REPORT: CostReport = {
+  // Images and videos are provider-native operations, `other` to this gateway.
+  // Its Anthropic-compatible Messages API and `v1/stt` are not documented to
+  // report a cost, so they keep billing on the catalog.
+  styles: ["chat_completions", "responses", "other"],
+  settled: (report) => report.costUsd !== null,
+  readsCredentialSource: false,
+  read(root, report) {
+    if (report.costUsd !== null) return false;
+    const usage = asRecord(root.usage) ?? asRecord(asRecord(root.response)?.usage);
+    const ticks = usage ? finiteNumber(usage.cost_in_usd_ticks) : null;
+    // A negative figure is not a charge; like OpenRouter's, it reads as no
+    // report at all rather than crediting a budget.
+    if (ticks === null || ticks < 0) return false;
+    report.costUsd = ticks / XAI_TICKS_PER_USD;
+    return true;
+  },
+};
+
 /**
  * Reads a whole response's self-report, merging across SSE events because a
  * stream carries its cost and its routing metadata only in the final chunk.
@@ -203,17 +271,7 @@ export function readProviderReport(
     const root = asRecord(value);
     if (!root) continue;
     if (integration.read(root, report)) reported = true;
-    // `credentialSource` is deliberately not required to stop: it is a claim
-    // that is simply absent on a non-BYOK request, so waiting for it would mean
-    // walking every chunk of every stream. The response that carries it carries
-    // the cost too.
-    if (
-      report.costUsd !== null
-      && report.servedProvider !== null
-      && report.servedModel !== null
-    ) {
-      break;
-    }
+    if (integration.settled(report)) break;
   }
   return reported ? report : null;
 }

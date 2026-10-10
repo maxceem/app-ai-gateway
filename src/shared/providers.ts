@@ -18,9 +18,11 @@ import {
   type ApiStyle,
   type EndpointApiStyle,
   type OutputClampStyle,
+  type ProviderRoute,
   type RouteCapability,
 } from "./capabilities.ts";
-import { type CostReport, OPENROUTER_COST_REPORT } from "./cost-report.ts";
+import { type CostReport, OPENROUTER_COST_REPORT, XAI_COST_REPORT } from "./cost-report.ts";
+import { relaysProviderResponses } from "./gateways.ts";
 
 /**
  * How a provider authenticates a direct call. The header name and the scheme
@@ -170,6 +172,11 @@ export const PROVIDER_DESCRIPTORS = {
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
     // `v1/audio/transcriptions`.
     endpointPaths: { responses: "v1/responses", audio_transcription: "v1/stt" },
+    // Every Chat Completions, Responses, image and video answer carries
+    // `usage.cost_in_usd_ticks`, what xAI actually billed for it. An image
+    // reports nothing else, so this is the only way to bill one; on the token
+    // APIs it beats the catalog's estimate, which knows no discounts.
+    costReport: XAI_COST_REPORT,
     modelAuthor: "xAI",
   },
   gemini: {
@@ -416,21 +423,36 @@ export function providersForEndpointStyle(style: EndpointApiStyle): EndpointProv
 }
 
 /**
- * Whether this provider type's own responses carry a per-request cost, which is
- * exactly whether it declared how to read one. Billability derives from the
- * declaration rather than sitting beside it, so the two cannot disagree.
+ * How this provider type reports its own cost on one route and API, or `null`
+ * where a response there cannot carry the report: the type declares none, the
+ * route answers in a gateway's own words rather than the provider's, or the
+ * API is not one the report covers. Billability derives from the declaration
+ * rather than sitting beside it, so the two cannot disagree.
+ *
+ * `style` is `null` only where no request is in hand yet — a configuration
+ * write naming a model it may later be called with — and then any API the
+ * report covers counts. A request is judged against its own API, which is the
+ * gate that keeps an unpriced model off the ones the report does not cover.
  *
  * Takes a plain string because a stored row's type reaches it from the console
  * as well as from the Worker.
  */
-export function reportsCost(type: string): boolean {
-  return isProviderType(type) && providerDescriptor(type).costReport !== undefined;
+export function routeCostReport(
+  type: string,
+  route: ProviderRoute | null,
+  style: ApiStyle | null,
+): CostReport | null {
+  if (!isProviderType(type) || !relaysProviderResponses(route)) return null;
+  const integration = providerDescriptor(type).costReport;
+  if (!integration) return null;
+  return style === null || integration.styles.includes(style) ? integration : null;
 }
 
-/**
- * Provider types whose own responses carry a per-request cost, so their models
- * proxy with no local price at all and the recorded cost is the upstream's own
- * figure.
- */
-export const COST_REPORTING_PROVIDER_TYPES: readonly ProviderType[] =
-  PROVIDER_TYPES.filter(reportsCost);
+/** Whether {@link routeCostReport} answers: a cost the provider states replaces a local price. */
+export function reportsCost(
+  type: string,
+  route: ProviderRoute | null,
+  style: ApiStyle | null,
+): boolean {
+  return routeCostReport(type, route, style) !== null;
+}

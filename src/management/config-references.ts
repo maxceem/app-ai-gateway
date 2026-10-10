@@ -2,6 +2,8 @@ import { supportsEndpointStyle } from "../providers/capability-matrix";
 import type { OrganizationProviders } from "../providers/provider-store";
 import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "../shared/providers";
+import { classifyPath } from "../shared/protocols";
+import { type ApiStyle, DEFAULT_PROXY_API_STYLES } from "../shared/capabilities";
 import { hasModelPrice, isBillable } from "../usage/pricing";
 import {
   ConfigError,
@@ -22,9 +24,11 @@ function validateRoutingPrices(
   scope: ProviderScope,
 ): void {
   for (const [source, target] of Object.entries(rewrites)) {
+    // A rewrite names no provider and no API, so a target any of them could
+    // bill is accepted; the policies below and each request judge the rest.
     const priced = PROVIDER_TYPES.some((type) => hasModelPrice(type, target, null))
       || Object.values(scope.instances).some((provider) =>
-        isBillable(provider.type, target, provider.pricing));
+        isBillable(provider.type, provider.route, null, target, provider.pricing));
     if (!priced) {
       throw new ConfigError(
         `routing.model_rewrites.${source} targets model ${target}, which has no configured price`,
@@ -38,16 +42,34 @@ function validateRoutingPrices(
       if (!scope.grandfathered.has(slug)) throw new ConfigError(`Unknown provider instance ${slug}`);
       continue;
     }
+    // The APIs a request under this policy can speak, classified exactly as
+    // the proxy classifies a request path. A model is judged against those
+    // and no others: one that only an API outside them could bill would save
+    // here and then be refused on every request it is allowed to make.
+    const paths = policy.allowed_paths.map((entry) => typeof entry === "string" ? entry : entry.path);
+    const allowedStyles: readonly ApiStyle[] = paths.length === 0
+      ? DEFAULT_PROXY_API_STYLES
+      : paths.map((path) => classifyPath(path).protocol.style);
     const configured = [
-      ...policy.allowed_models.map((model) => ({ model, label: `${slug}.allowed_models` })),
+      ...policy.allowed_models.map((model) => ({
+        model,
+        styles: allowedStyles,
+        label: `${slug}.allowed_models`,
+      })),
       ...policy.allowed_paths.flatMap((path, index) =>
         typeof path === "string" || path.fixed_model === undefined
           ? []
-          : [{ model: path.fixed_model, label: `${slug}.allowed_paths[${index}].fixed_model` }]),
+          : [{
+            model: path.fixed_model,
+            styles: [classifyPath(path.path).protocol.style],
+            label: `${slug}.allowed_paths[${index}].fixed_model`,
+          }]),
     ];
     for (const item of configured) {
       const resolved = lookup(rewrites, item.model) ?? item.model;
-      if (!isBillable(provider.type, resolved, provider.pricing)) {
+      const billable = item.styles.some((style) =>
+        isBillable(provider.type, provider.route, style, resolved, provider.pricing));
+      if (!billable) {
         throw new ConfigError(
           `${item.label} resolves ${item.model} to ${resolved}, which has no configured price`,
         );
@@ -79,7 +101,7 @@ function validateTarget(
         : `${label}.provider ${target.provider} is a ${instance.type} instance routed through a ${instance.route} gateway, which does not support ${endpoint.api_style}`,
     );
   }
-  if (!isBillable(instance.type, target.model, instance.pricing)) {
+  if (!isBillable(instance.type, instance.route, endpoint.api_style, target.model, instance.pricing)) {
     throw new ConfigError(
       `${label}.model ${target.model} has no configured price for ${target.provider}`,
     );

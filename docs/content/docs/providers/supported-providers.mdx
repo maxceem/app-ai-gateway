@@ -21,7 +21,7 @@ anything else, so the exact chat-completions path is listed for each.
 | --- | --- | --- | --- | --- |
 | `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/audio/transcriptions`. |
 | `anthropic` | Anthropic | `v1/messages` | Cloudflare, Vercel | Anthropic Messages, not chat completions. |
-| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/stt`. |
+| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/stt`, image generation. Reports its own cost. |
 | `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare, Vercel | Native API at `v1beta/models/{model}:generateContent`. |
 | `perplexity` | Perplexity | `chat/completions` | Cloudflare, Vercel | Sonar models. No test call. |
 | `deepseek` | DeepSeek | `chat/completions` | Vercel | No `v1/` in the base URL. |
@@ -95,9 +95,9 @@ Vercel.
 plane from its control plane. Copy the path from the table rather than
 assuming `v1/`.
 
-**OpenRouter** is an aggregator, and the only type that records the cost the
-upstream reports rather than a locally computed one. It has a section of its
-own [below](#openrouter).
+**xAI** and **OpenRouter** report what each request cost, and the gateway
+records that figure rather than a locally computed one. Each has a section of
+its own below: [xAI](#xai) and [OpenRouter](#openrouter).
 
 ## What Test provider calls
 
@@ -128,6 +128,46 @@ answers 200 regardless of the credential would report every key as good.
 
 The verdicts are explained in
 [Add a provider key](/providers/add-a-provider#test-provider).
+
+## xAI
+
+**Cost is reported, not computed.** xAI's Chat Completions, Responses and
+image generation answers carry `usage.cost_in_usd_ticks`, what xAI actually
+billed for that request after any discount. The gateway records it as the
+event's cost with `cost_source: "reported"`, ahead of any catalog price. So on
+those APIs an xAI model proxies with **no local price**, which is what makes
+image models such as `grok-imagine-image` work at all: xAI bills images per
+image and reports no token counts for them. Streaming works the same way; the
+figure arrives in the final chunk.
+
+Two exceptions bill on local prices, like any other provider type:
+
+- **xAI's Anthropic Messages API and `v1/stt`.** xAI does not document a cost
+  on them, so a model used there needs a price in the catalog or under the
+  provider's **Pricing** action.
+- **The Vercel route.** Vercel answers through its own APIs rather than passing
+  xAI's answer back, so the reported figure does not survive it. A Cloudflare
+  AI Gateway route passes it through unchanged.
+
+If a reporting API ever answers without a cost, a local price for the model is
+used if there is one (`computed`), and otherwise the event is marked
+[unresolved](/providers/model-pricing#where-a-cost-comes-from).
+
+Image generation is a provider operation rather than one of the default
+inference endpoints, so allow its path in the app's
+[provider access](/applications/provider-access#endpoints-this-provider-serves).
+Give it `"clamp": "none"`: an image has no output tokens to cap.
+
+```json
+"xai": {
+  "allowed_paths": [
+    "v1/chat/completions",
+    "v1/responses",
+    { "path": "v1/images/generations", "clamp": "none" }
+  ],
+  "allowed_models": []
+}
+```
 
 ## OpenRouter
 

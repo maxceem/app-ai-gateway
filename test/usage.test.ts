@@ -528,6 +528,7 @@ describe("provider self-reports", () => {
       })),
       "application/json",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.usage).toEqual({
@@ -555,6 +556,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.report?.costUsd).toBe(0.00009);
@@ -563,7 +565,7 @@ describe("provider self-reports", () => {
 
   it("calls the credential byok only when the response says so", () => {
     const byok = (usage: Record<string, unknown>) =>
-      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter", "chat_completions")
+      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter", "direct", "chat_completions")
         .report?.credentialSource;
     expect(byok({ cost: 0, is_byok: true })).toBe("byok");
     // The upstream's own charge is a figure OpenRouter only has when the
@@ -594,6 +596,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.report).toMatchObject({ costUsd: 0.5, servedModel: "late/model" });
@@ -607,6 +610,7 @@ describe("provider self-reports", () => {
         wholeBody(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } })),
         "application/json",
         "openrouter",
+        "direct",
         "chat_completions",
       ).report,
     ).toBeNull();
@@ -619,6 +623,7 @@ describe("provider self-reports", () => {
       wholeBody(completion({ cost: 9.99 })),
       "application/json",
       "openai",
+      "direct",
       "chat_completions",
     );
     expect(seen.report).toBeNull();
@@ -1108,7 +1113,7 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     expect(observed.totalBytes).toBeGreaterThan(SIX_MB);
     // An embeddings call is `other`: no cross-provider contract classifies it.
-    const usage = observeResponse(observed, "application/json", "openai", "other").usage;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "other").usage;
     expect(usage).toEqual({
       inputTokens: 120000,
       cachedInputTokens: 0,
@@ -1124,7 +1129,7 @@ describe("large response bodies", () => {
     // Input tokens are only in `message_start` at the head, output tokens only
     // in `message_delta` at the tail: one window alone would halve the bill.
     expect(
-      observeResponse(observed, "text/event-stream", "anthropic", "anthropic_messages").usage,
+      observeResponse(observed, "text/event-stream", "anthropic", "direct", "anthropic_messages").usage,
     ).toEqual({
       inputTokens: 1200,
       cachedInputTokens: 300,
@@ -1144,7 +1149,7 @@ describe("large response bodies", () => {
       usage: { type: "duration", seconds: 3600 },
     }));
     expect(observed.truncated).toBe(true);
-    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "audio_transcription").usage;
     expect(usage?.audioSeconds).toBe(3600);
     expect(computeCost("openai", "whisper-1", usage!))
       .toBeCloseTo(60 * shippedRates("openai", "whisper-1").per_minute, 12);
@@ -1159,7 +1164,7 @@ describe("large response bodies", () => {
       usage: { type: "tokens", input_tokens: 140, output_tokens: 12 },
     }));
     expect(observed.truncated).toBe(true);
-    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage!;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "audio_transcription").usage!;
     expect(usage).toMatchObject({ inputTokens: 140, outputTokens: 12, audioSeconds: 30 });
     expect(reportsPricedMeasure("openai", "whisper-1", usage)).toBe(true);
     expect(computeCost("openai", "whisper-1", usage))
@@ -1175,7 +1180,7 @@ describe("large response bodies", () => {
       usage: { input_tokens: 50, cache_read_input_tokens: 20, output_tokens: 9 },
     }));
     expect(observed.truncated).toBe(true);
-    expect(observeResponse(observed, "application/json", "anthropic", "other").usage).toEqual({
+    expect(observeResponse(observed, "application/json", "anthropic", "direct", "other").usage).toEqual({
       inputTokens: 50,
       cachedInputTokens: 20,
       cacheWriteTokens: 0,
@@ -1188,7 +1193,7 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     // Unresolved, exactly as an intact response carrying no usage is: nothing
     // here may read as a measured zero.
-    expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
+    expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toBeNull();
   });
 
   it("reads the usage object out of a tail full of braces and quotes", async () => {
@@ -1198,7 +1203,7 @@ describe("large response bodies", () => {
       + `"completion_tokens":7}`;
     const observed = await observe(`{"filler":"${"x".repeat(SIX_MB)}","usage":${usage}}`);
     expect(observed.truncated).toBe(true);
-    expect(observeResponse(observed, "application/json", "openai", "other").usage).toEqual({
+    expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toEqual({
       inputTokens: 42,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
@@ -1213,7 +1218,7 @@ describe("large response bodies", () => {
       // object leaves nothing to read: the scan has to end rather than keep
       // finding the same first occurrence.
       const observed = { head: "", tail: '"usage": 5, "x": 1}', truncated: true };
-      expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
+      expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toBeNull();
     },
     1000,
   );
@@ -1229,7 +1234,7 @@ describe("large response bodies", () => {
     expect(text.length).toBeGreaterThan(OBSERVER_HEAD_BYTES);
     expect(observed).toMatchObject({ head: text, tail: "", truncated: false, aborted: false });
     expect(
-      observeResponse(observed, "application/json", "openai", "chat_completions").usage,
+      observeResponse(observed, "application/json", "openai", "direct", "chat_completions").usage,
     ).toEqual({
       inputTokens: 30,
       cachedInputTokens: 0,
@@ -1440,8 +1445,10 @@ describe("the shipped price catalog", () => {
     // their traffic waits for an operator price rather than billing $0.
     for (const type of ["fireworks", "huggingface"] as const) {
       expect(catalog[type]).toBeUndefined();
-      expect(isBillable(type, "any/model")).toBe(false);
-      expect(isBillable(type, "any/model", { "any/model": { input: 1, output: 2 } })).toBe(true);
+      expect(isBillable(type, "direct", "chat_completions", "any/model")).toBe(false);
+      expect(
+        isBillable(type, "direct", "chat_completions", "any/model", { "any/model": { input: 1, output: 2 } }),
+      ).toBe(true);
     }
   });
 });

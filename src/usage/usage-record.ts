@@ -20,7 +20,7 @@ import {
   type UsageObservation,
 } from "./pricing";
 import { observeResponse } from "./usage-readers";
-import { type ProviderType, reportsCost } from "../shared/providers";
+import { type ProviderType, routeCostReport } from "../shared/providers";
 import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
 import { database } from "../db/index";
@@ -225,6 +225,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         body,
         input.contentType,
         attribution.provider,
+        attribution.providerRoute.kind,
         attribution.apiStyle,
       );
       observed = seen.usage;
@@ -239,7 +240,12 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
-  const reporting = reportsCost(attribution.provider);
+  const integration = routeCostReport(
+    attribution.provider,
+    attribution.providerRoute.kind,
+    attribution.apiStyle,
+  );
+  const reporting = integration !== null;
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
   const price = computeCost(
@@ -354,11 +360,12 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       providerSlug: attribution.providerSlug,
       providerGatewayId: gateway?.id ?? null,
       providerGatewayType: gateway?.type ?? null,
-      // On a reporting route the configuration settles nothing: the
+      // Behind an aggregator the configuration settles nothing: the
       // organization's own key always pays *that* service, and the question the
       // column answers is whose key paid for the inference behind it — which
-      // only the response can say, per request.
-      credentialSource: reporting
+      // only the response can say, per request. A provider that reports only
+      // its own charge leaves the route's answer standing.
+      credentialSource: integration?.readsCredentialSource
         ? (report?.credentialSource ?? null)
         : attribution.providerRoute.adapter.credentialSource,
       modelAuthor: resolveModelAuthor(attribution.provider, attribution.model),

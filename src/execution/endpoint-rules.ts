@@ -188,7 +188,7 @@ export async function resolveEndpointAttempts(
       }
       continue;
     }
-    if (!isBillable(entry.type, target.model, entry.pricing)) {
+    if (!isBillable(entry.type, entry.route.kind, endpoint.api_style, target.model, entry.pricing)) {
       if (primary) {
         throw new GatewayError(
           400,

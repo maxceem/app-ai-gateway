@@ -278,7 +278,9 @@ A model that is in neither the built-in catalog (`GET /v1/admin/prices`)
 nor the provider's `pricing` cannot be used by any app: requests answer
 `400 pricing_not_configured`, and an app configuration that names it in
 `allowed_models`, `model_rewrites` targets or endpoints is rejected on
-validation. OpenRouter reports its own cost and needs no price.
+validation. OpenRouter reports its own cost and needs no price, and so does
+xAI on Chat Completions, Responses and image generation, directly or through
+Cloudflare; its Messages API, `v1/stt` and the Vercel route still need one.
 
 Custom `baseUrl` points an `openai`-type provider at an OpenAI-compatible
 server. It requires `https`, a public hostname, the default port and no query.

@@ -18,6 +18,7 @@ import {
   CF_AIG_ROUTES,
   VERCEL_ROUTES,
   type GatewayProviderRoute,
+  type ProviderRoute,
 } from "./capabilities.ts";
 import type { ProviderType } from "./providers.ts";
 
@@ -52,6 +53,13 @@ export interface GatewayDescriptor {
   connectionFields: readonly GatewayConnectionField[];
   /** Which provider types this gateway serves, and how. */
   routes: Partial<Record<ProviderType, GatewayProviderRoute>>;
+  /**
+   * Whether a response comes back as the provider wrote it. Only then does a
+   * provider's own cost report survive the hop: a gateway that answers in its
+   * own words drops the provider's fields, and a model that bills on a report
+   * which never arrives would record every request unresolved.
+   */
+  relaysProviderResponses: boolean;
 }
 
 const GatewayIdSchema = z.string().trim().min(1).max(100);
@@ -71,6 +79,8 @@ export const GATEWAY_DESCRIPTORS = {
       { key: "gatewayId", label: "Cloudflare Gateway ID" },
     ],
     routes: CF_AIG_ROUTES,
+    // A proxy in front of the provider's own API: the body is the provider's.
+    relaysProviderResponses: true,
   },
   vercel: {
     label: "Vercel AI Gateway",
@@ -88,6 +98,10 @@ export const GATEWAY_DESCRIPTORS = {
     }),
     connectionFields: [],
     routes: VERCEL_ROUTES,
+    // Vercel answers through its own client APIs, translating between them and
+    // the serving provider's protocol, so a provider's own fields are not part
+    // of the contract.
+    relaysProviderResponses: false,
   },
 } as const satisfies Record<string, GatewayDescriptor>;
 
@@ -96,6 +110,15 @@ export type GatewayType = keyof typeof GATEWAY_DESCRIPTORS;
 
 /** The descriptor keys as a list, in declaration order. */
 export const GATEWAY_TYPES = Object.keys(GATEWAY_DESCRIPTORS) as [GatewayType, ...GatewayType[]];
+
+/**
+ * Whether responses on this route are the provider's own. A direct call always
+ * is; `null` — a gateway this deployment has no adapter for — carries nothing.
+ */
+export function relaysProviderResponses(route: ProviderRoute | null): boolean {
+  if (route === null) return false;
+  return route === "direct" || GATEWAY_DESCRIPTORS[route].relaysProviderResponses;
+}
 
 /** One gateway type's stored connection configuration. */
 export type GatewayConnectionConfig<T extends GatewayType = GatewayType> = {

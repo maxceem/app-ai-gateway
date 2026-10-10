@@ -595,6 +595,23 @@ describe("organization-scoped configuration references", () => {
     }))).toThrowError("has no configured price");
   });
 
+  /**
+   * A model is judged against the APIs its allowed paths can speak. xAI
+   * reports the cost of an image, so an unpriced image model saves where image
+   * generation is allowed, and is refused where only its Messages API is,
+   * which would refuse every request the app could make.
+   */
+  it("judges an allowlisted model by the APIs its paths allow", () => {
+    const allowing = (paths: string[]) => serverConfig({
+      proxy: { xai: { allowed_paths: paths, allowed_models: ["grok-imagine-image-2.0"] } },
+    });
+    expect(() => validateConfig(allowing(["v1/images/generations"]))).not.toThrow();
+    expect(() => validateConfig(allowing(["v1/messages", "v1/images/generations"]))).not.toThrow();
+    expect(() => validateConfig(allowing(["v1/messages"]))).toThrowError("has no configured price");
+    // No paths means the default inference APIs, which include ones xAI reports on.
+    expect(() => validateConfig(allowing([]))).not.toThrow();
+  });
+
   it("accepts an unpriced client alias when it rewrites to a priced provider model", () => {
     expect(() => validateConfig(serverConfig({
       proxy: {
@@ -787,10 +804,21 @@ describe("organization-scoped configuration references", () => {
           api_style: "responses",
           provider: "openai",
           model: "gpt-5.6-luna",
-          fallback: [{ provider: "xai", model: "released-today" }],
+          fallback: [{ provider: "openai", model: "released-today" }],
         },
       },
     }))).toThrowError("endpoints.chat.fallback[0].model");
+  });
+
+  /**
+   * xAI states what each Responses request cost, so an endpoint on that API
+   * needs no local price for its model — the same predicate the request is
+   * judged by.
+   */
+  it("accepts an unpriced model on an endpoint whose API reports its cost", () => {
+    expect(() => validateConfig(serverConfig({
+      endpoints: { chat: { api_style: "responses", provider: "xai", model: "released-today" } },
+    }))).not.toThrow();
   });
 
   it.each(["gemini", "anthropic", "perplexity"])(
