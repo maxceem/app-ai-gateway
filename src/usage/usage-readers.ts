@@ -13,11 +13,10 @@ import { readProviderReport, type ProviderReport } from "../shared/cost-report";
 import { PROTOCOLS, type UsageFormat } from "../providers/protocols";
 import { type ObservedText, wholeBody } from "./body-observer";
 import { EMPTY_USAGE, type UsageObservation } from "./pricing";
-import { costReport } from "../providers/provider-type";
 import { asRecord } from "../shared/records";
 import type { Modality, ModalityCounts, UsageCounts } from "../core/types";
-import type { ProviderType } from "../shared/providers";
-import type { ApiStyle } from "../shared/capabilities";
+import { type ProviderType, routeCostReport } from "../shared/providers";
+import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 
 
 function finiteNumber(value: unknown): number | null {
@@ -567,18 +566,19 @@ export function extractUsageText(
 
 /**
  * Everything one response body says about itself, parsed once. The report half
- * is read only by the integration the provider type declared, and only if it
- * declared one: usage is read by the style's own reader, and no type ever has
- * another provider's fields read out of its responses.
+ * is read only by the integration the provider type declared, and only where
+ * it covers this route and API: usage is read by the style's own reader, and no
+ * type ever has another provider's fields read out of its responses.
  */
 export function observeResponse(
   body: ObservedText,
   contentType: string,
   provider: ProviderType,
+  route: ProviderRoute,
   style: ApiStyle,
 ): { usage: UsageObservation | null; report: ProviderReport | null } {
   const values = responseValues(body, contentType);
-  const reporting = costReport(provider);
+  const reporting = routeCostReport(provider, route, style);
   return {
     usage: readUsage(values, style),
     // Handed the same backwards walk: the report of a stream is in its final

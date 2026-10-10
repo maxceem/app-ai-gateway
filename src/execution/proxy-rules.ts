@@ -332,6 +332,8 @@ function resolveModel(input: {
   policy: ProviderPolicy;
   rewrites: Record<string, string> | undefined;
   resolved: ResolvedProvider;
+  /** The API the request speaks, which decides whether a cost report covers it. */
+  style: ApiStyle;
 }): { requestedModel: string; actualModel: string; wireModel: string } {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
@@ -344,7 +346,7 @@ function resolveModel(input: {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
   const actualModel = lookup(input.rewrites, requestedModel) ?? requestedModel;
-  if (!isBillable(provider, actualModel, input.resolved.pricing)) {
+  if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
   // Everything above judged the canonical model; only the outbound request
@@ -430,6 +432,7 @@ export async function prepareProxyRequest(input: {
       policy: config,
       rewrites: input.app.config.routing.model_rewrites,
       resolved,
+      style: apiStyle,
     });
     const placement = modelPlacement(match, model);
     if (placement && "bodyModel" in placement && parsed) {
@@ -455,6 +458,7 @@ export async function prepareProxyRequest(input: {
     policy: config,
     rewrites: input.app.config.routing.model_rewrites,
     resolved,
+    style: apiStyle,
   });
   const placement = modelPlacement(match, model);
   let bodyChanged = false;

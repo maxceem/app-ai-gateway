@@ -29,6 +29,8 @@ interface EventRow {
   cost_source: string | null;
   model: string;
   endpoint_slug: string | null;
+  input_tokens: number;
+  output_tokens: number;
 }
 
 let pending: ExecutionContext[] = [];
@@ -46,14 +48,14 @@ async function workerFetch(input: string, init: RequestInit): Promise<Response> 
 }
 
 /** The most recent event for one provider slug, once `waitUntil` has settled. */
-async function lastEvent(slug: string): Promise<EventRow> {
+async function lastEvent(slug: string, appId = APP_ID): Promise<EventRow> {
   await settle();
   const row = await env.DB.prepare(
     `SELECT provider_slug, provider_gateway_id, provider_gateway_type, credential_source,
             model_author, served_provider, served_model, reported_cost_usd, cost_usd,
-            cost_source, model, endpoint_slug
+            cost_source, model, endpoint_slug, input_tokens, output_tokens
        FROM app_usage_event WHERE app_id = ? AND provider_slug = ? ORDER BY id DESC LIMIT 1`,
-  ).bind(APP_ID, slug).first<EventRow>();
+  ).bind(appId, slug).first<EventRow>();
   if (!row) throw new Error(`No usage event was recorded for ${slug}`);
   return row;
 }
@@ -650,19 +652,218 @@ describe("OpenRouter reported-cost metering", () => {
   });
 });
 
+describe("xAI reported-cost metering", () => {
+  const XAI_APP = "usage-attribution-xai";
+  const IMAGE_MODEL = "grok-imagine-image-2.0";
+  const PATHS = ["v1/images/generations", "v1/chat/completions", "v1/responses", "v1/messages"];
+  const open = { allowed_paths: PATHS, allowed_models: [] };
+  const IDS = ["attribution-xai-direct", "attribution-xai-cf", "attribution-xai-vercel"];
+
+  beforeAll(async () => {
+    await seedApp(XAI_APP, {
+      proxy: { "xai-direct": open, "xai-cf": open, "xai-vercel": open },
+    });
+    await seedProvider({ type: "xai", id: IDS[0], slug: "xai-direct", secret: "xai-attribution" });
+    await seedProvider({
+      type: "xai",
+      id: IDS[1],
+      slug: "xai-cf",
+      secret: "cf-aig-xai-token",
+      gateway: "cf_aig",
+      providerGatewayId: "attribution-xai-cf-gateway",
+    });
+    await seedProvider({
+      type: "xai",
+      id: IDS[2],
+      slug: "xai-vercel",
+      secret: "vck_xai_token",
+      gateway: "vercel",
+      providerGatewayId: "attribution-xai-vercel-gateway",
+    });
+  });
+
+  afterAll(async () => {
+    const db = database(env.DB);
+    for (const id of IDS) await db.delete(provider).where(eq(provider.id, id));
+    clearIsolateCaches();
+  });
+
+  function stubXai(body: string, contentType = "application/json"): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(body, { headers: { "content-type": contentType } }));
+  }
+
+  async function proxy(slug: string, path: string, body: Record<string, unknown>): Promise<Response> {
+    const response = await workerFetch(`${ORIGIN}/v1/apps/${XAI_APP}/proxy/${slug}/${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await gatewayToken(XAI_APP)}`,
+        "content-type": "application/json",
+        "x-app-version": "1.2.3",
+      },
+      body: JSON.stringify(body),
+    });
+    await response.text();
+    return response;
+  }
+
+  /** An image answer as xAI's cost tracking documents it: a cost and no token counts. */
+  function image(usage: Record<string, unknown> | null): string {
+    return JSON.stringify({
+      data: [{ url: "https://imgen.x.ai/one.jpg", revised_prompt: "" }],
+      ...(usage && { usage }),
+    });
+  }
+
+  it("bills an image at what xAI says it charged", async () => {
+    stubXai(image({ cost_in_usd_ticks: 200_000_000 }));
+    const response = await proxy("xai-direct", "v1/images/generations", {
+      model: IMAGE_MODEL,
+      prompt: "a cat",
+    });
+    expect(response.status).toBe(200);
+    expect(await lastEvent("xai-direct", XAI_APP)).toMatchObject({
+      model: IMAGE_MODEL,
+      cost_usd: 0.02,
+      reported_cost_usd: 0.02,
+      cost_source: "reported",
+      input_tokens: 0,
+      output_tokens: 0,
+      model_author: "xAI",
+      // xAI reports only what it charged: whose key paid is still the
+      // route's answer, not an aggregator's per-request claim.
+      credential_source: "direct",
+      served_provider: null,
+    });
+  });
+
+  it("keeps the gateway's credential source on a Cloudflare-routed image", async () => {
+    stubXai(image({ cost_in_usd_ticks: 700_000_000 }));
+    await proxy("xai-cf", "v1/images/generations", { model: IMAGE_MODEL, prompt: "a cat" });
+    expect(await lastEvent("xai-cf", XAI_APP)).toMatchObject({
+      cost_usd: 0.07,
+      cost_source: "reported",
+      provider_gateway_type: "cf_aig",
+      credential_source: "byok",
+    });
+  });
+
+  it("prefers the reported cost to the catalog's estimate for a priced model", async () => {
+    stubXai(JSON.stringify({
+      model: "grok-4.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" } }],
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+        cost_in_usd_ticks: 12_345_000,
+      },
+    }));
+    await proxy("xai-direct", "v1/chat/completions", {
+      model: "grok-4.5",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(await lastEvent("xai-direct", XAI_APP)).toMatchObject({
+      cost_usd: 0.0012345,
+      cost_source: "reported",
+      // The tokens are still recorded beside the figure.
+      input_tokens: 1000,
+      output_tokens: 100,
+    });
+  });
+
+  it("reads the cost off the event that closes a Responses stream", async () => {
+    const event = (type: string, extra: Record<string, unknown>) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+    stubXai([
+      event("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      event("response.output_text.delta", { delta: "hi" }),
+      event("response.completed", {
+        response: {
+          id: "resp_1",
+          status: "completed",
+          usage: { input_tokens: 10, output_tokens: 2, cost_in_usd_ticks: 1_580_000 },
+        },
+      }),
+    ].join(""), "text/event-stream");
+    await proxy("xai-direct", "v1/responses", { model: "grok-4.5", input: "hello", stream: true });
+    expect(await lastEvent("xai-direct", XAI_APP)).toMatchObject({
+      cost_usd: 0.000158,
+      cost_source: "reported",
+      output_tokens: 2,
+    });
+  });
+
+  /**
+   * Billable because it reports, so an answer that reports nothing is an
+   * unknown — the image has no tokens a local price could fall back on.
+   */
+  it("marks an image answer with no cost unresolved rather than free", async () => {
+    stubXai(image(null));
+    await proxy("xai-direct", "v1/images/generations", { model: IMAGE_MODEL, prompt: "a cat" });
+    expect(await lastEvent("xai-direct", XAI_APP)).toMatchObject({
+      cost_usd: 0,
+      reported_cost_usd: null,
+      cost_source: "unresolved",
+    });
+  });
+
+  it("refuses an unpriced model on an API whose answers carry no cost", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await proxy("xai-direct", "v1/messages", {
+      model: IMAGE_MODEL,
+      max_tokens: 16,
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Vercel answers in its own words, so xAI's report is not trusted there: an
+   * unpriced model is refused as on any non-reporting route, and a priced one
+   * bills on the catalog even if the field happens to appear.
+   */
+  it("bills on local prices through a gateway that does not relay the provider's answer", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const refused = await proxy("xai-vercel", "v1/chat/completions", {
+      model: "grok-unpriced",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(refused.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+
+    stubXai(JSON.stringify({
+      model: "spacexai/grok-4.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 100, cost_in_usd_ticks: 1 },
+    }));
+    const priced = await proxy("xai-vercel", "v1/chat/completions", {
+      model: "grok-4.5",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(priced.status).toBe(200);
+    const row = await lastEvent("xai-vercel", XAI_APP);
+    expect(row).toMatchObject({ cost_source: "computed", reported_cost_usd: null });
+    expect(row.cost_usd).toBeGreaterThan(0);
+  });
+});
+
 describe("billability", () => {
   it("proxies a model with a local price and refuses one without", () => {
-    expect(isBillable("openai", "gpt-5.6-sol")).toBe(true);
-    expect(isBillable("openai", "gpt-does-not-exist")).toBe(false);
-    // Identical to the bare price gate for every type shipped today.
+    expect(isBillable("openai", "direct", "chat_completions", "gpt-5.6-sol")).toBe(true);
+    expect(isBillable("openai", "direct", "chat_completions", "gpt-does-not-exist")).toBe(false);
+    // Identical to the bare price gate for a type that reports no cost.
     for (const model of ["gpt-5.6-sol", "gpt-does-not-exist"]) {
-      expect(isBillable("openai", model)).toBe(hasModelPrice("openai", model));
+      expect(isBillable("openai", "direct", "chat_completions", model))
+        .toBe(hasModelPrice("openai", model));
     }
   });
 
   it("accepts an operator's own price for a model the catalog never heard of", () => {
     const overrides = { "internal-model": { input: 1, output: 2 } };
-    expect(isBillable("openai", "internal-model", overrides)).toBe(true);
+    expect(isBillable("openai", "direct", "chat_completions", "internal-model", overrides)).toBe(true);
   });
 
   /**
@@ -672,15 +873,22 @@ describe("billability", () => {
    */
   it("proxies an unpriced model on a route that declares how it reports cost", () => {
     const descriptor = providerDescriptor("perplexity") as { costReport?: unknown };
-    expect(reportsCost("perplexity")).toBe(false);
+    expect(reportsCost("perplexity", "direct", "chat_completions")).toBe(false);
     try {
-      descriptor.costReport = { read: () => false };
-      expect(reportsCost("perplexity")).toBe(true);
-      expect(isBillable("perplexity", "model-with-no-local-price")).toBe(true);
+      descriptor.costReport = {
+        styles: ["chat_completions"],
+        settled: () => false,
+        readsCredentialSource: false,
+        read: () => false,
+      };
+      expect(reportsCost("perplexity", "direct", "chat_completions")).toBe(true);
+      expect(isBillable("perplexity", "direct", "chat_completions", "model-with-no-local-price"))
+        .toBe(true);
     } finally {
       delete descriptor.costReport;
     }
-    expect(isBillable("perplexity", "model-with-no-local-price")).toBe(false);
+    expect(isBillable("perplexity", "direct", "chat_completions", "model-with-no-local-price"))
+      .toBe(false);
   });
 
   /**
@@ -703,6 +911,9 @@ describe("billability", () => {
     try {
       const seen: string[] = [];
       descriptor.costReport = {
+        styles: ["chat_completions"],
+        settled: (report: { costUsd: number | null }) => report.costUsd !== null,
+        readsCredentialSource: false,
         // Reads a field only this hypothetical provider sends, and pointedly
         // not `usage.cost`.
         read: (value: Record<string, unknown>, report: { costUsd: number | null }) => {
@@ -717,6 +928,7 @@ describe("billability", () => {
         wholeBody(openRouterShaped),
         "application/json",
         "perplexity",
+        "direct",
         "chat_completions",
       );
       // Its own parser ran; OpenRouter's `usage.cost` and metadata were not read.
@@ -732,6 +944,7 @@ describe("billability", () => {
         ),
         "application/json",
         "perplexity",
+        "direct",
         "chat_completions",
       );
       expect(own.report?.costUsd).toBe(7);
@@ -744,6 +957,7 @@ describe("billability", () => {
         wholeBody(openRouterShaped),
         "application/json",
         "openrouter",
+        "direct",
         "chat_completions",
       ).report,
     ).toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
@@ -751,17 +965,52 @@ describe("billability", () => {
 
   /**
    * Cost reporting is a claim about one upstream's responses, so it stays an
-   * explicit per-type fact rather than an assumption: every type but the
-   * aggregator that really returns `usage.cost` bills on a local price.
+   * explicit per-type fact rather than an assumption: every type but the two
+   * that really return a cost bills on a local price.
    */
-  it("reports only OpenRouter as cost-reporting", () => {
+  it("reports only OpenRouter and xAI as cost-reporting", () => {
     for (const type of PROVIDER_TYPES) {
-      expect([type, reportsCost(type)]).toEqual([type, type === "openrouter"]);
+      expect([type, reportsCost(type, "direct", null)])
+        .toEqual([type, type === "openrouter" || type === "xai"]);
     }
     // Which is what makes an unpriced OpenRouter slug proxy at all: nothing in
     // the shipped catalog prices one.
     expect(hasModelPrice("openrouter", "google/gemini-3.6-flash")).toBe(false);
-    expect(isBillable("openrouter", "google/gemini-3.6-flash")).toBe(true);
+    expect(isBillable("openrouter", "direct", "chat_completions", "google/gemini-3.6-flash")).toBe(true);
+  });
+
+  /**
+   * A report covers the APIs whose responses carry it and nothing else. xAI
+   * documents its cost on Chat Completions, Responses, images and videos, so an
+   * unpriced model proxies there — and is refused on its Messages API and its
+   * transcription path, where nothing would ever price it.
+   */
+  it("bills an unpriced xAI model only on the APIs that report its cost", () => {
+    const model = "grok-imagine-image-2.0";
+    expect(hasModelPrice("xai", model)).toBe(false);
+    for (const style of ["chat_completions", "responses", "other"] as const) {
+      expect([style, isBillable("xai", "direct", style, model)]).toEqual([style, true]);
+    }
+    for (const style of ["anthropic_messages", "audio_transcription"] as const) {
+      expect([style, isBillable("xai", "direct", style, model)]).toEqual([style, false]);
+    }
+    // A configuration write has no request yet, so any reporting API counts.
+    expect(isBillable("xai", "direct", null, model)).toBe(true);
+  });
+
+  /**
+   * A gateway that answers in its own words drops the provider's report, so
+   * the provider's declaration counts only where the response is the
+   * provider's own.
+   */
+  it("trusts a provider's report only on routes that relay its responses", () => {
+    const model = "grok-imagine-image-2.0";
+    expect(reportsCost("xai", "cf_aig", "chat_completions")).toBe(true);
+    expect(reportsCost("xai", "vercel", "chat_completions")).toBe(false);
+    expect(reportsCost("xai", null, "chat_completions")).toBe(false);
+    expect(isBillable("xai", "vercel", "chat_completions", model)).toBe(false);
+    // A catalog price still bills the same model on that route.
+    expect(isBillable("xai", "vercel", "chat_completions", "grok-4.5")).toBe(true);
   });
 });
 

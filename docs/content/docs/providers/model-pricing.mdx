@@ -5,7 +5,7 @@ description: How the gateway prices each request, how to add prices for models t
 
 The gateway records provider attempts and their measured cost in USD. Before
 forwarding, it requires either a local model price or a route that reports its
-own cost, such as OpenRouter. A successful response without readable usage is
+own cost, such as xAI or OpenRouter. A successful response without readable usage is
 marked **unresolved**, so recorded spend can differ from your provider's
 invoice. This page covers local prices, reported cost and unresolved usage.
 
@@ -118,17 +118,26 @@ certainly not in the catalog and needs a price on that provider. See
 
 ## Providers that report their own cost
 
-One route reports what it charged instead of relying on a local price:
-[OpenRouter](/providers/supported-providers#openrouter). Every OpenRouter
-chat-completions response carries the cost of that request, and the gateway
-records that figure. So OpenRouter models proxy with **no local price**; the
-rule is "priced locally **or** reported upstream".
+Two provider types report what they charged instead of relying on a local
+price:
 
-The **Pricing** dialog says so for an OpenRouter provider: "OpenRouter reports
-the cost of every request, so its models proxy with no price here; a price
-entered here is only used if a response ever comes back without one." A
-custom price on such a provider is honoured as the fallback for a response
-that arrives without a cost.
+- [xAI](/providers/supported-providers#xai), on its Chat Completions,
+  Responses and image generation answers.
+- [OpenRouter](/providers/supported-providers#openrouter), on its
+  chat-completions answers, the only API it serves here.
+
+The gateway records that figure, so on those APIs their models proxy with
+**no local price**; the rule is "priced locally **or** reported upstream". A
+report counts only where the answer reaches the gateway as the provider wrote
+it: directly, or through Cloudflare AI Gateway. Through Vercel, an xAI model
+bills on its local price like any other.
+
+The **Pricing** dialog says which of a provider's APIs need a price. For an
+OpenRouter provider: "OpenRouter reports the cost of every request, so its
+models proxy with no price here; a price entered here is only used if a
+response ever comes back without one." For an xAI provider, it names the APIs
+xAI reports on and says that its other APIs still need a price. A custom price on such a provider is honoured as
+the fallback for a response that arrives without a cost.
 
 ## Where a cost comes from
 
@@ -136,7 +145,7 @@ Every usage event records how its cost was arrived at, in `cost_source`:
 
 | `cost_source` | Meaning |
 | --- | --- |
-| `reported` | The provider said what the request cost, and that figure is the recorded one. Only OpenRouter reports one today. |
+| `reported` | The provider said what the request cost, and that figure is the recorded one. xAI and OpenRouter report one. |
 | `computed` | Priced locally, from the provider's custom pricing or the shipped catalog. |
 | `unresolved` | Neither source could answer on a successful response. |
 

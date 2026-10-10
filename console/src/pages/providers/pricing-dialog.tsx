@@ -14,11 +14,39 @@ import {
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
+import { API_STYLE_LABELS } from "@/lib/capabilities";
 import { providerLabel, reportsCost } from "@/lib/config-types";
 import { draftsToPricing, toDrafts, type PricingDraft } from "@/lib/pricing-draft";
 import { useUpdateProvider } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
 import { errorMessage } from "./shared";
+
+/**
+ * What a price on this provider is for. A provider that reports its own cost
+ * needs none on the APIs it reports for, and a price there is only the fallback
+ * for a response that arrives without one; every other API still needs one.
+ */
+export function pricingNote(
+  provider: Pick<ProviderCredential, "type" | "route" | "capability">,
+): string {
+  const styles = provider.capability.apiStyles;
+  const reported = styles.filter((style) => reportsCost(provider.type, provider.route, style));
+  if (reported.length === 0) {
+    return "Requests for unpriced models are rejected until a price is set here.";
+  }
+  const label = providerLabel(provider.type);
+  const fallback = "a price entered here is only used if a response ever comes back without one";
+  if (reported.length === styles.length) {
+    return `${label} reports the cost of every request, so its models proxy with no price here; ${fallback}.`;
+  }
+  // `other` has no label of its own: it is every provider operation no shared
+  // API names, such as image generation.
+  const names = reported.map((style) => (Object.hasOwn(API_STYLE_LABELS, style)
+    ? API_STYLE_LABELS[style as keyof typeof API_STYLE_LABELS]
+    : "provider-native"));
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(names);
+  return `${label} reports the cost of each ${list} request, so models used that way proxy with no price here; ${fallback}. Its other APIs still need a price.`;
+}
 
 /**
  * Pricing is ordinary non-secret data, so it is shown and edited normally —
@@ -84,11 +112,7 @@ export function PricingDialog({
         <DialogBody className="space-y-3">
           <DialogDescription>
             For models the built-in catalog does not cover, or prices it in a way you disagree with.
-            {provider && reportsCost(provider.type)
-              ? ` ${providerLabel(provider.type)} reports the cost of
-                  every request, so its models proxy with no price here; a price entered here is
-                  only used if a response ever comes back without one.`
-              : " Requests for unpriced models are rejected until a price is set here."}{" "}
+            {provider ? ` ${pricingNote(provider)}` : null}{" "}
             Enter $0 for a model that is genuinely free.
           </DialogDescription>
           {drafts.length === 0 ? (
