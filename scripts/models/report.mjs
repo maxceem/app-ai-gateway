@@ -41,6 +41,29 @@ function details(summary, body) {
   return `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function count(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/**
+ * The pull request's title: what it holds and the day it was checked, e.g.
+ * "Model catalog: 3 price changes, 2 need attention (Oct 10)". Only counts and
+ * the date go in, nothing fetched. A price change counts once per model.
+ */
+export function renderTitle(decision, today) {
+  const [, month, day] = today.split("-").map(Number);
+  const changed = new Set(decision.changes.map(({ provider, model }) => `${provider}/${model}`)).size;
+  const discovered = decision.newModels.reduce((sum, { ids }) => sum + ids.length, 0);
+  const parts = [
+    changed && count(changed, "price change", "price changes"),
+    discovered && count(discovered, "new model", "new models"),
+    decision.attention.length && count(decision.attention.length, "needs attention", "need attention"),
+  ].filter(Boolean);
+  return `Model catalog: ${parts.length ? parts.join(", ") : "no changes"} (${MONTHS[month - 1]} ${day})`;
+}
+
 export function renderReport(decision) {
   const ready = [];
   const sections = [];

@@ -19,7 +19,7 @@ import { parseTogether } from "../scripts/models/parsers/together.mjs";
 import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/models/parsers/xai.mjs";
 import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/models/price.mjs";
-import { renderReport } from "../scripts/models/report.mjs";
+import { renderReport, renderTitle } from "../scripts/models/report.mjs";
 import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
 
@@ -898,6 +898,23 @@ for (const changed of [false, true]) {
     }
   });
 }
+
+test("title: counts what the pull request holds, with a short date", () => {
+  const empty = { changes: [], newModels: [], attention: [] };
+  assert.equal(renderTitle(empty, "2026-10-10"), "Model catalog: no changes (Oct 10)");
+  // One model with several changed fields is one price change.
+  const changes = [
+    { provider: "p", model: "a", field: "input" },
+    { provider: "p", model: "a", field: "output" },
+    { provider: "q", model: "a", field: "input" },
+  ];
+  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model catalog: 2 price changes (Jan 5)");
+  assert.equal(
+    renderTitle({ changes: changes.slice(0, 1), newModels: [{ provider: "p", ids: ["x", "y"] }, { provider: "q", ids: ["z"] }], attention: [{}] }, "2026-12-31"),
+    "Model catalog: 1 price change, 3 new models, 1 needs attention (Dec 31)",
+  );
+  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model catalog: 1 new model, 2 need attention (Oct 10)");
+});
 
 test("report: fetched text is escaped", () => {
   const report = renderReport({
