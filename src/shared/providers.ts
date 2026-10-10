@@ -78,6 +78,26 @@ export interface ProviderDescriptor {
    */
   endpointPaths?: Partial<Record<EndpointApiStyle, string>>;
   /**
+   * The `response_format` values of this type's transcription API whose answer
+   * carries the measure a transcription is billed by: token usage, or the
+   * duration of the audio. Absent where every answer carries one.
+   *
+   * A plain-text answer (`text`, `srt`, `vtt`) carries neither, so a priced
+   * model would record as unresolved at $0 and escape every budget; a request
+   * for one is refused before it is forwarded. Where the provider's own default
+   * carries no measure but a richer JSON format extends it with one, the
+   * request is sent with that format instead, which a client reading `text`
+   * off the answer cannot tell apart.
+   */
+  transcriptionFormats?: {
+    /** The formats whose answer carries usage or a duration. */
+    readonly metered: readonly string[];
+    /** What the provider answers in when the request names no format. */
+    readonly default: string;
+    /** A format with no measure, mapped to the metered format that extends it. */
+    readonly upgrades?: Readonly<Record<string, string>>;
+  };
+  /**
    * The only client API styles this type serves. Absent means every style,
    * which is the pass-through default: the raw proxy forwards whatever was
    * asked for and the provider itself answers for the paths it does not have.
@@ -146,6 +166,9 @@ export const PROVIDER_DESCRIPTORS = {
     // The two types whose Responses and transcription request shapes the
     // gateway composes itself for custom endpoints.
     endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
+    // Every JSON answer reports `usage`: tokens for the GPT transcription
+    // models, `{ type: "duration", seconds }` for whisper-1.
+    transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
     modelAuthor: "OpenAI",
   },
   anthropic: {
@@ -224,6 +247,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.groq.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Its default `json` answer is the transcript alone; `verbose_json` adds the
+    // duration it bills by, and the same `text` a client reads.
+    transcriptionFormats: {
+      metered: ["verbose_json"],
+      default: "json",
+      upgrades: { json: "verbose_json" },
+    },
     // Groq's OpenAI-compatible surface is namespaced under `openai/`.
     probePath: "openai/v1/models",
     examplePath: "openai/v1/chat/completions",
@@ -243,6 +273,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.together.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Its default `json` answer is the transcript alone; `verbose_json` adds the
+    // duration it bills by, and the same `text` a client reads.
+    transcriptionFormats: {
+      metered: ["verbose_json"],
+      default: "json",
+      upgrades: { json: "verbose_json" },
+    },
     probePath: "v1/models",
   },
   fireworks: {

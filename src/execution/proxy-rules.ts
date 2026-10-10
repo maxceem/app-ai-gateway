@@ -7,8 +7,10 @@ import {
   finishJsonBody,
   isMultipart,
   jsonObjectFromText,
+  meteredTranscriptionFormat,
   parseForm,
   readBodyLimited,
+  unmeteredTranscriptionFormat,
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
@@ -435,10 +437,16 @@ export async function prepareProxyRequest(input: {
       style: apiStyle,
     });
     const placement = modelPlacement(match, model);
-    if (placement && "bodyModel" in placement && parsed) {
+    // A transcription is only forwarded in a format whose answer can be priced.
+    const format = apiStyle === "audio_transcription" && parsed
+      ? meteredTranscriptionFormat(provider, parsed.get("response_format"))
+      : null;
+    if (format === "refuse") throw unmeteredTranscriptionFormat(provider);
+    if (parsed && ((placement && "bodyModel" in placement) || format)) {
       // Re-encoded only here, so fetch writes a fresh boundary for it; an
       // untouched upload keeps its original bytes and boundary.
-      parsed.set("model", placement.bodyModel);
+      if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
+      if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
       return prepared(parsed, input.providerPath, model.actualModel);
     }

@@ -14,7 +14,7 @@ import { GatewayError } from "../core/errors.ts";
 import { clampOutput } from "./protocols.ts";
 import { costReport } from "./provider-type.ts";
 import type { ResolvedRoute } from "./route-adapters.ts";
-import type { ProviderType } from "../shared/providers.ts";
+import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 
@@ -80,6 +80,36 @@ export function formWithModel(source: FormData, model: string): FormData {
   });
   form.set("model", model);
   return form;
+}
+
+/**
+ * What a transcription for this provider type must be sent as so its answer
+ * carries the measure it is billed by: `null` where it already is, the
+ * `response_format` to send it with instead, or `"refuse"` where no format the
+ * client could have meant carries one — a plain-text answer, or a field that
+ * is not text at all. See `transcriptionFormats` in `src/shared/providers.ts`.
+ */
+export function meteredTranscriptionFormat(
+  provider: ProviderType,
+  requested: FormDataEntryValue | null,
+): { send: string } | "refuse" | null {
+  const formats = providerDescriptor(provider).transcriptionFormats;
+  if (!formats) return null;
+  if (requested !== null && typeof requested !== "string") return "refuse";
+  const format = requested ?? formats.default;
+  if (formats.metered.includes(format)) return null;
+  const upgrade = formats.upgrades?.[format];
+  return upgrade ? { send: upgrade } : "refuse";
+}
+
+/** The answer to a transcription format {@link meteredTranscriptionFormat} refuses. */
+export function unmeteredTranscriptionFormat(provider: ProviderType): GatewayError {
+  const metered = providerDescriptor(provider).transcriptionFormats?.metered ?? [];
+  return new GatewayError(
+    400,
+    "invalid_request",
+    `This response_format answers without the usage or duration a transcription is billed by; use ${metered.join(" or ")}`,
+  );
 }
 
 export function jsonObject(bytes: Uint8Array): Record<string, unknown> {

@@ -56,6 +56,17 @@ A provider routed through Vercel AI Gateway accepts only `v1/responses`,
 `v1/chat/completions` and `v1/messages`. The full table with each provider's
 caveats is on [Supported providers](/providers/supported-providers).
 
+### Transcription response formats
+
+A transcription is billed by the tokens or the audio duration its answer
+reports, and a plain-text answer reports neither. So the gateway refuses a
+`response_format` of `text`, `srt` or `vtt` with `400 invalid_request` on
+OpenAI, Groq and Together AI. On OpenAI, use the default `json`, or
+`verbose_json` or `diarized_json`. Groq and Together AI report the duration
+only in `verbose_json`, so the gateway sends their transcriptions in that
+format when the request names `json` or no format at all. The answer still
+carries the same `text` field, plus timing details.
+
 For an SDK, the base URL is the proxy URL up to the provider's version
 prefix, for example `…/proxy/openai/v1`; the SDK appends `responses` or
 `chat/completions` itself.
