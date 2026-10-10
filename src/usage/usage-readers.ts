@@ -342,13 +342,18 @@ function carriesMessageUsage(value: unknown): boolean {
 
 /**
  * A tail window opens in the middle of whatever event was in flight, and half
- * an event must never read as a whole one, so everything before the first
- * event boundary is dropped.
+ * an event must never read as a whole one, so the events are only those after
+ * the first event boundary. What comes before it is kept apart as `cut`: when
+ * one event outgrows the window, as a streamed image does with its base64 and
+ * its usage in the same event, that cut-off event is where the stream reports,
+ * and the whole tail is one.
  */
-function completeTailEvents(tail: string): string {
+function splitTail(tail: string): { cut: string; events: string } {
   const normalized = tail.replace(/\r\n/gu, "\n");
   const boundary = normalized.indexOf("\n\n");
-  return boundary === -1 ? "" : normalized.slice(boundary + 2);
+  return boundary === -1
+    ? { cut: normalized, events: "" }
+    : { cut: normalized.slice(0, boundary), events: normalized.slice(boundary + 2) };
 }
 
 /**
@@ -459,10 +464,19 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     // Both windows are read: an Anthropic stream reports its input tokens in
     // the `message_start` event at the head and its output tokens at the tail.
     const head = sseEvents(body.head);
-    const tail = body.truncated ? sseEvents(completeTailEvents(body.tail)) : null;
+    const split = body.truncated ? splitTail(body.tail) : null;
+    const tail = split ? sseEvents(split.events) : null;
+    // The cut-off event is read only for the usage object at its end, the way
+    // a truncated document is, and only after every whole event in the tail:
+    // it came before them, and half an event is never parsed as one.
+    let cut: Record<string, unknown> | null | undefined;
     return {
       *backwards() {
         if (tail) yield* tail.backwards();
+        if (split) {
+          if (cut === undefined) cut = tailUsageDocument(split.cut);
+          if (cut) yield cut;
+        }
         yield* head.backwards();
       },
       headForwards: () => head.forwards(),

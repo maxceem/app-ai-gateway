@@ -370,6 +370,30 @@ describe("usage extraction", () => {
     );
   });
 
+  it("bills uncached OpenAI prompt tokens as images first when part of the prompt was cached", () => {
+    // `cached_tokens` does not say which modality was cached, and the split
+    // counts the whole prompt. Taking the cached part to be text could bill an
+    // image at the text rate, so the uncached part is billed as image first:
+    // never under what the provider charged, possibly over it.
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          input_tokens: 2000,
+          input_tokens_details: { text_tokens: 1000, image_tokens: 1000, cached_tokens: 1000 },
+          output_tokens: 0,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toMatchObject({ inputTokens: 1000, cachedInputTokens: 1000, modalityTokens: { input: { image: 1000 } } });
+    const image = shippedRates("openai", "gpt-image-1.5");
+    expect(computeCost("openai", "gpt-image-1.5", usage)).toBeCloseTo(
+      (1000 * image.image_input + 1000 * image.cached_input) / 1e6,
+      12,
+    );
+  });
+
   it("counts OpenAI tokens the split does not account for as unknown, and bills them high", () => {
     const usage = extracted(
       JSON.stringify({
@@ -1341,6 +1365,47 @@ describe("large response bodies", () => {
       outputTokens: 0,
     });
     expect(computeCost("openai", "gpt-5.6-sol", usage!)).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { name: "as the stream's last event", done: false },
+    { name: "before a closing [DONE]", done: true },
+  ])("prices a streamed image whose completed event outgrows the tail window, $name", async ({ done }) => {
+    // OpenAI's completed event carries the whole base64 image and the usage
+    // together, so the one event that reports is cut off at the window's start.
+    const event = (value: unknown) => `event: x\ndata: ${JSON.stringify(value)}\n\n`;
+    const text = event({ type: "image_edit.partial_image", b64_json: "B".repeat(SIX_MB), partial_image_index: 0 })
+      + event({
+        type: "image_edit.completed",
+        b64_json: "A".repeat(SIX_MB),
+        usage: {
+          input_tokens: 1360,
+          input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+          output_tokens: 6240,
+          total_tokens: 7600,
+        },
+      })
+      + (done ? "data: [DONE]\n\n" : "");
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "text/event-stream", "openai", "direct", "other").usage;
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 6240,
+      modalityTokens: { input: { image: 1310 } },
+    });
+  });
+
+  it("still prefers a whole tail event's usage to the cut-off one before it", async () => {
+    const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+    const text = event({ type: "image_edit.partial_image", b64_json: "B".repeat(SIX_MB), usage: { input_tokens: 1, output_tokens: 1 } })
+      + event({ type: "image_edit.completed", usage: { input_tokens: 40, output_tokens: 4160 } });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "text/event-stream", "openai", "direct", "other").usage;
+    expect(usage).toMatchObject({ inputTokens: 40, outputTokens: 4160 });
   });
 
   it("prices a 6 MB image response from the usage after its base64 image", async () => {

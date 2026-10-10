@@ -48,7 +48,10 @@ rates for image tokens where the provider charges them differently from text:
 Both providers report how many of a request's tokens were images, and the
 gateway bills each kind at its own rate. If a response does not break its
 tokens down, all of them bill at the model's highest rate, so an image is
-never billed at the cheaper text rate.
+never billed at the cheaper text rate. The same applies when part of a prompt
+was served from cache: the response does not say whether the cached tokens
+were text or images, so the uncached tokens are billed as images first. The
+recorded cost can then be above what the provider charged, but never below.
 
 A model billed a flat price per image is in the catalog only when its
 response says how many images it billed. Today that is **BytePlus Seedream**:
