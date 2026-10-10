@@ -150,12 +150,10 @@ export function renderReport(decision) {
     );
   }
 
-  const header =
-    "Checked every model in `src/usage/models.json` against its provider's pricing and deprecation pages, by `scripts/update-models.mjs`.";
   const parts = ready.length
     ? ready
     : ["No current price changes or newly discovered models. No pull request is needed."];
   if (attention) parts.push(attention);
   if (sections.length > 0) parts.push("## ℹ️ Additional information\n\nFor information only. Nothing here needs action.\n\n" + sections.join("\n\n"));
-  return `${REVIEW_MARKER}\n${header}\n\n${parts.join("\n\n")}\n`;
+  return `${REVIEW_MARKER}\n${parts.join("\n\n")}\n`;
 }
