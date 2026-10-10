@@ -15,6 +15,8 @@ import { refuseDetachedJob, sanitizedHeaders, unpricedMessage, type PreparedProx
 import {
   finishJsonBody,
   formWithModel,
+  meteredTranscriptionFormat,
+  unmeteredTranscriptionFormat,
   isMultipart,
   jsonObject,
   parseForm,
@@ -106,7 +108,11 @@ export function endpointAttemptRequest(
   const wireModel = routeWireModel(route, provider, target.model);
   let body: BodyInit;
   if (prepared.form) {
-    body = formWithModel(prepared.form, wireModel);
+    const form = formWithModel(prepared.form, wireModel);
+    // The plan already dropped a target no format could price this for.
+    const format = meteredTranscriptionFormat(provider, form);
+    if (format && format !== "refuse") form.set("response_format", format.send);
+    body = form;
   } else {
     const json = { ...prepared.json, model: wireModel };
     // The endpoint's own style is the contract, so it names the protocol
@@ -186,6 +192,12 @@ export async function resolveEndpointAttempts(
           `Provider instance ${target.provider} does not support ${endpoint.api_style} endpoints`,
         );
       }
+      continue;
+    }
+    // A transcription this target would answer in plain text cannot be priced,
+    // which is the same as no price at all.
+    if (prepared.form && meteredTranscriptionFormat(entry.type, prepared.form) === "refuse") {
+      if (primary) throw unmeteredTranscriptionFormat(entry.type);
       continue;
     }
     if (!isBillable(entry.type, entry.route.kind, endpoint.api_style, target.model, entry.pricing)) {

@@ -127,24 +127,26 @@ const OUTPUT_CAP_CASES: OutputCapCase[] = [
     expectedInjection: { generationConfig: { maxOutputTokens: 128 } },
   },
   {
+    // xAI's speech-to-text judges no response format, so a JSON body reaches
+    // the clamp at all; OpenAI's transcriptions are multipart uploads only.
     name: "none",
-    provider: "openai",
-    allowedPath: { path: "v1/audio/transcriptions", clamp: "none" },
-    path: "openai/v1/audio/transcriptions",
-    model: "gpt-4o-mini-transcribe",
+    provider: "xai",
+    allowedPath: { path: "v1/stt", clamp: "none" },
+    path: "xai/v1/stt",
+    model: "grok-transcribe",
     highBody: {
-      model: "gpt-4o-mini-transcribe",
+      model: "grok-transcribe",
       max_output_tokens: 99_999,
       max_tokens: 99_999,
       max_completion_tokens: 99_999,
     },
     allowedBody: {
-      model: "gpt-4o-mini-transcribe",
+      model: "grok-transcribe",
       max_output_tokens: 99_999,
       max_tokens: 99_999,
       max_completion_tokens: 99_999,
     },
-    noCapBody: { model: "gpt-4o-mini-transcribe" },
+    noCapBody: { model: "grok-transcribe" },
     expectedInjection: {},
     absentAfterInjection: ["max_output_tokens", "max_tokens", "max_completion_tokens"],
   },
@@ -1670,6 +1672,156 @@ describe("provider-native proxy", () => {
     expect(upstreamBody!.get("language")).toBe("en");
     expect((upstreamBody!.get("file") as File).size).toBe(3);
     expect(upstreamHeaders.get("content-type")).toBeNull();
+  });
+
+  describe("transcription formats that cannot be priced", () => {
+    const ALL_PROVIDERS = { proxy: { provider_mode: "all", model_rewrites: {} } };
+
+    /** A transcription upload to `path`, with `fields` beside the model and the file. */
+    function upload(appId: string, token: string, path: string, model: string, fields: Record<string, string> = {}) {
+      const form = new FormData();
+      form.set("model", model);
+      for (const [name, value] of Object.entries(fields)) form.set(name, value);
+      form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+      return workerFetch(`https://example.test/v1/apps/${appId}/proxy/${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3" },
+        body: form,
+      });
+    }
+
+    it.each(["text", "srt", "vtt"])("refuses an OpenAI transcription answered as %s", async (format) => {
+      const appId = `proxy-stt-format-${format}`;
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const response = await upload(appId, token, "openai/v1/audio/transcriptions", "whisper-1", {
+        response_format: format,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("forwards an OpenAI transcription in its default JSON untouched, and bills its duration", async () => {
+      const appId = "proxy-stt-format-openai-default";
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      let upstreamBody: BodyInit | null | undefined;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+        upstreamBody = init?.body;
+        return Response.json({ text: "hello", usage: { type: "duration", seconds: 30 } });
+      });
+
+      const response = await upload(appId, token, "openai/v1/audio/transcriptions", "whisper-1");
+      await response.text();
+
+      expect(response.status).toBe(200);
+      // Nothing to change, so the upload's own bytes go upstream rather than a re-encoded form.
+      expect(upstreamBody).not.toBeInstanceOf(FormData);
+      await settleUsage();
+      const row = await env.DB.prepare("SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ?")
+        .bind(appId)
+        .first<{ cost_usd: number; cost_source: string }>();
+      expect(row?.cost_source).toBe("computed");
+      expect(row?.cost_usd).toBeCloseTo((30 / 60) * shippedRates("openai", "whisper-1").per_minute, 12);
+    });
+
+    it.each([
+      ["no format", {}],
+      ["json", { response_format: "json" }],
+    ])("asks Groq for verbose_json when the request names %s, and bills its duration", async (_label, fields) => {
+      const appId = `proxy-stt-format-groq-${crypto.randomUUID()}`;
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      let upstreamBody: FormData | null = null;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+        if (init?.body instanceof FormData) upstreamBody = init.body;
+        return Response.json({ task: "transcribe", language: "english", duration: 90, text: "hello", segments: [] });
+      });
+
+      const response = await upload(appId, token, "groq/openai/v1/audio/transcriptions", "whisper-large-v3", fields);
+      await response.text();
+
+      expect(response.status).toBe(200);
+      expect(upstreamBody!.get("response_format")).toBe("verbose_json");
+      expect(upstreamBody!.get("model")).toBe("whisper-large-v3");
+      expect((upstreamBody!.get("file") as File).size).toBe(3);
+      await settleUsage();
+      const row = await env.DB.prepare("SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ?")
+        .bind(appId)
+        .first<{ cost_usd: number; cost_source: string }>();
+      expect(row?.cost_source).toBe("computed");
+      expect(row?.cost_usd).toBeCloseTo((90 / 3600) * shippedRates("groq", "whisper-large-v3").per_hour, 12);
+    });
+
+    it.each([
+      ["two formats, the last one plain text", (form: FormData) => {
+        form.append("response_format", "verbose_json");
+        form.append("response_format", "text");
+      }],
+      ["two models", (form: FormData) => {
+        form.append("model", "whisper-large-v3");
+      }],
+      ["a format named after an object property", (form: FormData) => {
+        form.set("response_format", "constructor");
+      }],
+    ])("refuses a Groq transcription form with %s", async (_label, shape) => {
+      const appId = `proxy-stt-form-${crypto.randomUUID()}`;
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const form = new FormData();
+      form.set("model", "whisper-large-v3-turbo");
+      shape(form);
+      form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+
+      const response = await workerFetch(`https://example.test/v1/apps/${appId}/proxy/groq/openai/v1/audio/transcriptions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3" },
+        body: form,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses a JSON body to OpenAI's transcription path, where no format could be judged", async () => {
+      const appId = "proxy-stt-json-body";
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const response = await proxyRequest({
+        appId,
+        token,
+        path: "openai/v1/audio/transcriptions",
+        body: { model: "whisper-1", response_format: "text" },
+      });
+
+      expect(response.status).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses a Groq transcription answered as srt", async () => {
+      const appId = "proxy-stt-format-groq-srt";
+      await seedApp(appId, ALL_PROVIDERS);
+      const token = await gatewayToken(appId);
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const response = await upload(appId, token, "groq/openai/v1/audio/transcriptions", "whisper-large-v3", {
+        response_format: "srt",
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: expect.stringContaining("verbose_json") },
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("forwards fixed-model xAI STT multipart bytes unchanged and records the policy model", async () => {

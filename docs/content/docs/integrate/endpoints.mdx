@@ -39,6 +39,9 @@ stream. A fallback happens only if nothing has been streamed yet.
 ## Transcription endpoints
 
 Send an OpenAI audio-transcription multipart body. `model` may be omitted.
+Leave `response_format` at its default or choose another JSON format: a
+plain-text answer (`text`, `srt` or `vtt`) reports nothing to bill, so it is
+refused with `400 invalid_request`.
 
 ```sh
 curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcribe \

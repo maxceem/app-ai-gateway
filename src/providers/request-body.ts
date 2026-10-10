@@ -14,7 +14,8 @@ import { GatewayError } from "../core/errors.ts";
 import { clampOutput } from "./protocols.ts";
 import { costReport } from "./provider-type.ts";
 import type { ResolvedRoute } from "./route-adapters.ts";
-import type { ProviderType } from "../shared/providers.ts";
+import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
+import { lookup } from "../shared/records.ts";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 
@@ -80,6 +81,58 @@ export function formWithModel(source: FormData, model: string): FormData {
   });
   form.set("model", model);
   return form;
+}
+
+/**
+ * What a transcription for this provider type must be sent as so its answer
+ * carries the measure it is billed by: `null` where it already is, the
+ * `response_format` to send it with instead, or `"refuse"` where no format the
+ * client could have meant carries one — a plain-text answer, or a field that
+ * is not text at all. See `transcriptionFormats` in `src/shared/providers.ts`.
+ */
+export function meteredTranscriptionFormat(
+  provider: ProviderType,
+  form: FormData,
+): { send: string } | "refuse" | null {
+  const formats = providerDescriptor(provider).transcriptionFormats;
+  if (!formats) return null;
+  // Two formats would leave the provider to pick one, and nothing says which.
+  const requested = form.getAll("response_format");
+  if (requested.length > 1) return "refuse";
+  const [named] = requested;
+  if (named !== undefined && typeof named !== "string") return "refuse";
+  const format = named ?? formats.default;
+  if (formats.metered.includes(format)) return null;
+  const upgrade = lookup(formats.upgrades, format);
+  return upgrade ? { send: upgrade } : "refuse";
+}
+
+/**
+ * Whether a multipart body names its model more than once. Pricing reads the
+ * first value, and a provider that read another would run a model nobody
+ * priced, so such a form is refused rather than forwarded with both.
+ */
+export function namesModelTwice(form: FormData): boolean {
+  return form.getAll("model").length > 1;
+}
+
+/**
+ * Whether this provider type's transcriptions are judged by their format,
+ * which only a multipart form names where {@link meteredTranscriptionFormat}
+ * can read it: a JSON body to the same path would pass unjudged.
+ */
+export function judgesTranscriptionFormat(provider: ProviderType): boolean {
+  return providerDescriptor(provider).transcriptionFormats !== undefined;
+}
+
+/** The answer to a transcription format {@link meteredTranscriptionFormat} refuses. */
+export function unmeteredTranscriptionFormat(provider: ProviderType): GatewayError {
+  const metered = providerDescriptor(provider).transcriptionFormats?.metered ?? [];
+  return new GatewayError(
+    400,
+    "invalid_request",
+    `This response_format answers without the usage or duration a transcription is billed by; use ${metered.join(" or ")}`,
+  );
 }
 
 export function jsonObject(bytes: Uint8Array): Record<string, unknown> {

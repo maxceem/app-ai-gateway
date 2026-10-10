@@ -7,8 +7,12 @@ import {
   finishJsonBody,
   isMultipart,
   jsonObjectFromText,
+  judgesTranscriptionFormat,
+  meteredTranscriptionFormat,
+  namesModelTwice,
   parseForm,
   readBodyLimited,
+  unmeteredTranscriptionFormat,
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
@@ -459,6 +463,9 @@ export async function prepareProxyRequest(input: {
     // already names it, and parsing the upload to confirm that would copy every
     // byte of it for nothing.
     const parsed = match.modelFromPath ? null : await parseForm(bytes, contentType);
+    if (parsed && namesModelTwice(parsed)) {
+      throw new GatewayError(400, "invalid_request", "The form names its model more than once");
+    }
     const modelField = parsed?.get("model");
     const model = resolveModel({
       match,
@@ -469,15 +476,25 @@ export async function prepareProxyRequest(input: {
       style: apiStyle,
     });
     const placement = modelPlacement(match, model);
-    if (placement && "bodyModel" in placement && parsed) {
+    // A transcription is only forwarded in a format whose answer can be priced.
+    const format = apiStyle === "audio_transcription" && parsed
+      ? meteredTranscriptionFormat(provider, parsed)
+      : null;
+    if (format === "refuse") throw unmeteredTranscriptionFormat(provider);
+    if (parsed && ((placement && "bodyModel" in placement) || format)) {
       // Re-encoded only here, so fetch writes a fresh boundary for it; an
       // untouched upload keeps its original bytes and boundary.
-      parsed.set("model", placement.bodyModel);
+      if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
+      if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
       return prepared(parsed, input.providerPath, model.actualModel);
     }
     const path = placement && "path" in placement ? placement.path : input.providerPath;
     return prepared(bytes, path, model.actualModel);
+  }
+
+  if (apiStyle === "audio_transcription" && judgesTranscriptionFormat(provider)) {
+    throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
   }
 
   // Decoded once and read twice: the parse below and, where nothing rewrote
