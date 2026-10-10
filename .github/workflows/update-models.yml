@@ -71,8 +71,11 @@ jobs:
           MODEL_REVIEW_API_URL: ${{ vars.MODEL_REVIEW_API_URL }}
           MODEL_REVIEW_MODEL: ${{ vars.MODEL_REVIEW_MODEL }}
         run: |
+          # One date for the prices and the title, even across midnight UTC.
+          today=$(date -u +%F)
+          echo "today=$today" >> "$GITHUB_OUTPUT"
           set +e
-          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md" --review "$RUNNER_TEMP/model-review.json"
+          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md" --review "$RUNNER_TEMP/model-review.json" --today "$today"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -87,8 +90,8 @@ jobs:
         with:
           branch: automation/update-models
           base: main
-          title: Update the model catalog
-          commit-message: Update the model catalog
+          title: Update the model catalog (${{ steps.models.outputs.today }})
+          commit-message: Update the model catalog (${{ steps.models.outputs.today }})
           body-path: ${{ runner.temp }}/models.md
           add-paths: |
             src/usage/models.json
