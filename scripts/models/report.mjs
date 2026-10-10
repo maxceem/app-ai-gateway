@@ -1,6 +1,7 @@
 // The Markdown report that becomes the catalog pull request's body and the
-// workflow's step summary. Current prices and new discoveries explain the PR trigger;
-// everything else is additional information. Empty subsections are left out.
+// workflow's step summary, in three parts: what merging applies (✅), what a
+// person has to resolve (❌), and everything else, for information (ℹ️). Empty
+// sections are left out.
 //
 // Much of what it quotes came from a fetched page (a parser's reason, a model
 // id a page lists), so every value goes through `escape` before it is placed
@@ -41,15 +42,16 @@ function details(summary, body) {
 }
 
 export function renderReport(decision) {
+  const ready = [];
   const sections = [];
-  const triggers = [];
+  let attention = "";
 
   if (decision.changes.length > 0) {
     const rows = decision.changes.map(
       (change) =>
         `| ${code(`${change.provider}/${change.model}`)} | ${change.field} | ${change.from} → **${change.to}** | ${change.source} |`,
     );
-    triggers.push(`### Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
+    ready.push(`## ✅ Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
   }
 
   if (decision.newModels.length > 0) {
@@ -58,9 +60,9 @@ export function renderReport(decision) {
     ) : decision.newModels.flatMap(({ provider, ids }) =>
       ids.map((id) => `| ${code(provider)} | ${code(id)} |`),
     );
-    triggers.push(
-      "### Newly discovered models\n\n" +
-      "These discoveries trigger this PR, even without price changes. Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source. **⚠️ Pending** models remain undecided.\n\n" +
+    ready.push(
+      "## ✅ Newly discovered models\n\n" +
+      "Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source. **⚠️ Pending** models remain undecided.\n\n" +
       (decision.modelChoices?.length ? `| Model | Proposal | Reason | Reviewer |\n| --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
       "\n\nTo override a proposal, comment on this PR with one or more commands, one per line. The bot updates this same PR and preserves your choices on later runs:\n\n" +
       "```text\n/models add openai/gpt-6-luna\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```",
@@ -81,12 +83,11 @@ export function renderReport(decision) {
   }
 
   if (decision.attention.length > 0) {
-    sections.push(
-      "### Needs attention\n\n" +
-        "These items fail the workflow but do not trigger a pull request.\n\n" +
-        list(decision.attention, (item) => `${escape(item.text)} — ${code(item.key)}`) +
-        "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.",
-    );
+    attention =
+      "## ❌ Needs your attention\n\n" +
+      "These items fail the workflow and need a manual fix. Merging this pull request does not resolve them.\n\n" +
+      list(decision.attention, (item) => `${escape(item.text)} — ${code(item.key)}`) +
+      "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
 
   if (decision.upcoming.length > 0) {
@@ -151,13 +152,10 @@ export function renderReport(decision) {
 
   const header =
     "Checked every model in `src/usage/models.json` against its provider's pricing and deprecation pages, by `scripts/update-models.mjs`.";
-  const trigger = "## Changes that trigger a pull request\n\n" + (triggers.length
-    ? "Current price changes and newly discovered models trigger a pull request.\n\n" + triggers.join("\n\n")
-    : "No current price changes or newly discovered models. No pull request is needed.");
-  const additional = sections.length > 0
-    ? "\n\n## Additional information\n\n" +
-      "The information below does not trigger a pull request.\n\n" +
-      sections.join("\n\n")
-    : "";
-  return `${REVIEW_MARKER}\n${header}\n\n${trigger}${additional}\n`;
+  const parts = ready.length
+    ? ready
+    : ["No current price changes or newly discovered models. No pull request is needed."];
+  if (attention) parts.push(attention);
+  if (sections.length > 0) parts.push("## ℹ️ Additional information\n\nFor information only. Nothing here needs action.\n\n" + sections.join("\n\n"));
+  return `${REVIEW_MARKER}\n${header}\n\n${parts.join("\n\n")}\n`;
 }

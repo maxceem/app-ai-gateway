@@ -875,22 +875,22 @@ for (const changed of [false, true]) {
     });
     const report = renderReport(decision);
     assert.deepEqual(report.match(/^## .+$/gmu), [
-      "## Changes that trigger a pull request",
-      "## Additional information",
+      ...(changed ? ["## ✅ Current price changes"] : []),
+      "## ℹ️ Additional information",
     ]);
-    const [trigger, additional] = report.split("## Additional information");
+    const [trigger, additional] = report.split("## ℹ️ Additional information");
     assert.doesNotMatch(trigger, /Retirement dates|Upcoming price changes|2027-01-01|2027-02-26/u);
-    assert.match(additional, /does not trigger a pull request/u);
+    assert.match(additional, /For information only/u);
     assert.match(additional, /### Retirement dates[\s\S]*2027-02-26/u);
     assert.match(additional, /### Upcoming price changes[\s\S]*2027-01-01/u);
-    assert.doesNotMatch(additional, /### Current price changes/u);
+    assert.doesNotMatch(additional, /Current price changes/u);
     if (changed) {
-      assert.match(trigger, /### Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
+      assert.match(trigger, /## ✅ Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
       assert.doesNotMatch(trigger, /No pull request is needed/u);
       assert.ok(catalogEdits(decision).length > 0);
     } else {
       assert.match(trigger, /No current price changes or newly discovered models\. No pull request is needed\./u);
-      assert.doesNotMatch(trigger, /### Current price changes/u);
+      assert.doesNotMatch(trigger, /Current price changes/u);
       assert.deepEqual(catalogEdits(decision), []);
     }
   });
@@ -914,6 +914,12 @@ test("report: fetched text is escaped", () => {
   assert.match(report, /&lt;img/u);
   const row = report.split("\n").find((line) => line.startsWith("| `p/m"));
   assert.equal(row.split(/(?<!\\)\|/u).length, 6, "the model id must not add a table cell");
-  assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*### Newly discovered models[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources/u);
-  assert.match(report, /These items fail the workflow but do not trigger a pull request/u);
+  assert.deepEqual(report.match(/^## .+$/gmu), [
+    "## ✅ Current price changes",
+    "## ✅ Newly discovered models",
+    "## ❌ Needs your attention",
+    "## ℹ️ Additional information",
+  ]);
+  assert.match(report, /## ❌ Needs your attention[\s\S]*parser failed[\s\S]*## ℹ️ Additional information[\s\S]*### Sources/u);
+  assert.doesNotMatch(report.split("## ℹ️ Additional information")[1], /parser failed/u);
 });
