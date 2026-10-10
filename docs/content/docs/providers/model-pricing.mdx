@@ -32,6 +32,31 @@ be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might
 pick. Their models proxy once you price them, and not before.
 
+### Image generation models
+
+The catalog covers image models that are priced per token, with separate
+rates for image tokens where the provider charges them differently from text:
+
+- **OpenAI** GPT Image models, such as `gpt-image-2` and
+  `gpt-image-2.5-sunburst`. Prompt text and input images (in an edit) each
+  bill at their own input rate, and generated images at the image output rate.
+- **Gemini** image models, such as `gemini-3-pro-image` and
+  `gemini-nano-banana-2.1`. Generated image tokens bill at the image output
+  rate, and text and thinking at the text rate.
+
+Both providers report how many of a request's tokens were images, and the
+gateway bills each kind at its own rate. If a response does not break its
+tokens down, all of them bill at the model's highest rate, so an image is
+never billed at the cheaper text rate.
+
+Image models billed per image, per megapixel or per step are not in the
+catalog. This includes Together AI's image models, BytePlus Seedream and
+Gemini 2.5 Flash Image. Their price depends on the image count, size,
+quality or steps rather than on tokens, and custom prices are per token, so
+no price could bill them correctly and these models stay unsupported. The exception is a provider that reports its own cost: xAI's
+image models proxy with no price (see
+[Providers that report their own cost](#providers-that-report-their-own-cost)).
+
 ### Treat recorded cost as usage accounting
 
 Catalog prices estimate the provider cost from the usage it reports. Discounts,
@@ -73,8 +98,10 @@ console can see them.
 Lookup is a two-level merge: the provider's own custom price for the requested
 model first, then the shipped catalog. A custom price therefore overrides the
 catalog for that provider only. Custom prices carry input and output rates
-only; a catalog entry's cached-input or long-context rates do not apply to a
-model you priced yourself.
+only; a catalog entry's cached-input, long-context or image rates do not apply
+to a model you priced yourself. If you priced a model yourself before the
+catalog covered it, such as a GPT Image model, delete that custom price so the
+catalog's full rates apply.
 
 The API equivalent sets `pricing` on the provider. It is a full replace, keyed
 by model ID, and `null` clears every custom price:

@@ -1,9 +1,18 @@
 // https://developers.openai.com/api/docs/pricing.md
 //
-// Three tables are read: "Standard pricing data" (not Batch, Flex, Fast or
+// Four tables are read: "Standard pricing data" (not Batch, Flex, Fast or
 // Ultrafast), the Standard table of the specialized models, where the Codex
-// and embedding models live, and the transcription models. An embedding model
-// generates nothing, so its missing output price is 0.
+// and embedding models live, the transcription models, and the Standard table
+// of the image generation models. An embedding model generates nothing, so its
+// missing output price is 0.
+//
+// The image table prices each model twice, a Text row and an Image row. Text
+// input is `input` and image input `image_input`. A model whose Text row has
+// no output generates only images, so its image output is its `output`; one
+// that also writes text keeps the image rate apart as `image_output`. Usage
+// counts cached tokens without saying which modality they were, so the higher
+// of the two cached rates is the model's `cached_input`, rather than let a
+// cached image bill at the cheaper text rate.
 
 import { ParseError, decimal, findLine, findNextLine, put, readTable } from "../price.mjs";
 
@@ -20,6 +29,8 @@ const TOKEN_HEADER = [
 ];
 const SPECIALIZED_HEADER = ["Category", "Model", "Input", "Cached input", "Output"];
 const TRANSCRIPTION_HEADER = ["Model", "Use case", "Input", "Output", "Estimated cost"];
+const IMAGE_HEADER = ["Model", "Modality", "Input", "Cached input", "Output"];
+const IMAGE_MODALITIES = ["Text", "Image"];
 
 const THRESHOLD_NOTE = /^Short context: ≤(\d+)K input tokens\. Long context: >(\d+)K input tokens\.$/u;
 const MODEL_CELL = /^([a-z0-9][a-z0-9.-]*)(?: \(<(\d+)K context length\))?$/u;
@@ -131,6 +142,49 @@ export function parseOpenai(text, { wanted }) {
     } else {
       throw new ParseError(`${where}: only one of input and output is priced`);
     }
+  }
+
+  // The Standard table is the first one under the title, Batch the next; the
+  // unit line is checked too, because a per-image table would read just as well.
+  const images = findLine(lines, "Image generation models", "image generation models");
+  const imageTable = findNextLine(lines, "### Grouped Pricing Table data", "image generation models", images);
+  const preamble = lines.slice(images + 1, imageTable).map((line) => line.trim());
+  if (!preamble.includes("Prices per 1M tokens.") || !preamble.includes("Standard") || preamble.includes("Batch")) {
+    throw new ParseError("image generation models: the first table is not the Standard per-1M-token one");
+  }
+  const imageRows = new Map();
+  for (const row of readTable(lines, imageTable + 1, IMAGE_HEADER, "image generation models")) {
+    const [id, modality] = row;
+    if (!MODEL_CELL.test(id) || id.includes("(")) {
+      throw new ParseError(`image generation models: unexpected model cell "${id}"`);
+    }
+    if (!IMAGE_MODALITIES.includes(modality)) {
+      throw new ParseError(`image generation models, ${id}: unexpected modality "${modality}"`);
+    }
+    const rows = imageRows.get(id) ?? {};
+    if (rows[modality]) throw new ParseError(`image generation models, ${id}: two ${modality} rows`);
+    rows[modality] = row;
+    imageRows.set(id, rows);
+  }
+  for (const [id, rows] of imageRows) {
+    if (!wanted.has(id)) {
+      put(prices, id, null);
+      continue;
+    }
+    const where = `image generation models, ${id}`;
+    if (!rows.Text || !rows.Image) throw new ParseError(`${where}: needs both a Text and an Image row`);
+    const [input, cachedText, textOutput] = rows.Text.slice(2).map((value) => cell(value, where));
+    const [imageInput, cachedImage, imageOutput] = rows.Image.slice(2).map((value) => cell(value, where));
+    if (input === undefined || imageInput === undefined || imageOutput === undefined) {
+      throw new ParseError(`${where}: no text input, image input or image output price`);
+    }
+    if ((cachedText === undefined) !== (cachedImage === undefined)) {
+      throw new ParseError(`${where}: only one modality has a cached price`);
+    }
+    const price = { input, output: textOutput ?? imageOutput, image_input: imageInput };
+    if (textOutput !== undefined) price.image_output = imageOutput;
+    if (cachedText !== undefined) price.cached_input = Math.max(cachedText, cachedImage);
+    put(prices, id, price);
   }
 
   return prices;

@@ -264,6 +264,149 @@ describe("usage extraction", () => {
     expect(computeCost("gemini", "gemini-3.5-flash", usage)).toBeCloseTo((1000 * flash.input) / 1e6, 12);
   });
 
+  it("bills an OpenAI image edit's input images at the image input rate", () => {
+    // The Images API response, as its reference documents it: the image is
+    // `b64_json`, and usage splits the prompt into text and image tokens.
+    const usage = extracted(
+      JSON.stringify({
+        created: 1713833628,
+        data: [{ b64_json: "iVBORw0KGgo=" }],
+        background: "opaque",
+        output_format: "png",
+        quality: "medium",
+        size: "1024x1024",
+        usage: {
+          input_tokens: 1360,
+          input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+          output_tokens: 1056,
+          total_tokens: 2416,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1056,
+      modalityTokens: { input: { image: 1310 } },
+    });
+    const image = shippedRates("openai", "gpt-image-2");
+    expect(computeCost("openai", "gpt-image-2", usage)).toBeCloseTo(
+      (50 * image.input + 1310 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+    // Without the split nothing says the prompt was text, so it all bills as image.
+    expect(computeCost("openai", "gpt-image-2", { ...usage, modalityTokens: undefined })).toBeCloseTo(
+      (1360 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+  });
+
+  it("reads a streamed OpenAI image edit from its completed event", () => {
+    const usage = extracted(
+      [
+        `event: image_edit.partial_image\ndata: ${JSON.stringify({
+          type: "image_edit.partial_image",
+          b64_json: "iVBORw0KGgo=",
+          partial_image_index: 0,
+        })}`,
+        `event: image_edit.completed\ndata: ${JSON.stringify({
+          type: "image_edit.completed",
+          b64_json: "iVBORw0KGgo=",
+          created_at: 1620000000,
+          size: "1024x1024",
+          quality: "high",
+          background: "transparent",
+          output_format: "png",
+          usage: {
+            total_tokens: 100,
+            input_tokens: 50,
+            output_tokens: 50,
+            input_tokens_details: { text_tokens: 10, image_tokens: 40 },
+          },
+        })}`,
+        "",
+      ].join("\n\n"),
+      "text/event-stream",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 50,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 50,
+      modalityTokens: { input: { image: 40 } },
+    });
+  });
+
+  it("bills an OpenAI image model's text output apart from its image output", () => {
+    const body = (outputDetails?: Record<string, number>) => JSON.stringify({
+      created: 1713833628,
+      data: [{ b64_json: "iVBORw0KGgo=" }],
+      usage: {
+        input_tokens: 30,
+        input_tokens_details: { text_tokens: 30, image_tokens: 0 },
+        output_tokens: 4260,
+        ...(outputDetails && { output_tokens_details: outputDetails }),
+        total_tokens: 4290,
+      },
+    });
+    const split = extracted(body({ text_tokens: 100, image_tokens: 4160 }), "application/json", "other");
+    // An all-text prompt says so: nothing on the input side is an image.
+    expect(split.modalityTokens).toEqual({ input: {}, output: { image: 4160 } });
+    const image = shippedRates("openai", "gpt-image-1.5");
+    expect(computeCost("openai", "gpt-image-1.5", split)).toBeCloseTo(
+      (30 * image.input + 100 * image.output + 4160 * image.image_output) / 1e6,
+      12,
+    );
+    // An output side that is not broken down bills at the image rate.
+    const whole = extracted(body(), "application/json", "other");
+    expect(whole.modalityTokens).toEqual({ input: {} });
+    expect(computeCost("openai", "gpt-image-1.5", whole)).toBeCloseTo(
+      (30 * image.input + 4260 * image.image_output) / 1e6,
+      12,
+    );
+  });
+
+  it("counts OpenAI tokens the split does not account for as unknown, and bills them high", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          input_tokens: 500,
+          input_tokens_details: { image_tokens: 300 },
+          output_tokens: 1056,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage.modalityTokens).toEqual({ input: { image: 300, unknown: 200 } });
+    const image = shippedRates("openai", "gpt-image-2");
+    expect(computeCost("openai", "gpt-image-2", usage)).toBeCloseTo(
+      (500 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+  });
+
+  it("takes no modality split from a Chat Completions usage that does not give one", () => {
+    // `audio_tokens` and `reasoning_tokens` alone do not say what the rest was.
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          prompt_tokens: 100,
+          prompt_tokens_details: { cached_tokens: 20, audio_tokens: 0 },
+          completion_tokens: 40,
+          completion_tokens_details: { reasoning_tokens: 10, audio_tokens: 0 },
+        },
+      }),
+      "application/json",
+      "chat_completions",
+    );
+    expect(usage).toEqual({ inputTokens: 80, cachedInputTokens: 20, cacheWriteTokens: 0, outputTokens: 40 });
+  });
+
   it("bills an OpenAI embedding's input tokens", () => {
     const usage = extracted(
       JSON.stringify({ object: "list", data: [], usage: { prompt_tokens: 800, total_tokens: 800 } }),
@@ -1121,6 +1264,30 @@ describe("large response bodies", () => {
       outputTokens: 0,
     });
     expect(computeCost("openai", "gpt-5.6-sol", usage!)).toBeGreaterThan(0);
+  });
+
+  it("prices a 6 MB image response from the usage after its base64 image", async () => {
+    // A generated image arrives inline, so the usage behind it is in the tail.
+    const text = JSON.stringify({
+      created: 1713833628,
+      data: [{ b64_json: "A".repeat(SIX_MB) }],
+      usage: {
+        input_tokens: 1360,
+        input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+        output_tokens: 6240,
+        total_tokens: 7600,
+      },
+    });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "other").usage;
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 6240,
+      modalityTokens: { input: { image: 1310 } },
+    });
   });
 
   it("prices a 6 MB Anthropic stream from both of its ends", async () => {

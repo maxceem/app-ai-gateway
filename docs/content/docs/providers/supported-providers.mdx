@@ -19,7 +19,7 @@ anything else, so the exact chat-completions path is listed for each.
 
 | Type | Service | Chat completions path | Through a gateway | Notes |
 | --- | --- | --- | --- | --- |
-| `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/audio/transcriptions`. |
+| `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/audio/transcriptions`, image generation. |
 | `anthropic` | Anthropic | `v1/messages` | Cloudflare, Vercel | Anthropic Messages, not chat completions. |
 | `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/stt`, image generation. Reports its own cost. |
 | `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare, Vercel | Native API at `v1beta/models/{model}:generateContent`. |
@@ -129,6 +129,44 @@ answers 200 regardless of the credential would report every key as good.
 The verdicts are explained in
 [Add a provider key](/providers/add-a-provider#test-provider).
 
+## Image generation
+
+Image endpoints are provider operations rather than default inference
+endpoints, so allow their paths in the app's
+[provider access](/applications/provider-access#endpoints-this-provider-serves)
+with `"clamp": "none"`. Whether an image model proxies depends on how its
+provider charges for it:
+
+| Provider | Image models | How the gateway bills them |
+| --- | --- | --- |
+| OpenAI | `gpt-image-*` on `v1/images/generations` and `v1/images/edits` | From the catalog, per token. Prompt text, input images and generated images each bill at their own rate. |
+| Gemini | Gemini image models (Nano Banana) on `v1beta/models/{model}:generateContent` | From the catalog, per token. Generated image tokens bill at the image rate. |
+| xAI | `grok-imagine-image` and its siblings on `v1/images/generations` and `v1/images/edits` | From the cost xAI reports. See [xAI](#xai). |
+| Together AI, ByteDance and others | Billed per image, per megapixel or per step | Not supported: refused with `pricing_not_configured`. |
+
+For OpenAI, for example:
+
+```json
+"openai": {
+  "allowed_paths": [
+    "v1/responses",
+    { "path": "v1/images/generations", "clamp": "none" },
+    { "path": "v1/images/edits", "clamp": "none" }
+  ],
+  "allowed_models": ["gpt-image-2"]
+}
+```
+
+Call Gemini image models on the native `generateContent` path. Its responses
+say how many output tokens were images. The OpenAI-compatible endpoint does
+not, so there every output token, text included, bills at the image rate.
+
+Image generation inside another model's request is not covered: OpenAI's
+Responses API `image_generation` tool and Mistral's `image_generation` tool. In
+both, the usage counts only the calling model's tokens, so the recorded cost
+leaves out the generated images. To meter images, call the image endpoint
+directly.
+
 ## xAI
 
 **Cost is reported, not computed.** xAI's Chat Completions, Responses and
@@ -153,8 +191,7 @@ If a reporting API ever answers without a cost, a local price for the model is
 used if there is one (`computed`), and otherwise the event is marked
 [unresolved](/providers/model-pricing#where-a-cost-comes-from).
 
-Image generation is a provider operation rather than one of the default
-inference endpoints, so allow its path in the app's
+As with every [image endpoint](#image-generation), allow the path in the app's
 [provider access](/applications/provider-access#endpoints-this-provider-serves).
 Give it `"clamp": "none"`: an image has no output tokens to cap.
 

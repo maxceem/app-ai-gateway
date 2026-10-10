@@ -147,7 +147,42 @@
     "gpt-4o-mini": { "input": 0.15, "cached_input": 0.075, "output": 0.6 },
     "gpt-4o-mini-transcribe": { "input": 1.25, "output": 5.0, "retirement_date": "2027-02-26" },
     "gpt-4o-transcribe": { "input": 2.5, "output": 10.0, "retirement_date": "2027-02-26" },
-    "whisper-1": { "per_minute": 0.006, "retirement_date": "2027-02-26" }
+    "whisper-1": { "per_minute": 0.006, "retirement_date": "2027-02-26" },
+    "gpt-image-2.5-sunburst": {
+      "input": 5.0,
+      "cached_input": 2.0,
+      "output": 30.0,
+      "image_input": 8.0
+    },
+    "gpt-image-2.5-flare": {
+      "input": 5.0,
+      "cached_input": 2.0,
+      "output": 30.0,
+      "image_input": 8.0
+    },
+    "gpt-image-2": { "input": 5.0, "cached_input": 2.0, "output": 30.0, "image_input": 8.0 },
+    "gpt-image-1.5": {
+      "input": 5.0,
+      "cached_input": 2.0,
+      "output": 10.0,
+      "image_input": 8.0,
+      "image_output": 32.0,
+      "retirement_date": "2026-12-01"
+    },
+    "gpt-image-1-mini": {
+      "input": 2.0,
+      "cached_input": 0.25,
+      "output": 8.0,
+      "image_input": 2.5,
+      "retirement_date": "2026-12-01"
+    },
+    "gpt-image-1": {
+      "input": 5.0,
+      "cached_input": 2.5,
+      "output": 40.0,
+      "image_input": 10.0,
+      "retirement_date": "2026-10-23"
+    }
   },
   "anthropic": {
     "claude-mythos-5-1": {

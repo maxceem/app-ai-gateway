@@ -39,6 +39,27 @@ function countsAny(usage: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => finiteNumber(usage[key]) !== null);
 }
 
+/**
+ * One side of an OpenAI usage object broken down by modality, as the image
+ * endpoints report it in `input_tokens_details` and `output_tokens_details`:
+ * `text_tokens` and `image_tokens`, with `audio_tokens` alongside where a model
+ * hears. Undefined where the details say nothing of the kind — a Chat
+ * Completions `audio_tokens` or `reasoning_tokens` alone is not a split of the
+ * side. As with Gemini, only what the split accounts for is believed, and the
+ * rest of `total` is `unknown` rather than text.
+ */
+function openAiModalities(details: Record<string, unknown> | null, total: number): ModalityCounts | undefined {
+  if (!details || !countsAny(details, ["text_tokens", "image_tokens"])) return undefined;
+  const counts: ModalityCounts = {};
+  const image = numberAt(details, "image_tokens");
+  const audio = numberAt(details, "audio_tokens");
+  if (image > 0) counts.image = image;
+  if (audio > 0) counts.audio = audio;
+  const accounted = numberAt(details, "text_tokens") + image + audio;
+  if (accounted < total) counts.unknown = total - accounted;
+  return counts;
+}
+
 function openAiUsage(value: unknown): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
@@ -62,11 +83,23 @@ function openAiUsage(value: unknown): UsageObservation | null {
     || numberAt(usage, "cached_tokens")
     || numberAt(usage, "prompt_cache_hit_tokens");
   const cacheWrite = details ? numberAt(details, "cache_write_tokens") : 0;
+  const outputTotal = numberAt(usage, "output_tokens") || numberAt(usage, "completion_tokens");
+  // An image model prices its image tokens apart from its text on both sides,
+  // and the split counts the whole side, cached part included: `sideCost`
+  // takes it out of the uncached tokens, never past them.
+  const input = openAiModalities(details, inputTotal);
+  const output = openAiModalities(
+    asRecord(usage.output_tokens_details) ?? asRecord(usage.completion_tokens_details),
+    outputTotal,
+  );
   return {
     inputTokens: Math.max(0, inputTotal - cached - cacheWrite),
     cachedInputTokens: cached,
     cacheWriteTokens: cacheWrite,
-    outputTokens: numberAt(usage, "output_tokens") || numberAt(usage, "completion_tokens"),
+    outputTokens: outputTotal,
+    ...((input || output) && {
+      modalityTokens: { ...(input && { input }), ...(output && { output }) },
+    }),
   };
 }
 
