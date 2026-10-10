@@ -14,7 +14,8 @@ The proxy route forwards a provider-native request to one of your providers:
   or a custom slug such as `openai-dev`. It names one of your provider keys,
   not a provider type.
 - `{provider_path}` is the provider's own API path, verbatim and without a
-  leading slash. New apps allow inference endpoints. Other operations need an
+  leading slash. New apps allow inference endpoints, including each provider's
+  image, embedding and speech endpoints. Other operations need an
   explicit [allowed path](/applications/provider-access), and a fixed model
   for pricing when the request does not name one. The provider route must
   support the operation too.

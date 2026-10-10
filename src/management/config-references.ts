@@ -7,6 +7,7 @@ import { type ApiStyle, DEFAULT_PROXY_API_STYLES } from "../shared/capabilities"
 import { hasModelPrice, isBillable } from "../usage/pricing";
 import {
   ConfigError,
+  defaultInferencePaths,
   selectedProviderPolicies,
   type AppConfig,
   type EndpointConfig,
@@ -48,7 +49,10 @@ function validateRoutingPrices(
     // here and then be refused on every request it is allowed to make.
     const paths = policy.allowed_paths.map((entry) => typeof entry === "string" ? entry : entry.path);
     const allowedStyles: readonly ApiStyle[] = paths.length === 0
-      ? DEFAULT_PROXY_API_STYLES
+      ? [
+        ...DEFAULT_PROXY_API_STYLES,
+        ...defaultInferencePaths(provider.type).map((entry) => classifyPath(entry.path).protocol.style),
+      ]
       : paths.map((path) => classifyPath(path).protocol.style);
     const configured = [
       ...policy.allowed_models.map((model) => ({

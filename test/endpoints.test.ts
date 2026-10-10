@@ -160,6 +160,25 @@ afterEach(async () => {
 });
 
 describe("custom endpoints", () => {
+  it("refuses a background request, whose cost only a poll would carry", async () => {
+    const appId = "endpoint-background";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello", background: true }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("overwrites the model, deep-merges configured params, and clamps output tokens", async () => {
     const appId = "endpoint-responses";
     await seedApp(appId, {

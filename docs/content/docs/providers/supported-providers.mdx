@@ -131,11 +131,10 @@ The verdicts are explained in
 
 ## Image generation
 
-Image endpoints are provider operations rather than default inference
-endpoints, so allow their paths in the app's
-[provider access](/applications/provider-access#endpoints-this-provider-serves)
-with `"clamp": "none"`. Whether an image model proxies depends on how its
-provider charges for it:
+Image endpoints are among an app's
+[default inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
+so an app that lists no paths can call them. Whether an image model proxies
+depends on how its provider charges for it:
 
 | Provider | Image models | How the gateway bills them |
 | --- | --- | --- |
@@ -145,7 +144,8 @@ provider charges for it:
 | ByteDance | Seedream 5.0 flash, 5.0 lite, 4.5 and 4.0 on `images/generations` | From the catalog, per image: each model's price times the `usage.generated_images` the response reports. |
 | Together AI, ByteDance (Seedream 5.0 pro) and others | Billed by size, quality or steps, or at an estimated price | Not supported: refused with `pricing_not_configured`. |
 
-For OpenAI, for example:
+If you list an app's endpoints yourself, include the image paths, with
+`"clamp": "none"`. A list replaces the defaults. For OpenAI, for example:
 
 ```json
 "openai": {
@@ -192,9 +192,11 @@ If a reporting API ever answers without a cost, a local price for the model is
 used if there is one (`computed`), and otherwise the event is marked
 [unresolved](/providers/model-pricing#where-a-cost-comes-from).
 
-As with every [image endpoint](#image-generation), allow the path in the app's
-[provider access](/applications/provider-access#endpoints-this-provider-serves).
-Give it `"clamp": "none"`: an image has no output tokens to cap.
+xAI's image endpoints are among an app's default inference endpoints. An app
+that lists its endpoints itself includes them with `"clamp": "none"`, because
+an image has no output tokens to cap. Video generation is not a default: xAI
+returns a job ID, and its result and cost arrive on a later poll the gateway
+cannot serve.
 
 ```json
 "xai": {
