@@ -13,10 +13,12 @@
 # there is one rolling pull request rather than one a day, and no diff means no
 # pull request. The report is its body and this run's summary.
 #
-# The run ends red when something needs a person: a parser that no longer
-# reads its page, lists that disagree, a suspicious move, a model gone from its
-# official page. An item that is expected is acknowledged by adding its key and
-# a reason to scripts/models/acknowledged.json.
+# Something needs a person when a parser no longer reads its page, lists
+# disagree, a price moves suspiciously or a model is gone from its official
+# page. The pull request then carries it: its description lists it and a red
+# "Model catalog" status marks it. Only when there is no pull request to carry
+# it does the run itself end red. An item that is expected is acknowledged by
+# adding its key and a reason to scripts/models/acknowledged.json.
 #
 # A pull request opened with the default token does not start `pull_request`
 # workflows, so CI is dispatched on the branch by hand, and its checks attach
@@ -35,6 +37,7 @@ permissions:
   pull-requests: write
   actions: write
   issues: write
+  statuses: write
 
 jobs:
   update:
@@ -99,13 +102,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-models
 
-      - name: Fail when something needs a person
-        if: steps.models.outputs.code != '0'
+      # The pull request is the notification: its description lists what needs
+      # a person, and this status puts a red mark on it without failing the run.
+      - name: Mark what needs your attention on the pull request
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ steps.models.outputs.code }}
+          SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$CODE" = "3" ]; then
+            state=failure; text="Needs your attention: see the description"
+          else
+            state=success; text="Nothing needs your attention"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="Model catalog" -f description="$text" -f target_url="$RUN_URL"
+
+      - name: Fail when something needs a person and no pull request shows it
+        if: steps.models.outputs.code != '0' && steps.pr.outputs.pull-request-number == ''
         env:
           CODE: ${{ steps.models.outputs.code }}
         run: |
           if [ "$CODE" = "3" ]; then
-            echo "::error::Some models need a person; see the run summary or the pull request."
+            echo "::error::Some models need a person; see the run summary."
           elif [ "$CODE" != "0" ]; then
             echo "::error::scripts/update-models.mjs failed (exit $CODE)."
           fi

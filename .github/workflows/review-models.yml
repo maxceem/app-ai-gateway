@@ -12,6 +12,7 @@ permissions:
   issues: write
   pull-requests: write
   actions: write
+  statuses: write
 
 jobs:
   decide:
@@ -81,6 +82,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/review-models.mjs failed
-      - name: Fail when something needs a person
-        if: steps.decisions.outputs.ready == 'true' && steps.models.outputs.code != '0'
+      # The pull request is the notification: its description lists what needs
+      # a person, and this status puts a red mark on it without failing the run.
+      - name: Mark what needs your attention on the pull request
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ steps.models.outputs.code }}
+          SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$CODE" = "3" ]; then
+            state=failure; text="Needs your attention: see the description"
+          else
+            state=success; text="Nothing needs your attention"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="Model catalog" -f description="$text" -f target_url="$RUN_URL"
+      - name: Fail when something needs a person and no pull request shows it
+        if: steps.decisions.outputs.ready == 'true' && steps.models.outputs.code != '0' && steps.pr.outputs.pull-request-number == ''
         run: exit 1
