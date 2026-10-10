@@ -34,6 +34,13 @@ interface Price {
   cache_write?: number;
   per_minute?: number;
   per_hour?: number;
+  /**
+   * What one generated image costs, for a model billed per image rather than
+   * per token. Only where the response counts the images it billed for, as
+   * BytePlus Seedream's `usage.generated_images` does; a price that also
+   * depends on size, quality or steps has no exact figure here.
+   */
+  per_image?: number;
   long_context_threshold?: number;
   long_input?: number;
   long_output?: number;
@@ -55,6 +62,8 @@ interface Price {
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
+  /** The images the response says it generated and billed, for a per-image model. */
+  images?: number;
   modalityTokens?: ModalityTokens;
   /**
    * Set when the response reported a duration and no token counts, so its
@@ -112,6 +121,7 @@ export function hasModelPrice(
   if (!price) return false;
   if (price.per_minute !== undefined) return Number.isFinite(price.per_minute) && price.per_minute >= 0;
   if (price.per_hour !== undefined) return Number.isFinite(price.per_hour) && price.per_hour >= 0;
+  if (price.per_image !== undefined) return Number.isFinite(price.per_image) && price.per_image >= 0;
   return price.input !== undefined
     && Number.isFinite(price.input)
     && price.input >= 0
@@ -170,9 +180,10 @@ export function resolveModelAuthor(provider: ProviderType, model: string): strin
 
 /**
  * Whether an observation carries the measure the model's price is denominated
- * in. A time-priced model needs a duration and a token-priced one needs token
- * counts; anything else would compute a confident $0 from the counters left at
- * zero — a free-looking request that escapes every budget. `true` where no
+ * in. A time-priced model needs a duration, an image-priced one an image count
+ * and a token-priced one token counts; anything else would compute a confident
+ * $0 from the counters left at zero — a free-looking request that escapes every
+ * budget. `true` where no
  * price applies, because that is {@link computeCost}'s `null` to report.
  */
 export function reportsPricedMeasure(
@@ -186,6 +197,7 @@ export function reportsPricedMeasure(
   if (price.per_minute !== undefined || price.per_hour !== undefined) {
     return usage.audioSeconds !== undefined;
   }
+  if (price.per_image !== undefined) return usage.images !== undefined;
   return usage.durationOnly !== true;
 }
 
@@ -261,6 +273,9 @@ export function computeCost(
   }
   if (price.per_hour !== undefined) {
     return ((usage.audioSeconds ?? 0) / 3600) * price.per_hour;
+  }
+  if (price.per_image !== undefined) {
+    return (usage.images ?? 0) * price.per_image;
   }
   if (price.input === undefined || price.output === undefined) return null;
   const promptTokens = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens;

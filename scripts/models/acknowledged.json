@@ -242,5 +242,113 @@
   {
     "key": "anthropic/claude-sonnet-4-5: threshold differs",
     "reason": "The lists keep the 200,000-token threshold of the retired 1M-context beta. Anthropic now gives Claude Sonnet 4.5 a 200k-token context window and a single price, so no prompt crosses a threshold."
+  },
+  {
+    "key": "openai/chatgpt-image-latest: not added",
+    "reason": "Moving alias whose underlying model changes without a new ID, and it retires on 2026-12-01."
+  },
+  {
+    "key": "together/google/flash-image-2.5: not added",
+    "reason": "Unsupported public pricing: image models, google/flash-image-2.5: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/google/gemini-3-pro-image: not added",
+    "reason": "Unsupported public pricing: image models, google/gemini-3-pro-image: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.1.1-pro: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.1.1-pro: billed per megapixel, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.1-kontext-pro: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.1-kontext-pro: billed per megapixel, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.1-kontext-max: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.1-kontext-max: billed per megapixel, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.2-pro: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.2-pro: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.2-dev: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.2-dev: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.2-flex: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.2-flex: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/ByteDance-Seed/Seedream-3.0: not added",
+    "reason": "Unsupported public pricing: image models, ByteDance-Seed/Seedream-3.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/ByteDance-Seed/Seedream-4.0: not added",
+    "reason": "Unsupported public pricing: image models, ByteDance-Seed/Seedream-4.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/ByteDance/Seedream-5.0-lite: not added",
+    "reason": "Unsupported public pricing: image models, ByteDance/Seedream-5.0-lite: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/Qwen/Qwen-Image: not added",
+    "reason": "Unsupported public pricing: image models, Qwen/Qwen-Image: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/RunDiffusion/Juggernaut-pro-flux: not added",
+    "reason": "Unsupported public pricing: image models, RunDiffusion/Juggernaut-pro-flux: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/Rundiffusion/Juggernaut-Lightning-Flux: not added",
+    "reason": "Unsupported public pricing: image models, Rundiffusion/Juggernaut-Lightning-Flux: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/ideogram/ideogram-3.0: not added",
+    "reason": "Unsupported public pricing: image models, ideogram/ideogram-3.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/stabilityai/stable-diffusion-xl-base-1.0: not added",
+    "reason": "Unsupported public pricing: image models, stabilityai/stable-diffusion-xl-base-1.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/black-forest-labs/FLUX.2-max: not added",
+    "reason": "Unsupported public pricing: image models, black-forest-labs/FLUX.2-max: billed per megapixel, which the catalog cannot price"
+  },
+  {
+    "key": "together/google/flash-image-3.1: not added",
+    "reason": "Unsupported public pricing: image models, google/flash-image-3.1: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/openai/gpt-image-1.5: not added",
+    "reason": "Unsupported public pricing: image models, openai/gpt-image-1.5: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/Qwen/Qwen-Image-2.0: not added",
+    "reason": "Unsupported public pricing: image models, Qwen/Qwen-Image-2.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/Qwen/Qwen-Image-2.0-Pro: not added",
+    "reason": "Unsupported public pricing: image models, Qwen/Qwen-Image-2.0-Pro: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/Wan-AI/Wan2.6-image: not added",
+    "reason": "Unsupported public pricing: image models, Wan-AI/Wan2.6-image: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/ideogram/ideogram-4.0: not added",
+    "reason": "Unsupported public pricing: image models, ideogram/ideogram-4.0: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/openai/gpt-image-2: not added",
+    "reason": "Unsupported public pricing: image models, openai/gpt-image-2: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/google/flash-image-3.1-lite: not added",
+    "reason": "Unsupported public pricing: image models, google/flash-image-3.1-lite: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "together/prunaai/p-image-ideogram: not added",
+    "reason": "Unsupported public pricing: image models, prunaai/p-image-ideogram: billed per image, which the catalog cannot price"
   }
 ]

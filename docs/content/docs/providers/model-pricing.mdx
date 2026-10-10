@@ -13,8 +13,9 @@ invoice. This page covers local prices, reported cost and unresolved usage.
 
 The gateway ships with a price catalog: input and output prices per million
 tokens for the common models of each provider type, plus cached-input,
-cache-write and long-context rates where the provider has them, and per-minute
-or per-hour rates for transcription models. Prices are market data about
+cache-write and long-context rates where the provider has them, per-minute
+or per-hour rates for transcription models, and per-image rates for a few image
+models. Prices are market data about
 models rather than something you configure, so the catalog ships with the
 gateway. The hosted service updates it with gateway releases. Self-hosted gateways receive catalog updates when you update your
 deployment. Use the provider's **Pricing** action to cover a new or changed
@@ -31,6 +32,44 @@ Two provider types ship with no catalog at all, because no static list could
 be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might
 pick. Their models proxy once you price them, and not before.
+
+### Image generation models
+
+The catalog covers image models that are priced per token, with separate
+rates for image tokens where the provider charges them differently from text:
+
+- **OpenAI** GPT Image models, such as `gpt-image-2` and
+  `gpt-image-2.5-sunburst`. Prompt text and input images (in an edit) each
+  bill at their own input rate, and generated images at the image output rate.
+- **Gemini** image models, such as `gemini-3-pro-image` and
+  `gemini-nano-banana-2.1`. Generated image tokens bill at the image output
+  rate, and text and thinking at the text rate.
+
+Both providers report how many of a request's tokens were images, and the
+gateway bills each kind at its own rate. If a response does not break its
+tokens down, all of them bill at the model's highest rate, so an image is
+never billed at the cheaper text rate. The same applies when part of a prompt
+was served from cache: the response does not say whether the cached tokens
+were text or images, so the uncached tokens are billed as images first. The
+recorded cost can then be above what the provider charged, but never below.
+
+A model billed a flat price per image is in the catalog only when its
+response says how many images it billed. Today that is **BytePlus Seedream**:
+`dola-seedream-5-0-flash-260915`, `seedream-5-0-lite-260128`,
+`seedream-4-5-251128` and `seedream-4-0-250828`. Each one bills its price times
+the images the response counts in `usage.generated_images`, which leaves out
+images that failed or were withheld by moderation, as BytePlus's own bill does.
+If a response does not count its images, the event is marked unresolved
+rather than recorded at $0.
+
+Other image models are not in the catalog when their price depends on more
+than a count of images, such as size, quality, steps or a provider's estimate.
+That covers Together AI's image models, Seedream 5.0 pro (two pixel tiers, a
+charge for input images and per-layer tiers) and Gemini 2.5 Flash Image.
+Custom prices are per token, so they cannot bill these models either, and
+the models stay unsupported. The exception is a provider that reports its own
+cost: xAI's image models proxy with no price (see
+[Providers that report their own cost](#providers-that-report-their-own-cost)).
 
 ### Treat recorded cost as usage accounting
 
@@ -73,8 +112,10 @@ console can see them.
 Lookup is a two-level merge: the provider's own custom price for the requested
 model first, then the shipped catalog. A custom price therefore overrides the
 catalog for that provider only. Custom prices carry input and output rates
-only; a catalog entry's cached-input or long-context rates do not apply to a
-model you priced yourself.
+only; a catalog entry's cached-input, long-context or image rates do not apply
+to a model you priced yourself. If you priced a model yourself before the
+catalog covered it, such as a GPT Image model, delete that custom price so the
+catalog's full rates apply.
 
 The API equivalent sets `pricing` on the provider. It is a full replace, keyed
 by model ID, and `null` clears every custom price:
@@ -190,6 +231,6 @@ price would replace a fact with an estimate. A repriced event's `cost_source`
 becomes `computed` when readable usage was available.
 
 Repricing covers retained raw events only, with at most 10,000 matching events
-per call, and requires token pricing. It does not reprice compacted history or
-time-based transcription charges. See the [API reference](/api) for the request
+per call, and requires token pricing. It does not reprice compacted history,
+time-based transcription charges or per-image charges. See the [API reference](/api) for the request
 shape.

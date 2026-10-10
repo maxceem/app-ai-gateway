@@ -10876,6 +10876,10 @@
                             "per_hour": {
                               "type": "number"
                             },
+                            "per_image": {
+                              "type": "number",
+                              "description": "USD per generated image, for a model billed per image rather than per token."
+                            },
                             "long_context_threshold": {
                               "type": "number"
                             },
