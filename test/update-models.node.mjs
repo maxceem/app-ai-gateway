@@ -923,6 +923,6 @@ test("report: fetched text is escaped", () => {
     "## ❌ Needs your attention",
     "## ℹ️ Additional information",
   ]);
-  assert.match(report, /## ❌ Needs your attention[\s\S]*parser failed[\s\S]*## ℹ️ Additional information[\s\S]*### Sources/u);
+  assert.match(report, /## ❌ Needs your attention[\s\S]*parser failed[\s\S]*## ℹ️ Additional information[\s\S]*<summary>Sources<\/summary>/u);
   assert.doesNotMatch(report.split("## ℹ️ Additional information")[1], /parser failed/u);
 });

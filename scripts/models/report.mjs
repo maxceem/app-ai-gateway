@@ -110,7 +110,10 @@ export function renderReport(decision) {
 
   if (decision.sources.length > 0) {
     sections.push(
-      "### Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}${SOURCES[item.provider]?.official ? ` — [official pricing](${SOURCES[item.provider].official.url})` : ""}`),
+      details(
+        "Sources",
+        list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}${SOURCES[item.provider]?.official ? ` — [official pricing](${SOURCES[item.provider].official.url})` : ""}`),
+      ),
     );
   }
 
