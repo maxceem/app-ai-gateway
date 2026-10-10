@@ -351,6 +351,8 @@ describe("proxy API style classification", () => {
     ["openai/v1/responses", "responses", "responses"],
     ["v1/audio/transcriptions", "audio_transcription", "none"],
     ["openai/v1/audio/transcriptions", "audio_transcription", "none"],
+    ["v1/audio/translations", "audio_transcription", "none"],
+    ["openai/v1/audio/translations", "audio_transcription", "none"],
     ["v1beta/models/gemini-3.5-flash:generateContent", "gemini_native", "gemini_native"],
     ["v1beta/models/gemini-3.5-flash:streamGenerateContent", "gemini_native", "gemini_native"],
     ["v1/threads/thread_123/messages", "other", "chat_completions"],
@@ -380,6 +382,187 @@ describe("paths the tables declare classify as what they declare", () => {
     for (const [style, path] of Object.entries(descriptor.endpointPaths ?? {})) {
       expect([path, apiStyleFromPath(path)]).toEqual([path, style]);
     }
+  });
+
+  // A default inference path that classified as a default style would be dead
+  // weight, and one with a leading slash, a wildcard or a repeat would never
+  // match what a client sends the way the descriptor reads.
+  it.each(PROVIDER_TYPES)("lists only provider-native, exact paths as %s's default inference paths", (type) => {
+    const paths = providerDescriptor(type).inferencePaths ?? [];
+    expect(new Set(paths).size).toBe(paths.length);
+    for (const path of paths) {
+      expect([path, apiStyleFromPath(path.replace("{model}", "a-model"))]).toEqual([path, "other"]);
+      expect([path, /^[a-z0-9][a-z0-9/._-]*(?:\{model\}[a-zA-Z:]*)?$/u.test(path)]).toEqual([path, true]);
+    }
+  });
+});
+
+describe("default inference endpoints", () => {
+  /** A fetch stub answering every call with `answer`, recording what it was sent. */
+  function upstream(answer: unknown): CapturedRequest[] {
+    const captured: CapturedRequest[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      captured.push({
+        url: typeof request === "string" ? request : request instanceof URL ? request.toString() : request.url,
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return Response.json(answer);
+    });
+    return captured;
+  }
+
+  async function costOf(appId: string) {
+    await settleUsage();
+    return env.DB.prepare("SELECT model, cost_usd, cost_source FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ model: string; cost_usd: number; cost_source: string }>();
+  }
+
+  it.each([
+    {
+      name: "OpenAI image generation",
+      path: "openai/v1/images/generations",
+      url: "https://api.openai.com/v1/images/generations",
+      body: { model: "gpt-image-2", prompt: "a lighthouse", size: "1024x1024" },
+      answer: { data: [{ b64_json: "iVBORw0KGgo=" }], usage: { input_tokens: 12, input_tokens_details: { text_tokens: 12, image_tokens: 0 }, output_tokens: 1056 } },
+      cost: () => (12 * shippedRates("openai", "gpt-image-2").input + 1056 * shippedRates("openai", "gpt-image-2").output) / 1e6,
+    },
+    {
+      name: "OpenAI embeddings",
+      path: "openai/v1/embeddings",
+      url: "https://api.openai.com/v1/embeddings",
+      body: { model: "text-embedding-3-small", input: "hello" },
+      answer: { object: "list", data: [], usage: { prompt_tokens: 800, total_tokens: 800 } },
+      cost: () => (800 * shippedRates("openai", "text-embedding-3-small").input) / 1e6,
+    },
+    {
+      name: "Gemini embeddings",
+      path: "gemini/v1beta/models/gemini-embedding-2:embedContent",
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+      body: { content: { parts: [{ text: "hello" }] } },
+      answer: { embedding: { values: [0.1] }, usageMetadata: { promptTokenCount: 100, promptTokenDetails: [{ modality: "TEXT", tokenCount: 100 }] } },
+      cost: () => (100 * shippedRates("gemini", "gemini-embedding-2").input) / 1e6,
+    },
+    {
+      name: "BytePlus Seedream images",
+      path: "bytedance/images/generations",
+      url: "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations",
+      body: { model: "seedream-4-0-250828", prompt: "a lighthouse" },
+      answer: { data: [{ url: "https://example.test/a.jpeg" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } },
+      cost: () => shippedRates("bytedance", "seedream-4-0-250828").per_image,
+    },
+  ])("allows $name with no paths listed, uncapped, and bills it", async (testCase) => {
+    const appId = `proxy-default-inference-${crypto.randomUUID()}`;
+    const provider = testCase.path.split("/")[0]!;
+    // An output cap is in force, and must not be written into a body that has
+    // no output tokens to bound.
+    await seedApp(appId, {
+      proxy: { [provider]: { allowed_paths: [], allowed_models: [], max_output_tokens: 64 }, model_rewrites: {} },
+    });
+    const token = await gatewayToken(appId);
+    const captured = upstream(testCase.answer);
+
+    const response = await proxyRequest({ appId, token, path: testCase.path, body: testCase.body });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe(testCase.url);
+    expect(JSON.parse(captured[0]!.body)).toEqual(testCase.body);
+    const row = await costOf(appId);
+    expect(row?.cost_source).toBe("computed");
+    expect(row?.cost_usd).toBeCloseTo(testCase.cost(), 12);
+  });
+
+  it("allows them in all mode too", async () => {
+    const appId = "proxy-default-inference-all";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const captured = upstream({ data: [], usage: { input_tokens: 1, output_tokens: 1 } });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/images/edits",
+      body: { model: "gpt-image-2", prompt: "make it blue", images: [{ image_url: "https://example.test/a.png" }] },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/images/edits");
+  });
+
+  it.each([
+    ["a batch", "openai/v1/batches", { model: "gpt-5.6-sol", input_file_id: "file-1" }],
+    ["a moderation", "openai/v1/moderations", { model: "omni-moderation-latest", input: "hi" }],
+    ["token counting", "openai/v1/responses/input_tokens", { model: "gpt-5.6-sol", input: "hi" }],
+    ["video generation", "xai/v1/videos/generations", { model: "grok-imagine-video", prompt: "a lighthouse" }],
+    ["another type's inference path", "anthropic/v1/images/generations", { model: "claude-opus-5", prompt: "a lighthouse" }],
+  ])("still refuses %s with no paths listed", async (_label, path, body) => {
+    const appId = `proxy-default-inference-deny-${crypto.randomUUID()}`;
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({ appId, token, path, body });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows only the listed paths once a policy names any", async () => {
+    const appId = "proxy-default-inference-listed";
+    await seedApp(appId, {
+      proxy: { openai: { allowed_paths: ["v1/responses"], allowed_models: [] }, model_rewrites: {} },
+    });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/images/generations",
+      body: { model: "gpt-image-2", prompt: "a lighthouse" },
+    });
+
+    expect(response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an OpenAI background response", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", background: true }],
+    ["an xAI deferred image", "xai/v1/images/generations", { model: "grok-imagine-image", prompt: "a lighthouse", deferred: true }],
+    ["an xAI deferred chat", "xai/v1/chat/completions", { model: "grok-4.7", messages: [], deferred: true }],
+  ])("refuses %s, whose cost only a poll would carry", async (_label, path, body) => {
+    const appId = `proxy-detached-${crypto.randomUUID()}`;
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({ appId, token, path, body });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards an OpenAI image whose background is a transparency setting", async () => {
+    const appId = "proxy-image-background";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const captured = upstream({ data: [], usage: { input_tokens: 1, output_tokens: 1 } });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/images/generations",
+      body: { model: "gpt-image-2", prompt: "a logo", background: "transparent" },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
   });
 });
 

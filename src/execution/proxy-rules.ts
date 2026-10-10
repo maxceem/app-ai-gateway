@@ -14,7 +14,12 @@ import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
 import { isBillable } from "../usage/pricing";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
-import { providerPolicyFor, DEFAULT_END_USER_HEADER, type ProviderPolicy } from "../shared/app-config";
+import {
+  defaultInferencePaths,
+  providerPolicyFor,
+  DEFAULT_END_USER_HEADER,
+  type ProviderPolicy,
+} from "../shared/app-config";
 import type { AllowedPath, AllowedPathConfig, AppRecord } from "../core/types";
 import type { ProviderType } from "../shared/providers";
 
@@ -75,24 +80,35 @@ function modelIsAllowed(allowedModels: string[], requestedModel: string): boolea
   return allowedModels.length === 0 || allowedModels.includes(requestedModel);
 }
 
-/**
- * The allowlist entry a path matches, and the model it captured if it names
- * one. An app that names no paths allows every default inference style, which
- * the caller has already checked; the classifier's own capture is the model
- * then, so a native Gemini path is judged by the model in its URL.
- */
-function matchedPath(path: string, allowed: AllowedPath[], model: { value: string; template: string } | undefined): MatchedPath | null {
-  if (allowed.length === 0) {
-    return model
-      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
-      : { entry: { path } };
-  }
+/** The entry of `allowed` a path matches, and the model it captured if it names one. */
+function listedPath(path: string, allowed: readonly AllowedPath[]): MatchedPath | null {
   for (const rawEntry of allowed) {
     const entry = normalizedPath(rawEntry);
     const match = path.match(pathPattern(entry.path));
     if (match) return { entry, ...(match[1] ? { modelFromPath: decodedModel(match[1]) } : {}) };
   }
   return null;
+}
+
+/**
+ * What an app whose policy names no paths may call: every default API style,
+ * judged by the model the classifier captured where the path carries one, and
+ * the provider type's own inference operations. Those are never output-capped,
+ * because none of them answers in tokens a cap could bound — an embedding or an
+ * image body given a `max_tokens` would be refused by its provider.
+ */
+function defaultPath(
+  path: string,
+  provider: ProviderType,
+  style: ApiStyle,
+  model: { value: string; template: string } | undefined,
+): MatchedPath | null {
+  if (isDefaultProxyApiStyle(style)) {
+    return model
+      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
+      : { entry: { path } };
+  }
+  return listedPath(path, defaultInferencePaths(provider));
 }
 
 /** A model segment of an allowed path, decoded; malformed escapes are the client's error. */
@@ -376,6 +392,25 @@ function modelPlacement(
   return match.entry.fixed_model ? null : { bodyModel: model.wireModel };
 }
 
+/**
+ * Refuses a request that asks the provider to run it detached: OpenAI's,
+ * Gemini's and Perplexity's `background: true` and xAI's `deferred: true`. Such
+ * an answer is an acknowledgement with no usage in it; the result and its cost
+ * arrive only on a later poll, a GET this gateway does not proxy. Forwarded, it
+ * would spend the provider key on something no client can collect, recorded as
+ * unresolved at $0 and so outside every budget. Only a literal `true` counts:
+ * OpenAI's image `background` is a string naming the image's transparency.
+ */
+export function refuseDetachedJob(body: Record<string, unknown>): void {
+  if (body.background === true || body.deferred === true) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "Background and deferred requests are not supported: their result and cost arrive on a later poll the gateway cannot serve",
+    );
+  }
+}
+
 export async function prepareProxyRequest(input: {
   request: Request;
   app: AppRecord;
@@ -397,10 +432,9 @@ export async function prepareProxyRequest(input: {
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const classified = classifyPath(input.providerPath);
   const apiStyle = classified.protocol.style;
-  if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
-    throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-  }
-  const match = matchedPath(input.providerPath, config.allowed_paths, classified.model);
+  const match = config.allowed_paths.length === 0
+    ? defaultPath(input.providerPath, provider, apiStyle, classified.model)
+    : listedPath(input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   assertApiStyleSupported(route.kind, provider, apiStyle);
 
@@ -450,6 +484,7 @@ export async function prepareProxyRequest(input: {
   // the body, the outbound request itself.
   const text = new TextDecoder().decode(bytes);
   const parsed = jsonObjectFromText(text);
+  refuseDetachedJob(parsed);
   const model = resolveModel({
     match,
     bodyModel: typeof parsed.model === "string" && parsed.model.length > 0

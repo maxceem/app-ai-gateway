@@ -11,7 +11,7 @@ import { providerDescriptor, type ProviderType } from "../shared/providers";
 import { routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
 import type { ExecutionAttempt } from "./plan";
-import { sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxy-rules";
+import { refuseDetachedJob, sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxy-rules";
 import {
   finishJsonBody,
   formWithModel,
@@ -264,6 +264,7 @@ export async function prepareEndpointRequest(input: {
   }
 
   const merged = deepMerge(jsonObject(bytes), input.endpoint.params ?? {});
+  refuseDetachedJob(merged);
   headers.set("content-type", "application/json");
   return {
     slug: input.slug,
