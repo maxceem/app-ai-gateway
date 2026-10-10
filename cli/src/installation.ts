@@ -1,4 +1,5 @@
-import { cp, writeFile } from "node:fs/promises";
+import { deployRelease, setBuild } from "./seamless.ts";
+import { cp, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CliCapabilitiesResponse } from "../../src/contracts/cli.ts";
@@ -94,8 +95,9 @@ export async function configFile(
   journal: InstallationJournal,
   artifact: ReleaseArtifact,
 ): Promise<DeploymentFile> {
-  const directory = join(ctx.store.directory, "deployments", journal.id);
-  await protectedDirectory(directory);
+  const parent = join(ctx.store.directory, "deployments", journal.id);
+  await protectedDirectory(parent);
+  const directory = await mkdtemp(join(parent, "run-"));
   await cp(artifact.directory, join(directory, "release"), { recursive: true });
   const config = {
     ...artifact.config,
@@ -243,9 +245,10 @@ export async function attachDomain(
     vars: { ...journal.vars, CLI_CONSOLE_ORIGIN: "https://" + domain },
   });
   const file = await configFile(ctx, journal, artifact);
-  await cf.run(["deploy", "--config", file.path, "--keep-vars"], {
-    cwd: file.directory,
-  });
+  try { await deployRelease(cf, journal, artifact, file, async () => {}, async buildId => {
+    await setBuild(file, buildId);
+    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory });
+  }); } finally { await rm(file.directory, { recursive: true, force: true }); }
   await verifyDeployment(ctx, "https://" + domain, journal.id);
   if (ctx.active?.deployment?.id === journal.id) {
     ctx.active.url = "https://" + domain;
@@ -286,6 +289,7 @@ async function currentInventory(
     USER_LIMITER: "durable_object_namespace",
     ORG_QUOTA: "durable_object_namespace",
     ENDPOINT_RATE_LIMITER: "durable_object_namespace",
+    REALTIME_SESSION: "durable_object_namespace",
   };
   if (
     bindings.some(
@@ -301,6 +305,7 @@ async function currentInventory(
     USER_LIMITER: "UserLimiter",
     ORG_QUOTA: "OrgQuota",
     ENDPOINT_RATE_LIMITER: "EndpointRateLimiter",
+    REALTIME_SESSION: "RealtimeSession",
   };
   if (
     bindings.some(

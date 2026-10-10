@@ -14,7 +14,7 @@ import type { z } from "zod";
 import {
   CATALOG,
   operationPath,
-  type OperationName,
+  type HttpOperationName as OperationName,
   type OperationParams,
   type OperationQuery,
   type OperationRequest,

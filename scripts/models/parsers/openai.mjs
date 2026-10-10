@@ -133,5 +133,24 @@ export function parseOpenai(text, { wanted }) {
     }
   }
 
+  // Realtime has independent text/audio and cached-modality rates. Never collapse audio into text.
+  const realtime = lines.findIndex(line => line.trim() === "Realtime and audio generation models");
+  if (realtime >= 0) {
+    const heading = findNextLine(lines, "### Grouped Pricing Table data", "realtime models", realtime);
+    const entries = new Map();
+    for (const row of readTable(lines, heading + 1, ["Model", "Modality", "Input", "Cached input", "Output / cost"], "realtime models")) {
+      if (!wanted.has(row[0]) || !["Text", "Audio"].includes(row[1])) continue;
+      const price = entries.get(row[0]) ?? {};
+      const [input, cached, output] = row.slice(2).map(value => cell(value, `realtime models, ${row[0]}`));
+      if (row[1] === "Text") { if (input !== undefined) price.input = input; if (output !== undefined) price.output = output; if (cached !== undefined) price.cached_input = cached; }
+      else { if (input !== undefined) price.audio_input = input; if (output !== undefined) price.audio_output = output; if (cached !== undefined) price.cached_audio_input = cached; }
+      entries.set(row[0], price);
+    }
+    for (const [model, price] of entries) {
+      if (price.input === undefined || price.output === undefined) throw new ParseError(`realtime models, ${model}: incomplete text rates`);
+      put(prices, model, price);
+    }
+  }
+
   return prices;
 }

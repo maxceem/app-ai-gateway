@@ -871,3 +871,50 @@ struct AppAIGatewayClientTests {
         #expect(registerCalls.snapshot() == 0)
     }
 }
+
+extension AppAIGatewayClientTests {
+    @Test func realtimeRequestUsesExistingHeadersAndSafeQueryItems() async throws {
+        MockURLProtocol.handler = { request in
+            #expect(request.url?.path == "/v1/apps/test-app/realtime/openai/connection")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+            #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "model", value: "a/b + &")])
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"url":"wss://release.workers.dev/v1/apps/test-app/realtime/openai?model=a%2Fb%20%2B%20%26","releaseId":"release"}"#.utf8))
+        }
+        let client = AppAIGatewayClient(appID: "test-app", baseURL: URL(string: "https://gateway.test")!, authMode: .apiKey(key: "test-key", issuerTokenProvider: nil), endUserId: "user-7", session: session())
+        let request = try await client.authorizedRealtimeRequest(provider: ProviderSlug.openai, model: "a/b + &")
+        #expect(request.url?.scheme == "wss")
+        #expect(request.url?.path == "/v1/apps/test-app/realtime/openai")
+        #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "model", value: "a/b + &")])
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(request.value(forHTTPHeaderField: "X-End-User-Id") == "user-7")
+        #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
+    }
+    @Test func localRealtimeUsesWS() async throws {
+        MockURLProtocol.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"url":"ws://preview.localhost:8080/v1/apps/test/realtime/openai?model=gpt-realtime"}"#.utf8))
+        }
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://preview.localhost:8080")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil), session: session())
+        #expect(try await client.realtimeURL(provider: "openai", model: "gpt-realtime").scheme == "ws")
+    }
+    @Test func unsafeDiscoveredRealtimeURLsAreRefused() async {
+        for discovered in ["http://release.example/socket", "https://release.example/socket", "ws://release.example/socket", "wss://user:password@release.example/socket", "wss://release.example/socket#fragment"] {
+            MockURLProtocol.handler = { request in
+                let body = try! JSONSerialization.data(withJSONObject: ["url": discovered])
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, body)
+            }
+            let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "https://gateway.example")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil), session: session())
+            await #expect(throws: URLError.self) { try await client.realtimeURL(provider: "openai", model: "gpt-realtime") }
+        }
+    }
+    @Test func insecurePublicRealtimeIsRefused() async {
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://gateway.example")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil))
+        await #expect(throws: URLError.self) { try await client.realtimeURL(provider: "openai", model: "gpt-realtime") }
+    }
+    @Test func decodesGatewayErrorWithoutProviderWrapping() throws {
+        let event = try JSONDecoder().decode(RealtimeGatewayError.self, from: Data(#"{"type":"gateway.error","error":{"code":"app_rate_limited","message":"Wait","retry_after_seconds":30},"session_id":"session","generation_id":null}"#.utf8))
+        #expect(event.type == "gateway.error")
+        #expect(event.error.retryAfterSeconds == 30)
+        #expect(event.generationID == nil)
+    }
+}

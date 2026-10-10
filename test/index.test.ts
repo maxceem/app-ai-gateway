@@ -5,10 +5,15 @@ describe("App AI Gateway", () => {
   it("serves the health check", async () => {
     const response = await exports.default.fetch("https://example.test/v1/healthz");
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     await expect(response.json()).resolves.toEqual({
       ok: true,
       service: "app-ai-gateway",
       vault: "ok",
+      buildId: "development",
+      ready: true,
+      backendContract: 1,
+      realtimeReleaseId: null,
     });
   });
 });

@@ -1,0 +1,178 @@
+---
+title: Realtime WebSockets
+description: Provider-native realtime conversations with generation admission, bounded sessions, and durable usage.
+---
+
+Enable **Realtime sessions** in your app's settings to use a supported OpenAI
+model. Existing apps have realtime disabled.
+
+Discover a release-specific connection URL using your provider instance's slug:
+
+```text
+GET https://api.appaigateway.com/v1/apps/{app}/realtime/{provider}/connection?model=gpt-realtime
+Authorization: Bearer <your gateway token or app API key>
+X-App-Version: <your app version>
+```
+
+The JSON response contains `url` and `releaseId`. Open that `wss://` URL with
+`Upgrade: websocket` and the same authentication headers. Discover again for
+every new conversation. The stable gateway's WebSocket path returns a
+`conflict` response asking for discovery.
+
+Established sessions remain on their immutable release through ordinary gateway
+updates. New connections move to the promoted release; a previously discovered
+URL accepts opens for at most 60 seconds after retirement. If it refuses,
+discover again. This preserves conversations during ordinary releases; network
+failures, runtime failures, and client disconnects still end a conversation.
+
+Use `X-App-Version` with gateway tokens, and your configured end-user header for
+API keys that identify users. Credentials in query parameters, cookies, or
+WebSocket subprotocols are unsupported. Native iOS and server clients can supply
+authentication headers; browser clients and WebRTC are outside this release.
+
+## Supported profiles
+
+| Provider | Models | Modes |
+| --- | --- | --- |
+| Direct OpenAI, official origin | `gpt-realtime`, `gpt-realtime-mini` | Manual response creation; gateway-managed `server_vad`; text and 24 kHz PCM audio; application function tools |
+| Gemini Live | Unavailable pending live conformance | The adapter is restricted to explicit text turns or manual audio activities; no enabled model profile yet |
+
+Third-party gateway routes and custom provider origins are unsupported. Pricing
+catalog membership does not enable a realtime profile. Custom realtime prices
+must include text input/output, audio input/output, cached text input and cached
+audio input. Images, transcription, hosted tools, stored prompts, semantic VAD,
+idle prompts, and unknown client event types are refused.
+
+## One generation is one request
+
+An admitted generation attempt counts once. Twenty admitted responses over one
+socket count as twenty requests. Connection setup, configuration, audio chunks,
+and output deltas add no requests. Failed, cancelled, or disconnected attempts
+remain counted after admission. A refusal before admission does not count.
+
+The gateway checks your user's limits, your app's limits, and access before
+sending a generation trigger. Only one provider response can be active. Usage
+must be durably recorded and delivered before the next response starts. Monthly
+spending is based on completed usage; concurrent in-flight responses can exceed
+a spending budget before their final costs are known.
+
+## OpenAI event flow
+
+Wait for `session.updated` before sending input. The gateway initially disables
+turn detection. For manual turns send conversation items or append/commit audio,
+then `response.create`. You may lower `max_output_tokens`; the gateway applies
+its finite ceiling to the session and every response.
+
+For managed VAD, send `session.update` with `audio.input.turn_detection.type`
+set to `server_vad`. Your requested `create_response` and `interrupt_response`
+behavior is managed by the gateway. Upstream these fields are forced to `false`;
+the acknowledgement shows the actual effective configuration. The gateway admits
+one response for each committed speech item. Do not also send manual
+`response.create` in this mode. Interruption cancels the active response and
+waits for its terminal usage before admitting the next one. Only one pending
+automatic turn is buffered.
+
+Function tools run in your application. Send results for outstanding calls with
+`conversation.item.create`, then request another admitted response. Cancellation
+uses `response.cancel`; it consumes no additional request and does not refund the
+active attempt.
+
+## Limits and errors
+
+Defaults: 30-minute session, 10 concurrent sessions per app and 2 per identity,
+10-second setup, 120-second useful-activity idle timeout, 60-second input turn,
+120-second response, 1,000 generations, and 4,096 output tokens (or a lower app
+cap). Gateway tokens bound the session to their verified expiry.
+
+Client JSON frames are limited to 256 KiB; provider frames to 1 MiB. Queued input
+is limited to 256 events and 1 MiB, input per turn to 4 MiB, and output per
+generation to 16 MiB. These bound application buffering; they do not implement
+network write backpressure. Binary frames are unsupported.
+
+Client `response.create` event IDs are deduplicated for the entire connection.
+Other client event IDs, including audio chunks, are deduplicated within the most
+recent 4,096 such events. Audio chunks do not consume a lifetime event-ID limit.
+Use a fresh ID for each new event; replaying an event outside the recent window
+can forward it again. Reusing a retained ID with different content closes the
+session.
+
+A refused generation closes the session. Gateway-originated errors have their
+own type; provider events retain their native shape:
+
+```json
+{
+  "type": "gateway.error",
+  "error": { "code": "app_rate_limited", "message": "Request limit exceeded", "retry_after_seconds": 30 },
+  "session_id": "server-generated-session-id",
+  "generation_id": "server-generated-generation-id"
+}
+```
+
+Policy/auth closure uses 1008, oversize input uses 1009, upstream or recording
+failure uses 1011, and normal expiration uses 1000. App/provider changes and key
+revocation are checked at generation boundaries and every 30 seconds, with the
+existing caches allowing up to about 90 seconds before a change takes effect.
+
+## Reconnect and incomplete usage
+
+Reconnect with a fresh authorized request. A reconnect creates a new conversation;
+no session resumption, automatic replay, provider fallback, or refund is provided.
+A crash after admission but before confirmed dispatch still leaves a counted
+interrupted attempt. Missing provider usage is marked unresolved, never asserted
+to be free. Disconnect cancels upstream work, with at most two seconds to collect
+final usage. Accounting retries retain metadata for up to seven days; raw audio,
+transcripts, and credentials are never stored in the session journal.
+
+Gemini's future explicit audio profile requires automatic activity detection to
+be disabled, then `activityStart`, audio, and `activityEnd`. Admission happens
+before `activityStart`. Default automatic/proactive Gemini SDK sessions will not
+work unchanged. No Gemini profile is available until its usage snapshots and
+output cap pass a real-provider conformance check.
+
+## Swift
+
+```swift
+let request = try await gateway.authorizedRealtimeRequest(
+    provider: .openai, model: "gpt-realtime"
+)
+let socket = URLSession.shared.webSocketTask(with: request)
+socket.resume()
+
+// Receive session.updated before sending input.
+while true {
+    let message = try await socket.receive()
+    guard case .string(let text) = message else { continue }
+    let data = Data(text.utf8)
+    if let error = try? JSONDecoder().decode(RealtimeGatewayError.self, from: data),
+       error.type == "gateway.error" {
+        print(error.error.code) // Handle retry_after_seconds when present.
+        break
+    }
+    // Handle the provider-native event and send when appropriate:
+    // try await socket.send(.string(#"{"type":"response.create"}"#))
+}
+// Explicit cancellation of an active OpenAI response:
+try await socket.send(.string(#"{"type":"response.cancel"}"#))
+socket.cancel(with: .normalClosure, reason: nil)
+// For a new conversation, build a new authorizedRealtimeRequest and socket.
+```
+
+## Development checks
+
+`scripts/realtime-conformance.mjs --live openai MODEL` checks two manual text
+turns. `scripts/realtime-modes.mjs --live openai MODEL` additionally checks audio,
+an audio-mode function call and its follow-up, voice detection, and cancellation.
+Set `REALTIME_PCM_FILE` to a short mono 24 kHz signed 16-bit PCM speech fixture
+for the audio checks. These scripts explicitly spend provider credits.
+
+Credentials come from an ignored local environment file. Use
+`REALTIME_PROVIDER_KEY` for direct access, or `REALTIME_GATEWAY_URL` and
+`REALTIME_GATEWAY_TOKEN` for a running gateway. For Cloudflare AI Gateway's
+stored keys, provide `CF_ACCOUNT_ID`, `CF_GATEWAY_NAME`, and `CF_GATEWAY_API_KEY`.
+The scripts issue short-lived credentials over HTTP, then use the official
+provider WebSocket endpoint. This option is confined to the test scripts.
+
+The Swift SDK discovers the URL automatically in `authorizedRealtimeRequest`.
+`realtimeURL` is also asynchronous and performs authenticated discovery. Both
+reject insecure public URLs, URL credentials, and fragments. Local development
+uses `ws://` only when both gateway and connection hosts are loopback hosts.

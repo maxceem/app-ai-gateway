@@ -876,6 +876,35 @@
             "default": {},
             "additionalProperties": false
           },
+          "realtime": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false
+              },
+              "max_session_seconds": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 1800,
+                "default": 1800
+              },
+              "max_concurrent_sessions": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 100,
+                "default": 10
+              },
+              "max_concurrent_sessions_per_identity": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 10,
+                "default": 2
+              }
+            },
+            "default": {},
+            "additionalProperties": false
+          },
           "endpoints": {
             "type": "object",
             "additionalProperties": {
@@ -1468,6 +1497,17 @@
             ],
             "description": "What this instance can do on its route, decided by the gateway rather than re-derived by clients."
           },
+          "realtimeProtocols": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "openai_realtime",
+                "gemini_live"
+              ]
+            },
+            "description": "Supported realtime transports, independent of model availability and price sufficiency."
+          },
           "revision": {
             "type": "integer",
             "exclusiveMinimum": 0
@@ -1518,6 +1558,22 @@
               "minimum": 0
             },
             "output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "audio_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "audio_output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cached_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cached_audio_input": {
               "type": "number",
               "minimum": 0
             }
@@ -2128,6 +2184,41 @@
             "type": "string"
           },
           "endpoint_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "realtime_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "realtime_generation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "realtime_protocol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "openai_realtime",
+              "gemini_live",
+              null
+            ]
+          },
+          "provider_response_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completion_status": {
             "type": [
               "string",
               "null"
@@ -2929,12 +3020,31 @@
                         "ok",
                         "misconfigured"
                       ]
+                    },
+                    "buildId": {
+                      "type": "string"
+                    },
+                    "ready": {
+                      "type": "boolean"
+                    },
+                    "backendContract": {
+                      "type": "number"
+                    },
+                    "realtimeReleaseId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
                     "ok",
                     "service",
-                    "vault"
+                    "vault",
+                    "buildId",
+                    "ready",
+                    "backendContract",
+                    "realtimeReleaseId"
                   ]
                 }
               }
@@ -3908,6 +4018,298 @@
           },
           "404": {
             "description": "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/realtime/{provider}/connection": {
+      "get": {
+        "tags": [
+          "Provider proxy"
+        ],
+        "operationId": "discoverRealtime",
+        "summary": "Discover the current realtime release",
+        "description": "Authenticate with your usual gateway headers. Open the returned release-specific WebSocket URL with the same headers. Discover again for each new conversation; existing sockets remain on their immutable release through gateway updates.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "example": "openai-dev"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "model",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
+            },
+            "required": false,
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
+            "name": "x-end-user-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trusted release-specific connection URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "releaseId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "releaseId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Realtime release is not ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/realtime/{provider}": {
+      "get": {
+        "tags": [
+          "Provider proxy"
+        ],
+        "operationId": "connectRealtime",
+        "summary": "Connect a provider-native realtime session",
+        "description": "Use discoverRealtime first; this route on the stable gateway returns discovery-required. The discovered release serves the WebSocket path. Each admitted model generation attempt is one request; configuration and audio frames are not additional requests. Native Authorization headers are required. No reconnect replay or conversation resumption. Gateway errors use type gateway.error. Only documented provider profiles are supported.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "example": "openai-dev"
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "model",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
+            },
+            "required": false,
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
+            "name": "x-end-user-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching protocols to a provider-native WebSocket stream."
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "A WebSocket upgrade is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider connection failed.",
             "content": {
               "application/json": {
                 "schema": {

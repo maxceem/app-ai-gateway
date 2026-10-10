@@ -10,10 +10,15 @@
 import type { ProviderPricing } from "@/lib/types";
 
 /** A repeatable pricing row while it is still being typed. */
+export const EXTRA_PRICE_FIELDS = ["audio_input", "audio_output", "cached_input", "cached_audio_input"] as const;
 export interface PricingDraft {
   model: string;
   input: string;
   output: string;
+  audio_input?: string;
+  audio_output?: string;
+  cached_input?: string;
+  cached_audio_input?: string;
 }
 
 /** The stored prices as rows, which is how the form holds them. */
@@ -22,6 +27,7 @@ export function toDrafts(pricing: ProviderPricing | null): PricingDraft[] {
     model,
     input: String(entry.input),
     output: String(entry.output),
+    ...Object.fromEntries(EXTRA_PRICE_FIELDS.filter(field => entry[field] !== undefined).map(field => [field, String(entry[field])])),
   }));
 }
 
@@ -41,7 +47,7 @@ export function draftsToPricing(
     const model = draft.model.trim();
     const input = draft.input.trim();
     const output = draft.output.trim();
-    if (!model && !input && !output) continue;
+    if (!model && !input && !output && EXTRA_PRICE_FIELDS.every(field => !draft[field]?.trim())) continue;
     if (!model) return { error: "Every pricing row needs a model name" };
     if (!input || !output) {
       return { error: `Enter both prices for ${model} — use 0 only if it is genuinely free` };
@@ -59,6 +65,13 @@ export function draftsToPricing(
       return { error: `${model} is priced twice — remove the duplicate row` };
     }
     pricing[model] = { input: inputPrice, output: outputPrice };
+    for (const field of EXTRA_PRICE_FIELDS) {
+      const raw = draft[field]?.trim();
+      if (!raw) continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0) return { error: `Prices for ${model} must be numbers of 0 or more` };
+      pricing[model][field] = value;
+    }
   }
   return { pricing };
 }

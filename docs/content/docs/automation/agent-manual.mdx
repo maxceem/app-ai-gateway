@@ -572,3 +572,13 @@ result; a different payload under the same token is 409. A new application
 key is returned in `result.api_key.key` for 15 minutes after creation; past
 that the result still names the resource and the key's id, and no second key
 is minted. Records are kept for 90 days.
+
+## Realtime sessions
+
+Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
+`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
+VAD. Each admitted generation attempt is one request, including cancellation or
+failure; audio chunks and connection setup add no requests. Reconnect creates a
+new conversation without replay. Gemini Live remains unavailable pending live
+conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
+and `URLSession.webSocketTask(with:)`.

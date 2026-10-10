@@ -143,6 +143,11 @@ export type ErrorCode =
    * authenticate with: curl for an App Attest app, Swift for a server app.
    */
   | "unsupported_snippet"
+  | "realtime_not_supported"
+  | "realtime_session_limit"
+  | "realtime_protocol_error"
+  | "realtime_usage_unresolved"
+  | "upgrade_required"
   | "internal_error";
 
 /**
@@ -200,8 +205,9 @@ export function errorResponse(
   code: ErrorCode,
   message: string,
   headers?: HeadersInit,
+  data?: GatewayErrorData,
 ): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), {
+  return new Response(JSON.stringify({ error: { code, message, ...(data === undefined ? {} : { data }) } }), {
     status,
     headers: { "content-type": "application/json; charset=UTF-8", ...headers },
   });

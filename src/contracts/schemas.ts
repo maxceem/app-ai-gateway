@@ -1,3 +1,4 @@
+import { REALTIME_MAX_SESSION_SECONDS } from '../realtime/limits.ts';
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import {
@@ -427,6 +428,12 @@ export const AppConfigSchema = z.object({
     per_user: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
     per_app: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
   }).strict().prefault({}),
+  realtime: z.object({
+    enabled: z.boolean().default(false),
+    max_session_seconds: z.number().int().positive().max(REALTIME_MAX_SESSION_SECONDS).default(REALTIME_MAX_SESSION_SECONDS),
+    max_concurrent_sessions: z.number().int().positive().max(100).default(10),
+    max_concurrent_sessions_per_identity: z.number().int().positive().max(10).default(2),
+  }).strict().prefault({}),
   endpoints: z.record(
     safeKey(z.string().regex(ENDPOINT_SLUG)),
     EndpointSchema,
@@ -443,6 +450,11 @@ export const AppConfigSchema = z.object({
   // parsed, so both of these are the parsed values here.
   const authentication = config.authentication as AuthenticationConfig | undefined;
   const perUser = config.limits?.per_user as LimitScopeConfig | undefined;
+  if (config.realtime?.enabled && authentication?.end_user.source === "header"
+    && authentication.end_user.header === "x-realtime-bootstrap") {
+    context.addIssue({ code: "custom", path: ["authentication", "end_user", "header"],
+      message: "cannot be x-realtime-bootstrap while realtime is enabled: the gateway uses that header" });
+  }
   if (
     authentication !== undefined
     && perUser !== undefined
@@ -583,6 +595,10 @@ export const ProviderPricingSchema = z.record(
   z.object({
     input: z.number().finite().nonnegative(),
     output: z.number().finite().nonnegative(),
+    audio_input: z.number().finite().nonnegative().optional(),
+    audio_output: z.number().finite().nonnegative().optional(),
+    cached_input: z.number().finite().nonnegative().optional(),
+    cached_audio_input: z.number().finite().nonnegative().optional(),
   }).strict(),
 ).meta({ id: "ProviderPricing" });
 

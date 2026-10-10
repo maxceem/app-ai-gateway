@@ -143,3 +143,13 @@ credentials as a proxy request:
 `requests_today` is `null` when the app sets no per-user limit, because
 requests are then not counted. An app with no user identity answers
 `404 auth_method_not_supported`.
+
+## Realtime sessions
+
+Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
+`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
+VAD. Each admitted generation attempt is one request, including cancellation or
+failure; audio chunks and connection setup add no requests. Reconnect creates a
+new conversation without replay. Gemini Live remains unavailable pending live
+conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
+and `URLSession.webSocketTask(with:)`.

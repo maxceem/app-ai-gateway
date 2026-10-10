@@ -372,6 +372,7 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
+                      {event.realtime_session_id && <div className="mt-1 text-xs text-muted-foreground" title={`Generation: ${event.realtime_generation_id} · Provider response: ${event.provider_response_id ?? "unknown"}`}>Session {event.realtime_session_id} · {event.completion_status}</div>}
                       {/* The configured route, which is known with certainty;
                           a direct call has no gateway to name. */}
                       {/* The stored type is the one that carried the request,

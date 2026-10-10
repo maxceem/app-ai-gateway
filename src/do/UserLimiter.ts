@@ -1,3 +1,4 @@
+import { AdmissionReceipts } from "./admission-receipts";
 import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
@@ -28,6 +29,8 @@ export const SPEND_REFRESH_MS = 10_000;
 type WindowKind = "minute" | "day";
 
 export interface LimiterCheckInput {
+  admissionId?: string;
+  freshSpend?: boolean;
   now: number;
   rpm: number | null;
   rpd: number | null;
@@ -59,6 +62,7 @@ export class UserLimiter extends DurableObject<Env> {
         -- rather than appended to, so there is nothing here to prune. Fixed
         -- windows admit a 2x burst across a boundary, which is an acceptable
         -- trade for abuse control at these magnitudes.
+        CREATE TABLE IF NOT EXISTS session_leases (session_id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS request_windows (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           minute_key TEXT NOT NULL,
@@ -132,14 +136,42 @@ export class UserLimiter extends DurableObject<Env> {
    * day limit refuses does not silently spend a minute token.
    */
   async checkAndIncrement(input: LimiterCheckInput): Promise<LimiterCheckResult> {
+    const fingerprint = JSON.stringify(input);
+    const receipts = input.admissionId ? new AdmissionReceipts(this.ctx.storage.sql) : null;
+    const previous = input.admissionId ? receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint) : null;
+    if (previous) return previous;
     // A caller-supplied clock decides which window a request lands in; a
     // nonsensical one falls back to real time rather than to window "NaN".
     const now = Number.isFinite(input.now) ? input.now : Date.now();
     if (input.monthlyBudgetMicrousd !== null) {
-      const spent = await this.monthlySpend(input.spend, now);
-      if (spent >= input.monthlyBudgetMicrousd) return { allowed: false, reason: "budget" };
+      const spent = await this.monthlySpend(input.spend, now, input.freshSpend);
+      if (spent >= input.monthlyBudgetMicrousd) {
+        return this.ctx.storage.transactionSync(() => {
+          const result = { allowed: false, reason: "budget" } as const;
+          if (input.admissionId) {
+            const previous = receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint);
+            if (previous) return previous;
+            receipts!.save(input.admissionId, fingerprint, result);
+          }
+          return result;
+        });
+      }
     }
 
+    return this.ctx.storage.transactionSync(() => {
+      const previous = input.admissionId ? receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint) : null;
+      if (previous) return previous;
+      const result = this.claimWindows(input, now);
+      if (input.admissionId) receipts!.save(input.admissionId, fingerprint, result);
+      return result;
+    });
+  }
+
+  receipt(admissionId: string): LimiterCheckResult | null {
+    return new AdmissionReceipts(this.ctx.storage.sql).read(admissionId);
+  }
+
+  private claimWindows(input: LimiterCheckInput, now: number): LimiterCheckResult {
     const windows = this.windowCounts(now);
     const minuteCount = windows.minute;
     const dayCount = windows.day;
@@ -171,8 +203,9 @@ export class UserLimiter extends DurableObject<Env> {
    * cold start or a refresh boundary costs D1 one query rather than one each;
    * a failed read is forgotten, so the next request tries again.
    */
-  private async monthlySpend(key: SpendKey, now: number): Promise<number> {
+  private async monthlySpend(key: SpendKey, now: number, fresh = false): Promise<number> {
     const month = this.month(now);
+    if (fresh) return monthlySpendMicrousd(this.env.DB, key, month);
     const cached = this.spend;
     if (cached && cached.month === month && now - cached.readAt < SPEND_REFRESH_MS) {
       return cached.microusd;
@@ -207,6 +240,32 @@ export class UserLimiter extends DurableObject<Env> {
       dayKey,
       day,
     );
+  }
+
+  acquireSession(sessionId: string, cap: number): { allowed: boolean; expiresAt: number } {
+    if (!Number.isSafeInteger(cap) || cap <= 0) throw new RangeError("Invalid session cap");
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      this.ctx.storage.sql.exec("DELETE FROM session_leases WHERE expires_at <= ?", now);
+      const existing = this.ctx.storage.sql.exec<{ expires_at: number }>("SELECT expires_at FROM session_leases WHERE session_id = ?", sessionId).toArray()[0];
+      if (existing) return { allowed: true, expiresAt: existing.expires_at };
+      const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM session_leases").one().count;
+      if (count >= cap) return { allowed: false, expiresAt: 0 };
+      const expiresAt = now + 90_000;
+      this.ctx.storage.sql.exec("INSERT INTO session_leases VALUES (?, ?)", sessionId, expiresAt);
+      return { allowed: true, expiresAt };
+    });
+  }
+
+  renewSession(sessionId: string): { allowed: boolean; expiresAt: number } {
+    const now = Date.now();
+    const expiresAt = now + 90_000;
+    const rows = this.ctx.storage.sql.exec("UPDATE session_leases SET expires_at = ? WHERE session_id = ? AND expires_at > ? RETURNING session_id", expiresAt, sessionId, now).toArray();
+    return { allowed: rows.length === 1, expiresAt: rows.length ? expiresAt : 0 };
+  }
+
+  releaseSession(sessionId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM session_leases WHERE session_id = ?", sessionId);
   }
 
   getStatus(now: number): LimiterStatus {

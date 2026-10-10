@@ -85,7 +85,7 @@ describe("atomic organization app writes", () => {
       name: "After",
       status: "active",
     });
-    expect(written?.config).toEqual(serverConfig());
+    expect(written?.config).toEqual(parseAppConfig(serverConfig()));
     const row = await env.DB.prepare(
       "SELECT name FROM app WHERE id = ?",
     ).bind("update-writes-app").first<{ name: string }>();

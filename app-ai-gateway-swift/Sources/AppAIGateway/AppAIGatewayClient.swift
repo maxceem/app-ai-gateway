@@ -207,6 +207,49 @@ public actor AppAIGatewayClient {
         )
     }
 
+    /// Discovers the current immutable release for a fresh conversation.
+    public func realtimeURL(provider: String, model: String) async throws -> URL {
+        let base = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        let host = base?.host ?? ""
+        let local = host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+        guard base?.user == nil, base?.password == nil, base?.fragment == nil,
+              base?.scheme == "https" || (base?.scheme == "http" && local), !model.isEmpty else { throw URLError(.unsupportedURL) }
+        var connection = URLComponents(url: baseURL.appending(path: "v1/apps/\(appID)/realtime/\(provider)/connection"), resolvingAgainstBaseURL: false)!
+        connection.queryItems = [URLQueryItem(name: "model", value: model)]
+        var request = try await authorizedRequest(url: connection.url!, method: "GET")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+            throw GatewayError(code: GatewayErrorCode(rawValue: envelope?.error.code ?? "unknown") ?? .unknown,
+                message: envelope?.error.message ?? "Realtime discovery failed", statusCode: http.statusCode,
+                data: envelope?.error.data ?? [:], retryAfter: GatewayError.retryAfter(from: http))
+        }
+        struct Connection: Decodable { let url: String }
+        let discovery = try JSONDecoder().decode(Connection.self, from: data)
+        guard let discovered = URLComponents(string: discovery.url), let url = discovered.url,
+              discovered.user == nil, discovered.password == nil, discovered.fragment == nil,
+              discovered.host?.isEmpty == false else { throw URLError(.badURL) }
+        let discoveredHost = discovered.host ?? ""
+        let discoveredLocal = discoveredHost == "localhost" || discoveredHost.hasSuffix(".localhost") || discoveredHost == "127.0.0.1" || discoveredHost == "::1" || discoveredHost == "[::1]"
+        guard discovered.scheme == "wss" || (discovered.scheme == "ws" && local && discoveredLocal) else { throw URLError(.unsupportedURL) }
+        return url
+    }
+
+    public func realtimeURL(provider: ProviderSlug, model: String) async throws -> URL {
+        try await realtimeURL(provider: provider.rawValue, model: model)
+    }
+
+    /// Pass this request to URLSession.webSocketTask(with:). Each admitted response consumes one request.
+    public func authorizedRealtimeRequest(provider: String, model: String) async throws -> URLRequest {
+        try await authorizedRequest(url: realtimeURL(provider: provider, model: model), method: "GET")
+    }
+
+    public func authorizedRealtimeRequest(provider: ProviderSlug, model: String) async throws -> URLRequest {
+        try await authorizedRealtimeRequest(provider: provider.rawValue, model: model)
+    }
+
     /// A server-configured endpoint. The provider, model, and any baked
     /// parameters live in the gateway's endpoint row, so the caller sends only
     /// the request body its slug expects.

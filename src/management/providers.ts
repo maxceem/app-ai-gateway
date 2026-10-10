@@ -1,3 +1,4 @@
+import { realtimeProtocols } from "../shared/capabilities";
 import { and, eq } from "drizzle-orm";
 import type {
   ProviderCreateRequest,
@@ -59,6 +60,7 @@ function serialize(row: ProviderRow, route: ProviderRoute | null): ProviderSumma
     pricing: row.pricing,
     route,
     capability: instanceCapability(route, row.type, row.gatewayRoute),
+    realtimeProtocols: realtimeProtocols(route, row.type, row.baseUrl !== null),
     revision: row.revision,
     status: row.status,
     createdAt: row.createdAt,

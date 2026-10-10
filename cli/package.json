@@ -47,7 +47,7 @@
     "typecheck:tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "wrangler": "4.96.0"
+    "wrangler": "4.113.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

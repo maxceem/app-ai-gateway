@@ -215,3 +215,13 @@ The package also builds requests for server applications, with
 `endUserId` for an app whose backend names the user. That is useful for a
 macOS or server-side Swift process. Never use `.apiKey` inside an iOS app:
 an API key shipped in an app can be extracted.
+
+## Realtime sessions
+
+Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
+`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
+VAD. Each admitted generation attempt is one request, including cancellation or
+failure; audio chunks and connection setup add no requests. Reconnect creates a
+new conversation without replay. Gemini Live remains unavailable pending live
+conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
+and `URLSession.webSocketTask(with:)`.

@@ -2,3 +2,7 @@
 import "../proxy.test";
 import "../endpoints.test";
 import "../gateway-errors.test";
+
+import "../realtime.test";
+
+import "../realtime-failures.test";
