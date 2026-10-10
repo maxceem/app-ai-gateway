@@ -35,6 +35,9 @@ export interface ProviderAuth {
   scheme?: string;
 }
 
+/** A default inference path: bare where nothing is capped, or with the clamp style its body takes. */
+export type InferencePath = string | { readonly path: string; readonly clamp: OutputClampStyle };
+
 export interface ProviderDescriptor {
   /** The display name the console and the CLI show for this type. */
   label: string;
@@ -77,6 +80,23 @@ export interface ProviderDescriptor {
    * here. The key set *is* the capability — see {@link providerCapability}.
    */
   endpointPaths?: Partial<Record<EndpointApiStyle, string>>;
+  /**
+   * Provider-native inference operations an app may call when its policy names
+   * no paths, on top of {@link DEFAULT_PROXY_API_STYLES}: image generation,
+   * embeddings, speech and legacy completions where this type serves them.
+   * Exact paths, `{model}` the only placeholder, as an `allowed_paths` entry
+   * matches them. A bare path is never output-capped, because an image, an
+   * embedding or a recording has no output tokens to bound and a provider would
+   * refuse the field; a text-generation path names the clamp style its body is
+   * capped in, so an app's output cap holds there as on the default APIs.
+   *
+   * Only operations that run a model, are named by the request and answer in
+   * the same response. Anything else stays an explicit `allowed_paths` choice:
+   * control-plane calls (files, batches, fine-tuning), and asynchronous jobs
+   * such as video generation, whose result and cost only a later poll returns —
+   * a poll this gateway, which proxies POST alone, cannot serve or bill.
+   */
+  inferencePaths?: readonly InferencePath[];
   /**
    * The only client API styles this type serves. Absent means every style,
    * which is the pass-through default: the raw proxy forwards whatever was
@@ -137,6 +157,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.openai.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // Images, which report token usage, embeddings and speech.
+    inferencePaths: [
+      "v1/images/generations",
+      "v1/images/edits",
+      "v1/embeddings",
+      "v1/audio/speech",
+    ],
     probePath: "v1/models",
     examplePath: "v1/responses",
     // OpenAI's chat-completions surface deprecated `max_tokens` in favour of
@@ -168,6 +195,14 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.x.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // Images and their edits report their cost like chat does; embeddings and
+    // legacy completions answer in tokens, the latter capped in `max_tokens`.
+    inferencePaths: [
+      "v1/images/generations",
+      "v1/images/edits",
+      "v1/embeddings",
+      { path: "v1/completions", clamp: "chat_completions" },
+    ],
     probePath: "v1/models",
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
     // `v1/audio/transcriptions`.
@@ -184,6 +219,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://generativelanguage.googleapis.com/",
     auth: { header: "x-goog-api-key" },
     nativeClampStyle: "gemini_native",
+    // Embeddings. `generateContent` already carries text, images, speech and
+    // transcription; `batchEmbedContents` is left out because each item may name
+    // a model the one in the URL does not.
+    inferencePaths: [
+      "v1beta/models/{model}:embedContent",
+      "v1/models/{model}:embedContent",
+    ],
     probePath: "v1beta/models",
     // Native Gemini generation requests carry the model in the URL rather than
     // in the JSON body, so there is no example path without a model.
@@ -195,6 +237,15 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // The Agent API, its model router's three formats, and embeddings.
+    inferencePaths: [
+      { path: "v1/agent", clamp: "responses" },
+      { path: "router/v1/chat/completions", clamp: "chat_completions" },
+      { path: "router/v1/responses", clamp: "responses" },
+      { path: "router/v1/messages", clamp: "anthropic" },
+      "v1/embeddings",
+      "v1/contextualizedembeddings",
+    ],
     // No `probePath`: Perplexity has no unmetered authenticated endpoint.
     examplePath: "chat/completions",
     modelAuthor: "Perplexity",
@@ -212,6 +263,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.deepseek.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Responses, fill-in-the-middle completions and the Anthropic-format API,
+    // which like its chat path carry no `v1/` prefix of their own.
+    inferencePaths: [
+      { path: "responses", clamp: "responses" },
+      { path: "beta/completions", clamp: "chat_completions" },
+      { path: "anthropic/v1/messages", clamp: "anthropic" },
+    ],
     // DeepSeek's OpenAI base URL carries no `v1` segment.
     probePath: "models",
     examplePath: "chat/completions",
@@ -224,6 +282,8 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.groq.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Speech; transcriptions are a default style already.
+    inferencePaths: ["openai/v1/audio/speech"],
     // Groq's OpenAI-compatible surface is namespaced under `openai/`.
     probePath: "openai/v1/models",
     examplePath: "openai/v1/chat/completions",
@@ -233,6 +293,12 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.mistral.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Embeddings, fill-in-the-middle completions and speech.
+    inferencePaths: [
+      "v1/embeddings",
+      { path: "v1/fim/completions", clamp: "chat_completions" },
+      "v1/audio/speech",
+    ],
     probePath: "v1/models",
     modelAuthor: "Mistral",
   },
@@ -243,6 +309,14 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.together.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Legacy completions, images, speech and embeddings. Video is a job whose
+    // result is polled for, so it is not here.
+    inferencePaths: [
+      { path: "v1/completions", clamp: "chat_completions" },
+      "v1/images/generations",
+      "v1/audio/speech",
+      "v1/embeddings",
+    ],
     probePath: "v1/models",
   },
   fireworks: {
@@ -252,6 +326,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.fireworks.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Every format its inference plane speaks, and embeddings.
+    inferencePaths: [
+      { path: "inference/v1/completions", clamp: "chat_completions" },
+      { path: "inference/v1/messages", clamp: "anthropic" },
+      { path: "inference/v1/responses", clamp: "responses" },
+      "inference/v1/embeddings",
+    ],
     // No `probePath`: its list-models call is `v1/accounts/{account}/models`,
     // and the account id cannot be derived from the key. Nothing under
     // `inference/v1/` is documented as a GET.
@@ -262,6 +343,8 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.cerebras.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Legacy completions.
+    inferencePaths: [{ path: "v1/completions", clamp: "chat_completions" }],
     probePath: "v1/models",
   },
   moonshot: {
@@ -271,6 +354,8 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.moonshot.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // The Anthropic-format API.
+    inferencePaths: [{ path: "anthropic/v1/messages", clamp: "anthropic" }],
     probePath: "v1/models",
     modelAuthor: "Moonshot AI",
   },
@@ -308,6 +393,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Responses, Seedream images and multimodal embeddings, all under the base
+    // URL's own `api/v3/`. Seedance video is a polled job, so it is not here.
+    inferencePaths: [
+      { path: "responses", clamp: "responses" },
+      "images/generations",
+      "embeddings/multimodal",
+    ],
     // No `probePath`: ModelArk publishes no list-models call, and its own SDK
     // has no models resource. It also authenticates before it routes, so every
     // path answers the same 401 and a probe would prove nothing about the key.
