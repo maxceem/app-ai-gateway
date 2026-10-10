@@ -55,6 +55,7 @@ const LABELS = {
 function describe(price) {
   if (price.per_minute !== undefined) return `$${price.per_minute}/min`;
   if (price.per_hour !== undefined) return `$${price.per_hour}/h`;
+  if (price.per_image !== undefined) return `$${price.per_image}/image`;
   const parts = PRICE_FIELDS.filter((field) => price[field] !== undefined).map(
     (field) => `${LABELS[field]} $${round6(price[field])}`,
   );
@@ -85,6 +86,15 @@ function suspicious(from, to) {
  * each would bill, never on which fields it spells out.
  */
 export function compare(ours, source) {
+  // An image price has no token or time equivalent to convert to or from.
+  if (ours.per_image !== undefined) {
+    if (source.per_image === undefined) return { problem: "kind", text: "the source has no per-image price" };
+    const rate = round6(source.per_image);
+    if (round6(ours.per_image) === rate) return { edits: [] };
+    const guard = suspicious(ours.per_image, rate);
+    if (guard) return { problem: "suspicious", text: `per_image: ${guard}` };
+    return { edits: [{ field: "per_image", from: ours.per_image, to: rate }] };
+  }
   const unit = AUDIO_FIELDS.find((field) => ours[field] !== undefined);
   if (unit !== undefined) {
     const rate = audioRate(source, unit);

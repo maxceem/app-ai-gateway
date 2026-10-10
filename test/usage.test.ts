@@ -390,6 +390,83 @@ describe("usage extraction", () => {
     );
   });
 
+  it("bills a per-image model by the images the response says it billed", () => {
+    const usage = extracted(
+      JSON.stringify({
+        model: "dola-seedream-5-0-flash-260915",
+        created: 1757323224,
+        data: [{ url: "https://example.test/a.jpeg", size: "1760x2368" }],
+        usage: { generated_images: 1, input_images: 2, output_tokens: 16280, total_tokens: 16280 },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 16280,
+      images: 1,
+    });
+    const flash = shippedRates("bytedance", "dola-seedream-5-0-flash-260915");
+    // Pixels are not priced: one image costs one image's price at any size.
+    expect(computeCost("bytedance", "dola-seedream-5-0-flash-260915", usage)).toBeCloseTo(flash.per_image, 12);
+    expect(reportsPricedMeasure("bytedance", "dola-seedream-5-0-flash-260915", usage)).toBe(true);
+    // An image withheld by moderation is not billed, and not counted.
+    const withheld = { ...usage, images: 0, outputTokens: 0 };
+    expect(computeCost("bytedance", "dola-seedream-5-0-flash-260915", withheld)).toBe(0);
+    expect(reportsPricedMeasure("bytedance", "dola-seedream-5-0-flash-260915", withheld)).toBe(true);
+  });
+
+  it("reads a streamed Seedream image count from its completed event", () => {
+    const usage = extracted(
+      [
+        `data: ${JSON.stringify({
+          type: "image_generation.partial_succeeded",
+          model: "seedream-4-5-251128",
+          created: 1589478378,
+          image_index: 0,
+          url: "https://example.test/a.jpeg",
+          size: "2048x2048",
+        })}`,
+        `data: ${JSON.stringify({
+          type: "image_generation.completed",
+          model: "seedream-4-5-251128",
+          created: 1589478378,
+          usage: { generated_images: 2, output_tokens: 32768, total_tokens: 32768 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n"),
+      "text/event-stream",
+      "other",
+    );
+    expect(usage.images).toBe(2);
+    expect(computeCost("bytedance", "seedream-4-5-251128", usage)).toBeCloseTo(
+      2 * shippedRates("bytedance", "seedream-4-5-251128").per_image,
+      12,
+    );
+  });
+
+  it("does not bill a per-image model whose response counted no images", () => {
+    // Tokens alone are not the measure an image price is in, so this records
+    // as unresolved rather than as a confident $0.
+    const usage = extracted(
+      JSON.stringify({ usage: { output_tokens: 16384, total_tokens: 16384 } }),
+      "application/json",
+      "other",
+    );
+    expect(usage.images).toBeUndefined();
+    expect(reportsPricedMeasure("bytedance", "seedream-4-0-250828", usage)).toBe(false);
+    // And an image count never turns a token-priced model into an image-priced one.
+    const counted = { ...usage, images: 3 };
+    expect(reportsPricedMeasure("openai", "gpt-image-2", counted)).toBe(true);
+    expect(computeCost("openai", "gpt-image-2", counted)).toBeCloseTo(
+      (16384 * shippedRates("openai", "gpt-image-2").output) / 1e6,
+      12,
+    );
+  });
+
   it("takes no modality split from a Chat Completions usage that does not give one", () => {
     // `audio_tokens` and `reasoning_tokens` alone do not say what the rest was.
     const usage = extracted(
@@ -1461,6 +1538,12 @@ describe("the shipped price catalog", () => {
           expect([where, field, (value as number) >= 0]).toEqual([where, field, true]);
         }
         if (entry.per_minute !== undefined || entry.per_hour !== undefined) continue;
+        if (entry.per_image !== undefined) {
+          // Dollars per image: a few cents, never a per-1M figure entered by mistake.
+          const perImage = entry.per_image as number;
+          expect([where, perImage > 0 && perImage < 10]).toEqual([where, true]);
+          continue;
+        }
         // Per-1M units: a $3/1M model is `3`, not `0.000003` and not `300`.
         // Nothing real sits outside this band, and both mistakes leave it.
         for (const field of ["input", "output", "image_input", "audio_input", "video_input", "image_output", "cached_input", "cache_write"]) {

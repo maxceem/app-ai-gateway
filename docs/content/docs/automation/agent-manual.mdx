@@ -282,9 +282,10 @@ validation. OpenRouter reports its own cost and needs no price, and so does
 xAI on Chat Completions, Responses and image generation, directly or through
 Cloudflare; its Messages API, `v1/stt` and the Vercel route still need one.
 The catalog prices OpenAI's `gpt-image-*` and Gemini's image models per token,
-with separate image rates. Image models billed per image or per megapixel,
-such as Together AI's and BytePlus Seedream, are not supported, and per-token
-`pricing` cannot express them.
+with separate image rates, and BytePlus Seedream 5.0 flash, 5.0 lite, 4.5 and
+4.0 per generated image. Other image models billed per image or per
+megapixel, such as Together AI's and Seedream 5.0 pro, are not supported, and
+per-token `pricing` cannot express them.
 
 Custom `baseUrl` points an `openai`-type provider at an OpenAI-compatible
 server. It requires `https`, a public hostname, the default port and no query.

@@ -497,6 +497,10 @@
       "output": 3.96,
       "author": "DeepSeek"
     },
-    "gpt-oss-120b-250805": { "input": 0.1, "output": 0.5, "author": "OpenAI" }
+    "gpt-oss-120b-250805": { "input": 0.1, "output": 0.5, "author": "OpenAI" },
+    "dola-seedream-5-0-flash-260915": { "per_image": 0.018, "author": "ByteDance" },
+    "seedream-5-0-lite-260128": { "per_image": 0.035, "author": "ByteDance" },
+    "seedream-4-5-251128": { "per_image": 0.04, "author": "ByteDance" },
+    "seedream-4-0-250828": { "per_image": 0.03, "author": "ByteDance" }
   }
 }

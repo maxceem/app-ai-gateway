@@ -545,6 +545,13 @@ const cases = [
     noSource: ["cerebras/a", "cerebras/b", "cerebras/c"],
   },
   {
+    name: "a per-image price is compared as one, never against token prices",
+    catalog: { cerebras: { a: { input: 1.0, output: 2.0 }, i: { per_image: 0.03 }, j: { per_image: 0.04 }, k: { per_image: 0.04 } } },
+    official: { cerebras: page({ a: { input: 1, output: 2 }, i: { per_image: 0.03 }, j: { per_image: 0.045 }, k: { input: 1, output: 2 } }) },
+    changes: [["cerebras/j", "per_image", 0.04, 0.045, "official"]],
+    attention: ["cerebras/k: cannot compare"],
+  },
+  {
     name: "parser failed, lists agree: update from the lists",
     catalog: { cerebras: { a: { input: 1.0, output: 2.0 } } },
     official: { cerebras: { error: "the table header changed" } },

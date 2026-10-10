@@ -1525,6 +1525,43 @@ describe("provider-native proxy", () => {
     );
   });
 
+  it("bills a BytePlus Seedream request per generated image", async () => {
+    const appId = "proxy-seedream";
+    await seedApp(appId, {
+      proxy: {
+        bytedance: { allowed_paths: [{ path: "images/generations", clamp: "none" }], allowed_models: [] },
+        model_rewrites: {},
+      },
+    });
+    const token = await gatewayToken(appId);
+    // The response BytePlus documents: `output_tokens` is pixels over 256 and
+    // prices nothing; `generated_images` is what it billed.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
+      model: "seedream-4-0-250828",
+      created: 1757323224,
+      data: [{ url: "https://example.test/a.jpeg", size: "2048x2048" }, { url: "https://example.test/b.jpeg", size: "2048x2048" }],
+      usage: { generated_images: 2, output_tokens: 32768, total_tokens: 32768 },
+    }));
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "bytedance/images/generations",
+      body: { model: "seedream-4-0-250828", prompt: "a lighthouse", size: "2K" },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT model, output_tokens, cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ model: string; output_tokens: number; cost_usd: number; cost_source: string }>();
+    expect(row).toMatchObject({ model: "seedream-4-0-250828", output_tokens: 32768, cost_source: "computed" });
+    expect(row?.cost_usd).toBeCloseTo(2 * shippedRates("bytedance", "seedream-4-0-250828").per_image, 12);
+  });
+
   it.each([
     {
       provider: "openai",

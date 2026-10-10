@@ -93,6 +93,8 @@ export interface UsageEvent {
    * value is the sole record of what a transcription cost was computed from.
    */
   audioSeconds?: number;
+  /** Generated images for per-image models, log-only for the same reason. */
+  images?: number;
 }
 
 const RECORD_ATTEMPTS = 3;
@@ -187,6 +189,7 @@ export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<vo
     modalityTokens: event.row.modalityTokens,
     // Undefined for token-priced traffic, where JSON.stringify drops the field.
     audioSeconds: event.audioSeconds,
+    images: event.images,
     costUsd: event.row.costUsd,
     costSource: event.row.costSource,
   });
@@ -394,5 +397,6 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       createdAt,
     },
     audioSeconds: usage.audioSeconds,
+    images: usage.images,
   });
 }

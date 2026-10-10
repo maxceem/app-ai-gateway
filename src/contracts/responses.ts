@@ -900,6 +900,9 @@ export const ModelPriceSchema = z.object({
   cache_write: z.number().optional(),
   per_minute: z.number().optional(),
   per_hour: z.number().optional(),
+  per_image: z.number().optional().meta({
+    description: "USD per generated image, for a model billed per image rather than per token.",
+  }),
   long_context_threshold: z.number().optional(),
   long_input: z.number().optional(),
   long_output: z.number().optional(),

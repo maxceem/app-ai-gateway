@@ -142,7 +142,8 @@ provider charges for it:
 | OpenAI | `gpt-image-*` on `v1/images/generations` and `v1/images/edits` | From the catalog, per token. Prompt text, input images and generated images each bill at their own rate. |
 | Gemini | Gemini image models (Nano Banana) on `v1beta/models/{model}:generateContent` | From the catalog, per token. Generated image tokens bill at the image rate. |
 | xAI | `grok-imagine-image` and its siblings on `v1/images/generations` and `v1/images/edits` | From the cost xAI reports. See [xAI](#xai). |
-| Together AI, ByteDance and others | Billed per image, per megapixel or per step | Not supported: refused with `pricing_not_configured`. |
+| ByteDance | Seedream 5.0 flash, 5.0 lite, 4.5 and 4.0 on `images/generations` | From the catalog, per image: each model's price times the `usage.generated_images` the response reports. |
+| Together AI, ByteDance (Seedream 5.0 pro) and others | Billed by size, quality or steps, or at an estimated price | Not supported: refused with `pricing_not_configured`. |
 
 For OpenAI, for example:
 

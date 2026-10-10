@@ -18,6 +18,7 @@ export interface ShippedRates {
   cache_write: number;
   per_minute: number;
   per_hour: number;
+  per_image: number;
   long_context_threshold: number;
   long_input: number;
   long_output: number;

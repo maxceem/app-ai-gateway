@@ -66,7 +66,9 @@ function openAiUsage(value: unknown): UsageObservation | null {
   const response = asRecord(root.response) ?? root;
   const usage = asRecord(response.usage);
   if (!usage) return null;
-  if (!countsAny(usage, ["input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"])) {
+  if (
+    !countsAny(usage, ["input_tokens", "prompt_tokens", "output_tokens", "completion_tokens", "generated_images"])
+  ) {
     return null;
   }
   const inputTotal = numberAt(usage, "input_tokens") || numberAt(usage, "prompt_tokens");
@@ -97,6 +99,10 @@ function openAiUsage(value: unknown): UsageObservation | null {
     cachedInputTokens: cached,
     cacheWriteTokens: cacheWrite,
     outputTokens: outputTotal,
+    // BytePlus Seedream bills per image, and counts here the images it billed:
+    // those that failed or were withheld by moderation are not in it. Its
+    // `output_tokens` is only the pixel count over 256 and prices nothing.
+    ...(finiteNumber(usage.generated_images) !== null && { images: numberAt(usage, "generated_images") }),
     ...((input || output) && {
       modalityTokens: { ...(input && { input }), ...(output && { output }) },
     }),
