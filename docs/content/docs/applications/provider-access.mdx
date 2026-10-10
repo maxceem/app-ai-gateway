@@ -31,7 +31,7 @@ to say what you set, such as "1 endpoint · 1 model · up to 4,096 output tokens
 answers in the same response:
 
 - Responses, Chat Completions, Anthropic Messages, Gemini `generateContent`,
-  and transcription and translation, on every provider.
+  and transcription, on every provider.
 - Each provider's own image generation, embedding, speech and legacy
   completion endpoints, listed below.
 
@@ -44,8 +44,8 @@ any request reaches it.
 
 | Provider | Endpoints beyond the default APIs |
 | --- | --- |
-| OpenAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/audio/speech`, `v1/completions`, `v1/responses/compact` |
-| xAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/completions`, `v1/responses/compact` |
+| OpenAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/audio/speech` |
+| xAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/completions` |
 | Gemini | `v1beta/models/{model}:embedContent`, `v1/models/{model}:embedContent` |
 | Perplexity | `v1/agent`, `router/v1/chat/completions`, `router/v1/responses`, `router/v1/messages`, `v1/embeddings`, `v1/contextualizedembeddings` |
 | DeepSeek | `responses`, `beta/completions`, `anthropic/v1/messages` |
@@ -58,8 +58,10 @@ any request reaches it.
 | ByteDance | `responses`, `images/generations`, `embeddings/multimodal` |
 | Anthropic, Hugging Face, Baseten, OpenRouter | None |
 
-The console lists these under the field, too. These endpoints are never
-output-capped, because an image or an embedding has no output tokens to cap.
+The console lists these under the field, too. **Max output tokens** applies
+to the text endpoints among them, such as completions and the Anthropic-format
+APIs, as it does to the default APIs. Image, embedding and speech endpoints are
+never capped, because they have no output tokens to cap.
 A provider routed through a gateway that publishes its own URL space, such as
 Vercel, serves only the APIs that gateway carries.
 

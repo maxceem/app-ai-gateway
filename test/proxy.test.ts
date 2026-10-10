@@ -8,6 +8,7 @@ const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
 const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
   clampStyleFor(PROTOCOLS[style], provider);
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
+import { defaultInferencePaths } from "../src/shared/app-config";
 import { costReportBodyMutation } from "../src/providers/request-body";
 import { examplePath } from "../src/shared/first-request";
 import {
@@ -351,8 +352,6 @@ describe("proxy API style classification", () => {
     ["openai/v1/responses", "responses", "responses"],
     ["v1/audio/transcriptions", "audio_transcription", "none"],
     ["openai/v1/audio/transcriptions", "audio_transcription", "none"],
-    ["v1/audio/translations", "audio_transcription", "none"],
-    ["openai/v1/audio/translations", "audio_transcription", "none"],
     ["v1beta/models/gemini-3.5-flash:generateContent", "gemini_native", "gemini_native"],
     ["v1beta/models/gemini-3.5-flash:streamGenerateContent", "gemini_native", "gemini_native"],
     ["v1/threads/thread_123/messages", "other", "chat_completions"],
@@ -388,7 +387,7 @@ describe("paths the tables declare classify as what they declare", () => {
   // weight, and one with a leading slash, a wildcard or a repeat would never
   // match what a client sends the way the descriptor reads.
   it.each(PROVIDER_TYPES)("lists only provider-native, exact paths as %s's default inference paths", (type) => {
-    const paths = providerDescriptor(type).inferencePaths ?? [];
+    const paths = defaultInferencePaths(type).map((entry) => entry.path);
     expect(new Set(paths).size).toBe(paths.length);
     for (const path of paths) {
       expect([path, apiStyleFromPath(path.replace("{model}", "a-model"))]).toEqual([path, "other"]);
@@ -474,6 +473,52 @@ describe("default inference endpoints", () => {
     expect(row?.cost_usd).toBeCloseTo(testCase.cost(), 12);
   });
 
+  it.each([
+    {
+      name: "DeepSeek fill-in-the-middle completions",
+      path: "deepseek/beta/completions",
+      body: { model: "deepseek-v4-pro", prompt: "def add(a, b):" },
+      field: "max_tokens",
+    },
+    {
+      name: "the Anthropic format on Moonshot",
+      path: "moonshot/anthropic/v1/messages",
+      body: { model: "kimi-k3", messages: [] },
+      field: "max_tokens",
+    },
+    {
+      name: "Perplexity's Agent API",
+      path: "perplexity/v1/agent",
+      body: { model: "sonar-pro", input: "hi" },
+      field: "max_output_tokens",
+    },
+  ])("caps $name, a text endpoint, like the default APIs", async (testCase) => {
+    const appId = `proxy-default-text-cap-${crypto.randomUUID()}`;
+    const provider = testCase.path.split("/")[0]!;
+    await seedApp(appId, {
+      proxy: { [provider]: { allowed_paths: [], allowed_models: [], max_output_tokens: 64 }, model_rewrites: {} },
+    });
+    const token = await gatewayToken(appId);
+    const captured = upstream({ usage: { prompt_tokens: 1, completion_tokens: 1, input_tokens: 1, output_tokens: 1 } });
+
+    // A body that names no limit gets the cap written into its own field.
+    const capped = await proxyRequest({ appId, token, path: testCase.path, body: testCase.body });
+    await capped.text();
+    expect(capped.status).toBe(200);
+    expect(JSON.parse(captured[0]!.body)[testCase.field]).toBe(64);
+
+    // One that asks for more is refused before it reaches the provider.
+    const refused = await proxyRequest({
+      appId,
+      token,
+      path: testCase.path,
+      body: { ...testCase.body, [testCase.field]: 8192 },
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "max_output_tokens_exceeded" } });
+    expect(captured).toHaveLength(1);
+  });
+
   it("allows them in all mode too", async () => {
     const appId = "proxy-default-inference-all";
     await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
@@ -497,6 +542,8 @@ describe("default inference endpoints", () => {
     ["a moderation", "openai/v1/moderations", { model: "omni-moderation-latest", input: "hi" }],
     ["token counting", "openai/v1/responses/input_tokens", { model: "gpt-5.6-sol", input: "hi" }],
     ["video generation", "xai/v1/videos/generations", { model: "grok-imagine-video", prompt: "a lighthouse" }],
+    // A translation in the default `json` format reports no duration to bill.
+    ["a translation", "openai/v1/audio/translations", { model: "whisper-1" }],
     ["another type's inference path", "anthropic/v1/images/generations", { model: "claude-opus-5", prompt: "a lighthouse" }],
   ])("still refuses %s with no paths listed", async (_label, path, body) => {
     const appId = `proxy-default-inference-deny-${crypto.randomUUID()}`;

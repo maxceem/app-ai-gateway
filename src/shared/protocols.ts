@@ -53,9 +53,7 @@ export interface Protocol {
 export const PROTOCOLS: Record<ApiStyle, Protocol> = {
   audio_transcription: {
     style: "audio_transcription",
-    // A translation is a transcription into English: the same multipart
-    // request, and the same answer.
-    path: /^(?:(?:v1|openai\/v1)\/audio\/(?:transcriptions|translations)|v1\/stt)$/u,
+    path: /^(?:(?:v1|openai\/v1)\/audio\/transcriptions|v1\/stt)$/u,
     clamp: "none",
     usage: "audio",
     body: "multipart",

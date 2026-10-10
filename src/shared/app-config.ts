@@ -22,6 +22,7 @@ import {
 } from "../contracts/schemas.ts";
 import { schemaIssueMessage } from "./schema-issues.ts";
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "./providers.ts";
+import type { OutputClampStyle } from "./capabilities.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
@@ -135,21 +136,23 @@ export function selectedProviderPolicies(routing: RoutingConfig): Record<string,
 /** An `allowed_paths` entry a default policy allows, as it would be written. */
 export interface DefaultInferencePath {
   path: string;
-  clamp: "none";
+  clamp: OutputClampStyle;
 }
 
 const DEFAULT_INFERENCE_PATHS: ReadonlyMap<ProviderType, readonly DefaultInferencePath[]> = new Map(
   PROVIDER_TYPES.map((type) => [
     type,
-    (providerDescriptor(type).inferencePaths ?? []).map((path) => ({ path, clamp: "none" as const })),
+    (providerDescriptor(type).inferencePaths ?? []).map((entry) =>
+      typeof entry === "string" ? { path: entry, clamp: "none" as const } : { ...entry }),
   ]),
 );
 
 /**
  * The provider-native inference operations a policy that names no paths allows
  * on a provider type, beyond the default API styles, as the `allowed_paths`
- * entries that would allow them: never output-capped. Built once, because the
- * proxy asks on every request that falls outside the default styles.
+ * entries that would allow them, each with the clamp style its body is capped
+ * in. Built once, because the proxy asks on every request that falls outside
+ * the default styles.
  */
 export function defaultInferencePaths(provider: ProviderType): readonly DefaultInferencePath[] {
   return DEFAULT_INFERENCE_PATHS.get(provider) ?? [];

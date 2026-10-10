@@ -93,9 +93,9 @@ function listedPath(path: string, allowed: readonly AllowedPath[]): MatchedPath 
 /**
  * What an app whose policy names no paths may call: every default API style,
  * judged by the model the classifier captured where the path carries one, and
- * the provider type's own inference operations. Those are never output-capped,
- * because none of them answers in tokens a cap could bound — an embedding or an
- * image body given a `max_tokens` would be refused by its provider.
+ * the provider type's own inference operations, each capped in the clamp style
+ * its entry names — none at all for an image, embedding or speech body, which a
+ * `max_tokens` would only get refused.
  */
 function defaultPath(
   path: string,

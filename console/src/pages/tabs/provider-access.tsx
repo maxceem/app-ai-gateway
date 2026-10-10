@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Check, ChevronDown, CircleSlash, Plus, Trash2 } from "lucide-react";
 import { OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
 import { emptyPolicy } from "@shared/app-defaults";
-import { providerDescriptor } from "@shared/providers";
+import { defaultInferencePaths } from "@shared/app-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -342,8 +342,7 @@ function PolicyPanel({
           </div>
         ) : (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Responses, Chat Completions, Anthropic Messages, Gemini generateContent, transcription and
-            translation
+            Responses, Chat Completions, Anthropic Messages, Gemini generateContent and transcription
             {row.defaultPaths.length > 0 ? (
               <>
                 , and{" "}
@@ -509,7 +508,7 @@ function policyRows(
     type: instance.type,
     hint: gatewayHint(instance, gateways) ?? PROVIDER_HINTS[instance.type],
     defaultPaths: instance.route !== null && routedSurface(instance) === null
-      ? (providerDescriptor(instance.type).inferencePaths ?? [])
+      ? defaultInferencePaths(instance.type).map((entry) => entry.path)
       : [],
     // Includes models only this instance prices: the allowlist is per instance,
     // so suggesting them is exactly as correct as the catalog entries.
