@@ -295,9 +295,12 @@ export function swiftSnippet(
     "endpoint" in example.target
       ? `endpointSlug: ${JSON.stringify(example.target.endpoint)}`
       : `provider: ${JSON.stringify(example.target.provider)},\n    providerPath: ${JSON.stringify(example.target.path)}`;
+  // The body goes in through `authorizedRequest`, which signs every request
+  // of an App Attest app over it: a body set afterwards is one the proof does
+  // not cover, and the gateway refuses it.
   const body = example.body
-    ? `request.httpBody = Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
-    : `// Supply the provider-native JSON body.\nrequest.httpBody = Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
+    ? `body: Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
+    : `// Supply the provider-native JSON body.\n    body: Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
   return (
     commented(notes, "//") +
     `import Foundation
@@ -309,12 +312,12 @@ let gateway = AppAIGatewayClient(
     authMode: ${authMode}
 )
 
-var request = try await gateway.authorizedRequest(
-    ${target}
+${example.anthropic ? "var" : "let"} request = try await gateway.authorizedRequest(
+    ${target},
+    ${body},
+    contentType: "application/json"
 )
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-${example.anthropic ? 'request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")\n' : ""}${body}
-let (data, _) = try await URLSession.shared.data(for: request)
+${example.anthropic ? 'request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")\n' : ""}let (data, _) = try await URLSession.shared.data(for: request)
 print(String(decoding: data, as: UTF8.self))
 `
   );
