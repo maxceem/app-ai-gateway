@@ -138,6 +138,23 @@ let request = try await gateway.authorizedRequest(
 )
 ```
 
+## Show the user where they stand
+
+`currentUserRequest()` builds a signed `GET /v1/apps/{app}/me`, which answers
+the limits that apply to the caller, its requests today, the month's spend
+against its budget, and whether it is blocked. On an iOS app the request
+counts are the install's and `install_id` names it.
+
+```swift
+let (data, _) = try await URLSession.shared.data(for: try await gateway.currentUserRequest())
+```
+
+Build it with the client rather than from a URL of your own: like every
+gateway request it must be signed, so an unsigned one is refused with
+`401 assertion_required`, and changing a signed request's URL afterwards
+breaks its proof. The response is described under
+[Calling the provider proxy](/integrate/proxy#reading-your-own-limits).
+
 ## Per-request proof
 
 Every request an iOS app sends through the gateway is signed. Alongside the
@@ -191,8 +208,9 @@ prove themselves.
   the mode has one. Concurrent callers share one exchange.
 - **Refresh.** It refreshes the token five minutes before expiry in a
   background task, so a request rarely waits for an exchange.
-- **Request signing.** It signs every request with the key the gateway token
-  is bound to; see [Per-request proof](#per-request-proof).
+- **Request signing.** It signs every request it builds, `/me` included, with
+  the key the gateway token is bound to; see
+  [Per-request proof](#per-request-proof).
 - **Recovery.** After a reinstall the Keychain may still name a key that no
   longer exists in the Secure Enclave. The client detects the local signing
   failure, registers a new key, exchanges it for a token bound to the new key
