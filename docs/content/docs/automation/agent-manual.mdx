@@ -329,7 +329,6 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | `GET /v1/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |
 | `POST /v1/admin/apps/{app}/keys/{key}/revoke` | | |
-| `POST /v1/admin/apps/{app}/legacy/{mode}/disable` | | Ends a legacy mode now; returns the app. Only after the person confirms, see below |
 
 `status` is `active` or `disabled`. A disabled app refuses every request
 with `403 app_disabled` and keeps everything.
@@ -340,18 +339,6 @@ person about every warning and help them act before its date. Warnings are
 read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
 body you write back, or the write is refused, and keep the `revision` from the
 read, which an update requires.
-
-A warning with a `legacy` field names a legacy mode the app is in. The one
-mode today is `unsigned_requests`: the app accepts requests without an App
-Attest proof, for builds still on the AppAIGateway Swift package 1.x, until
-the warning's `until` instant, after which they are refused on their own.
-`unsigned_last_seen_at` says when such a request last arrived, or is `null`
-when none has. `POST /v1/admin/apps/{app}/legacy/{mode}/disable` (CLI
-`agw app legacy disable`, MCP `disable_app_legacy_mode`) ends a mode early and
-cannot be undone; nothing creates or extends one. Disable a mode only after the
-person confirms every shipped build in use is updated, never on your own
-judgement, and never because a recent `unsigned_last_seen_at` is absent or the
-date is near.
 
 ## Application configuration reference
 
@@ -379,6 +366,7 @@ Discriminated on `type`.
 | `app_attest.team_id` | string | Apple Team ID |
 | `app_attest.bundle_id` | string | Bundle ID |
 | `app_attest.environments` | `["production"]`, `["development"]` or both; optional | Which App Attest environments are accepted. Omitted means production only |
+| `app_attest.verify_on` | `"every_request"` or `"token_exchange"`; optional | When the install's App Attest assertion is verified. `every_request`, the default when omitted: every request carries `X-AppAttest-Proof`, which needs the Swift package 2.0 or later. `token_exchange`: only at the hourly token exchange, and requests carry the token alone. Apps created before this setting was added were set to `token_exchange`. Switch an app to `every_request` only after the person confirms every build in use is on package 2.0 or later; older builds are refused from then on |
 | `end_user` | object, required | `{ "source": "issuer", "issuer": {…} }` for signed-in users, or `{ "source": "app_install" }` to count each install as a user |
 
 **Server application** (`api_key`):
@@ -573,15 +561,18 @@ client code.
 - Proxy: `{METHOD} /v1/apps/{app}/proxy/{provider_slug}/{provider_path}`
   with the provider's own body. Credential: `Authorization: Bearer <gateway
   token>` plus `X-App-Version` for iOS and signed-in-user apps, or
-  `Authorization: Bearer agw_…` for a server app without user identity. Every
-  iOS request also carries `X-AppAttest-Proof`, an App Attest assertion over
-  that request; without it the gateway answers `401 assertion_required`.
+  `Authorization: Bearer agw_…` for a server app without user identity. When
+  an iOS app's `verify_on` is `every_request`, every request also carries
+  `X-AppAttest-Proof`, an App Attest assertion over that request; without it
+  the gateway answers `401 assertion_required`. With `token_exchange` the
+  token alone is enough.
 - Custom endpoint: `POST /v1/apps/{app}/endpoints/{slug}`.
 - Token exchange for a server app with signed-in users:
   `POST /v1/apps/{app}/auth/token` with `{ "api_key", "issuer_token" }`,
   returning `{ "access_token", "expires_in": 3600 }`.
-- iOS apps use the AppAIGateway Swift package 2.x, which handles App Attest,
-  the token exchange and the per-request proof. Pass the request body to
+- iOS apps use the AppAIGateway Swift package 2.0 or later, which handles App
+  Attest, the token exchange and, when the token exchange answers
+  `verify_on: "every_request"`, the per-request proof. Pass the request body to
   `authorizedRequest`, never set it afterwards. See the human documentation
   under Integrate your app.
 

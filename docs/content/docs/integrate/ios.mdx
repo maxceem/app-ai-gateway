@@ -5,7 +5,8 @@ description: Add the AppAIGateway package, pick an auth mode, and send provider 
 
 The AppAIGateway Swift package does the part of the integration that is easy
 to get wrong: App Attest registration, the token exchange, token refresh,
-signing every request with App Attest, and the headers every request needs. You keep sending provider requests with
+signing each request with App Attest when your app verifies every request,
+and the headers every request needs. You keep sending provider requests with
 `URLSession` or any HTTP client. The package builds and signs the request; it
 does not send it.
 
@@ -140,7 +141,7 @@ let request = try await gateway.authorizedRequest(
 
 ## Show the user where they stand
 
-`currentUserRequest()` builds a signed `GET /v1/apps/{app}/me`, which answers
+`currentUserRequest()` builds a `GET /v1/apps/{app}/me`, which answers
 the limits that apply to the caller, its requests today, the month's spend
 against its budget, and whether it is blocked. On an iOS app the request
 counts are the install's and `install_id` names it.
@@ -149,22 +150,40 @@ counts are the install's and `install_id` names it.
 let (data, _) = try await URLSession.shared.data(for: try await gateway.currentUserRequest())
 ```
 
-Build it with the client rather than from a URL of your own: like every
-gateway request it must be signed, so an unsigned one is refused with
+Build it with the client rather than from a URL of your own: when your app
+verifies App Attest on every request, it must be signed like any other
+gateway request, so one without a proof is refused with
 `401 assertion_required`, and changing a signed request's URL afterwards
 breaks its proof. The response is described under
 [Calling the provider proxy](/integrate/proxy#reading-your-own-limits).
 
 ## Per-request proof
 
-Every request an iOS app sends through the gateway is signed. Alongside the
-gateway token it carries an `X-AppAttest-Proof` header: an assertion the
-install's App Attest key made over that one request. A gateway token copied
-off the network is worthless without the device's key, and a proof is
-accepted once.
+Each iOS app's **Verify App Attest on** setting, `verify_on`, decides whether
+requests are signed:
 
-The client data the key signs is the SHA-256 of these lines joined by a
-newline, with no trailing newline:
+- **Every request** (`every_request`, the default for new apps): every
+  request the app sends through the gateway is signed. Alongside the gateway
+  token it carries an `X-AppAttest-Proof` header: an assertion the install's
+  App Attest key made over that one request. A gateway token copied off the
+  network is worthless without the device's key, and a proof is accepted
+  once. Needs the package 2.0 or later.
+- **Token exchange** (`token_exchange`): the assertion is checked once per
+  hourly token, and requests carry only the token.
+
+The token exchange answers with the app's `verify_on`, and the package signs
+requests only when it is `every_request`; a gateway that does not send it is
+treated as `token_exchange`. Build every request with `authorizedRequest`
+either way, and switching the setting needs no change in your app.
+
+Apps created before this setting was added were set to **Token exchange**, so
+builds already in your users' hands, on package 1.x, keep working. Switch to
+**Every request** on the app's **Auth policy** page once every build in use is
+on 2.0 or later: from then on a request without a proof is refused with
+`401 assertion_required`.
+
+With **Every request**, the client data the key signs is the SHA-256 of these
+lines joined by a newline, with no trailing newline:
 
 ```text
 appaigateway-request-v1
@@ -178,7 +197,8 @@ appaigateway-request-v1
 ```
 
 and the header is `v1.<unix seconds>.<random value>.<assertion, base64url>`.
-The gateway accepts a timestamp within five minutes of its own clock.
+The timestamp is signed, but the gateway does not compare it with its own
+clock; the assertion counter is what stops a proof being used twice.
 
 `authorizedRequest` computes all of it. What that asks of your code:
 
@@ -196,24 +216,11 @@ The gateway accepts a timestamp within five minutes of its own clock.
 - **One request per proof.** Call `authorizedRequest` for every send,
   retries included. Replaying a request the gateway has already accepted is
   refused as a replayed assertion.
-- **Version 2.x.** Version 1.x of the package sends no proof, and the
-  gateway refuses its requests with `401 assertion_required`. Moving to 2.x
-  means passing the body to `authorizedRequest` instead of assigning it
-  afterwards; nothing else in your code changes.
-
-### Legacy mode for builds already shipped
-
-An iOS app that existed before the gateway required proofs starts in a
-**legacy mode**, `unsigned_requests`: for ninety days it still accepts
-requests without a proof, so builds already in your users' hands keep
-working while you ship one on 2.x. Those responses carry `Deprecation` and
-`Sunset` headers. The app's page in the console shows the date and when an
-unsigned request last arrived. Once every build in use is on 2.x, end it
-early with **Disable legacy mode** on the app's page,
-`agw app legacy disable <app> unsigned_requests`, or
-`POST /v1/admin/apps/{app}/legacy/unsigned_requests/disable`. From then on
-requests without a proof are refused. Disabling cannot be undone, and nothing
-extends the date: on it, unsigned requests stop being accepted on their own.
+- **Version 2.0 or later.** Version 1.x of the package sends no proof, so
+  an app that verifies every request refuses its requests with
+  `401 assertion_required`. Moving to 2.0 means passing the body to
+  `authorizedRequest` instead of assigning it afterwards; nothing else in
+  your code changes.
 
 An app whose API-key mode builds server requests sends no proof: API keys
 prove themselves.
@@ -229,9 +236,9 @@ prove themselves.
   the mode has one. Concurrent callers share one exchange.
 - **Refresh.** It refreshes the token five minutes before expiry in a
   background task, so a request rarely waits for an exchange.
-- **Request signing.** It signs every request it builds, `/me` included, with
-  the key the gateway token is bound to; see
-  [Per-request proof](#per-request-proof).
+- **Request signing.** When the app verifies App Attest on every request, it
+  signs every request it builds, `/me` included, with the key the gateway
+  token is bound to; see [Per-request proof](#per-request-proof).
 - **Recovery.** After a reinstall the Keychain may still name a key that no
   longer exists in the Secure Enclave. The client detects the local signing
   failure, registers a new key, exchanges it for a token bound to the new key
