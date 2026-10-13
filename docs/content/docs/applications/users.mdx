@@ -4,7 +4,9 @@ description: See who is using the app, what each user has spent, and block a use
 ---
 
 The **Users** page lists every user the app has identified, with their
-requests, tokens and cost for the selected month.
+requests, tokens and cost for the selected month. On an iOS app with
+**Unauthenticated users** the page is called **Installs**, because there
+every user is one install and its ID is the install's App Attest key ID.
 
 A row appears once a client completes its first token exchange, or, for a
 server that names users in a header, its first request.
@@ -13,9 +15,11 @@ server that names users in a header, its first request.
 
 - **User**: the user ID, from the sign-in token, the App Attest key, or your
   backend's header. A blocked user carries a `blocked` badge.
-- **Attestation**: `registered` with the assertion counter for an App Attest
-  install, `issuer token` for a user verified by sign-in token, or
-  `server attributed` for a header-named user.
+- **Installs**, on an iOS app with signed-in users: how many installs the
+  user holds, one per device and one more for each reinstall.
+- **Attestation**, elsewhere: `registered` for an App Attest install,
+  `issuer token` for a user verified by sign-in token, or `server attributed`
+  for a header-named user.
 - **Last seen**, **Requests**, **Tokens**, **Cost** for the selected month.
 
 Search by user ID, filter by **All users**, **Active** or **Blocked**, and
@@ -23,7 +27,7 @@ change the month with the picker. Pages hold 25 users.
 
 ## Blocking
 
-**Block** refuses every request from the user. New token exchanges are
+**Block** refuses every request from the user, on every install they hold. New token exchanges are
 refused immediately with `403 auth_required`, and a gateway token the user
 already holds stops working within ten seconds. **Unblock** restores them the
 same way.
@@ -41,6 +45,7 @@ your backend instead.
 ## Through the API
 
 - `GET /v1/admin/apps/{app}/users` with optional `month`, `status`, `query`,
-  `limit` and `offset`.
+  `limit` and `offset`. Each user carries `installs`, the number of App Attest
+  keys they hold, which is `0` on a server app.
 - `GET /v1/admin/apps/{app}/users/{user}`.
 - `POST /v1/admin/apps/{app}/users/{user}/block` and `…/unblock`.

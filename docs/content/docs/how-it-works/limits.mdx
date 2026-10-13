@@ -3,23 +3,33 @@ title: Limits and blocking
 description: The limits you set on your app's users, how they are counted, and how to block a user.
 ---
 
-An app's **Limits** page sets what its users and the app as a whole may do.
+An app's **Limits** page sets what its callers and the app as a whole may do.
 There are two scopes, each with the same three fields.
 
-| Field | Per-user limits | Per-app limits |
-| --- | --- | --- |
-| **Requests per minute** | Each user separately | All users and keys of the app together |
-| **Requests per day** | Each user separately | All together |
-| **Monthly spending budget (USD)** | Each user separately | All together |
+| Field | Per-install limits (iOS) | Per-user limits (server) | Per-app limits |
+| --- | --- | --- | --- |
+| **Requests per minute** | Each install separately | Each user separately | All callers of the app together |
+| **Requests per day** | Each install separately | Each user separately | All together |
+| **Monthly spending budget (USD)** | Each install, or each signed-in user if you choose | Each user separately | All together |
 
-Leave a field empty for no limit. A request refused by a per-user limit
-answers `429 app_rate_limited` or `429 app_budget_exhausted` with
-`data.scope` set to `user`. A request refused by an application limit answers
-the same codes with `data.scope` set to `app`. Both carry a `Retry-After`
+An install is one copy of your app on one device. Reinstalling the app
+starts a new one, and one person on a phone and a tablet is two. Counting
+iOS request limits per install means each device a person uses has its own
+minute and its own day. The budget follows the same rule unless you measure
+it per user, which only an app with **Signed-in users only** can do, because
+only then is there a person behind several installs. Nothing switches it for
+you.
+
+Leave a field empty for no limit. A request refused by a per-install or
+per-user limit answers `429 app_rate_limited` or `429 app_budget_exhausted`
+with `data.scope` set to `install` or `user`: `install` for an iOS app's
+request limits and an install budget, `user` for a server app's limits and a
+budget measured per user. A request refused by an application limit answers
+the same codes with `data.scope` set to `app`. All carry a `Retry-After`
 header.
 
-Per-user limits are checked before application limits, so one heavy user
-cannot drain the shared window before their own limit stops them.
+Per-install and per-user limits are checked before application limits, so one
+heavy caller cannot drain the shared window before their own limit stops them.
 
 ## How they are counted
 
@@ -33,7 +43,9 @@ cannot drain the shared window before their own limit stops them.
   of the one that crossed it. A single very expensive call, or a burst inside
   those seconds, can overshoot.
 - **Budgets use UTC calendar months.** Turning on an application budget
-  part-way through a month counts what the month has already spent.
+  part-way through a month counts what the month has already spent. Spend is
+  kept per install and per user alike, so switching an iOS app's budget from
+  one to the other mid-month counts the month so far too.
 - **A budget of zero is a closed door.** It stops all billable traffic for
   that scope. Leave the field empty for unlimited instead. A request limit of
   zero is rejected as a likely typo.
@@ -41,11 +53,12 @@ cannot drain the shared window before their own limit stops them.
 
 Per-user limits need an app that identifies users. An app with **No user
 identity** has nobody to apply them to, and the console disables its per-user fields.
+An iOS app always identifies its installs.
 
 ## Blocking a user
 
 Blocking is not a limit. On the app's **Users** page, **Block** refuses every
-request from that user with `403 auth_required`. New token exchanges are
+request from that user, on every install, with `403 auth_required`. New token exchanges are
 refused at once, and a token the user already holds stops working within ten
 seconds. **Unblock** restores them the same way. Users identified by a backend header must be blocked in your
 backend; the gateway does not offer blocking for them.
@@ -53,7 +66,9 @@ backend; the gateway does not offer blocking for them.
 ## What a user can see about themselves
 
 An app that identifies users can call `GET /v1/apps/{app}/me` with the same
-credentials as a proxy request to read the user's per-user limits, requests today, what is
+credentials as a proxy request to read the limits that apply, requests today, what is
 left of the daily limit, the month's spend, and whether the user is blocked.
+On an iOS app the request counts and, by default, the spend are the install's,
+and `install_id` names it.
 It is meant for showing a user where they stand before they hit a limit. See
 [Errors and limits from the client side](/integrate/errors).

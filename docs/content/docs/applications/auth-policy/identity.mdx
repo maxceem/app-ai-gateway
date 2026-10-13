@@ -22,7 +22,13 @@ this app.
 Apple binds an App Attest key to one install of one app on one device, and
 the attestation carries a hash of your team ID and bundle ID. The gateway
 checks that hash, stores the key's public half, and from then on accepts
-assertions signed by that key. The key never leaves the Secure Enclave.
+assertions signed by that key: one at each token exchange, and one on every
+request. The key never leaves the Secure Enclave.
+
+Keys are per install. A signed-in user who uses your app on a phone and a
+tablet holds two keys, and a user who reinstalls the app gets a new one;
+registering a key never replaces another. Each install is counted on its own
+by the [per-install limits](/applications/limits).
 
 ### iOS app environment
 
@@ -38,8 +44,10 @@ team's provisioning profile, which is why Development is off by default and
 why the console warns when you turn it on. Put the opt-in on a development
 bundle ID, never on the one you ship.
 
-Removing an environment also stops the keys it already admitted: their next
-token exchange answers `403 attest_failed` and the app registers a fresh key.
+Removing an environment also stops the keys it already admitted, on their
+next request rather than their next token exchange: the request answers
+`403 attest_failed`, and the app registers a fresh key in an environment the
+app still accepts.
 
 Two things no setting changes. App Attest is unavailable in the Simulator,
 because it needs the Secure Enclave. And a development build can be made to

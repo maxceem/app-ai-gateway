@@ -53,11 +53,16 @@ curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcrib
 ## With the Swift package
 
 ```swift
-var request = try await gateway.authorizedRequest(endpointSlug: "chat")
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-request.httpBody = Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8)
+let request = try await gateway.authorizedRequest(
+    endpointSlug: "chat",
+    body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
+    contentType: "application/json"
+)
 let (data, response) = try await URLSession.shared.data(for: request)
 ```
+
+Pass the body to `authorizedRequest`: the request is signed over it, as
+described in [Per-request proof](/integrate/ios#per-request-proof).
 
 ## Errors
 

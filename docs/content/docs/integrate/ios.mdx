@@ -4,8 +4,8 @@ description: Add the AppAIGateway package, pick an auth mode, and send provider 
 ---
 
 The AppAIGateway Swift package does the part of the integration that is easy
-to get wrong: App Attest registration, the token exchange, token refresh, and
-the headers every request needs. You keep sending provider requests with
+to get wrong: App Attest registration, the token exchange, token refresh,
+signing every request with App Attest, and the headers every request needs. You keep sending provider requests with
 `URLSession` or any HTTP client. The package builds and signs the request; it
 does not send it.
 
@@ -23,7 +23,7 @@ https://github.com/maxceem/app-ai-gateway-swift
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.0.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "2.0.0")
 ```
 
 Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
@@ -96,20 +96,20 @@ The closure is named `issuerTokenProvider` regardless of the token type.
 
 ## Send a request
 
-`authorizedRequest` returns a `URLRequest` with the URL, the `Authorization`
-header and `X-App-Version` set. Add the provider's own headers and body and
-send it.
+`authorizedRequest` returns a `URLRequest` with the URL, the body, the
+`Authorization` header, `X-App-Version` and the request's App Attest proof
+set. Pass the body to it, then send what it returns.
 
 ```swift
-var request = try await gateway.authorizedRequest(
+let request = try await gateway.authorizedRequest(
     provider: .openai,
-    providerPath: "v1/responses"
+    providerPath: "v1/responses",
+    body: try JSONEncoder().encode([
+        "model": "gpt-5.6-sol",
+        "input": "Summarise today's meals in one sentence."
+    ]),
+    contentType: "application/json"
 )
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-request.httpBody = try JSONEncoder().encode([
-    "model": "gpt-5.6-sol",
-    "input": "Summarise today's meals in one sentence."
-])
 
 let (data, response) = try await URLSession.shared.data(for: request)
 if let error = GatewayError(response: response as! HTTPURLResponse, body: data) {
@@ -122,7 +122,8 @@ if let error = GatewayError(response: response as! HTTPURLResponse, body: data) 
 `.custom("openai-dev")` for any other. `providerPath` is the provider's own
 API path with no leading slash.
 
-For Anthropic add `anthropic-version`; for streaming use
+Headers the provider needs, such as `anthropic-version` for Anthropic, can be
+added to the returned request; the proof does not cover them. For streaming use
 `URLSession.bytes(for:)` and read the provider's stream as documented by the
 provider. See [Calling the provider proxy](/integrate/proxy) for the paths
 and headers of each provider.
@@ -130,8 +131,54 @@ and headers of each provider.
 A [custom endpoint](/integrate/endpoints) is the same call with a slug:
 
 ```swift
-var request = try await gateway.authorizedRequest(endpointSlug: "chat")
+let request = try await gateway.authorizedRequest(
+    endpointSlug: "chat",
+    body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
+    contentType: "application/json"
+)
 ```
+
+## Per-request proof
+
+Every request an iOS app sends through the gateway is signed. Alongside the
+gateway token it carries an `X-AppAttest-Proof` header: an assertion the
+install's App Attest key made over that one request. A gateway token copied
+off the network is worthless without the device's key, and a proof is
+accepted once.
+
+The client data the key signs is the SHA-256 of these lines joined by a
+newline, with no trailing newline:
+
+```text
+appaigateway-request-v1
+<app id>
+<HTTP method, upper case>
+<URL path and query exactly as sent>
+<base64url SHA-256 of the body; an absent body hashes as empty>
+<base64url SHA-256 of the gateway token>
+<unix seconds>
+<16 random bytes, base64url>
+```
+
+and the header is `v1.<unix seconds>.<random value>.<assertion, base64url>`.
+The gateway accepts a timestamp within five minutes of its own clock.
+
+`authorizedRequest` computes all of it. What that asks of your code:
+
+- **Set the body before it is signed.** Pass it as `body:`. Changing
+  `httpBody` or the URL after `authorizedRequest` returns invalidates the
+  proof, and the request is refused with `403 attest_failed`. Other headers
+  may be added.
+- **One request per proof.** Call `authorizedRequest` for every send,
+  retries included. Replaying a request the gateway has already accepted is
+  refused as a replayed assertion.
+- **Version 2.x.** Version 1.x of the package sends no proof, and the
+  gateway refuses its requests with `401 assertion_required`. Moving to 2.x
+  means passing the body to `authorizedRequest` instead of assigning it
+  afterwards; nothing else in your code changes.
+
+An app whose API-key mode builds server requests sends no proof: API keys
+prove themselves.
 
 ## What the client does for you
 
@@ -144,10 +191,17 @@ var request = try await gateway.authorizedRequest(endpointSlug: "chat")
   the mode has one. Concurrent callers share one exchange.
 - **Refresh.** It refreshes the token five minutes before expiry in a
   background task, so a request rarely waits for an exchange.
+- **Request signing.** It signs every request with the key the gateway token
+  is bound to; see [Per-request proof](#per-request-proof).
 - **Recovery.** After a reinstall the Keychain may still name a key that no
   longer exists in the Secure Enclave. The client detects the local signing
-  failure, registers a new key and retries. It does the same once when the
-  gateway answers `attest_failed`.
+  failure, registers a new key, exchanges it for a token bound to the new key
+  and signs once more, whether that happens at the token exchange or while
+  signing a request. It also replaces the key once when the gateway answers
+  `attest_failed` at the token exchange. A request you send yourself and see
+  refused with `attest_failed` or `auth_required` is yours to handle: call
+  `discardAccessToken()` and build it again, and the next exchange
+  re-registers the key if the gateway no longer knows it.
 - **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
   with a `429`, the client remembers how long the wait is and refuses the next
   call itself until it passes, rather than asking Apple for a new key on every
@@ -194,8 +248,9 @@ reads it. The useful properties:
 - `code`: a `GatewayErrorCode` such as `.appRateLimited`, or `.unknown` for a
   code this version of the package does not know.
 - `retryAfter`: seconds until a rate limit or budget window reopens.
-- `limitScope`: `"user"` or `"app"` for an app limit, so you can tell "slow
-  this user down" from "the whole app is busy".
+- `limitScope`: `"install"`, `"user"` or `"app"` for an app limit, so you
+  can tell "slow this caller down" from "the whole app is busy". An iOS app's
+  request limits count per install, one copy of the app on one device.
 - `isRetryable`: whether the same request could succeed later without a
   change.
 

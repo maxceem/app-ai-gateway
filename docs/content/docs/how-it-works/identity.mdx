@@ -21,8 +21,8 @@ An **iOS application** proves itself with Apple App Attest. The device holds a
 key in the Secure Enclave, Apple attests that the key belongs to a genuine
 install of your app, and the gateway checks that attestation against your
 Team ID and Bundle ID. The app then exchanges an assertion for a gateway
-token that lasts one hour. There is no shared application API key to embed in
-the app.
+token that lasts one hour, and signs every request it sends with that same
+key. There is no shared application API key to embed in the app.
 
 A **server** application proves itself with an API key, a long-lived
 `agw_…` secret. Without signed-in users it sends that key on every request;
@@ -76,14 +76,40 @@ again. See [Subscription check](/applications/auth-policy/subscription-check).
 
 ## What the gateway token is
 
-An iOS app, or a server app with signed-in users, does not send its proof and
-its user's token on every request. It exchanges them once at the app's token
-endpoint and receives a **gateway token**, valid for one hour, that stands for
-both. Requests carry that token and an `X-App-Version` header. The Swift
-package refreshes it before it expires.
+An iOS app, or a server app with signed-in users, does not send its user's
+sign-in token on every request. It exchanges its proof and that token once at
+the app's token endpoint and receives a **gateway token**, valid for one hour,
+that stands for both. Requests carry that token and an `X-App-Version` header.
+The Swift package refreshes it before it expires.
 
 A server app with no signed-in users skips the exchange and sends its API key
 directly.
+
+### Every iOS request is signed
+
+An iOS app's gateway token is bound to the App Attest key of the install it
+was issued to, and is not enough on its own. Every request sent with it also
+carries an `X-AppAttest-Proof` header: an App Attest assertion that the key
+signed over that one request. The proof covers:
+
+- your app's ID, the HTTP method, and the URL path and query exactly as sent;
+- a hash of the request body;
+- a hash of the gateway token itself;
+- the time it was signed, which must be within five minutes of the gateway's
+  clock, and a random value.
+
+The gateway checks the signature against the install's registered key, and
+the assertion's counter against every counter that install has already used,
+so each proof is accepted once.
+
+What someone who copies a gateway token off the network, with an HTTPS
+inspector for example, can do with it: nothing. Without the device's key they
+cannot sign a new request, a proof they copied alongside it covers only the
+request it came with, and that request has already been served. A request
+without a proof is refused with `401 assertion_required`.
+
+The Swift package 2.x signs every request for you. See
+[Per-request proof](/integrate/ios#per-request-proof).
 
 ## Combinations
 
