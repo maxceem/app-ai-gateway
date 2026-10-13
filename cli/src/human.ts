@@ -138,10 +138,7 @@ function render(
     case "provider-gateway list":
     case "app list":
     case "app key list":
-    case "app legacy list":
       return list(command, result, style);
-    case "app legacy disable":
-      return legacyDisabled(result, style);
     case "provider show":
     case "provider-gateway show":
     case "app show":
@@ -316,28 +313,7 @@ function list(command: CommandName, result: RenderedResult, style: Style): strin
       style,
     );
   }
-  if (command === "app legacy list" && "legacy" in result && "app_id" in result) {
-    if (!result.legacy.length) return [`${result.app_id} is in no legacy mode.`];
-    return table(
-      ["MODE", "UNTIL", "LAST UNSIGNED REQUEST"],
-      result.legacy.map((entry) => [
-        entry.mode,
-        entry.until ?? "",
-        entry.unsigned_last_seen_at ?? "none seen yet",
-      ]),
-      style,
-    );
-  }
   return [style.json(result)];
-}
-
-/** `app legacy disable`: what is left once the mode is gone. */
-function legacyDisabled(result: RenderedResult, style: Style): string[] {
-  if (!("app" in result) || "guidance" in result) return [style.json(result)];
-  return [
-    style.headline(`Legacy mode disabled for ${result.app.name} (${result.app.id}).`),
-    ...warnings(result.app.warnings ?? [], style),
-  ];
 }
 
 /**

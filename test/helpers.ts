@@ -336,7 +336,11 @@ export function defaultProxyConfig(): Record<string, unknown> {
 
 export async function seedApp(
   appId: string,
-  options: SeedOptions & { endUser?: "app_install" } = {},
+  options: SeedOptions & {
+    endUser?: "app_install";
+    /** When App Attest is verified; absent takes the schema's `every_request`. */
+    verifyOn?: "every_request" | "token_exchange";
+  } = {},
 ): Promise<void> {
   const issuer = options.auth ?? {};
   await database(env.DB).insert(app).values({
@@ -351,6 +355,7 @@ export async function seedApp(
         app_attest: {
           team_id: "AAAAAAAAAA",
           bundle_id: `com.example.${appId}`,
+          ...(options.verifyOn === undefined ? {} : { verify_on: options.verifyOn }),
         },
         end_user: options.endUser === "app_install"
           ? { source: "app_install" }

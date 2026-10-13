@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Link, Route, Routes } from "react-router-dom";
-import { screen, waitFor, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppDetailPage } from "./app-detail";
 import { renderAuthenticated, stubApi } from "@/test/render";
@@ -334,19 +334,17 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
 });
 
 describe("an app's warnings", () => {
-  const warning = (lastSeen: string | null) => ({
-    code: "legacy_unsigned_requests",
-    legacy: "unsigned_requests",
-    message: "Legacy mode: requests without an App Attest proof are accepted until 2027-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, then disable legacy mode.",
+  // Nothing produces a warning today; the alert is for whatever does.
+  const warning = {
+    code: "example_change",
+    message: "Example: this behaviour stops on 2027-01-31T00:00:00Z. Update the app before then.",
     until: "2027-01-31T00:00:00Z",
-    docs_url: "https://docs.appaigateway.com/integrate/ios#per-request-proof",
-    unsigned_last_seen_at: lastSeen,
-  });
+    docs_url: "https://docs.appaigateway.com/integrate/ios",
+  };
 
   function renderWithWarnings(warnings: unknown[]) {
-    const fetchMock = stubApi({
+    stubApi({
       [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys: [] } },
-      // Answers the disable too, which returns the app.
       [`/v1/admin/apps/${APP_ID}`]: { body: { app: { ...APP_ROW, warnings } } },
     });
     renderAuthenticated(
@@ -355,34 +353,15 @@ describe("an app's warnings", () => {
       </Routes>,
       { route: `/apps/${APP_ID}/limits` },
     );
-    return fetchMock;
   }
 
-  it("says until when unsigned requests are accepted, and that none has been seen", async () => {
-    renderWithWarnings([warning(null)]);
+  it("lists each warning with where to read about it, and offers no action", async () => {
+    renderWithWarnings([warning]);
     expect(await screen.findByText("This app has a warning")).toBeTruthy();
-    expect(screen.getByText(/^Legacy mode: unsigned requests accepted until .+\. Last unsigned request none seen yet\.$/u))
-      .toBeTruthy();
-    expect(screen.getByRole("link", { name: "What to change" }).getAttribute("href")).toBe(warning(null).docs_url);
-  });
-
-  it("says how long ago the last unsigned request was", async () => {
-    renderWithWarnings([warning(new Date(Date.now() - 3 * 86_400_000).toISOString())]);
-    expect(await screen.findByText(/Last unsigned request 3 days ago\./u)).toBeTruthy();
-  });
-
-  it("disables legacy mode only after a confirmation that says what it breaks", async () => {
-    const fetchMock = renderWithWarnings([warning(null)]);
-    await userEvent.click(await screen.findByRole("button", { name: "Disable legacy mode" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain(
-      "Requests without an App Attest proof will be refused immediately. Do this only when every build in use is on AppAIGateway package 2.x.",
-    );
-    const disables = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/legacy/unsigned_requests/disable"));
-    expect(disables()).toHaveLength(0);
-    await userEvent.click(within(dialog).getByRole("button", { name: "Disable legacy mode" }));
-    await waitFor(() => expect(disables()).toHaveLength(1));
-    expect(disables()[0]![1]?.method).toBe("POST");
+    expect(screen.getByText(/^Example: this behaviour stops on/u)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "What to change" }).getAttribute("href")).toBe(warning.docs_url);
+    const alert = screen.getByText("This app has a warning").closest<HTMLElement>("[role='status']")!;
+    expect(within(alert).queryByRole("button")).toBeNull();
   });
 
   it("says nothing when there are none", async () => {

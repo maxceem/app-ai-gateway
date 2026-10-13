@@ -108,13 +108,12 @@ const app: AppResponse = {
   },
 };
 
+// Nothing produces a warning today; the rendering is for whatever does.
 const warning = {
-  code: "legacy_unsigned_requests",
-  legacy: "unsigned_requests" as const,
-  message: "Legacy mode: requests without an App Attest proof are accepted until 2027-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, then disable legacy mode.",
+  code: "example_change",
+  message: "Example: this behaviour stops on 2027-01-31T00:00:00Z. Update the app before then.",
   until: "2027-01-31T00:00:00Z",
-  docs_url: "https://docs.appaigateway.com/integrate/ios#per-request-proof",
-  unsigned_last_seen_at: "2026-10-10T08:00:00.000Z",
+  docs_url: "https://docs.appaigateway.com/integrate/ios",
 };
 
 const account: CliAccountResponse = {
@@ -275,8 +274,8 @@ const cases: Case[] = [
     result: { app: { ...app.app, warnings: [warning] } },
     includes: [
       "Warnings",
-      "- Legacy mode: requests without an App Attest proof are accepted until 2027-01-31T00:00:00Z.",
-      "See https://docs.appaigateway.com/integrate/ios#per-request-proof",
+      "- Example: this behaviour stops on 2027-01-31T00:00:00Z.",
+      "See https://docs.appaigateway.com/integrate/ios",
       '"warnings": [',
     ],
   },
@@ -460,31 +459,6 @@ const cases: Case[] = [
     excludes: ["Warnings"],
   },
   {
-    name: "app legacy list shows each mode, its date and the last unsigned request",
-    command: "app legacy list",
-    result: {
-      app_id: "app_1",
-      legacy: [
-        { mode: "unsigned_requests", until: "2027-01-31T00:00:00Z", unsigned_last_seen_at: null, message: warning.message },
-      ],
-    },
-    includes: ["MODE", "UNTIL", "LAST UNSIGNED REQUEST", "unsigned_requests", "2027-01-31T00:00:00Z", "none seen yet"],
-    excludes: ["{"],
-  },
-  {
-    name: "app legacy list says when there is none",
-    command: "app legacy list",
-    result: { app_id: "app_1", legacy: [] },
-    includes: ["app_1 is in no legacy mode."],
-  },
-  {
-    name: "app legacy disable confirms, with what warnings remain",
-    command: "app legacy disable",
-    result: app,
-    includes: ["Legacy mode disabled for Example (app_1)."],
-    excludes: ["Warnings", "{"],
-  },
-  {
     name: "app check reports warnings beside a ready verdict, not as a failure",
     command: "app check",
     result: {
@@ -496,7 +470,7 @@ const cases: Case[] = [
       limitations: ["No inference was sent."],
       warnings: [warning],
     },
-    includes: ["app_1 is ready to serve requests.", "Warnings", "accepted until 2027-01-31T00:00:00Z"],
+    includes: ["app_1 is ready to serve requests.", "Warnings", "stops on 2027-01-31T00:00:00Z"],
   },
   {
     name: "app validate reports what it could and could not check",

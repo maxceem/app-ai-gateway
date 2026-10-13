@@ -66,11 +66,11 @@ export type ErrorCode =
    */
   | "attest_failed"
   /**
-   * A request authenticated with an App Attest application's gateway token
-   * arrived without the `X-AppAttest-Proof` header every such request must
-   * carry. The client is older than the change that requires it: AppAIGateway
-   * Swift package 1.x. The message stands alone for clients that show unknown
-   * codes' messages verbatim.
+   * A request authenticated with the gateway token of an App Attest
+   * application whose `verify_on` is `every_request` arrived without the
+   * `X-AppAttest-Proof` header every such request must carry. The client is
+   * older than that setting needs: AppAIGateway Swift package 1.x. The message
+   * stands alone for clients that show unknown codes' messages verbatim.
    */
   | "assertion_required"
   | "issuer_token_rejected"

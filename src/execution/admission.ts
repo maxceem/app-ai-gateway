@@ -70,7 +70,8 @@ export interface AdmissionInput {
   /**
    * The counter of the App Attest assertion the request was signed with,
    * which the install's limiter accepts once and refuses as a replay after.
-   * Null where nothing was signed.
+   * Null where nothing was signed: a server application, or an App Attest one
+   * whose `verify_on` is `token_exchange`.
    */
   assertionCounter: number | null;
   plan: ExecutionPlan;
@@ -81,9 +82,11 @@ export interface AdmissionInput {
 /**
  * The per-caller limiter a request is counted by, and what it is asked.
  *
- * An App Attest request is counted per install — the key that signed it —
- * and its object is called on every request, because it also owns the
- * install's assertion counter. Its budget is the install's month by default,
+ * An App Attest request is counted per install — the key its token names —
+ * and its object is called on every signed request, because it also owns the
+ * install's assertion counter; an application that verifies App Attest on the
+ * token exchange signs nothing per request, so its object is called only
+ * where limits exist. Its budget is the install's month by default,
  * or the user's when the application says so. A server application's request
  * is counted per user, and only where per-user limits exist, as before
  * installs did.

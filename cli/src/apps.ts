@@ -26,6 +26,7 @@ import { shellQuote } from "../../src/shared/first-request.ts";
 import {
   selectedProviderPolicies,
   type AppAttestEnvironment,
+  type AppAttestVerifyOn,
 } from "../../src/shared/app-config.ts";
 import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 
@@ -41,23 +42,7 @@ export interface AppWriteResult {
   guidance: string;
 }
 
-/** One legacy mode an application is in, as `app legacy list` reports it. */
-export interface LegacyModeEntry {
-  mode: string;
-  until: string | null;
-  /** When an unsigned request was last served, or null when none has been seen. */
-  unsigned_last_seen_at: string | null;
-  message: string;
-}
-
-/** `app legacy list`: the application's legacy modes, read off its warnings. */
-export interface AppLegacyList {
-  app_id: string;
-  legacy: LegacyModeEntry[];
-}
-
 export type AppResult =
-  | AppLegacyList
   | AppListResponse
   | AppResponse
   | AppDeleteResponse
@@ -119,7 +104,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     const ios = type === "ios";
     if (
       !ios &&
-      ["team-id", "bundle-id", "attest-environments"].some((k) => flags[k as keyof Flags])
+      IOS_FLAGS.some((k) => flags[k])
     )
       fail("invalid_input", "Server apps cannot use iOS flags.");
     const bundle = ios
@@ -157,7 +142,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   const auth = doc.config.authentication;
   if (
     auth.type === "api_key" &&
-    ["team-id", "bundle-id", "attest-environments"].some((k) => flags[k as keyof Flags])
+    IOS_FLAGS.some((k) => flags[k])
   )
     fail("invalid_input", "Server apps cannot use iOS flags.");
   if (auth.type === "apple_app_attest") {
@@ -167,6 +152,10 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     if (flags["bundle-id"]) auth.app_attest.bundle_id = flags["bundle-id"];
     if (flags["attest-environments"])
       auth.app_attest.environments = attestEnvironments(flags["attest-environments"]);
+    // Passed through as typed, for `localApp` to refuse anything but
+    // every_request or token_exchange.
+    if (flags["verify-on"])
+      auth.app_attest.verify_on = flags["verify-on"].trim() as AppAttestVerifyOn;
   }
   const selectedProviders = flagList(flags.provider);
   if (selectedProviders.length) {
@@ -181,6 +170,9 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   if (flags["all-providers"]) doc.config.routing.providers = { mode: "all" };
   return localApp(doc);
 }
+
+/** The flags only an iOS (App Attest) application takes. */
+const IOS_FLAGS = ["team-id", "bundle-id", "attest-environments", "verify-on"] as const satisfies readonly (keyof Flags)[];
 
 /**
  * `--attest-environments` as the configuration's own list. Names are passed
@@ -310,30 +302,6 @@ export async function appCommand(
             : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
     }
-  }
-  if (action.startsWith("legacy ")) {
-    const sub = action.slice(7);
-    const appId = args[0] ?? "";
-    if (sub === "list") {
-      const { data } = await ctx.call("getApp", { params: { app: appId } });
-      return {
-        app_id: data.app.id,
-        legacy: data.app.warnings
-          .filter((warning) => warning.legacy !== undefined)
-          .map((warning) => ({
-            mode: warning.legacy!,
-            until: warning.until ?? null,
-            unsigned_last_seen_at: warning.unsigned_last_seen_at ?? null,
-            message: warning.message,
-          })),
-      };
-    }
-    const mode = args[1] ?? "";
-    await confirm(
-      `Disable legacy mode ${mode} for app ${appId}? Requests without an App Attest proof will be refused immediately. Do this only when every build in use is on AppAIGateway package 2.x. It cannot be undone.`,
-      flags,
-    );
-    return (await ctx.call("disableAppLegacyMode", { params: { app: appId, mode } })).data;
   }
   if (action.startsWith("key ")) {
     const sub = action.slice(4);

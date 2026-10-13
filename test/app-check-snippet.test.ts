@@ -82,23 +82,6 @@ describe("checkApp", () => {
     });
   });
 
-  it("reports an app's warnings without making it any less ready", async () => {
-    const { organizationId, headers } = await account("check-warnings@example.test");
-    await provider(organizationId, "openai", "openai");
-    await seedServerApp("check-warnings-app", { organizationId, proxy: { openai: open } });
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'check-warnings-app'")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } })).run();
-
-    const { status, body } = await check("check-warnings-app", headers);
-    expect(status).toBe(200);
-    expect(body.ready).toBe(true);
-    expect(body.warnings).toEqual([expect.objectContaining({
-      code: "legacy_unsigned_requests",
-      legacy: "unsigned_requests",
-      until: "2099-01-31T00:00:00Z",
-    })]);
-  });
-
   it("is ready once one provider it names is active, and lists only the ones it names", async () => {
     const { organizationId, headers } = await account("check-ready@example.test");
     await provider(organizationId, "openai", "openai");

@@ -444,19 +444,6 @@ export function useSaveApp(appId: string) {
   });
 }
 
-/** Ends one of an app's legacy modes now; the app is answered with its warnings recomputed. */
-export function useDisableLegacyMode(appId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (mode: "unsigned_requests") =>
-      call("disableAppLegacyMode", { params: { app: appId, mode } }),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: keys.app(appId) });
-      void client.invalidateQueries({ queryKey: keys.appsPrefix });
-    },
-  });
-}
-
 export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({

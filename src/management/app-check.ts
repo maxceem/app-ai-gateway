@@ -11,7 +11,7 @@ import {
 import type { Actor } from "./actor";
 import { validateApp } from "./apps";
 import { listProviders } from "./providers";
-import { appWarnings } from "../client-auth/legacy";
+import { appWarnings } from "./app-warnings";
 import type { ManagementScope } from "./scope";
 
 type AppRow = typeof app.$inferSelect;

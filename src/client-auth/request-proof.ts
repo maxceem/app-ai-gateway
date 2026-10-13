@@ -1,7 +1,7 @@
 /**
- * The per-request App Attest proof: every request an App Attest application's
- * gateway token is sent with carries an assertion the install's key signed
- * over that very request.
+ * The per-request App Attest proof: where an App Attest application's
+ * `verify_on` is `every_request`, every request its gateway token is sent
+ * with carries an assertion the install's key signed over that very request.
  *
  * The header is
  *

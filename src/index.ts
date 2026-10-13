@@ -164,7 +164,6 @@ app.onError((error, c) => {
   headers.set("content-type", "application/json; charset=UTF-8");
   const timings = c.get("servedTimings");
   if (timings !== undefined) headers.set("server-timing", serverTiming(timings));
-  for (const [name, value] of Object.entries(c.get("responseHeaders") ?? {})) headers.set(name, value);
   if (error instanceof GatewayError) {
     new Headers(error.headers).forEach((value, name) => headers.set(name, value));
     // Every business rejection, exactly once, in one shape. Without this a user

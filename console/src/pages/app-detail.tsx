@@ -121,7 +121,7 @@ export function AppDetailPage() {
       />
 
       {/* The saved app's, which the gateway computed on read: a draft has none. */}
-      <AppWarningsAlert appId={appId} warnings={query.data?.app.warnings ?? []} />
+      <AppWarningsAlert warnings={query.data?.app.warnings ?? []} />
       {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
       {/* Not on Auth policy, where the keys themselves are in view. */}
       {draft && draft.config.authentication.type === "api_key" && tab !== "auth" ? (

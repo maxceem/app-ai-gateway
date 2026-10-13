@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { parseProof, requestClientData } from "../src/client-auth/request-proof";
-import { legacyMode, noteUnsignedRequest } from "../src/client-auth/legacy";
 import { appConfigCache, loadApp } from "../src/core/app-records";
 // Shared with the Swift package's tests, byte for byte: both sides must sign
 // the path and query exactly as this runtime's URL parser reads them.
@@ -21,10 +20,12 @@ import {
 } from "./helpers";
 
 /**
- * Every request an App Attest application's gateway token is sent with must
- * carry `X-AppAttest-Proof`: an assertion the install's key signed over that
- * very request. These drive the whole served path — token, proof, limiter —
- * with a P-256 key standing in for the device's.
+ * Where an App Attest application's `verify_on` is `every_request`, the
+ * default, every request its gateway token is sent with must carry
+ * `X-AppAttest-Proof`: an assertion the install's key signed over that very
+ * request. Where it is `token_exchange`, the token alone is enough. These
+ * drive the whole served path — token, proof, limiter — with a P-256 key
+ * standing in for the device's.
  */
 
 const ORIGIN = "https://example.test";
@@ -179,7 +180,6 @@ describe("per-request App Attest proofs", () => {
     expect(response.status).toBe(200);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.has("x-appattest-proof")).toBe(false);
-    expect(response.headers.has("deprecation")).toBe(false);
   });
 
   it("signs the path and query exactly as sent", async () => {
@@ -200,7 +200,7 @@ describe("per-request App Attest proofs", () => {
     expect(response.status).toBe(401);
     await expect(errorOf(response)).resolves.toEqual({
       code: "assertion_required",
-      message: "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.x.",
+      message: "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.0 or later.",
     });
     expect(fetchSpy).toHaveLength(0);
   });
@@ -362,9 +362,9 @@ describe("per-request App Attest proofs", () => {
   it("signs /me like any other request, and reports the install", async () => {
     const { install, token } = await attestApp("proof-me");
     const url = `${ORIGIN}/v1/apps/proof-me/me`;
-    const unsigned = await send(new Request(url, { headers: { authorization: `Bearer ${token}` } }));
-    expect(unsigned.status).toBe(401);
-    await expect(errorOf(unsigned)).resolves.toMatchObject({ code: "assertion_required" });
+    const withoutProof = await send(new Request(url, { headers: { authorization: `Bearer ${token}` } }));
+    expect(withoutProof.status).toBe(401);
+    await expect(errorOf(withoutProof)).resolves.toMatchObject({ code: "assertion_required" });
 
     install.counter += 1;
     const proof = await signedProof({
@@ -400,116 +400,112 @@ describe("per-request App Attest proofs", () => {
 });
 
 /**
- * The `unsigned_requests` legacy mode: dated, set by migration 0006 or by hand in D1 for
- * an application whose shipped build cannot sign yet.
+ * `verify_on: token_exchange`: the assertion is verified once, at the token
+ * exchange, and requests carry the token alone. Limits still count per
+ * install, because the token names it.
  */
-describe("the unsigned_requests legacy mode", () => {
-  async function withLegacy(appId: string, legacy: string | null) {
-    const seeded = await attestApp(appId);
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?").bind(legacy, appId).run();
-    clearIsolateCaches();
-    return seeded;
-  }
+describe("verify_on token_exchange", () => {
+  /** A token as the gateway minted them before tokens named their install. */
+  const installLessToken = async (appId: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ app: appId, auth_method: "attest" })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setSubject("user-1")
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3600)
+      .setJti(crypto.randomUUID())
+      .sign(new TextEncoder().encode(env.JWT_SECRET));
+  };
 
-  const live = () => JSON.stringify({
-    unsigned_requests: { until: "2099-01-31T00:00:00Z" },
-  });
-
-  it("accepts an unsigned request while live, and says when it stops", async () => {
-    const { install, token } = await withLegacy("legacy-live", live());
-    upstream();
-    const warn = vi.spyOn(console, "warn");
+  it("serves a request that carries only the token", async () => {
+    const { install, token } = await attestApp("verify-token-alone", { verifyOn: "token_exchange" });
+    const seen = upstream();
     const response = await send(await proxied(install, token, { proof: null }));
     expect(response.status).toBe(200);
-    expect(response.headers.get("deprecation")).toBe("true");
-    expect(response.headers.get("sunset")).toBe("Sat, 31 Jan 2099 00:00:00 GMT");
-    expect(response.headers.get("link")).toBe(
-      '<https://docs.appaigateway.com/integrate/ios#per-request-proof>; rel="sunset"',
-    );
-    const logged = warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
-    expect(logged).toContainEqual(expect.objectContaining({
-      message: "legacy_unsigned_requests_used",
-      app: "legacy-live",
-      until: "2099-01-31T00:00:00.000Z",
-    }));
+    expect(seen).toHaveLength(1);
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    const event = await env.DB.prepare("SELECT install_id FROM app_usage_event WHERE app_id = 'verify-token-alone'").first();
+    expect(event).toEqual({ install_id: install.keyId });
   });
 
-  it("carries the notice on a refusal too", async () => {
-    const { install, token } = await withLegacy("legacy-refusal", live());
-    // No such provider path is allowed, so the request is refused after it
-    // was accepted under the switch.
-    const response = await send(await proxied(install, token, {
-      proof: null,
-      url: `${ORIGIN}/v1/apps/legacy-refusal/proxy/nope/v1/responses`,
-    }));
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.headers.get("deprecation")).toBe("true");
+  it("ignores a proof that is present anyway: never verified, never counted, never forwarded", async () => {
+    const { install, token } = await attestApp("verify-ignores-proof", { verifyOn: "token_exchange" });
+    const seen = upstream();
+    // Malformed, and signed over another request: neither is looked at.
+    expect((await send(await proxied(install, token, { proof: "v1.nonsense" }))).status).toBe(200);
+    expect((await send(await proxied(install, token, { sign: { token: "other" } }))).status).toBe(200);
+    // The same valid proof twice: a replay only where a counter is spent.
+    const request = await proxied(install, token);
+    const again = request.clone() as Request;
+    expect((await send(request)).status).toBe(200);
+    expect((await send(again)).status).toBe(200);
+    expect(seen.every((headers) => !headers.has("x-appattest-proof"))).toBe(true);
   });
 
-  it("still verifies a proof that is present", async () => {
-    const { install, token } = await withLegacy("legacy-proof", live());
+  it("still counts request limits per install", async () => {
+    const { install, token } = await attestApp("verify-limits", {
+      verifyOn: "token_exchange",
+      endUser: "app_install",
+      limits: { rpm: 1 },
+    });
+    const other = await registerTestInstall("verify-limits", "second-install");
     upstream();
-    expect((await send(await proxied(install, token))).status).toBe(200);
-    const response = await send(await proxied(install, token, { sign: { token: "other" } }));
-    expect(response.status).toBe(403);
-    await expect(errorOf(response)).resolves.toMatchObject({ code: "attest_failed" });
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+    const limited = await send(await proxied(install, token, { proof: null }));
+    expect(limited.status).toBe(429);
+    await expect(limited.json()).resolves.toMatchObject({ error: { data: { scope: "install" } } });
+    // Another install has a minute of its own.
+    expect((await send(await proxied(other, await tokenForInstall(other), { proof: null }))).status).toBe(200);
+  });
+
+  it("answers /me with the token alone, and reports the install", async () => {
+    const { install, token } = await attestApp("verify-me", { verifyOn: "token_exchange" });
+    const response = await send(new Request(`${ORIGIN}/v1/apps/verify-me/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ user_id: "user-1", install_id: install.keyId });
   });
 
   /**
-   * A token minted before installs existed names none. A shipped 1.x client
-   * holds one for up to an hour after the gateway is updated, and under the
-   * switch that hour must not lock it out.
+   * A shipped 1.x client holds a token minted before tokens named their
+   * install for up to an hour after the gateway is updated; an application
+   * that never checks a per-request proof has no reason to refuse it.
    */
-  it("accepts a token from before installs existed, only while live and only unsigned", async () => {
-    const legacyToken = async (appId: string) => {
-      const now = Math.floor(Date.now() / 1000);
-      return new SignJWT({ app: appId, auth_method: "attest" })
-        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-        .setSubject("user-1")
-        .setIssuedAt(now)
-        .setExpirationTime(now + 3600)
-        .setJti(crypto.randomUUID())
-        .sign(new TextEncoder().encode(env.JWT_SECRET));
-    };
-    const { install } = await withLegacy("legacy-legacy-token", live());
+  it("accepts a token from before tokens named their install, where every_request refuses it", async () => {
+    const { install } = await attestApp("verify-install-less", { verifyOn: "token_exchange" });
     upstream();
-    const token = await legacyToken("legacy-legacy-token");
-    const accepted = await send(await proxied(install, token, { proof: null }));
+    const accepted = await send(await proxied(install, await installLessToken("verify-install-less"), { proof: null }));
     expect(accepted.status).toBe(200);
-    expect(accepted.headers.get("deprecation")).toBe("true");
-    // A proof needs an install to be checked against.
-    const signed = await send(await proxied(install, token));
-    expect(signed.status).toBe(401);
-    await expect(errorOf(signed)).resolves.toMatchObject({ code: "auth_required" });
 
-    const { install: other } = await withLegacy("legacy-legacy-off", null);
-    const refused = await send(await proxied(other, await legacyToken("legacy-legacy-off"), { proof: null }));
+    const { install: strict } = await attestApp("verify-install-less-strict");
+    const refused = await send(await proxied(strict, await installLessToken("verify-install-less-strict"), { proof: null }));
     expect(refused.status).toBe(401);
     await expect(errorOf(refused)).resolves.toMatchObject({ code: "auth_required" });
   });
 
-  it("stops on its date", async () => {
-    const { install, token } = await withLegacy("legacy-expired", JSON.stringify({
-      unsigned_requests: { until: "2020-01-01T00:00:00Z" },
+  it("requires a proof again once the app switches to every_request", async () => {
+    const { install, token } = await attestApp("verify-switch", { verifyOn: "token_exchange" });
+    upstream();
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+    const admin = (init: RequestInit = {}) => send(new Request(`${ORIGIN}/v1/admin/apps/verify-switch`, {
+      ...init,
+      headers: { authorization: "Bearer agw_mgmt_test-admin-secret", "content-type": "application/json" },
     }));
-    const response = await send(await proxied(install, token, { proof: null }));
-    expect(response.status).toBe(401);
-    await expect(errorOf(response)).resolves.toMatchObject({ code: "assertion_required" });
-  });
-
-  it.each([
-    ["not JSON", "{"],
-    ["an unknown switch", JSON.stringify({ something_else: { until: "2099-01-01T00:00:00Z" } })],
-    ["a date without a time", JSON.stringify({ unsigned_requests: { until: "2099-01-01" } })],
-  ])("switches nothing on for %s, and logs it", async (_label, legacy) => {
-    const appId = `legacy-invalid-${crypto.randomUUID()}`;
-    const { install, token } = await withLegacy(appId, legacy);
-    const warn = vi.spyOn(console, "warn");
-    const response = await send(await proxied(install, token, { proof: null }));
-    expect(response.status).toBe(401);
-    await expect(errorOf(response)).resolves.toMatchObject({ code: "assertion_required" });
-    const logged = warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
-    expect(logged).toContainEqual(expect.objectContaining({ message: "legacy_invalid", app: appId }));
+    const { app } = await (await admin()).json<{
+      app: { name: string; revision: number; config: { authentication: { app_attest: Record<string, unknown> } } };
+    }>();
+    expect(app.config.authentication.app_attest.verify_on).toBe("token_exchange");
+    app.config.authentication.app_attest.verify_on = "every_request";
+    const updated = await admin({
+      method: "PUT",
+      body: JSON.stringify({ name: app.name, config: app.config, revision: app.revision }),
+    });
+    expect(updated.status).toBe(200);
+    const refused = await send(await proxied(install, token, { proof: null }));
+    expect(refused.status).toBe(401);
+    await expect(errorOf(refused)).resolves.toMatchObject({ code: "assertion_required" });
+    expect((await send(await proxied(install, token))).status).toBe(200);
   });
 });
 
@@ -601,28 +597,6 @@ describe("an application's warnings", () => {
     },
   }));
 
-  it("describes a live legacy mode on read, and nothing once it ends", async () => {
-    await seedApp("warnings-live");
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-live'")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } })).run();
-    const response = await admin("warnings-live");
-    expect(response.status).toBe(200);
-    const { app } = await response.json<{ app: { warnings: unknown[] } }>();
-    expect(app.warnings).toEqual([{
-      code: "legacy_unsigned_requests",
-      legacy: "unsigned_requests",
-      message: "Legacy mode: requests without an App Attest proof are accepted until 2099-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, then disable legacy mode.",
-      until: "2099-01-31T00:00:00Z",
-      docs_url: "https://docs.appaigateway.com/integrate/ios#per-request-proof",
-      unsigned_last_seen_at: null,
-    }]);
-
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-live'")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2020-01-31T00:00:00Z" } })).run();
-    const expired = await (await admin("warnings-live")).json<{ app: { warnings: unknown[] } }>();
-    expect(expired.app.warnings).toEqual([]);
-  });
-
   it("is always present, and refused on a write", async () => {
     await seedApp("warnings-write");
     const { app } = await (await admin("warnings-write")).json<{
@@ -635,221 +609,24 @@ describe("an application's warnings", () => {
     });
     expect(refused.status).toBe(400);
     await expect(refused.json()).resolves.toMatchObject({ error: { message: expect.stringContaining("warnings") } });
-    // A write never touches the legacy modes either.
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-write'")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } })).run();
-    const updated = await admin("warnings-write", {
-      method: "PUT",
-      body: JSON.stringify({ name: "Renamed", config: app.config, revision: app.revision }),
-    });
-    expect(updated.status).toBe(200);
-    const body = await updated.json<{ app: { warnings: { code: string }[] } }>();
-    expect(body.app.warnings.map((warning) => warning.code)).toEqual(["legacy_unsigned_requests"]);
-    const stored = await env.DB.prepare("SELECT legacy FROM app WHERE id = 'warnings-write'").first<{ legacy: string }>();
-    expect(JSON.parse(stored!.legacy)).toEqual({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } });
   });
 });
 
-describe("the last unsigned request", () => {
-  it("is recorded at most once an hour, and shown in the warning", async () => {
-    const appId = "legacy-last-seen";
-    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
+describe("the cached app record and an update that races a read", () => {
+  it("never lets a read that began before the update put the old configuration back", async () => {
+    const appId = "app-read-race";
+    await seedApp(appId, { verifyOn: "token_exchange" });
     clearIsolateCaches();
-    const install = await registerTestInstall(appId);
-    const token = await tokenForInstall(install);
-    upstream();
-    const seenAt = async () => (await env.DB.prepare("SELECT unsigned_last_seen_at AS at FROM app WHERE id = ?")
-      .bind(appId).first<{ at: string | null }>())?.at ?? null;
-    expect(await seenAt()).toBeNull();
-
-    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
-    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
-    const first = await seenAt();
-    expect(first).not.toBeNull();
-    expect(Math.abs(Date.parse(first!) - Date.now())).toBeLessThan(60_000);
-
-    // Within the hour nothing is written, not even by a fresh isolate.
-    clearIsolateCaches();
-    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
-    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
-    expect(await seenAt()).toBe(first);
-
-    // A signed request is not an unsigned one.
-    const stale = new Date(Date.now() - 2 * 3_600_000).toISOString();
-    await env.DB.prepare("UPDATE app SET unsigned_last_seen_at = ? WHERE id = ?").bind(stale, appId).run();
-    clearIsolateCaches();
-    expect((await send(await proxied(install, token))).status).toBe(200);
-    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
-    expect(await seenAt()).toBe(stale);
-
-    // Past the hour, the next unsigned request moves it.
-    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
-    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
-    const moved = await seenAt();
-    expect(moved! > stale).toBe(true);
-
-    const read = await send(new Request(`${ORIGIN}/v1/admin/apps/${appId}`, {
-      headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
+    const admin = (init: RequestInit = {}) => send(new Request(`${ORIGIN}/v1/admin/apps/${appId}`, {
+      ...init,
+      headers: { authorization: "Bearer agw_mgmt_test-admin-secret", "content-type": "application/json" },
     }));
-    const { app } = await read.json<{ app: { warnings: { unsigned_last_seen_at: string | null }[] } }>();
-    expect(app.warnings[0]?.unsigned_last_seen_at).toBe(moved);
-  });
-});
-
-describe("disabling a legacy mode", () => {
-  const admin = (path: string, init: RequestInit = {}) => send(new Request(`${ORIGIN}/v1/admin/apps/${path}`, {
-    ...init,
-    headers: {
-      authorization: "Bearer agw_mgmt_test-admin-secret",
-      "content-type": "application/json",
-      ...init.headers,
-    },
-  }));
-
-  it("ends it at once, answers the app without the warning, and changes nothing the second time", async () => {
-    const appId = "legacy-disable";
-    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
-    clearIsolateCaches();
-    const install = await registerTestInstall(appId);
-    const token = await tokenForInstall(install);
-    upstream();
-    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
-
-    const disabled = await admin(`${appId}/legacy/unsigned_requests/disable`, { method: "POST" });
-    expect(disabled.status).toBe(200);
-    const body = await disabled.json<{ app: { id: string; warnings: unknown[]; revision: number } }>();
-    expect(body.app).toMatchObject({ id: appId, warnings: [], revision: 1 });
-    const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = ?").bind(appId).first();
-    expect(row).toEqual({ legacy: null });
-
-    // This isolate dropped its cached record, so the very next request is refused.
-    const refused = await send(await proxied(install, token, { proof: null }));
-    expect(refused.status).toBe(401);
-    await expect(errorOf(refused)).resolves.toMatchObject({ code: "assertion_required" });
-
-    const again = await admin(`${appId}/legacy/unsigned_requests/disable`, { method: "POST" });
-    expect(again.status).toBe(200);
-  });
-
-  it("refuses a mode that does not exist", async () => {
-    await seedApp("legacy-disable-unknown");
-    const response = await admin("legacy-disable-unknown/legacy/everything/disable", { method: "POST" });
-    expect(response.status).toBe(400);
-  });
-
-  /** One way: nothing writes a legacy mode, so none can be created or extended. */
-  it("is the only write that reaches legacy: app create and update refuse it", async () => {
-    await seedApp("legacy-write");
-    const { app } = await (await admin("legacy-write")).json<{
-      app: { name: string; config: Record<string, unknown>; revision: number };
+    const { app } = await (await admin()).json<{
+      app: { name: string; revision: number; config: { authentication: { app_attest: Record<string, unknown> } } };
     }>();
-    const legacy = { unsigned_requests: { until: "2099-01-31T00:00:00Z" } };
-    for (const body of [
-      { name: app.name, config: app.config, revision: app.revision, legacy },
-      { name: app.name, config: { ...app.config, legacy }, revision: app.revision },
-    ]) {
-      const refused = await admin("legacy-write", { method: "PUT", body: JSON.stringify(body) });
-      expect(refused.status).toBe(400);
-      await expect(errorOf(refused)).resolves.toMatchObject({ message: expect.stringContaining("legacy") });
-    }
-    for (const body of [
-      { name: "New app", config: app.config, legacy },
-      { name: "New app", config: { ...app.config, legacy } },
-    ]) {
-      const refused = await send(new Request(`${ORIGIN}/v1/admin/apps`, {
-        method: "POST",
-        headers: { authorization: "Bearer agw_mgmt_test-admin-secret", "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }));
-      expect(refused.status).toBe(400);
-    }
-    const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = 'legacy-write'").first();
-    expect(row).toEqual({ legacy: null });
-  });
-});
-
-describe("a failing last-seen write", () => {
-  /** The deployment's database, with the last-seen write failing and counted. */
-  function failingWrites(counter: { attempts: number }): D1Database {
-    return new Proxy(env.DB, {
-      get: (target, property, receiver) => property === "prepare"
-        ? (query: string) => {
-          if (!query.includes("SET unsigned_last_seen_at")) return target.prepare(query);
-          counter.attempts += 1;
-          return {
-            bind: () => ({ run: () => Promise.reject(new Error("D1 is not accepting writes")) }),
-          } as unknown as D1PreparedStatement;
-        }
-        : Reflect.get(target, property, receiver),
-    });
-  }
-
-  it("leaves the responses alone and is not retried on every request", async () => {
-    const appId = "legacy-seen-outage";
-    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
-    clearIsolateCaches();
-    const install = await registerTestInstall(appId);
-    const token = await tokenForInstall(install);
-    upstream();
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const counter = { attempts: 0 };
-    const bindings = new Proxy(env, {
-      get: (target, property, receiver) =>
-        property === "DB" ? failingWrites(counter) : Reflect.get(target, property, receiver),
-    }) as Env;
-    for (let index = 0; index < 5; index += 1) {
-      expect((await send(await proxied(install, token, { proof: null }), bindings)).status).toBe(200);
-    }
-    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
-    expect(counter.attempts).toBe(1);
-  });
-
-  it("backs off five minutes, doubling, and writes again once the backoff has passed", async () => {
-    const appId = "legacy-seen-backoff";
-    await seedApp(appId);
-    clearIsolateCaches();
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const counter = { attempts: 0 };
-    const db = failingWrites(counter);
-    const record = { id: appId, unsignedLastSeenAt: null };
-    const start = Date.now();
-    const minute = 60_000;
-    await noteUnsignedRequest(db, record, start);
-    expect(counter.attempts).toBe(1);
-    // Inside the first backoff, nothing is tried.
-    await noteUnsignedRequest(db, record, start + 1_000);
-    await noteUnsignedRequest(db, record, start + 4 * minute);
-    expect(counter.attempts).toBe(1);
-    // Past it, one more try, which fails and doubles the wait.
-    await noteUnsignedRequest(db, record, start + 5 * minute);
-    expect(counter.attempts).toBe(2);
-    await noteUnsignedRequest(db, record, start + 14 * minute);
-    expect(counter.attempts).toBe(2);
-    await noteUnsignedRequest(db, record, start + 15 * minute);
-    expect(counter.attempts).toBe(3);
-    // Once D1 takes writes again, the next try past the backoff lands.
-    await noteUnsignedRequest(env.DB, record, start + 35 * minute);
-    const row = await env.DB.prepare("SELECT unsigned_last_seen_at AS at FROM app WHERE id = ?")
-      .bind(appId).first<{ at: string | null }>();
-    expect(row?.at).toBe(new Date(start + 35 * minute).toISOString());
-  });
-});
-
-describe("the cached app record and a disable that races a read", () => {
-  it("never lets a read that began before the disable put the mode back", async () => {
-    const appId = "legacy-read-race";
-    await seedApp(appId);
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
     clearIsolateCaches();
     // A read whose answer is held back until the test releases it, having
-    // already been read from D1 with the mode enabled.
+    // already been read from D1 with the old configuration.
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let read!: () => void;
@@ -881,24 +658,29 @@ describe("the cached app record and a disable that races a read", () => {
       get: (target, property, receiver) => property === "DB" ? slowDb : Reflect.get(target, property, receiver),
     }) as Env;
 
+    const verifyOn = (record: Awaited<ReturnType<typeof loadApp>>) =>
+      record.config.authentication.type === "apple_app_attest"
+        ? record.config.authentication.app_attest.verify_on
+        : null;
     const stale = loadApp(slow, appId);
     await readDone;
-    // The disable commits and invalidates while that read is still out.
-    const disabled = await send(new Request(`${ORIGIN}/v1/admin/apps/${appId}/legacy/unsigned_requests/disable`, {
-      method: "POST",
-      headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
-    }));
-    expect(disabled.status).toBe(200);
+    // The update commits and invalidates while that read is still out.
+    app.config.authentication.app_attest.verify_on = "every_request";
+    const updated = await admin({
+      method: "PUT",
+      body: JSON.stringify({ name: app.name, config: app.config, revision: app.revision }),
+    });
+    expect(updated.status).toBe(200);
     release();
     // The read in flight answers what it read...
-    expect(legacyMode(await stale, "unsigned_requests")).not.toBeNull();
-    // ...but did not cache it: the next request sees the mode gone.
+    expect(verifyOn(await stale)).toBe("token_exchange");
+    // ...but did not cache it: the next request sees the update.
     expect(appConfigCache.peek(appId)).toBeUndefined();
-    expect(legacyMode(await loadApp(env, appId), "unsigned_requests")).toBeNull();
+    expect(verifyOn(await loadApp(env, appId))).toBe("every_request");
   });
 
   it("measures the cached record's window from the read's start", async () => {
-    const appId = "legacy-read-window";
+    const appId = "app-read-window";
     await seedApp(appId);
     clearIsolateCaches();
     const before = Date.now();

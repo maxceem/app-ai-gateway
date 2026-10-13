@@ -273,7 +273,7 @@ const GatewayClientHeadersSchema = z.object({
   }),
   "x-appattest-proof": z.string().regex(/^v1\.[0-9]{1,12}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/).optional().meta({
     description:
-      "Required on every request an App Attest application's gateway token is sent with; ignored, and never forwarded, for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds within five minutes of the gateway's clock, 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 2.x computes it.",
+      "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 2.0 or later computes it.",
   }),
   "x-end-user-id": z.string().optional().meta({
     description: "Optional configured end-user identity for issuer-less API-key applications.",
@@ -431,7 +431,7 @@ export const CATALOG = {
     path: "/v1/apps/{app}/auth/token",
     tags: ["Application authentication"],
     summary: "Exchange issuer identity and client proof for a gateway token",
-    description: "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
+    description: "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
     security: "public",
     params: APP_PARAM,
     request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
@@ -445,7 +445,7 @@ export const CATALOG = {
     path: "/v1/apps/{app}/me",
     tags: ["Application"],
     summary: "Get the current user's limits, spend and block state",
-    description: "On an App Attest application the request limits and, by default, the budget are the install's; install_id names it. Signed with X-AppAttest-Proof like every other request with an App Attest gateway token.",
+    description: "On an App Attest application the request limits and, by default, the budget are the install's; install_id names it. Signed with X-AppAttest-Proof like every other request where the application verifies App Attest on every request.",
     security: "gateway",
     params: APP_PARAM,
     headers: GatewayClientHeadersSchema,
@@ -719,21 +719,6 @@ export const CATALOG = {
     response: AppDeleteResponseSchema,
     responseDescription:
       "Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.",
-  },
-
-  disableAppLegacyMode: {
-    method: "POST",
-    path: "/v1/admin/apps/{app}/legacy/{mode}/disable",
-    tags: ["Admin applications"],
-    summary: "Disable one of an application's legacy modes",
-    description: "Ends a legacy mode now rather than on its date, and answers the application with its warnings recomputed. One way: no operation creates or extends a legacy mode. Disabling unsigned_requests refuses every App Attest request without an X-AppAttest-Proof from then on (within the 60 second configuration cache), so do it only once every build in use is on the AppAIGateway Swift package 2.x. Disabling a mode the application is not in changes nothing.",
-    security: "management",
-    params: {
-      app: { example: "my-app" },
-      mode: { example: "unsigned_requests", pattern: /^unsigned_requests$/ },
-    },
-    response: AppResponseSchema,
-    responseDescription: "The application, with the mode gone from its warnings.",
   },
 
   listManagementKeys: {

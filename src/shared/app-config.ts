@@ -26,6 +26,7 @@ import type { OutputClampStyle } from "./capabilities.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
+  APP_ATTEST_VERIFY_ON,
   BUDGET_SCOPES,
   DEFAULT_END_USER_HEADER,
   ENDPOINT_SLUG,
@@ -42,6 +43,7 @@ export type {
   ApiKeyEndUser,
   AppAttestEndUser,
   AppAttestEnvironment,
+  AppAttestVerifyOn,
   AppConfig,
   AppConfigInput,
   AppleAppAttestAuthentication,

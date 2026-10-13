@@ -88,12 +88,7 @@ describe("initial database migration", () => {
       "status",
       "created_at",
       "updated_at",
-      // Legacy modes and their last-seen signal; see src/client-auth/legacy.ts.
-      "legacy",
-      "unsigned_last_seen_at",
     ]);
-    expect(appColumns.results.find((column) => column.name === "legacy"))
-      .toMatchObject({ notnull: 0, dflt_value: null });
     expect(appColumns.results.find((column) => column.name === "auth_type"))
       .toMatchObject({ notnull: 1, dflt_value: null });
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
@@ -404,40 +399,57 @@ describe("initial database migration", () => {
 
   /**
    * Every App Attest application that exists when migration 0006 lands has
-   * builds on the 1.x Swift package in its users' hands, so it is enrolled in
-   * the unsigned_requests legacy mode for ninety days. The statement is run
-   * here again, exactly as the migration holds it, over rows that predate it.
+   * builds on the 1.x Swift package in its users' hands, which sign no
+   * request, so it is set to verify App Attest on the token exchange. The
+   * statement is run here again, exactly as the migration holds it, over rows
+   * that predate it.
    */
-  it("enrolls existing App Attest apps in unsigned_requests for ninety days, and no server app", async () => {
+  it("sets existing App Attest apps to verify on the token exchange, and leaves server apps alone", async () => {
     await seedProviderOrganization();
-    const enroll = env.TEST_MIGRATIONS
+    const flip = env.TEST_MIGRATIONS
       .find((migration) => migration.name.startsWith("0006_"))!
-      .queries.find((query) => query.includes("SET `legacy` = json_object"));
-    expect(enroll).toBeDefined();
-    const insert = (id: string, type: string, legacy: string | null) => env.DB.prepare(
-      `INSERT INTO app(id, organization_id, name, config_json, auth_type, legacy)
-       VALUES (?, 'org-providers', ?, ?, ?, ?)`,
-    ).bind(id, id, JSON.stringify({ authentication: { type } }), type, legacy);
-    const kept = JSON.stringify({ unsigned_requests: { until: "2030-01-01T00:00:00Z" } });
+      .queries.find((query) => query.includes("'$.authentication.app_attest.verify_on', 'token_exchange'"));
+    expect(flip).toBeDefined();
+    const ios = (verifyOn?: string) => JSON.stringify({
+      authentication: {
+        type: "apple_app_attest",
+        app_attest: {
+          team_id: "AAAAAAAAAA",
+          bundle_id: "com.example.flip",
+          environments: ["production"],
+          ...(verifyOn === undefined ? {} : { verify_on: verifyOn }),
+        },
+        end_user: { source: "app_install" },
+      },
+    });
+    const server = JSON.stringify({ authentication: { type: "api_key", end_user: { source: "none" } } });
+    const insert = (id: string, type: string, config: string) => env.DB.prepare(
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type)
+       VALUES (?, 'org-providers', ?, ?, ?)`,
+    ).bind(id, id, config, type);
     await env.DB.batch([
-      insert("enrol-ios", "apple_app_attest", null),
-      insert("enrol-ios-set", "apple_app_attest", kept),
-      insert("enrol-server", "api_key", null),
+      insert("flip-ios", "apple_app_attest", ios()),
+      insert("flip-ios-set", "apple_app_attest", ios("every_request")),
+      insert("flip-server", "api_key", server),
     ]);
-    await env.DB.prepare(enroll!).run();
+    await env.DB.prepare(flip!).run();
 
-    const legacyOf = async (id: string) => (await env.DB.prepare("SELECT legacy FROM app WHERE id = ?")
-      .bind(id).first<{ legacy: string | null }>())!.legacy;
-    const enrolled = JSON.parse((await legacyOf("enrol-ios"))!) as { unsigned_requests: { until: string } };
-    expect(enrolled.unsigned_requests.until).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u);
-    const days = (Date.parse(enrolled.unsigned_requests.until) - Date.now()) / 86_400_000;
-    expect(days).toBeGreaterThan(89.9);
-    expect(days).toBeLessThan(90.1);
-    // A mode already set is left alone, and a server app sends no proof to miss.
-    expect(await legacyOf("enrol-ios-set")).toBe(kept);
-    expect(await legacyOf("enrol-server")).toBeNull();
+    const configOf = async (id: string) => JSON.parse((await env.DB.prepare("SELECT config_json FROM app WHERE id = ?")
+      .bind(id).first<{ config_json: string }>())!.config_json) as {
+      authentication: { app_attest?: Record<string, unknown> };
+    };
+    // Only the field is added: the rest of the stored document is untouched.
+    expect((await configOf("flip-ios")).authentication.app_attest).toEqual({
+      team_id: "AAAAAAAAAA",
+      bundle_id: "com.example.flip",
+      environments: ["production"],
+      verify_on: "token_exchange",
+    });
+    // A value already written is kept, and a server app has nothing to verify.
+    expect((await configOf("flip-ios-set")).authentication.app_attest?.verify_on).toBe("every_request");
+    expect(await configOf("flip-server")).toEqual(JSON.parse(server));
     // Minimal rows no reader could parse: gone before anything else meets them.
-    await env.DB.prepare("DELETE FROM app WHERE id IN ('enrol-ios', 'enrol-ios-set', 'enrol-server')").run();
+    await env.DB.prepare("DELETE FROM app WHERE id IN ('flip-ios', 'flip-ios-set', 'flip-server')").run();
   });
 
   it("keeps an install's spend beside its user's, and changes both on a reprice", async () => {

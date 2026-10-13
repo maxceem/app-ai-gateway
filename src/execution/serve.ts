@@ -32,7 +32,6 @@ import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../providers/provider-store";
 import { readBodyLimited } from "../providers/request-body";
-import { noteUnsignedRequest } from "../client-auth/legacy";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "../middleware/request-scope";
 import { admitRequest } from "./admission";
@@ -69,7 +68,6 @@ async function authenticated(
   identity: GatewayIdentity;
   credentialHeader: string;
   assertionCounter: number | null;
-  responseHeaders: Record<string, string>;
 }> {
   const start = performance.now();
   const appId = c.req.param("app");
@@ -88,7 +86,7 @@ async function authenticated(
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);
-  const { identity, credential, assertionCounter, responseHeaders, unsignedLegacy } = await authenticateRequest({
+  const { identity, credential, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,
     request: c.req.raw,
@@ -97,25 +95,10 @@ async function authenticated(
     providers,
   });
   timings.authMs = performance.now() - start;
-  // From here on every answer, refusals included, carries what the request
-  // was accepted under.
-  if (Object.keys(responseHeaders).length > 0) c.set("responseHeaders", responseHeaders);
-  // Whether old builds are still calling is what tells a person when the
-  // legacy mode can go; recorded at most once an hour per app.
-  if (unsignedLegacy) c.executionCtx.waitUntil(noteUnsignedRequest(c.env.DB, app));
   if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
-  return { app, identity, credentialHeader: credential.headerName, assertionCounter, responseHeaders };
-}
-
-/** A response with `headers` added, its body passed through untouched. */
-export function withResponseHeaders(response: Response, headers: Record<string, string>): Response {
-  const entries = Object.entries(headers);
-  if (entries.length === 0) return response;
-  const answered = new Response(response.body, response);
-  for (const [name, value] of entries) answered.headers.set(name, value);
-  return answered;
+  return { app, identity, credentialHeader: credential.headerName, assertionCounter };
 }
 
 async function serve(
@@ -126,7 +109,7 @@ async function serve(
   const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
   c.set("servedTimings", timings);
   const body = bodyOnce(c.req.raw);
-  const { app, identity, credentialHeader, assertionCounter, responseHeaders } =
+  const { app, identity, credentialHeader, assertionCounter } =
     await authenticated(c, timings, providerSlug, body);
   const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
   const appVersion = c.req.header("x-app-version") ?? null;
@@ -147,10 +130,7 @@ async function serve(
       timings.limiterMs = durationMs;
     },
   );
-  return withResponseHeaders(
-    await execute(plan, { env: c.env, app, identity, appVersion, timings, waitUntil }),
-    responseHeaders,
-  );
+  return execute(plan, { env: c.env, app, identity, appVersion, timings, waitUntil });
 }
 
 /** `/v1/apps/:app/proxy/:provider/*`: the client names the provider and its path. */

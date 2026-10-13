@@ -61,7 +61,7 @@ function key(secret: string): Promise<CryptoKey> {
 /**
  * What a gateway token says: one user of one application, and how they proved
  * it — the API key it was minted from, or the App Attest key of the install
- * that signs every request it is sent with.
+ * it was minted for.
  */
 export type GatewayTokenClaims =
   | { appId: string; userId: string; authMethod: "api_key"; apiKeyId?: string }
@@ -78,9 +78,10 @@ export async function issueGatewayToken(
     app: claims.appId,
     auth_method: claims.authMethod,
     ...(claims.authMethod === "api_key" && claims.apiKeyId !== undefined ? { api_key_id: claims.apiKeyId } : {}),
-    // The install is the App Attest key id: every request this token is sent
-    // with has to carry an assertion that key signed, so a copied token is
-    // worth nothing without the device it was minted on.
+    // The install is the App Attest key id: limits and budgets count per
+    // install, and where the application verifies every request, each one
+    // has to carry an assertion that key signed, so a copied token is worth
+    // nothing without the device it was minted on.
     ...(claims.authMethod === "attest" ? { install: claims.installId } : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
@@ -95,18 +96,17 @@ export async function issueGatewayToken(
 /**
  * A gateway token's identity, or `401 auth_required`.
  *
- * An attest token must name its install. `legacyAttest` is the one exception:
- * a token minted before installs existed, accepted only for an application
- * in the `unsigned_requests` legacy mode and only on a
- * request that carries no proof, so a shipped 1.x client is not locked out for
- * the hour its token has left after the gateway is updated. It comes back with
- * a null `installId`.
+ * An attest token must name its install. `installOptional` is the one
+ * exception: a token minted before tokens named their install, accepted only
+ * for an App Attest application whose `verify_on` is `token_exchange`, so a
+ * shipped 1.x client is not locked out for the hour its token has left after
+ * the gateway is updated. It comes back with a null `installId`.
  */
 export async function verifyGatewayToken(
   token: string,
   secret: string,
   expectedAppId: string,
-  options: { legacyAttest?: boolean } = {},
+  options: { installOptional?: boolean } = {},
 ): Promise<GatewayIdentity> {
   try {
     const { payload, protectedHeader } = await jwtVerify(token, await key(secret), {
@@ -126,7 +126,7 @@ export async function verifyGatewayToken(
       // An attest token names its install, and only an attest token does.
       (payload.auth_method === "attest"
         ? payload.install === undefined
-          ? options.legacyAttest !== true
+          ? options.installOptional !== true
           : typeof payload.install !== "string" || payload.install.length === 0
         : payload.install !== undefined)
     ) {

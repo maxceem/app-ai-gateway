@@ -1042,24 +1042,6 @@ describe("MCP direct changes", () => {
     const stranger = await account("mcp-revoke-stranger@example.test");
     expectRefusal(await callTool(stranger.key, "block_app_user", { app: owner.app, user: "mcp-blocked" }), "app_not_found");
   });
-
-  it("disables a legacy mode with the manage grant only, and says so in the summary", async () => {
-    const owner = await withApp("mcp-legacy@example.test");
-    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
-      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), owner.app).run();
-    const read = await callTool(owner.read, "get_app", { app: owner.app });
-    expect(read.structuredContent.app.warnings).toEqual([expect.objectContaining({ legacy: "unsigned_requests" })]);
-    expectRefusal(
-      await callTool(owner.read, "disable_app_legacy_mode", { app: owner.app, mode: "unsigned_requests" }),
-      "grant_insufficient",
-    );
-    const disabled = await callTool(owner.key, "disable_app_legacy_mode", { app: owner.app, mode: "unsigned_requests" });
-    expect(disabled.isError, disabled.content[0]?.text).toBeFalsy();
-    expect(disabled.structuredContent.app.warnings).toEqual([]);
-    expect(disabled.content[0]?.text).toContain("0 warnings");
-    const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = ?").bind(owner.app).first();
-    expect(row).toEqual({ legacy: null });
-  });
 });
 
 describe("MCP result redaction", () => {
@@ -1407,11 +1389,6 @@ describe("MCP every change tool", () => {
         tool: "unblock_app_user",
         args: () => ({ app: state.app.id, user: "every-user" }),
         after: (result) => expect(result.structuredContent.blocked).toBe(false),
-      },
-      {
-        tool: "disable_app_legacy_mode",
-        args: () => ({ app: state.app.id, mode: "unsigned_requests" }),
-        after: (result) => expect(result.structuredContent.app.warnings).toEqual([]),
       },
       {
         tool: "remove_app",

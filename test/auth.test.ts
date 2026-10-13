@@ -107,7 +107,9 @@ describe("issuer-backed API key exchange", () => {
     });
 
     expect(response.status).toBe(200);
-    const body = await response.json<{ access_token: string }>();
+    const body = await response.json<{ access_token: string; verify_on?: string }>();
+    // Only an App Attest application has a verify_on to report.
+    expect(body).not.toHaveProperty("verify_on");
     await expect(
       verifyGatewayToken(body.access_token, env.JWT_SECRET, "api-key-success"),
     ).resolves.toMatchObject({
@@ -944,10 +946,32 @@ describe("App Attest token exchange and installs", () => {
       assertion: await assertionFor(install, value, 1),
     });
     expect(response.status).toBe(200);
-    const { access_token } = await response.json<{ access_token: string }>();
+    const { access_token, verify_on } = await response.json<{ access_token: string; verify_on?: string }>();
+    expect(verify_on).toBe("every_request");
     expect(claims(access_token)).toMatchObject({ sub: "install-key-1", install: "install-key-1", auth_method: "attest" });
     await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
       .resolves.toMatchObject({ installId: "install-key-1", userId: "install-key-1" });
+  });
+
+  it("verifies the assertion and names the install on token_exchange too, and says so", async () => {
+    const appId = "exchange-token-exchange";
+    await seedApp(appId, { endUser: "app_install", verifyOn: "token_exchange" });
+    const install = await registerTestInstall(appId, "te-key", { keyId: "te-key" });
+    const first = await challenge(appId);
+    const response = await exchangeToken(appId, {
+      key_id: install.keyId, challenge: first, assertion: await assertionFor(install, first, 3),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json<{ access_token: string; verify_on?: string }>();
+    expect(body.verify_on).toBe("token_exchange");
+    expect(claims(body.access_token)).toMatchObject({ install: "te-key", auth_method: "attest" });
+    // The exchange still spends the counter: a replay is refused as anywhere.
+    const second = await challenge(appId);
+    const replay = await exchangeToken(appId, {
+      key_id: install.keyId, challenge: second, assertion: await assertionFor(install, second, 3),
+    });
+    expect(replay.status).toBe(403);
+    await expect(replay.json()).resolves.toMatchObject({ error: { code: "attest_failed" } });
   });
 
   it("refuses a replayed counter through the install's limiter", async () => {

@@ -260,6 +260,8 @@ describe("an iOS application", () => {
         team_id: "ABCDE12345",
         bundle_id: "com.example.calories",
         environments: ["production"],
+        // A new app verifies App Attest on every request.
+        verify_on: "every_request",
       },
       end_user: { source: "app_install" },
     });
@@ -307,6 +309,8 @@ describe("an iOS application", () => {
         team_id: "ABCDE12345",
         bundle_id: "com.example.calories",
         environments: ["production"],
+        // A new app verifies App Attest on every request.
+        verify_on: "every_request",
       },
       end_user: {
         source: "issuer",

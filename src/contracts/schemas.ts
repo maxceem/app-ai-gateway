@@ -24,6 +24,12 @@ import { APP_STATUSES } from "../shared/app-status.ts";
 export const ISSUER_PROVIDERS = ["firebase", "supabase", "auth0", "clerk", "custom"] as const;
 export const ENTITLEMENT_CHECKS = ["revenuecat", "custom"] as const;
 export const APP_ATTEST_ENVIRONMENTS = ["production", "development"] as const;
+/**
+ * When an App Attest application's assertions are verified: on every gateway
+ * request, each carrying its own `X-AppAttest-Proof`, or only at the token
+ * exchange, after which requests carry the hourly gateway token alone.
+ */
+export const APP_ATTEST_VERIFY_ON = ["every_request", "token_exchange"] as const;
 export const DEFAULT_END_USER_HEADER = "x-end-user-id";
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -304,6 +310,19 @@ const AppleAppAttestAuthenticationSchema = z.object({
         error: "environments cannot repeat a value",
       })
       .prefault(["production"]),
+    /**
+     * Where the install's App Attest key proves itself. `every_request`, the
+     * default, binds every gateway request to the device: each one carries
+     * an assertion over that very request, so a copied token is worthless.
+     * `token_exchange` checks the assertion only when the hourly gateway
+     * token is minted, and requests then carry the token alone; limits and
+     * budgets still count per install, because the token names it.
+     */
+    verify_on: z.enum(APP_ATTEST_VERIFY_ON, {
+      error: "verify_on must be one of every_request, token_exchange",
+    }).default("every_request").meta({
+      description: "When the install's App Attest assertion is verified. every_request (the default): every gateway request carries X-AppAttest-Proof, a fresh assertion over that request; needs the AppAIGateway Swift package 2.0 or later. token_exchange: the assertion is verified once, when the hourly gateway token is exchanged, and requests carry only the token.",
+    }),
   }).strict(),
 }).strict();
 
@@ -954,6 +973,7 @@ export type AppAttestEndUser = z.output<typeof AppAttestEndUserSchema>;
 /** Every way an application of either type can identify its end users, `none` included. */
 export type EndUserSource = (ApiKeyEndUser | AppAttestEndUser)["source"];
 export type AppAttestEnvironment = (typeof APP_ATTEST_ENVIRONMENTS)[number];
+export type AppAttestVerifyOn = (typeof APP_ATTEST_VERIFY_ON)[number];
 export type AuthenticationConfig = AppConfig["authentication"];
 /** The same block as a client may send it, which is what a half-filled form is. */
 export type AuthenticationConfigInput = AppConfigInput["authentication"];

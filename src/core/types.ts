@@ -4,7 +4,6 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 import type { AppStatus } from "../shared/app-status.ts";
-import type { AppLegacy } from "../client-auth/legacy.ts";
 
 /** How a client first proved itself to an application: an API key, or an App Attest key. */
 export type AuthMethod = "attest" | "api_key";
@@ -27,13 +26,6 @@ export interface AppRecord {
   status: AppStatus;
   revision: number;
   config: AppConfig;
-  /**
-   * The legacy modes the application is in, parsed once with the
-   * configuration and cached with it. Never part of `config`.
-   */
-  legacy: AppLegacy;
-  /** When a request was last served under `unsigned_requests`, if ever. */
-  unsignedLastSeenAt: string | null;
 }
 
 export interface GatewayIdentity {
@@ -53,7 +45,9 @@ export interface GatewayIdentity {
   /**
    * The App Attest key id of the install this request came from, which an
    * attest gateway token carries; null for server applications, which have no
-   * install. Under `app_install` it equals `userId`.
+   * install, and for an attest token minted before tokens named their install,
+   * which only a `token_exchange` application accepts. Under `app_install` it
+   * equals `userId`.
    */
   installId: string | null;
 }

@@ -324,6 +324,18 @@ describe("the application configuration grammar", () => {
         .toThrowError("authentication.app_attest.environments");
     });
 
+    it("verifies on every request unless the configuration says token_exchange", () => {
+      // A stored configuration without the field reads the default too.
+      expect(parsedAttest(appleConfig()).verify_on).toBe("every_request");
+      expect(parsedAttest(appleConfig({ verify_on: "token_exchange" })).verify_on).toBe("token_exchange");
+      expect(parsedAttest(appleConfig({ verify_on: "every_request" })).verify_on).toBe("every_request");
+    });
+
+    it.each(["sometimes", "", null, true])("refuses verify_on %s", (verify_on) => {
+      expect(() => parseAppConfig(appleConfig({ verify_on })))
+        .toThrowError("verify_on must be one of every_request, token_exchange");
+    });
+
     // Moved here from the CLI, which was the only thing that ever checked them.
     it.each(["abcde12345", "AAAAAAAAA", "AAAAAAAAAAA", ""])(
       "refuses the team id %s",
@@ -999,8 +1011,6 @@ describe("how each configuration authenticates its clients", () => {
     status: "active",
     revision: 1,
     config: parseAppConfig(serverConfig({ authentication })),
-    legacy: {},
-    unsignedLastSeenAt: null,
   });
   const summary = (authentication: Record<string, unknown>) => {
     const { exchange, tokenHeader, consumedHeaders } = auth(authentication);
@@ -1009,7 +1019,8 @@ describe("how each configuration authenticates its clients", () => {
 
   it("settles the five configurations into three ways of authenticating", () => {
     // The App Attest proof header is consumed everywhere: required beside an
-    // attest token, ignored beside anything else, and forwarded never.
+    // attest token where App Attest is verified on every request, ignored
+    // anywhere else, and forwarded never.
     expect(summary({ type: "api_key", end_user: { source: "none" } }))
       .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
     expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
@@ -1020,6 +1031,20 @@ describe("how each configuration authenticates its clients", () => {
       .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token", "x-appattest-proof"] });
     expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "app_install" } }))
       .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
+  });
+
+  it("asks for a per-request proof only where App Attest is verified on every request", () => {
+    const attest = (verifyOn?: string) => auth({
+      type: "apple_app_attest",
+      app_attest: { ...appAttest, ...(verifyOn === undefined ? {} : { verify_on: verifyOn }) },
+      end_user: { source: "app_install" },
+    });
+    expect(attest().verifiesEveryRequest).toBe(true);
+    expect(attest("every_request").verifiesEveryRequest).toBe(true);
+    expect(attest("token_exchange").verifiesEveryRequest).toBe(false);
+    // Still consumed where it is not checked: never forwarded upstream.
+    expect(attest("token_exchange").consumedHeaders).toEqual(["x-appattest-proof"]);
+    expect(auth({ type: "api_key", end_user: { source: "none" } }).verifiesEveryRequest).toBe(false);
   });
 
   it("refuses a request that names no end user before verifying its credential", () => {

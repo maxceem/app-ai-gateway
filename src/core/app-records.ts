@@ -6,7 +6,6 @@ import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
 import { isAppStatus } from "../shared/app-status";
 import type { AppRecord } from "./types";
-import { parseLegacy } from "../client-auth/legacy";
 
 const CONFIG_CACHE_TTL_MS = 60_000;
 
@@ -32,9 +31,6 @@ export const appConfigCache = ttlCache<string, AppRecord>({
 type AppColumns = Pick<typeof app.$inferSelect, "id" | "organizationId" | "name" | "revision"> & {
   config: unknown;
   status: string;
-  /** Absent where a caller selected only the configuration's columns; read as no legacy mode. */
-  legacy?: string | null;
-  unsignedLastSeenAt?: string | null;
 };
 
 /**
@@ -57,8 +53,6 @@ export function appRecordFromRow(row: AppColumns): AppRecord {
       status,
       revision: row.revision,
       config: parseAppConfig(row.config),
-      legacy: parseLegacy(row.id, row.legacy),
-      unsignedLastSeenAt: row.unsignedLastSeenAt ?? null,
     };
   } catch (error) {
     if (error instanceof ConfigError) {
@@ -83,8 +77,8 @@ export function storedAppFromRow(
 /**
  * Bumped by every invalidation in this isolate. A read captures it when it
  * starts and caches its answer only if no invalidation happened meanwhile:
- * otherwise a read that began before a write committed — disabling a legacy
- * mode, say — could finish after the write's invalidation and put the old
+ * otherwise a read that began before a write committed — an update that
+ * switches `verify_on`, say — could finish after the write's invalidation and put the old
  * record back for a whole TTL. One counter for every app, because an
  * invalidation is rare and a read that skips the cache once costs one more
  * read, never a wrong answer.

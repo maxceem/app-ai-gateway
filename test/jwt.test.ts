@@ -49,11 +49,11 @@ describe("gateway JWT auth method", () => {
       .resolves.toMatchObject({ authMethod: "attest", installId: "key-1" });
     await expect(verifyGatewayToken(await sign({ auth_method: "api_key" }), secret, "method-app"))
       .resolves.toMatchObject({ authMethod: "api_key", installId: null });
-    // Only a caller that may accept an unsigned request lets an install-less
-    // attest token through, and never an empty install.
-    await expect(verifyGatewayToken(await sign({ auth_method: "attest" }), secret, "method-app", { legacyAttest: true }))
+    // Only an application that verifies App Attest on the token exchange lets
+    // an install-less attest token through, and never an empty install.
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest" }), secret, "method-app", { installOptional: true }))
       .resolves.toMatchObject({ authMethod: "attest", installId: null });
-    await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "" }), secret, "method-app", { legacyAttest: true }))
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "" }), secret, "method-app", { installOptional: true }))
       .rejects.toMatchObject({ status: 401, code: "auth_required" });
   });
 

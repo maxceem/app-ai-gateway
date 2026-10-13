@@ -126,22 +126,6 @@ export const app = sqliteTable(
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
-    /**
-     * The legacy modes this application is in, as JSON
-     * `{ "<mode>": { "until": "<ISO UTC>" } }`: behaviour the gateway keeps
-     * for it for a while after moving on, each until a date. Set by migration
-     * 0006 or by hand in D1; the API can only remove a mode, never add or
-     * extend one. Not part of the configuration; `src/client-auth/legacy.ts`
-     * is its reader.
-     */
-    legacy: text("legacy"),
-    /**
-     * When the application last served a request under the
-     * `unsigned_requests` legacy mode, written at most once an hour, so the
-     * person deciding whether to disable it can see whether old builds are
-     * still calling.
-     */
-    unsignedLastSeenAt: text("unsigned_last_seen_at"),
   },
   (table) => [
     index("idx_apps_organization_id").on(table.organizationId),

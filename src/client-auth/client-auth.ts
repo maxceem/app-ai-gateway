@@ -13,9 +13,7 @@
  */
 
 import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys";
-import { deprecationHeaders, legacyMode } from "./legacy";
 import { GatewayError } from "../core/errors";
-import { log } from "../core/log";
 import { verifyGatewayToken } from "./gateway-token";
 import { PROOF_HEADER, verifyRequestProof } from "./request-proof";
 import { organizationProviders, type OrganizationProviders } from "../providers/provider-store";
@@ -128,6 +126,13 @@ export interface ClientAuth {
    */
   readonly consumedHeaders: readonly string[];
   /**
+   * Whether every request an attest gateway token is sent with must carry an
+   * `X-AppAttest-Proof`: an App Attest application whose `verify_on` is
+   * `every_request`. Where it is `token_exchange`, the assertion was verified
+   * when the token was minted, and the token alone authenticates a request.
+   */
+  readonly verifiesEveryRequest: boolean;
+  /**
    * The verification a request's credential needs, ready to start. Whatever
    * the request must name besides its credential is read before anything is
    * verified — a request that names no user is refused for that, not for its
@@ -139,7 +144,6 @@ export interface ClientAuth {
     appId: string,
     headers: Headers,
     credential: RequestCredential,
-    options?: { legacyAttest?: boolean },
   ): () => Promise<GatewayIdentity>;
 }
 
@@ -152,6 +156,7 @@ function apiKeyAuth(endUserHeader: string | null): ClientAuth {
   return {
     exchange: null,
     tokenHeader: undefined,
+    verifiesEveryRequest: false,
     // A proof sent to a server application is ignored, and never forwarded.
     consumedHeaders: endUserHeader === null ? [PROOF_HEADER] : [endUserHeader, PROOF_HEADER],
     verifier(env, appId, headers, credential) {
@@ -168,19 +173,28 @@ function apiKeyAuth(endUserHeader: string | null): ClientAuth {
  */
 function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication | undefined): ClientAuth {
   const tokenHeader = issuer?.token_header?.toLowerCase();
-  // The proof a token minted by an exchange answers to: App Attest's, signed
-  // per request, or the API key it names.
+  // The proof a token minted by an exchange answers to: App Attest's, or the
+  // API key it names.
   const authMethod = exchange.type === "app_attest" ? "attest" : "api_key";
+  const verifiesEveryRequest = exchange.type === "app_attest"
+    && exchange.authentication.app_attest.verify_on === "every_request";
+  // A token minted before tokens named their install can still be good for
+  // the hour it was issued for, and only an application that never checks a
+  // per-request proof can take it: there is no install to check one against.
+  const tokenOptions = { installOptional: exchange.type === "app_attest" && !verifiesEveryRequest };
   return {
     exchange,
     tokenHeader,
+    verifiesEveryRequest,
+    // Consumed in either mode: a proof sent where none is checked is ignored,
+    // and never forwarded.
     consumedHeaders: tokenHeader === undefined ? [PROOF_HEADER] : [tokenHeader, PROOF_HEADER],
-    verifier(env, appId, _headers, credential, options = {}) {
+    verifier(env, appId, _headers, credential) {
       return async () => {
-        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId, options);
+        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId, tokenOptions);
         // A token minted by the exchange this application used to run, before
         // its authentication changed, is not one it would mint now: an API-key
-        // token on an App Attest application would skip the per-request proof,
+        // token on an App Attest application would skip App Attest altogether,
         // and an attest token on an API-key one would skip the key's revocation.
         if (identity.authMethod !== authMethod) {
           throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
@@ -237,27 +251,17 @@ export interface AuthenticatedRequest {
   /**
    * The counter of the App Attest assertion the request was signed with, for
    * the install's limiter to accept or refuse as a replay. Null where nothing
-   * was signed: a server application, or a request accepted without a proof
-   * in the `unsigned_requests` legacy mode.
+   * was signed: a server application, or an App Attest one that verifies on
+   * the token exchange.
    */
   assertionCounter: number | null;
-  /**
-   * Response headers the request must be answered with: the deprecation
-   * notice of a request accepted in a legacy mode. Empty otherwise.
-   */
-  responseHeaders: Record<string, string>;
-  /**
-   * Whether the request was accepted unsigned under the `unsigned_requests`
-   * legacy mode, which the caller records with `noteUnsignedRequest` once it
-   * has a `waitUntil` to record it from.
-   */
-  unsignedLegacy: boolean;
 }
 
 /**
  * Authenticates one client request against its application: which credential
  * it carried, whose identity that credential proves and, for an App Attest
- * application, that the install's key signed this very request.
+ * application that verifies on every request, that the install's key signed
+ * this very request.
  *
  * `providerSlug` is the proxied provider, where the route names one; it is read
  * only when `authorization` carried nothing, because that is when the provider
@@ -288,38 +292,24 @@ export async function authenticateRequest(input: {
     auth,
     await providerTypeForHeader(env, app.organizationId, input.providerSlug, input.providers),
   );
-  const header = headers.get(PROOF_HEADER);
-  // Only where the request could be accepted unsigned anyway: a token from
-  // before installs existed has no install for a proof to be checked against.
-  const unsigned = header === null ? legacyMode(app, "unsigned_requests") : null;
-  const verify = auth.verifier(env, app.id, headers, credential, { legacyAttest: unsigned !== null });
+  const verify = auth.verifier(env, app.id, headers, credential);
   const [verified] = await Promise.allSettled([verify(), input.providers ?? Promise.resolve()]);
   if (verified.status === "rejected") throw verified.reason;
   const identity = verified.value;
-  // Only an attest token is signed per request; anything else proved itself
-  // with its credential alone, and a proof header beside it is ignored.
-  if (identity.authMethod !== "attest") {
-    return { identity, credential, assertionCounter: null, responseHeaders: {}, unsignedLegacy: false };
+  // Only an attest token on an application that verifies every request is
+  // signed per request; anything else proved itself with its credential
+  // alone, and a proof header beside it is ignored: not verified, and its
+  // counter never reaches the install's limiter.
+  if (identity.authMethod !== "attest" || !auth.verifiesEveryRequest) {
+    return { identity, credential, assertionCounter: null };
   }
+  const header = headers.get(PROOF_HEADER);
   if (header === null) {
-    if (unsigned === null) {
-      throw new GatewayError(
-        401,
-        "assertion_required",
-        "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.x.",
-      );
-    }
-    log("warn", "legacy_unsigned_requests_used", {
-      app: app.id,
-      until: unsigned.until.toISOString(),
-    });
-    return {
-      identity,
-      credential,
-      assertionCounter: null,
-      responseHeaders: deprecationHeaders(unsigned.until),
-      unsignedLegacy: true,
-    };
+    throw new GatewayError(
+      401,
+      "assertion_required",
+      "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.0 or later.",
+    );
   }
   const assertionCounter = await verifyRequestProof({
     env,
@@ -331,7 +321,7 @@ export async function authenticateRequest(input: {
     body: await input.body(),
     token: credential.token,
   });
-  return { identity, credential, assertionCounter, responseHeaders: {}, unsignedLegacy: false };
+  return { identity, credential, assertionCounter };
 }
 
 /**

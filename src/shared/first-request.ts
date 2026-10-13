@@ -295,9 +295,9 @@ export function swiftSnippet(
     "endpoint" in example.target
       ? `endpointSlug: ${JSON.stringify(example.target.endpoint)}`
       : `provider: ${JSON.stringify(example.target.provider)},\n    providerPath: ${JSON.stringify(example.target.path)}`;
-  // The body goes in through `authorizedRequest`, which signs every request
-  // of an App Attest app over it: a body set afterwards is one the proof does
-  // not cover, and the gateway refuses it.
+  // The body goes in through `authorizedRequest`, which signs the request
+  // over it where the app verifies App Attest on every request: a body set
+  // afterwards is one the proof does not cover, and the gateway refuses it.
   const body = example.body
     ? `body: Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
     : `// Supply the provider-native JSON body.\n    body: Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
