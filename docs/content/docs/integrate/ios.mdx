@@ -122,11 +122,13 @@ The package never performs the request itself, so any session, configuration
 or networking library works in the closure. If the gateway answers `401`, the
 client discards its token, builds the request again with a fresh token and,
 when your app verifies every request, a fresh proof, and calls your closure
-once more. That recovers from an expired gateway token, from an App Attest key
-the gateway no longer knows (the fresh exchange re-registers it), and from an
-app switched to **Every request** after the token was cached. An error your
-closure throws, and every other status, `403` and `429` included, come back
-to you untouched.
+once more. That recovers from an expired gateway token or one that names no
+install (`401 auth_required`), and from an app switched to **Every request**
+after the token was cached (`401 assertion_required`). Any `401` is retried
+without its body being read, so one a provider returned through the proxy,
+such as for a rejected provider key, costs one extra exchange and one
+repeated provider call. An error your closure throws, and every other status,
+`403 attest_failed` and `429` included, come back to you untouched.
 
 `provider` is a provider slug. The constants `.openai`, `.anthropic`, `.xai`,
 `.gemini` and `.perplexity` spell the default slug of each type; use
@@ -291,8 +293,8 @@ prove themselves.
   `attest_failed` at the token exchange. When a request sent through
   `withAuthorizedRequest` is refused with `401`, `auth_required` or
   `assertion_required`, it discards the token and builds and sends the
-  request once more. The next exchange re-registers the key if the gateway
-  no longer knows it, and answers the app's current `verify_on`.
+  request once more. The next exchange answers the app's current
+  `verify_on`.
   `assertion_required` on a request built by the package and sent with its
   headers intact means the app was switched to **Every request** after its
   cached token was issued under **Token exchange**; the rebuilt request is
@@ -300,9 +302,13 @@ prove themselves.
   whenever the app is on **Every request**. If you send requests built with
   `authorizedRequest` instead, a `401` is yours to handle: call
   `discardAccessToken()` and build the request again, once. A
-  `403 attest_failed` is never retried for you, because it shares its status
-  with refusals a retry cannot help; if it persists on a rebuilt request,
-  discarding the token clears it the same way.
+  `403 attest_failed` on a request is returned to you, never retried: a key
+  the gateway does not know, an environment it no longer accepts, a malformed
+  proof and a request changed after signing all answer it. Calling
+  `discardAccessToken()` and building the request again helps when the key
+  was lost, because the fresh exchange re-registers it, and not when the
+  environment is no longer accepted or the request was changed after
+  signing.
 - **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
   with a `429`, the client remembers how long the wait is and refuses the next
   call itself until it passes, rather than asking Apple for a new key on every
