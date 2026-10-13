@@ -325,10 +325,7 @@ export function AppIdentity({
       />
       {/* The wizard leaves it at its default: a new app verifies every request. */}
       {compact ? null : (
-        <Field
-          label="Verify App Attest on"
-          hint="Apps created before this release were set to Token exchange, so their existing installs keep working. Switch to Every request once your clients are on the AppAIGateway Swift package 1.4 or later; older builds are refused from then on."
-        >
+        <Field label="Verify App Attest on">
           {readOnly ? (
             <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
               <ChoiceList

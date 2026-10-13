@@ -217,8 +217,6 @@ describe("AuthPolicyTab Verify App Attest on", () => {
       "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 1.4 or later.",
     );
     expect(group.textContent).toContain("The assertion is checked once per hourly token. Requests carry only the token.");
-    expect(screen.getByText(/apps created before this release were set to token exchange/i).textContent)
-      .toMatch(/Swift package 1\.4 or later/u);
   });
 
   it("reopens on the stored answer, and writes a new one through the draft", async () => {
