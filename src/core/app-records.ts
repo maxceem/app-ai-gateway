@@ -80,19 +80,35 @@ export function storedAppFromRow(
   return { ...appRecordFromRow(row), createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
+/**
+ * Bumped by every invalidation in this isolate. A read captures it when it
+ * starts and caches its answer only if no invalidation happened meanwhile:
+ * otherwise a read that began before a write committed — disabling a legacy
+ * mode, say — could finish after the write's invalidation and put the old
+ * record back for a whole TTL. One counter for every app, because an
+ * invalidation is rare and a read that skips the cache once costs one more
+ * read, never a wrong answer.
+ */
+let invalidations = 0;
+
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appConfigCache.get(appId);
   if (cached) return cached;
+  // The window is measured from the read's start, not its end, so a slow read
+  // never extends how stale a cached record may be.
+  const startedAt = Date.now();
+  const generation = invalidations;
   // Fill from the authoritative primary. This TTL is the only intentional
   // configuration staleness window and must not be extended by replica lag.
   const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   const value = appRecordFromRow(row);
-  appConfigCache.set(appId, value);
+  if (generation === invalidations) appConfigCache.set(appId, value, { storedAt: startedAt });
   return value;
 }
 
 export function invalidateAppConfig(appId: string): void {
+  invalidations += 1;
   appConfigCache.delete(appId);
 }
 
