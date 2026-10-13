@@ -126,6 +126,13 @@ export const app = sqliteTable(
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+    /**
+     * Internal compatibility switches, as JSON, set by hand in D1 and by
+     * nothing else: no API, console, CLI or MCP write reaches it, and it is not
+     * part of the configuration. Each switch carries the date it stops
+     * applying; `src/client-auth/compat.ts` is its only reader.
+     */
+    compat: text("compat"),
   },
   (table) => [
     index("idx_apps_organization_id").on(table.organizationId),
@@ -247,15 +254,6 @@ export const appUser = sqliteTable(
       .notNull()
       .references(() => app.id),
     id: text("id").notNull(),
-    attestKeyId: text("attest_key_id"),
-    attestPublicKey: text("attest_public_key"),
-    attestCounter: integer("attest_counter").notNull().default(0),
-    /**
-     * Which App Attest environment registered the stored key, so that removing
-     * an application's development opt-in also stops the keys that opt-in
-     * admitted. Set exactly when a key is, which the check below holds.
-     */
-    attestEnvironment: text("attest_env").$type<AttestEnvironment>(),
     status: text("status").$type<UserStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     lastSeenAt: text("last_seen_at"),
@@ -271,12 +269,45 @@ export const appUser = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
     check("users_status_check", sql`${table.status} IN ('active', 'blocked')`),
-    // A registered key is its id, its public key and the environment that
-    // attested it, all three; a user identified by an issuer has none of them.
-    check(
-      "users_attest_key_check",
-      sql`(${table.attestKeyId} IS NULL) = (${table.attestPublicKey} IS NULL) AND (${table.attestKeyId} IS NULL) = (${table.attestEnvironment} IS NULL)`,
-    ),
+  ],
+);
+
+/**
+ * One registered App Attest key: one install of an iOS application.
+ *
+ * A user may hold several — one per device they signed in on, and a new one
+ * each time the app is reinstalled — so registering a key never replaces
+ * another. Under `app_install` the key is the identity, and `user_id` is the
+ * key id itself.
+ *
+ * The assertion counter is not here. It is per-request state, kept by the
+ * install's limiter Durable Object (`src/do/UserLimiter.ts`), which is the one
+ * place every request of the install already passes through.
+ */
+export const appAttestKey = sqliteTable(
+  "app_attest_key",
+  {
+    appId: text("app_id")
+      .notNull()
+      .references(() => app.id),
+    /** Apple's key id: the base64 SHA-256 of the public key. */
+    keyId: text("key_id").notNull(),
+    /** SPKI PEM. */
+    publicKey: text("public_key").notNull(),
+    /**
+     * Which App Attest environment attested the key, so that removing an
+     * application's development opt-in also stops the keys it admitted.
+     */
+    environment: text("environment").$type<AttestEnvironment>().notNull(),
+    /** The `(app_id, id)` user this key authenticates for. */
+    userId: text("user_id"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    /** Updated by the token exchange, not by every request. */
+    lastSeenAt: text("last_seen_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.appId, table.keyId] }),
+    index("idx_attest_keys_app_user").on(table.appId, table.userId),
   ],
 );
 
@@ -390,10 +421,17 @@ export const appUsageEvent = sqliteTable(
     clientAborted: integer("client_aborted"),
     latencyMs: integer("latency_ms"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    /**
+     * The App Attest key id of the install that made the request, on every
+     * request an App Attest application served; null for server applications,
+     * which have no install.
+     */
+    installId: text("install_id"),
   },
   (table) => [
     index("idx_usage_event_account_created").on(table.organizationId, table.createdAt),
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
+    index("idx_usage_install_month").on(table.appId, table.installId, table.createdAt),
     index("idx_usage_app_month").on(table.appId, table.createdAt),
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
@@ -403,7 +441,7 @@ export const appUsageEvent = sqliteTable(
   ],
 );
 
-export type AppUsageSpendScope = "app" | "user";
+export type AppUsageSpendScope = "app" | "user" | "install";
 
 /**
  * Canonical monthly spend derived atomically from `app_usage_event` by the D1
@@ -414,7 +452,9 @@ export type AppUsageSpendScope = "app" | "user";
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities
- * distinct in the unique key.
+ * distinct in the unique key. An `install` row's key is the App Attest key id;
+ * every event of an App Attest application writes both its `user` and its
+ * `install` row, so either can become the budget's scope with its history.
  */
 export const appUsageSpend = sqliteTable(
   "app_usage_spend",
@@ -436,7 +476,7 @@ export const appUsageSpend = sqliteTable(
       table.month,
     ),
     index("idx_app_usage_spend_organization").on(table.organizationId),
-    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user')`),
+    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user', 'install')`),
     check(
       "app_usage_spend_month_check",
       sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
@@ -531,14 +571,16 @@ export const appRejectionEvent = sqliteTable(
     authMethod: text("auth_method").$type<AuthMethod>(),
     latencyMs: integer("latency_ms"),
     createdAt: text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+    /** The install that was refused, on App Attest applications; null for server applications. */
+    installId: text("install_id"),
   },
   (table) => [
     uniqueIndex("rejection_events_event_id_unique").on(table.eventId),
     index("idx_rejection_events_app_created").on(table.appId, table.createdAt),
     index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
     index("idx_rejection_events_created").on(table.createdAt),
-    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`),
-    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'app', 'account')`),
+    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user', 'blocked_replay')`),
+    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'app', 'account')`),
   ],
 );
 
