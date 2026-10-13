@@ -52,7 +52,11 @@ URL yourself or act as the person approving it.
   credentials and provider gateways the account holds, as metadata.
 - \`list_apps\`, \`get_app\` — the apps, and one app's whole stored document.
   Its \`warnings\` describe behaviour that will stop on the stated date: tell
-  the person, and help them act before then.
+  the person, and help them act before then. A warning with \`legacy\` names
+  a legacy mode, such as \`unsigned_requests\`: the app accepts requests
+  without an App Attest proof until \`until\`, for builds on the Swift
+  package 1.x, and \`unsigned_last_seen_at\` says when such a request last
+  arrived.
 - \`validate_app\` — whether an app document would be accepted, without saving it.
 - \`check_app\` — whether an app can serve requests, without sending one.
 - \`get_app_snippet\` — the first request an app can send.
@@ -108,7 +112,10 @@ URL yourself.
 change someone made since is refused rather than overwritten;
 \`remove_provider\`, \`remove_provider_gateway\` and \`remove_app\` delete for
 good and need the id again as \`confirm\`; \`revoke_app_key\`,
-\`block_app_user\` and \`unblock_app_user\` need no browser handoff. App and
+\`block_app_user\` and \`unblock_app_user\` need no browser handoff.
+\`disable_app_legacy_mode\` ends a legacy mode early and cannot be undone:
+run it only after the person confirms every shipped build is updated, never on
+your own judgement. App and
 provider changes, including key revocation, take up to a minute to reach live
 traffic. User blocks stop new token exchanges immediately and existing gateway
 tokens within ten seconds; header-based users must be blocked in the backend.

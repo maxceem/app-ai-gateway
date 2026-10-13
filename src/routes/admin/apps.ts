@@ -14,3 +14,4 @@ routes.handle("checkApp");
 routes.handle("getAppSnippet");
 routes.handle("updateApp");
 routes.handle("deleteApp");
+routes.handle("disableAppLegacyMode");

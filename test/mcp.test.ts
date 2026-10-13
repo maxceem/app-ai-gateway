@@ -198,6 +198,7 @@ const CHANGE_TOOL_NAMES = [
   "revoke_app_key",
   "block_app_user",
   "unblock_app_user",
+  "disable_app_legacy_mode",
   "claim_account",
 ];
 
@@ -377,6 +378,7 @@ describe("MCP handshake", () => {
       revoke_app_key: effect(true, true),
       block_app_user: effect(true, true),
       unblock_app_user: effect(false, true),
+      disable_app_legacy_mode: effect(true, true),
       claim_account: effect(false, false),
     };
     for (const tool of tools) {

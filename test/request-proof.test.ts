@@ -399,23 +399,23 @@ describe("per-request App Attest proofs", () => {
 });
 
 /**
- * `bearer_without_assertion`: an internal, dated switch set by hand in D1 for
+ * The `unsigned_requests` legacy mode: dated, set by migration 0006 or by hand in D1 for
  * an application whose shipped build cannot sign yet.
  */
-describe("the bearer_without_assertion compatibility switch", () => {
-  async function withCompat(appId: string, compat: string | null) {
+describe("the unsigned_requests legacy mode", () => {
+  async function withLegacy(appId: string, legacy: string | null) {
     const seeded = await attestApp(appId);
-    await env.DB.prepare("UPDATE app SET compat = ? WHERE id = ?").bind(compat, appId).run();
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?").bind(legacy, appId).run();
     clearIsolateCaches();
     return seeded;
   }
 
   const live = () => JSON.stringify({
-    bearer_without_assertion: { until: "2099-01-31T00:00:00Z" },
+    unsigned_requests: { until: "2099-01-31T00:00:00Z" },
   });
 
   it("accepts an unsigned request while live, and says when it stops", async () => {
-    const { install, token } = await withCompat("compat-live", live());
+    const { install, token } = await withLegacy("legacy-live", live());
     upstream();
     const warn = vi.spyOn(console, "warn");
     const response = await send(await proxied(install, token, { proof: null }));
@@ -427,26 +427,26 @@ describe("the bearer_without_assertion compatibility switch", () => {
     );
     const logged = warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
     expect(logged).toContainEqual(expect.objectContaining({
-      message: "compat_bearer_without_assertion_used",
-      app: "compat-live",
+      message: "legacy_unsigned_requests_used",
+      app: "legacy-live",
       until: "2099-01-31T00:00:00.000Z",
     }));
   });
 
   it("carries the notice on a refusal too", async () => {
-    const { install, token } = await withCompat("compat-refusal", live());
+    const { install, token } = await withLegacy("legacy-refusal", live());
     // No such provider path is allowed, so the request is refused after it
     // was accepted under the switch.
     const response = await send(await proxied(install, token, {
       proof: null,
-      url: `${ORIGIN}/v1/apps/compat-refusal/proxy/nope/v1/responses`,
+      url: `${ORIGIN}/v1/apps/legacy-refusal/proxy/nope/v1/responses`,
     }));
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.headers.get("deprecation")).toBe("true");
   });
 
   it("still verifies a proof that is present", async () => {
-    const { install, token } = await withCompat("compat-proof", live());
+    const { install, token } = await withLegacy("legacy-proof", live());
     upstream();
     expect((await send(await proxied(install, token))).status).toBe(200);
     const response = await send(await proxied(install, token, { sign: { token: "other" } }));
@@ -470,9 +470,9 @@ describe("the bearer_without_assertion compatibility switch", () => {
         .setJti(crypto.randomUUID())
         .sign(new TextEncoder().encode(env.JWT_SECRET));
     };
-    const { install } = await withCompat("compat-legacy-token", live());
+    const { install } = await withLegacy("legacy-legacy-token", live());
     upstream();
-    const token = await legacyToken("compat-legacy-token");
+    const token = await legacyToken("legacy-legacy-token");
     const accepted = await send(await proxied(install, token, { proof: null }));
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get("deprecation")).toBe("true");
@@ -481,15 +481,15 @@ describe("the bearer_without_assertion compatibility switch", () => {
     expect(signed.status).toBe(401);
     await expect(errorOf(signed)).resolves.toMatchObject({ code: "auth_required" });
 
-    const { install: other } = await withCompat("compat-legacy-off", null);
-    const refused = await send(await proxied(other, await legacyToken("compat-legacy-off"), { proof: null }));
+    const { install: other } = await withLegacy("legacy-legacy-off", null);
+    const refused = await send(await proxied(other, await legacyToken("legacy-legacy-off"), { proof: null }));
     expect(refused.status).toBe(401);
     await expect(errorOf(refused)).resolves.toMatchObject({ code: "auth_required" });
   });
 
   it("stops on its date", async () => {
-    const { install, token } = await withCompat("compat-expired", JSON.stringify({
-      bearer_without_assertion: { until: "2020-01-01T00:00:00Z" },
+    const { install, token } = await withLegacy("legacy-expired", JSON.stringify({
+      unsigned_requests: { until: "2020-01-01T00:00:00Z" },
     }));
     const response = await send(await proxied(install, token, { proof: null }));
     expect(response.status).toBe(401);
@@ -499,16 +499,16 @@ describe("the bearer_without_assertion compatibility switch", () => {
   it.each([
     ["not JSON", "{"],
     ["an unknown switch", JSON.stringify({ something_else: { until: "2099-01-01T00:00:00Z" } })],
-    ["a date without a time", JSON.stringify({ bearer_without_assertion: { until: "2099-01-01" } })],
-  ])("switches nothing on for %s, and logs it", async (_label, compat) => {
-    const appId = `compat-invalid-${crypto.randomUUID()}`;
-    const { install, token } = await withCompat(appId, compat);
+    ["a date without a time", JSON.stringify({ unsigned_requests: { until: "2099-01-01" } })],
+  ])("switches nothing on for %s, and logs it", async (_label, legacy) => {
+    const appId = `legacy-invalid-${crypto.randomUUID()}`;
+    const { install, token } = await withLegacy(appId, legacy);
     const warn = vi.spyOn(console, "warn");
     const response = await send(await proxied(install, token, { proof: null }));
     expect(response.status).toBe(401);
     await expect(errorOf(response)).resolves.toMatchObject({ code: "assertion_required" });
     const logged = warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
-    expect(logged).toContainEqual(expect.objectContaining({ message: "compat_invalid", app: appId }));
+    expect(logged).toContainEqual(expect.objectContaining({ message: "legacy_invalid", app: appId }));
   });
 });
 
@@ -600,22 +600,24 @@ describe("an application's warnings", () => {
     },
   }));
 
-  it("describes a live compatibility switch on read, and nothing once it ends", async () => {
+  it("describes a live legacy mode on read, and nothing once it ends", async () => {
     await seedApp("warnings-live");
-    await env.DB.prepare("UPDATE app SET compat = ? WHERE id = 'warnings-live'")
-      .bind(JSON.stringify({ bearer_without_assertion: { until: "2099-01-31T00:00:00Z" } })).run();
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-live'")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } })).run();
     const response = await admin("warnings-live");
     expect(response.status).toBe(200);
     const { app } = await response.json<{ app: { warnings: unknown[] } }>();
     expect(app.warnings).toEqual([{
-      code: "bearer_without_assertion",
-      message: "Requests signed only with a gateway token are accepted until 2099-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, which signs every request with App Attest.",
+      code: "legacy_unsigned_requests",
+      legacy: "unsigned_requests",
+      message: "Legacy mode: requests without an App Attest proof are accepted until 2099-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, then disable legacy mode.",
       until: "2099-01-31T00:00:00Z",
       docs_url: "https://docs.appaigateway.com/integrate/ios#per-request-proof",
+      unsigned_last_seen_at: null,
     }]);
 
-    await env.DB.prepare("UPDATE app SET compat = ? WHERE id = 'warnings-live'")
-      .bind(JSON.stringify({ bearer_without_assertion: { until: "2020-01-31T00:00:00Z" } })).run();
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-live'")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2020-01-31T00:00:00Z" } })).run();
     const expired = await (await admin("warnings-live")).json<{ app: { warnings: unknown[] } }>();
     expect(expired.app.warnings).toEqual([]);
   });
@@ -632,17 +634,139 @@ describe("an application's warnings", () => {
     });
     expect(refused.status).toBe(400);
     await expect(refused.json()).resolves.toMatchObject({ error: { message: expect.stringContaining("warnings") } });
-    // A write never touches the switches either: they are set by hand alone.
-    await env.DB.prepare("UPDATE app SET compat = ? WHERE id = 'warnings-write'")
-      .bind(JSON.stringify({ bearer_without_assertion: { until: "2099-01-31T00:00:00Z" } })).run();
+    // A write never touches the legacy modes either.
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = 'warnings-write'")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } })).run();
     const updated = await admin("warnings-write", {
       method: "PUT",
       body: JSON.stringify({ name: "Renamed", config: app.config, revision: app.revision }),
     });
     expect(updated.status).toBe(200);
     const body = await updated.json<{ app: { warnings: { code: string }[] } }>();
-    expect(body.app.warnings.map((warning) => warning.code)).toEqual(["bearer_without_assertion"]);
-    const stored = await env.DB.prepare("SELECT compat FROM app WHERE id = 'warnings-write'").first<{ compat: string }>();
-    expect(JSON.parse(stored!.compat)).toEqual({ bearer_without_assertion: { until: "2099-01-31T00:00:00Z" } });
+    expect(body.app.warnings.map((warning) => warning.code)).toEqual(["legacy_unsigned_requests"]);
+    const stored = await env.DB.prepare("SELECT legacy FROM app WHERE id = 'warnings-write'").first<{ legacy: string }>();
+    expect(JSON.parse(stored!.legacy)).toEqual({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } });
+  });
+});
+
+describe("the last unsigned request", () => {
+  it("is recorded at most once an hour, and shown in the warning", async () => {
+    const appId = "legacy-last-seen";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
+    clearIsolateCaches();
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    upstream();
+    const seenAt = async () => (await env.DB.prepare("SELECT unsigned_last_seen_at AS at FROM app WHERE id = ?")
+      .bind(appId).first<{ at: string | null }>())?.at ?? null;
+    expect(await seenAt()).toBeNull();
+
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    const first = await seenAt();
+    expect(first).not.toBeNull();
+    expect(Math.abs(Date.parse(first!) - Date.now())).toBeLessThan(60_000);
+
+    // Within the hour nothing is written, not even by a fresh isolate.
+    clearIsolateCaches();
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    expect(await seenAt()).toBe(first);
+
+    // A signed request is not an unsigned one.
+    const stale = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    await env.DB.prepare("UPDATE app SET unsigned_last_seen_at = ? WHERE id = ?").bind(stale, appId).run();
+    clearIsolateCaches();
+    expect((await send(await proxied(install, token))).status).toBe(200);
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    expect(await seenAt()).toBe(stale);
+
+    // Past the hour, the next unsigned request moves it.
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    const moved = await seenAt();
+    expect(moved! > stale).toBe(true);
+
+    const read = await send(new Request(`${ORIGIN}/v1/admin/apps/${appId}`, {
+      headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
+    }));
+    const { app } = await read.json<{ app: { warnings: { unsigned_last_seen_at: string | null }[] } }>();
+    expect(app.warnings[0]?.unsigned_last_seen_at).toBe(moved);
+  });
+});
+
+describe("disabling a legacy mode", () => {
+  const admin = (path: string, init: RequestInit = {}) => send(new Request(`${ORIGIN}/v1/admin/apps/${path}`, {
+    ...init,
+    headers: {
+      authorization: "Bearer agw_mgmt_test-admin-secret",
+      "content-type": "application/json",
+      ...init.headers,
+    },
+  }));
+
+  it("ends it at once, answers the app without the warning, and changes nothing the second time", async () => {
+    const appId = "legacy-disable";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
+    clearIsolateCaches();
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    upstream();
+    expect((await send(await proxied(install, token, { proof: null }))).status).toBe(200);
+
+    const disabled = await admin(`${appId}/legacy/unsigned_requests/disable`, { method: "POST" });
+    expect(disabled.status).toBe(200);
+    const body = await disabled.json<{ app: { id: string; warnings: unknown[]; revision: number } }>();
+    expect(body.app).toMatchObject({ id: appId, warnings: [], revision: 1 });
+    const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = ?").bind(appId).first();
+    expect(row).toEqual({ legacy: null });
+
+    // This isolate dropped its cached record, so the very next request is refused.
+    const refused = await send(await proxied(install, token, { proof: null }));
+    expect(refused.status).toBe(401);
+    await expect(errorOf(refused)).resolves.toMatchObject({ code: "assertion_required" });
+
+    const again = await admin(`${appId}/legacy/unsigned_requests/disable`, { method: "POST" });
+    expect(again.status).toBe(200);
+  });
+
+  it("refuses a mode that does not exist", async () => {
+    await seedApp("legacy-disable-unknown");
+    const response = await admin("legacy-disable-unknown/legacy/everything/disable", { method: "POST" });
+    expect(response.status).toBe(400);
+  });
+
+  /** One way: nothing writes a legacy mode, so none can be created or extended. */
+  it("is the only write that reaches legacy: app create and update refuse it", async () => {
+    await seedApp("legacy-write");
+    const { app } = await (await admin("legacy-write")).json<{
+      app: { name: string; config: Record<string, unknown>; revision: number };
+    }>();
+    const legacy = { unsigned_requests: { until: "2099-01-31T00:00:00Z" } };
+    for (const body of [
+      { name: app.name, config: app.config, revision: app.revision, legacy },
+      { name: app.name, config: { ...app.config, legacy }, revision: app.revision },
+    ]) {
+      const refused = await admin("legacy-write", { method: "PUT", body: JSON.stringify(body) });
+      expect(refused.status).toBe(400);
+      await expect(errorOf(refused)).resolves.toMatchObject({ message: expect.stringContaining("legacy") });
+    }
+    for (const body of [
+      { name: "New app", config: app.config, legacy },
+      { name: "New app", config: { ...app.config, legacy } },
+    ]) {
+      const refused = await send(new Request(`${ORIGIN}/v1/admin/apps`, {
+        method: "POST",
+        headers: { authorization: "Bearer agw_mgmt_test-admin-secret", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+      expect(refused.status).toBe(400);
+    }
+    const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = 'legacy-write'").first();
+    expect(row).toEqual({ legacy: null });
   });
 });

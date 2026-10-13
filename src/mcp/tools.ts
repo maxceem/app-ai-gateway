@@ -90,6 +90,7 @@ export const MCP_WRITE_OPERATIONS = [
   "revokeAppKey",
   "blockAppUser",
   "unblockAppUser",
+  "disableAppLegacyMode",
   "updateProvider",
   "updateProviderGateway",
   "deleteProvider",
@@ -177,6 +178,9 @@ const PATH_ARGUMENTS: Readonly<Record<string, z.ZodType>> = {
   app: z.string().min(1).meta({ description: "The application's id, as list_apps returns it." }),
   user: z.string().min(1).meta({ description: "The end user's id, as list_app_users returns it." }),
   key: z.string().min(1).meta({ description: "The key's id, as list_app_keys returns it." }),
+  mode: z.enum(["unsigned_requests"]).meta({
+    description: "The legacy mode, as the app's warnings name it in their legacy field.",
+  }),
   id: z.string().min(1).meta({ description: "The id of what the tool acts on, as the tool that lists it returns it." }),
 };
 
@@ -1320,6 +1324,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
     operation: "unblockAppUser",
     effect: { destructive: false, idempotent: true },
     summary: (result) => `User ${result.user_id} of ${result.app_id} is ${result.blocked ? "blocked" : "not blocked"}.`,
+  }),
+  tool({
+    name: "disable_app_legacy_mode",
+    title: "Disable an app's legacy mode",
+    description:
+      "Ends one of an app's legacy modes now instead of on its date; get_app lists them in its warnings. Disabling unsigned_requests refuses every request without an App Attest proof from then on, which breaks every build of the app still on AppAIGateway Swift package 1.x. Run it only after the person confirms that every shipped build in use is updated to 2.x, never on your own judgement, and never because the date is near. It cannot be undone: nothing re-enables or extends a legacy mode. Disabling a mode the app is not in answers the same.",
+    operation: "disableAppLegacyMode",
+    effect: { destructive: true, idempotent: true },
+    summary: (result) =>
+      `App "${result.app.name}" (${result.app.id}) now has ${plural(result.app.warnings.length, "warning")}${
+        result.app.warnings.length === 0 ? "" : `: ${result.app.warnings.map((warning) => warning.message).join(" ")}`
+      }.`,
   }),
   {
     name: "claim_account",

@@ -41,7 +41,23 @@ export interface AppWriteResult {
   guidance: string;
 }
 
+/** One legacy mode an application is in, as `app legacy list` reports it. */
+export interface LegacyModeEntry {
+  mode: string;
+  until: string | null;
+  /** When an unsigned request was last served, or null when none has been seen. */
+  unsigned_last_seen_at: string | null;
+  message: string;
+}
+
+/** `app legacy list`: the application's legacy modes, read off its warnings. */
+export interface AppLegacyList {
+  app_id: string;
+  legacy: LegacyModeEntry[];
+}
+
 export type AppResult =
+  | AppLegacyList
   | AppListResponse
   | AppResponse
   | AppDeleteResponse
@@ -290,10 +306,34 @@ export async function appCommand(
         ...(key ? { applicationKey: key } : {}),
         guidance:
           doc.config.authentication.type === "apple_app_attest"
-            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.0.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
+            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 2.0.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
             : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
     }
+  }
+  if (action.startsWith("legacy ")) {
+    const sub = action.slice(7);
+    const appId = args[0] ?? "";
+    if (sub === "list") {
+      const { data } = await ctx.call("getApp", { params: { app: appId } });
+      return {
+        app_id: data.app.id,
+        legacy: data.app.warnings
+          .filter((warning) => warning.legacy !== undefined)
+          .map((warning) => ({
+            mode: warning.legacy!,
+            until: warning.until ?? null,
+            unsigned_last_seen_at: warning.unsigned_last_seen_at ?? null,
+            message: warning.message,
+          })),
+      };
+    }
+    const mode = args[1] ?? "";
+    await confirm(
+      `Disable legacy mode ${mode} for app ${appId}? Requests without an App Attest proof will be refused immediately. Do this only when every build in use is on AppAIGateway package 2.x. It cannot be undone.`,
+      flags,
+    );
+    return (await ctx.call("disableAppLegacyMode", { params: { app: appId, mode } })).data;
   }
   if (action.startsWith("key ")) {
     const sub = action.slice(4);

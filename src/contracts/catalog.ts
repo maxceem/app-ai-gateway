@@ -721,6 +721,21 @@ export const CATALOG = {
       "Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.",
   },
 
+  disableAppLegacyMode: {
+    method: "POST",
+    path: "/v1/admin/apps/{app}/legacy/{mode}/disable",
+    tags: ["Admin applications"],
+    summary: "Disable one of an application's legacy modes",
+    description: "Ends a legacy mode now rather than on its date, and answers the application with its warnings recomputed. One way: no operation creates or extends a legacy mode. Disabling unsigned_requests refuses every App Attest request without an X-AppAttest-Proof from then on (within the 60 second configuration cache), so do it only once every build in use is on the AppAIGateway Swift package 2.x. Disabling a mode the application is not in changes nothing.",
+    security: "management",
+    params: {
+      app: { example: "my-app" },
+      mode: { example: "unsigned_requests", pattern: /^unsigned_requests$/ },
+    },
+    response: AppResponseSchema,
+    responseDescription: "The application, with the mode gone from its warnings.",
+  },
+
   listManagementKeys: {
     method: "GET",
     path: "/v1/admin/keys",

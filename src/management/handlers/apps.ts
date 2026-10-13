@@ -3,6 +3,7 @@ import { appSnippet } from "../app-snippet";
 import {
   createApp,
   deleteApp,
+  disableAppLegacyMode,
   getApp,
   listApps,
   updateApp,
@@ -22,4 +23,6 @@ export const appHandlers = {
   getAppSnippet: ({ scope, actor, app, query }) => appSnippet(scope, actor, app, query),
   updateApp: ({ scope, actor, app, body }) => updateApp(scope, actor, app, body),
   deleteApp: ({ scope, actor, app, query }) => deleteApp(scope, actor, app, query.confirm),
+  disableAppLegacyMode: ({ scope, actor, app, params }) =>
+    disableAppLegacyMode(scope, actor, app, params.mode),
 } satisfies OperationHandlerTable;

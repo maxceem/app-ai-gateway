@@ -956,11 +956,18 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable identifier, for example bearer_without_assertion."
+            "description": "Stable identifier, for example legacy_unsigned_requests."
           },
           "message": {
             "type": "string",
             "description": "What will stop, when, and what to do about it, in one sentence or two."
+          },
+          "legacy": {
+            "type": "string",
+            "enum": [
+              "unsigned_requests"
+            ],
+            "description": "The legacy mode the warning is about. unsigned_requests: requests without an App Attest proof are accepted until `until`. Disable it with POST /v1/admin/apps/{app}/legacy/{mode}/disable once every build in use signs its requests; nothing creates or extends one."
           },
           "until": {
             "type": "string",
@@ -969,6 +976,13 @@
           "docs_url": {
             "type": "string",
             "description": "Where the change is described."
+          },
+          "unsigned_last_seen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For unsigned_requests: when the app last served a request without a proof, to within an hour, or null when none has been seen."
           }
         },
         "required": [
@@ -6320,6 +6334,97 @@
                     "snippet",
                     "notes"
                   ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/legacy/{mode}/disable": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "disableAppLegacyMode",
+        "summary": "Disable one of an application's legacy modes",
+        "description": "Ends a legacy mode now rather than on its date, and answers the application with its warnings recomputed. One way: no operation creates or extends a legacy mode. Disabling unsigned_requests refuses every App Attest request without an X-AppAttest-Proof from then on (within the 60 second configuration cache), so do it only once every build in use is on the AppAIGateway Swift package 2.x. Disabling a mode the application is not in changes nothing.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^unsigned_requests$",
+              "example": "unsigned_requests"
+            },
+            "required": true,
+            "name": "mode",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The application, with the mode gone from its warnings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
                 }
               }
             }

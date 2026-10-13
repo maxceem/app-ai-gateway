@@ -78,6 +78,8 @@ export const commands = {
   "app key list": { args: 1, flags: "" },
   "app key add": { args: 1, flags: "name key-output" },
   "app key revoke": { args: 2, flags: "yes!" },
+  "app legacy list": { args: 1, flags: "" },
+  "app legacy disable": { args: 2, flags: "yes!" },
   "usage show": { args: 0, flags: "app month" },
   "usage breakdown": { args: 0, flags: "app by from to limit" },
   "operation status": { args: 1, flags: "" },

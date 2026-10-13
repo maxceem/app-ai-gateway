@@ -206,6 +206,42 @@ test("app snippet writes the example to --output and reports only the path", asy
   assert.equal(await readFile(path, "utf8"), serverExample.snippet);
 });
 
+test("app legacy list reads the modes off the app's warnings", async () => {
+  const warning = {
+    code: "legacy_unsigned_requests",
+    legacy: "unsigned_requests",
+    message: "Legacy mode: requests without an App Attest proof are accepted until 2027-01-31T00:00:00Z.",
+    until: "2027-01-31T00:00:00Z",
+    unsigned_last_seen_at: "2026-10-10T08:00:00.000Z",
+  };
+  const { ctx, calls } = snippetContext(() => ({
+    app: { id: "app-1", warnings: [warning, { code: "something_else", message: "not a legacy mode" }] },
+  }));
+  assert.deepEqual(await appCommand(ctx, "app legacy list", ["app-1"], {}), {
+    app_id: "app-1",
+    legacy: [{
+      mode: "unsigned_requests",
+      until: "2027-01-31T00:00:00Z",
+      unsigned_last_seen_at: "2026-10-10T08:00:00.000Z",
+      message: warning.message,
+    }],
+  });
+  assert.deepEqual(calls, [{ name: "getApp", options: { params: { app: "app-1" } } }]);
+});
+
+test("app legacy disable asks first, then names the mode in the path", async () => {
+  const answer = { app: { id: "app-1", name: "Example", warnings: [] } };
+  const { ctx, calls } = snippetContext(() => answer);
+  // Without --yes and without a terminal to ask on, nothing is sent.
+  await assert.rejects(appCommand(ctx, "app legacy disable", ["app-1", "unsigned_requests"], { "no-input": true }));
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await appCommand(ctx, "app legacy disable", ["app-1", "unsigned_requests"], { yes: true }), answer);
+  assert.deepEqual(calls, [{
+    name: "disableAppLegacyMode",
+    options: { params: { app: "app-1", mode: "unsigned_requests" } },
+  }]);
+});
+
 test("app check is the gateway's own verdict", async () => {
   const verdict = {
     appId: "app-1",
