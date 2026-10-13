@@ -180,7 +180,9 @@ Apps created before this setting was added were set to **Token exchange**, so
 builds already in your users' hands, on package 1.x, keep working. Switch to
 **Every request** on the app's **Auth policy** page once every build in use is
 on 2.0 or later: from then on a request without a proof is refused with
-`401 assertion_required`.
+`401 assertion_required`. A 2.0 client still holding a token from before the
+switch is refused that way too, until it discards the token and rebuilds the
+request; see **Recovery** under [What the client does for you](#what-the-client-does-for-you).
 
 With **Every request**, the client data the key signs is the SHA-256 of these
 lines joined by a newline, with no trailing newline:
@@ -245,9 +247,13 @@ prove themselves.
   and signs once more, whether that happens at the token exchange or while
   signing a request. It also replaces the key once when the gateway answers
   `attest_failed` at the token exchange. A request you send yourself and see
-  refused with `attest_failed` or `auth_required` is yours to handle: call
-  `discardAccessToken()` and build it again, and the next exchange
-  re-registers the key if the gateway no longer knows it.
+  refused with `attest_failed`, `auth_required` or `assertion_required` is
+  yours to handle: call `discardAccessToken()` and build it again with
+  `authorizedRequest`, once. The next exchange re-registers the key if the
+  gateway no longer knows it, and answers the app's current `verify_on`.
+  `assertion_required` on a 2.0 client means the app was switched to
+  **Every request** after its cached token was issued under **Token
+  exchange**; the rebuilt request is signed.
 - **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
   with a `429`, the client remembers how long the wait is and refuses the next
   call itself until it passes, rather than asking Apple for a new key on every
