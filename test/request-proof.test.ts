@@ -200,7 +200,7 @@ describe("per-request App Attest proofs", () => {
     expect(response.status).toBe(401);
     await expect(errorOf(response)).resolves.toEqual({
       code: "assertion_required",
-      message: "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.0 or later.",
+      message: "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 1.4 or later.",
     });
     expect(fetchSpy).toHaveLength(0);
   });

@@ -24,7 +24,7 @@ https://github.com/maxceem/app-ai-gateway-swift
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "2.0.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.4.0")
 ```
 
 Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
@@ -167,7 +167,7 @@ requests are signed:
   token it carries an `X-AppAttest-Proof` header: an assertion the install's
   App Attest key made over that one request. A gateway token copied off the
   network is worthless without the device's key, and a proof is accepted
-  once. Needs the package 2.0 or later.
+  once. Needs the package 1.4 or later.
 - **Token exchange** (`token_exchange`): the assertion is checked once per
   hourly token, and requests carry only the token.
 
@@ -177,10 +177,10 @@ treated as `token_exchange`. Build every request with `authorizedRequest`
 either way, and switching the setting needs no change in your app.
 
 Apps created before this setting was added were set to **Token exchange**, so
-builds already in your users' hands, on package 1.x, keep working. Switch to
+builds already in your users' hands, on a package before 1.4, keep working. Switch to
 **Every request** on the app's **Auth policy** page once every build in use is
-on 2.0 or later: from then on a request without a proof is refused with
-`401 assertion_required`. A 2.0 client still holding a token from before the
+on 1.4 or later: from then on a request without a proof is refused with
+`401 assertion_required`. A 1.4 client still holding a token from before the
 switch is refused that way too, until it discards the token and rebuilds the
 request; see **Recovery** under [What the client does for you](#what-the-client-does-for-you).
 
@@ -218,9 +218,9 @@ clock; the assertion counter is what stops a proof being used twice.
 - **One request per proof.** Call `authorizedRequest` for every send,
   retries included. Replaying a request the gateway has already accepted is
   refused as a replayed assertion.
-- **Version 2.0 or later.** Version 1.x of the package sends no proof, so
-  an app that verifies every request refuses its requests with
-  `401 assertion_required`. Moving to 2.0 means passing the body to
+- **Version 1.4 or later.** Earlier versions of the package send no proof,
+  so an app that verifies every request refuses their requests with
+  `401 assertion_required`. Moving to 1.4 means passing the body to
   `authorizedRequest` instead of assigning it afterwards; nothing else in
   your code changes.
 

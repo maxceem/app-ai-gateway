@@ -126,7 +126,7 @@ cannot sign a new request, a proof they copied alongside it covers only the
 request it came with, and that request has already been served. A request
 without a proof is refused with `401 assertion_required`.
 
-The Swift package 2.0 or later signs every request for you. See
+The Swift package 1.4 or later signs every request for you. See
 [Per-request proof](/integrate/ios#per-request-proof).
 
 ### Token exchange
@@ -134,7 +134,7 @@ The Swift package 2.0 or later signs every request for you. See
 With **Token exchange**, the assertion is checked once per hourly token, and
 requests carry only the token. A token copied off the network works from
 anywhere until it expires, at most an hour. Choose it when the builds in use
-are on a Swift package older than 2.0; switch to **Every request** once they
+are on a Swift package older than 1.4; switch to **Every request** once they
 have been updated.
 
 ## Combinations

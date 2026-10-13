@@ -54,7 +54,7 @@ const VERIFY_ON_CHOICES: Choice<AppAttestVerifyOn>[] = [
     value: "every_request",
     label: "Every request",
     description:
-      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 2.0 or later.",
+      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 1.4 or later.",
   },
   {
     value: "token_exchange",
@@ -327,7 +327,7 @@ export function AppIdentity({
       {compact ? null : (
         <Field
           label="Verify App Attest on"
-          hint="Apps created before this release were set to Token exchange, so their existing installs keep working. Switch to Every request once your clients are on the AppAIGateway Swift package 2.0 or later; older builds are refused from then on."
+          hint="Apps created before this release were set to Token exchange, so their existing installs keep working. Switch to Every request once your clients are on the AppAIGateway Swift package 1.4 or later; older builds are refused from then on."
         >
           {readOnly ? (
             <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">

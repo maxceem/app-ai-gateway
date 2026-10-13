@@ -24,10 +24,10 @@ FROM `app_user`
 WHERE `attest_key_id` IS NOT NULL AND `attest_public_key` IS NOT NULL AND `attest_env` IS NOT NULL
 ORDER BY COALESCE(`last_seen_at`, `created_at`), `id`;--> statement-breakpoint
 -- Every App Attest application that exists when this lands has shipped
--- builds on the 1.x Swift package, which send no per-request proof. Each is
+-- builds on a Swift package before 1.4, which send no per-request proof. Each is
 -- set to verify App Attest on the token exchange, as it always has, so those
 -- builds keep working; switching to every_request is the person's call, once
--- their clients are on the 2.0 package. A new application, or a stored
+-- their clients are on the 1.4 package. A new application, or a stored
 -- configuration without the field, verifies on every request.
 UPDATE `app` SET `config_json` = json_set(`config_json`, '$.authentication.app_attest.verify_on', 'token_exchange')
 WHERE `auth_type` = 'apple_app_attest'

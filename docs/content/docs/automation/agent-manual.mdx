@@ -366,7 +366,7 @@ Discriminated on `type`.
 | `app_attest.team_id` | string | Apple Team ID |
 | `app_attest.bundle_id` | string | Bundle ID |
 | `app_attest.environments` | `["production"]`, `["development"]` or both; optional | Which App Attest environments are accepted. Omitted means production only |
-| `app_attest.verify_on` | `"every_request"` or `"token_exchange"`; optional | When the install's App Attest assertion is verified. `every_request`, the default when omitted: every request carries `X-AppAttest-Proof`, which needs the Swift package 2.0 or later. `token_exchange`: only at the hourly token exchange, and requests carry the token alone. Apps created before this setting was added were set to `token_exchange`. Switch an app to `every_request` only after the person confirms every build in use is on package 2.0 or later; older builds are refused from then on |
+| `app_attest.verify_on` | `"every_request"` or `"token_exchange"`; optional | When the install's App Attest assertion is verified. `every_request`, the default when omitted: every request carries `X-AppAttest-Proof`, which needs the Swift package 1.4 or later. `token_exchange`: only at the hourly token exchange, and requests carry the token alone. Apps created before this setting was added were set to `token_exchange`. Switch an app to `every_request` only after the person confirms every build in use is on package 1.4 or later; older builds are refused from then on |
 | `end_user` | object, required | `{ "source": "issuer", "issuer": {…} }` for signed-in users, or `{ "source": "app_install" }` to count each install as a user |
 
 **Server application** (`api_key`):
@@ -570,7 +570,7 @@ client code.
 - Token exchange for a server app with signed-in users:
   `POST /v1/apps/{app}/auth/token` with `{ "api_key", "issuer_token" }`,
   returning `{ "access_token", "expires_in": 3600 }`.
-- iOS apps use the AppAIGateway Swift package 2.0 or later, which handles App
+- iOS apps use the AppAIGateway Swift package 1.4 or later, which handles App
   Attest, the token exchange and, when the token exchange answers
   `verify_on: "every_request"`, the per-request proof. Pass the request body to
   `authorizedRequest`, never set it afterwards. See the human documentation

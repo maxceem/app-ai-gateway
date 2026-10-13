@@ -82,7 +82,7 @@ the current status unless the person asked to change them. Omitting status
 enables the app.
 An iOS app's \`authentication.app_attest.verify_on\` is \`every_request\` (the
 default) or \`token_exchange\`; switch an app to \`every_request\` only after the
-person confirms every build in use is on the AppAIGateway Swift package 2.0 or
+person confirms every build in use is on the AppAIGateway Swift package 1.4 or
 later, because older builds are refused from then on.
 
 Changes come in three shapes.

@@ -304,7 +304,7 @@ export async function authenticateRequest(input: {
     throw new GatewayError(
       401,
       "assertion_required",
-      "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.0 or later.",
+      "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 1.4 or later.",
     );
   }
   const assertionCounter = await verifyRequestProof({

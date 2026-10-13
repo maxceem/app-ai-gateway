@@ -321,7 +321,7 @@ const AppleAppAttestAuthenticationSchema = z.object({
     verify_on: z.enum(APP_ATTEST_VERIFY_ON, {
       error: "verify_on must be one of every_request, token_exchange",
     }).default("every_request").meta({
-      description: "When the install's App Attest assertion is verified. every_request (the default): every gateway request carries X-AppAttest-Proof, a fresh assertion over that request; needs the AppAIGateway Swift package 2.0 or later. token_exchange: the assertion is verified once, when the hourly gateway token is exchanged, and requests carry only the token.",
+      description: "When the install's App Attest assertion is verified. every_request (the default): every gateway request carries X-AppAttest-Proof, a fresh assertion over that request; needs the AppAIGateway Swift package 1.4 or later. token_exchange: the assertion is verified once, when the hourly gateway token is exchanged, and requests carry only the token.",
     }),
   }).strict(),
 }).strict();

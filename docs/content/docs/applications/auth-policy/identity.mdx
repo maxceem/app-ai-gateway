@@ -63,14 +63,14 @@ When the gateway checks the install's App Attest assertion.
 
 - **Every request**: each request carries a fresh App Attest assertion, so a
   gateway token copied off the network is useless without the device.
-  Requires the AppAIGateway Swift package 2.0 or later. The default for new
+  Requires the AppAIGateway Swift package 1.4 or later. The default for new
   apps.
 - **Token exchange**: the assertion is checked once per hourly token, and
   requests carry only the token.
 
 Apps created before this setting was added were set to **Token exchange**, so
 their existing installs keep working. Switch to **Every request** once your
-clients are on the Swift package 2.0 or later: from then on a request without
+clients are on the Swift package 1.4 or later: from then on a request without
 a proof is refused with `401 assertion_required`, which is what every build
 on an older package receives. Request limits, budgets and usage are counted
 per install either way. See

@@ -214,11 +214,11 @@ describe("AuthPolicyTab Verify App Attest on", () => {
     expect(within(group).getByRole("radio", { name: /every request/i }).getAttribute("aria-checked")).toBe("true");
     expect(within(group).getByRole("radio", { name: /token exchange/i }).getAttribute("aria-checked")).toBe("false");
     expect(group.textContent).toContain(
-      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 2.0 or later.",
+      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 1.4 or later.",
     );
     expect(group.textContent).toContain("The assertion is checked once per hourly token. Requests carry only the token.");
     expect(screen.getByText(/apps created before this release were set to token exchange/i).textContent)
-      .toMatch(/Swift package 2\.0 or later/u);
+      .toMatch(/Swift package 1\.4 or later/u);
   });
 
   it("reopens on the stored answer, and writes a new one through the draft", async () => {
