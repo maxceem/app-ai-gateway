@@ -37,6 +37,7 @@ function row(config: Record<string, unknown>, revision = 1): AppRow {
     revision,
     name: "My app",
     status: "active",
+    warnings: [],
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
     config: parseAppConfig(config),
@@ -176,7 +177,8 @@ describe("per-user limits and the users they belong to", () => {
 
     expect(session.draft.config.limits?.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
-      spending: { monthly_usd: null },
+      // The scope the schema wrote stays: it is the same, unlimited, budget.
+      spending: { monthly_usd: null, scope: "user" },
     });
     // The application-wide limits are untouched: they still mean something.
     expect(session.draft.config.limits?.per_app?.requests.per_minute).toBe(100);
@@ -200,7 +202,7 @@ describe("per-user limits and the users they belong to", () => {
 
     expect(second.draft.config.limits?.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
-      spending: { monthly_usd: null },
+      spending: { monthly_usd: null, scope: "user" },
     });
   });
 });

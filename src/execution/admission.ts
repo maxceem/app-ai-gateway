@@ -1,11 +1,18 @@
 import { requireActiveBilling, type BillingRequestCache } from "../billing/gateway";
 import { billingQuota } from "../billing/quota";
-import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
+import {
+  budgetScope,
+  countsPerInstall,
+  hasAppLevelLimits,
+  hasUserLevelLimits,
+  monthlyBudgetMicrousd,
+} from "../shared/app-config";
 import { GatewayError } from "../core/errors";
 import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
-import type { LimiterCheckResult } from "../do/UserLimiter";
+import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
+import type { SpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
@@ -34,7 +41,8 @@ import type { Deployment } from "../policy/deployment";
  * are always decided first and the allowance is claimed last.
  *
  * What this costs. Both quotas live in single Durable Objects — one per
- * `app:user` pair and one per app for the app's own limits, one per
+ * install of an App Attest application or per `app:user` pair of a server
+ * application, and one per app for the app's own limits, one per
  * organization for the plan allowance — and a request that is subject to all
  * of them calls them one after another, because each is allowed to refuse
  * before the next is spent. Those objects sit wherever they were created, so a
@@ -59,9 +67,50 @@ export interface AdmissionInput {
   billingCache: BillingRequestCache;
   app: AppRecord;
   identity: GatewayIdentity;
+  /**
+   * The counter of the App Attest assertion the request was signed with,
+   * which the install's limiter accepts once and refuses as a replay after.
+   * Null where nothing was signed.
+   */
+  assertionCounter: number | null;
   plan: ExecutionPlan;
   appVersion: string | null;
   waitUntil: (promise: Promise<unknown>) => void;
+}
+
+/**
+ * The per-caller limiter a request is counted by, and what it is asked.
+ *
+ * An App Attest request is counted per install — the key that signed it —
+ * and its object is called on every request, because it also owns the
+ * install's assertion counter. Its budget is the install's month by default,
+ * or the user's when the application says so. A server application's request
+ * is counted per user, and only where per-user limits exist, as before
+ * installs did.
+ */
+export function callerLimiter(
+  app: AppRecord,
+  identity: GatewayIdentity,
+  assertionCounter: number | null,
+): { name: string; scope: "install" | "user"; spend: SpendKey & { scope: "install" | "user" } } | null {
+  const config = app.config;
+  const { appId, installId, userId } = identity;
+  if (countsPerInstall(config) && installId !== null) {
+    if (assertionCounter === null && !hasUserLevelLimits(config)) return null;
+    return {
+      name: `${appId}:install:${installId}`,
+      scope: "install",
+      // An App Attest identity always names somebody, so `user` has a key.
+      spend: budgetScope(config) === "user" && userId !== null
+        ? { appId, scope: "user", key: userId }
+        : { appId, scope: "install", key: installId },
+    };
+  }
+  // `identity.userId` is non-null whenever per-user limits exist: configuring
+  // them on an application that identifies no end users is refused when the
+  // configuration is parsed, so this is a narrowing, not a second policy.
+  if (!hasUserLevelLimits(config) || userId === null) return null;
+  return { name: `${appId}:${userId}`, scope: "user", spend: { appId, scope: "user", key: userId } };
 }
 
 /**
@@ -104,10 +153,14 @@ export async function admitRequest(
   /** Refuses the request the way the app's own limits decided to. */
   const refuseByAppLimits = (
     result: Extract<LimiterCheckResult, { allowed: false }>,
-    scope: "user" | "app",
+    scope: "user" | "install" | "app",
     now: number,
   ): never => {
     const durationMs = finish();
+    if (result.reason === "replay") {
+      blockedEvent("blocked_replay", "install", durationMs);
+      throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
+    }
     if (result.reason === "budget") {
       // A budget settles from completed requests, so it has no instant of its
       // own to retry after; the month it is measured over is the honest one.
@@ -173,20 +226,23 @@ export async function admitRequest(
    * own tokens, which costs only the caller already being refused.
    */
   const now = Date.now();
-  // `identity.userId` is non-null whenever per-user limits exist: configuring
-  // them on an application that identifies no end users is refused when the
-  // configuration is parsed, so this is a narrowing, not a second policy.
-  if (hasUserLevelLimits(app.config) && identity.userId !== null) {
-    const result = await env.USER_LIMITER
-      .getByName(`${identity.appId}:${identity.userId}`)
-      .checkAndIncrement({
-        now,
-        rpm: app.config.limits.per_user.requests.per_minute,
-        rpd: app.config.limits.per_user.requests.per_day,
-        monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
-        spend: { appId: identity.appId, userKey: identity.userId },
-      });
-    if (!result.allowed) refuseByAppLimits(result, "user", now);
+  const caller = callerLimiter(app, identity, input.assertionCounter);
+  if (caller !== null) {
+    const perUser = app.config.limits.per_user;
+    const check: LimiterCheckInput = {
+      now,
+      rpm: perUser.requests.per_minute,
+      rpd: perUser.requests.per_day,
+      monthlyBudgetMicrousd: monthlyBudgetMicrousd(perUser),
+      spend: caller.spend,
+      ...(input.assertionCounter === null ? {} : { assertionCounter: input.assertionCounter }),
+    };
+    const result = await env.USER_LIMITER.getByName(caller.name).checkAndIncrement(check);
+    if (!result.allowed) {
+      // A request limit refuses for the caller the limiter counts; a budget
+      // for whoever's month it is measured over.
+      refuseByAppLimits(result, result.reason === "budget" ? caller.spend.scope : caller.scope, now);
+    }
   }
   if (hasAppLevelLimits(app.config)) {
     const result = await env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
@@ -194,7 +250,7 @@ export async function admitRequest(
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
-      spend: { appId: identity.appId, userKey: null },
+      spend: { appId: identity.appId, scope: "app", key: null },
     });
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }

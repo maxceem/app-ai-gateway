@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clientAuth } from "../src/client-auth/client-auth";
 import { providersForEndpointStyle } from "../src/shared/providers";
 import { AppConfigSchema } from "../src/contracts/schemas";
-import { parseAppConfig } from "../src/shared/app-config";
+import { budgetScope, parseAppConfig } from "../src/shared/app-config";
 import { serverConfig, validateConfig } from "./helpers";
 
 /**
@@ -84,7 +84,8 @@ describe("the application configuration grammar", () => {
     });
     expect(parsed.endpoints).toEqual({});
     expect(parsed.limits).toEqual({
-      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+      // A server application's budget is per user: it has no installs.
+      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null, scope: "user" } },
       per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
     });
   });
@@ -453,7 +454,64 @@ describe("the application configuration grammar", () => {
 
     it("keeps a configured block through the round trip", () => {
       expect(parseAppConfig(withLimits({ per_user: scope(), per_app: scope() })).limits)
-        .toEqual({ per_user: scope(), per_app: scope() });
+        .toEqual({ per_user: scope({ spending: { monthly_usd: 5, scope: "user" } }), per_app: scope() });
+    });
+
+    describe("the budget's scope", () => {
+      const attest = (endUser: Record<string, unknown>, spending: Record<string, unknown>) => ({
+        ...withUsers(),
+        authentication: {
+          type: "apple_app_attest",
+          app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
+          end_user: endUser,
+        },
+        limits: { per_user: scope({ spending }), per_app: scope() },
+      });
+      const issuerUser = {
+        source: "issuer",
+        issuer: {
+          jwks_url: "https://issuer.test/jwks",
+          issuer: "https://issuer.test/",
+          audience: "aud",
+          user_id_claim: "sub",
+          required_claims: [],
+          max_token_lifetime_seconds: 3600,
+        },
+      };
+
+      it("defaults to install on an App Attest application, and fills it in", () => {
+        const parsed = parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5 }));
+        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "install" });
+        expect(budgetScope(parsed)).toBe("install");
+      });
+
+      it("moves to user only on an issuer-backed App Attest application", () => {
+        const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5, scope: "user" }));
+        expect(budgetScope(parsed)).toBe("user");
+        expect(() => parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5, scope: "user" })))
+          .toThrowError(/limits\.per_user\.spending\.scope.*end_user\.source is issuer/u);
+      });
+
+      it("refuses install on a server application, which has none", () => {
+        expect(() => parseAppConfig(withLimits({
+          per_user: scope({ spending: { monthly_usd: 5, scope: "install" } }),
+          per_app: scope(),
+        }))).toThrowError(/server applications have no install; the budget is per user/u);
+      });
+
+      it("keeps a stored configuration written before it existed", () => {
+        // Rows stored before the field still parse, and read the default.
+        const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5 }));
+        expect(parsed.limits.per_user.spending.scope).toBe("install");
+        expect(parseAppConfig(parsed)).toEqual(parsed);
+      });
+
+      it("is not accepted on per_app", () => {
+        expect(() => parseAppConfig(withLimits({
+          per_user: scope(),
+          per_app: scope({ spending: { monthly_usd: 5, scope: "user" } }),
+        }))).toThrowError(/limits\.per_app\.spending/u);
+      });
     });
 
     it("fills in a scope the configuration did not write", () => {
@@ -941,6 +999,7 @@ describe("how each configuration authenticates its clients", () => {
     status: "active",
     revision: 1,
     config: parseAppConfig(serverConfig({ authentication })),
+    compat: {},
   });
   const summary = (authentication: Record<string, unknown>) => {
     const { exchange, tokenHeader, consumedHeaders } = auth(authentication);
@@ -948,16 +1007,18 @@ describe("how each configuration authenticates its clients", () => {
   };
 
   it("settles the five configurations into three ways of authenticating", () => {
+    // The App Attest proof header is consumed everywhere: required beside an
+    // attest token, ignored beside anything else, and forwarded never.
     expect(summary({ type: "api_key", end_user: { source: "none" } }))
-      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: [] });
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
     expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
-      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user"] });
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user", "x-appattest-proof"] });
     expect(summary({ type: "api_key", end_user: { source: "issuer", issuer } }))
-      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token", "x-appattest-proof"] });
     expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "issuer", issuer } }))
-      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token", "x-appattest-proof"] });
     expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "app_install" } }))
-      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: [] });
+      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
   });
 
   it("refuses a request that names no end user before verifying its credential", () => {

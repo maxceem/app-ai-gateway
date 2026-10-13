@@ -3,9 +3,16 @@ import { TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Field } from "@/components/field";
 import type { AppDraft } from "@/hooks/use-app-draft";
-import { draftLimits, type LimitScopeConfig } from "@/lib/config-types";
+import { draftLimits, type LimitsConfig } from "@/lib/config-types";
 import { identifiesEndUsers } from "@shared/app-config";
 import { formatCost } from "@/lib/format";
 
@@ -24,7 +31,17 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
    * while everything landed in a single bucket.
    */
   const identifiesUsers = identifiesEndUsers(draft.config.authentication);
-  const updateScope = (scope: "per_user" | "per_app", partial: Partial<LimitScopeConfig>) =>
+  /*
+   * An App Attest application's callers are installs — one copy of the app on
+   * one device — so its request limits count per install, and so does its
+   * budget unless it is moved to the signed-in user, which only an issuer
+   * gives a meaning of its own. The JSON key stays `per_user` either way.
+   */
+  const authentication = draft.config.authentication;
+  const perInstall = authentication.type === "apple_app_attest";
+  const userScopeAllowed = perInstall && authentication.end_user.source === "issuer";
+  const budgetScope = perInstall ? (limits.per_user.spending.scope ?? "install") : "user";
+  const updateScope = <K extends "per_user" | "per_app">(scope: K, partial: Partial<LimitsConfig[K]>) =>
     state.updateLimits({
       ...limits,
       [scope]: { ...limits[scope], ...partial },
@@ -35,7 +52,12 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Per-user limits</CardTitle>
+            <CardTitle className="text-sm">{perInstall ? "Per-install limits" : "Per-user limits"}</CardTitle>
+            {perInstall ? (
+              <p className="text-xs text-muted-foreground">
+                Counted for each install: one copy of the app on one device. Reinstalling the app starts a new one.
+              </p>
+            ) : null}
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
@@ -76,13 +98,13 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
                 />
               </Field>
             </div>
-            <div className="border-t pt-4">
+            <div className="space-y-4 border-t pt-4">
               <Field
                 label="Monthly spending budget (USD)"
                 htmlFor="budget"
                 hint={
                   limits.per_user.spending.monthly_usd !== null
-                    ? `${formatCost(limits.per_user.spending.monthly_usd)} per user per month. Settled from completed requests, so it stops the request after the one that crosses it.`
+                    ? `${formatCost(limits.per_user.spending.monthly_usd)} per ${budgetScope} per month. Settled from completed requests, so it stops the request after the one that crosses it.`
                     : undefined
                 }
               >
@@ -96,11 +118,40 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
                   placeholder="Unlimited"
                   onChange={(event) =>
                     updateScope("per_user", {
-                      spending: { monthly_usd: asLimit(event.target.value) },
+                      // The scope rides along: it is the same budget, re-sized.
+                      spending: { ...limits.per_user.spending, monthly_usd: asLimit(event.target.value) },
                     })
                   }
                 />
               </Field>
+              {perInstall ? (
+                <Field
+                  label="Budget measured per"
+                  htmlFor="budget-scope"
+                  hint={
+                    userScopeAllowed
+                      ? "Per user adds up every install of one signed-in person."
+                      : "Per user needs sign-in through an identity provider; under app installation every install is its own user."
+                  }
+                >
+                  <Select
+                    value={budgetScope}
+                    onValueChange={(next) =>
+                      updateScope("per_user", {
+                        spending: { ...limits.per_user.spending, scope: next as "install" | "user" },
+                      })
+                    }
+                  >
+                    <SelectTrigger id="budget-scope" className="w-[180px]" size="sm" aria-label="Budget measured per">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="install">Install</SelectItem>
+                      <SelectItem value="user" disabled={!userScopeAllowed}>User</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : null}
             </div>
             {identifiesUsers ? null : (
               <Alert role="status">

@@ -2,10 +2,15 @@ import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
 /**
- * Request windows for the app's own limits, counted consistently per scope.
+ * Request windows for the app's own limits, counted consistently per scope,
+ * and the App Attest assertion counter of an install.
  *
- * One instance per `app:user` pair and one more per app id, which is why
- * nothing here is named for a user. The month's spend is D1's — one row the
+ * One instance per install of an App Attest application
+ * (`app:install:<key id>`), one per `app:user` pair of a server application,
+ * and one more per app id, which is why nothing here is named for a user. An
+ * install's object is called on every request, limits or not, because it owns
+ * the install's counter: each assertion's counter is accepted once, and a
+ * replayed one is refused before anything is counted. The month's spend is D1's — one row the
  * usage triggers keep current — and is read from there and cached for
  * {@link SPEND_REFRESH_MS}, so a budget settles within that window of the
  * request that spent it.
@@ -27,8 +32,24 @@ export const SPEND_REFRESH_MS = 10_000;
 /** A window's key: the epoch minute, or the UTC date as `YYYY-MM-DD`. */
 type WindowKind = "minute" | "day";
 
+/**
+ * How far behind the highest counter an install has used an assertion may
+ * still arrive. Requests are signed on the device in one order and can reach
+ * the gateway in another; a counter inside the window is accepted once, a
+ * counter behind it never.
+ */
+export const COUNTER_WINDOW = 64;
+
+const MASK_64 = (1n << 64n) - 1n;
+
 export interface LimiterCheckInput {
   now: number;
+  /**
+   * The counter of the App Attest assertion the request was signed with, on
+   * an install's object. Judged before anything else, and a replay counts
+   * nothing.
+   */
+  assertionCounter?: number;
   rpm: number | null;
   rpd: number | null;
   monthlyBudgetMicrousd: number | null;
@@ -38,7 +59,7 @@ export interface LimiterCheckInput {
 
 export type LimiterCheckResult =
   | { allowed: true }
-  | { allowed: false; reason: "rate" | "budget"; retryAfterSeconds?: number };
+  | { allowed: false; reason: "rate" | "budget" | "replay"; retryAfterSeconds?: number };
 
 export interface LimiterStatus {
   requestsToday: number;
@@ -65,6 +86,15 @@ export class UserLimiter extends DurableObject<Env> {
           minute_count INTEGER NOT NULL,
           day_key TEXT NOT NULL,
           day_count INTEGER NOT NULL
+        );
+        -- An install's assertion counters: the highest one used, and which of
+        -- the COUNTER_WINDOW below it have been, as a 64-bit mask in sixteen
+        -- hex digits (bit n is counter_high - n). Absent until the first
+        -- assertion, which is accepted whatever its counter.
+        CREATE TABLE IF NOT EXISTS assertion_counter (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          counter_high INTEGER NOT NULL,
+          counter_seen TEXT NOT NULL
         );
       `);
     });
@@ -120,25 +150,33 @@ export class UserLimiter extends DurableObject<Env> {
   }
 
   /**
-   * Claims one request against this scope's limits, or refuses it.
+   * Claims one request against this scope's limits, or refuses it: a replayed
+   * assertion counter first, then the request windows, then the budget.
    *
    * Everything that decides and counts runs without an `await` between the
    * read and the write, so no concurrent caller can interleave and a window can
-   * never be overshot. The one `await` — reading the month's spend when the
-   * cached figure has aged — comes first, and only fills the cache: it decides
-   * nothing a concurrent caller could invalidate.
+   * never be overshot. The counter is accepted and recorded in one synchronous
+   * step before anything else. The one `await` — reading the month's spend
+   * when the cached figure has aged — comes next, and only fills the cache: it
+   * decides nothing a concurrent caller could invalidate.
    *
-   * Both windows are incremented only once both have passed, so a request the
-   * day limit refuses does not silently spend a minute token.
+   * Both windows are incremented only once both have passed and the budget
+   * has room, so a request the day limit or the budget refuses does not
+   * silently spend a minute token. A counter, once seen, stays spent.
    */
   async checkAndIncrement(input: LimiterCheckInput): Promise<LimiterCheckResult> {
     // A caller-supplied clock decides which window a request lands in; a
     // nonsensical one falls back to real time rather than to window "NaN".
     const now = Number.isFinite(input.now) ? input.now : Date.now();
-    if (input.monthlyBudgetMicrousd !== null) {
-      const spent = await this.monthlySpend(input.spend, now);
-      if (spent >= input.monthlyBudgetMicrousd) return { allowed: false, reason: "budget" };
+    // First and synchronously: the counter is accepted and recorded in one
+    // step, so two requests carrying the same assertion cannot both pass, and
+    // a replay is refused before it can spend anything.
+    if (input.assertionCounter !== undefined && !this.useCounter(input.assertionCounter)) {
+      return { allowed: false, reason: "replay" };
     }
+    // Only fills the cache, so nothing decided after it can be invalidated by
+    // a concurrent caller meanwhile.
+    const spent = input.monthlyBudgetMicrousd === null ? 0 : await this.monthlySpend(input.spend, now);
 
     const windows = this.windowCounts(now);
     const minuteCount = windows.minute;
@@ -160,9 +198,63 @@ export class UserLimiter extends DurableObject<Env> {
         retryAfterSeconds: Math.max(1, Math.ceil((nextDay - now) / 1000)),
       };
     }
+    if (input.monthlyBudgetMicrousd !== null && spent >= input.monthlyBudgetMicrousd) {
+      return { allowed: false, reason: "budget" };
+    }
 
     this.bumpWindows(windows.minuteKey, minuteCount + 1, windows.dayKey, dayCount + 1);
     return { allowed: true };
+  }
+
+  /**
+   * Accepts one App Attest assertion counter for the token exchange, which
+   * signs from the same key and so shares the same sequence. Nothing else is
+   * counted.
+   */
+  advanceCounter(counter: number): { accepted: boolean } {
+    return { accepted: this.useCounter(counter) };
+  }
+
+  /**
+   * Whether `counter` is one this install has not used yet, recording it if
+   * so. Ahead of the highest seen, it becomes the highest and the window
+   * slides; inside the window below it, it is accepted once; behind the
+   * window, never. No `await`, so the read and the write cannot interleave.
+   */
+  private useCounter(counter: number): boolean {
+    if (!Number.isSafeInteger(counter) || counter < 0) return false;
+    const stored = this.ctx.storage.sql
+      .exec<{ counter_high: number; counter_seen: string }>(
+        "SELECT counter_high, counter_seen FROM assertion_counter WHERE singleton = 1",
+      )
+      .toArray()[0];
+    let high: number;
+    let seen: bigint;
+    if (stored === undefined) {
+      high = counter;
+      seen = 1n;
+    } else if (counter > stored.counter_high) {
+      const shift = counter - stored.counter_high;
+      seen = shift >= COUNTER_WINDOW ? 1n : ((BigInt(`0x${stored.counter_seen}`) << BigInt(shift)) & MASK_64) | 1n;
+      high = counter;
+    } else {
+      const behind = stored.counter_high - counter;
+      if (behind >= COUNTER_WINDOW) return false;
+      const bit = 1n << BigInt(behind);
+      const mask = BigInt(`0x${stored.counter_seen}`);
+      if ((mask & bit) !== 0n) return false;
+      high = stored.counter_high;
+      seen = mask | bit;
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO assertion_counter(singleton, counter_high, counter_seen) VALUES (1, ?, ?)
+       ON CONFLICT(singleton) DO UPDATE SET
+         counter_high = excluded.counter_high,
+         counter_seen = excluded.counter_seen`,
+      high,
+      seen.toString(16).padStart(16, "0"),
+    );
+    return true;
   }
 
   /**

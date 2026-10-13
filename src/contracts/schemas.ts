@@ -358,6 +358,27 @@ const LimitScopeSchema = z.object({
   spending: z.object({ monthly_usd: NullableSpendLimit }).strict(),
 }).strict();
 
+/** Whose month a `limits.per_user` budget is measured over. */
+export const BUDGET_SCOPES = ["install", "user"] as const;
+export type BudgetScope = (typeof BUDGET_SCOPES)[number];
+
+/**
+ * The limits on each of an application's callers. The key is `per_user` for
+ * compatibility, but on an App Attest application its request limits count
+ * per install — one copy of the app on one device — and so, by default, does
+ * its budget; `spending.scope` moves the budget to the signed-in user, which
+ * only an issuer-backed App Attest application can do. A server application
+ * has no installs: everything here is per user.
+ */
+const PerUserLimitScopeSchema = LimitScopeSchema.extend({
+  spending: LimitScopeSchema.shape.spending.extend({
+    scope: z.enum(BUDGET_SCOPES).optional().meta({
+      description:
+        "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
+    }),
+  }).strict(),
+}).strict();
+
 /** No limit of any kind, which is what an unwritten scope means. */
 const UNLIMITED_SCOPE = {
   requests: { per_minute: null, per_day: null },
@@ -424,7 +445,7 @@ export const AppConfigSchema = z.object({
    * parsed configuration: an unwritten block is the unlimited one.
    */
   limits: z.object({
-    per_user: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
+    per_user: PerUserLimitScopeSchema.prefault(UNLIMITED_SCOPE),
     per_app: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
   }).strict().prefault({}),
   endpoints: z.record(
@@ -456,6 +477,42 @@ export const AppConfigSchema = z.object({
         "needs an authentication.end_user source other than none: this application identifies no end users, so use limits.per_app",
     });
   }
+  /*
+   * A budget is measured per install or per user, and each application type
+   * admits only the scopes it has. A server application has no installs. An
+   * App Attest application under `app_install` has no user but the install
+   * itself, so only an issuer gives `user` a meaning of its own.
+   */
+  const budgetScope = (perUser as PerUserLimitScopeConfig | undefined)?.spending.scope;
+  if (authentication !== undefined && budgetScope !== undefined) {
+    if (authentication.type === "api_key" && budgetScope === "install") {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message: "cannot be install: server applications have no install; the budget is per user",
+      });
+    }
+    if (
+      authentication.type === "apple_app_attest"
+      && budgetScope === "user"
+      && authentication.end_user.source !== "issuer"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message:
+          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use install",
+      });
+    }
+  }
+}).overwrite((config) => {
+  // The scope's default depends on the application type, so it is filled in
+  // here, once both are parsed, and every reader finds it written.
+  const spending = config.limits.per_user.spending;
+  if (spending.scope === undefined) {
+    spending.scope = config.authentication.type === "apple_app_attest" ? "install" : "user";
+  }
+  return config;
 }).meta({ id: "AppConfig" });
 
 /** What a client may send, and what a parse of it produces. They differ: see the defaults above. */
@@ -908,6 +965,7 @@ export type ApiKeyAuthentication = Extract<AuthenticationConfig, { type: "api_ke
 export type ProviderPolicy = z.output<typeof ProviderPolicySchema>;
 export type RoutingConfig = AppConfig["routing"];
 export type LimitScopeConfig = z.output<typeof LimitScopeSchema>;
+export type PerUserLimitScopeConfig = z.output<typeof PerUserLimitScopeSchema>;
 export type LimitsConfig = AppConfig["limits"];
 export type EndpointConfig = z.output<typeof EndpointSchema>;
 export type EndpointsConfig = AppConfig["endpoints"];
