@@ -251,9 +251,11 @@ prove themselves.
   yours to handle: call `discardAccessToken()` and build it again with
   `authorizedRequest`, once. The next exchange re-registers the key if the
   gateway no longer knows it, and answers the app's current `verify_on`.
-  `assertion_required` on a 2.0 client means the app was switched to
-  **Every request** after its cached token was issued under **Token
-  exchange**; the rebuilt request is signed.
+  `assertion_required` on a request built with `authorizedRequest` and sent
+  with its headers intact means the app was switched to **Every request**
+  after its cached token was issued under **Token exchange**; the rebuilt
+  request is signed. A request assembled from `gatewayAccessToken()` by hand
+  gets it whenever the app is on **Every request**.
 - **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
   with a `429`, the client remembers how long the wait is and refuses the next
   call itself until it passes, rather than asking Apple for a new key on every
