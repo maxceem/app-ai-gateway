@@ -131,13 +131,12 @@ let gateway = AppAIGatewayClient(
     authMode: .appAttestInstall
 )
 
-let request = try await gateway.authorizedRequest(
+let (data, _) = try await gateway.withAuthorizedRequest(
     provider: .openai,
     providerPath: "v1/responses",
     body: Data(#"{"model":"gpt-5.6-sol","input":"Say hello."}"#.utf8),
     contentType: "application/json"
-)
-let (data, _) = try await URLSession.shared.data(for: request)
+) { try await URLSession.shared.data(for: $0) }
 print(String(decoding: data, as: UTF8.self))
 ```
 

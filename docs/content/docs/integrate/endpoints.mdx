@@ -53,15 +53,14 @@ curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcrib
 ## With the Swift package
 
 ```swift
-let request = try await gateway.authorizedRequest(
+let (data, response) = try await gateway.withAuthorizedRequest(
     endpointSlug: "chat",
     body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
     contentType: "application/json"
-)
-let (data, response) = try await URLSession.shared.data(for: request)
+) { try await URLSession.shared.data(for: $0) }
 ```
 
-Pass the body to `authorizedRequest`: when the app verifies App Attest on
+Pass the body to `withAuthorizedRequest`: when the app verifies App Attest on
 every request, the request is signed over it, as described in
 [Per-request proof](/integrate/ios#per-request-proof).
 

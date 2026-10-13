@@ -7,8 +7,8 @@ The AppAIGateway Swift package does the part of the integration that is easy
 to get wrong: App Attest registration, the token exchange, token refresh,
 signing each request with App Attest when your app verifies every request,
 and the headers every request needs. You keep sending provider requests with
-`URLSession` or any HTTP client. The package builds and signs the request; it
-does not send it.
+`URLSession` or any HTTP client. The package builds and signs the request,
+and decides when to build it again; your code sends it.
 
 Requirements: iOS 16 or later, a real device for App Attest, and an app in
 the console of type **iOS application** with your Team ID and Bundle ID.
@@ -24,7 +24,7 @@ https://github.com/maxceem/app-ai-gateway-swift
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.4.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.4.1")
 ```
 
 Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
@@ -97,12 +97,13 @@ The closure is named `issuerTokenProvider` regardless of the token type.
 
 ## Send a request
 
-`authorizedRequest` returns a `URLRequest` with the URL, the body, the
+`withAuthorizedRequest` builds a `URLRequest` with the URL, the body, the
 `Authorization` header, `X-App-Version` and the request's App Attest proof
-set. Pass the body to it, then send what it returns.
+set, and hands it to your closure to send. Pass the body to it, and send the
+request your closure receives.
 
 ```swift
-let request = try await gateway.authorizedRequest(
+let (data, response) = try await gateway.withAuthorizedRequest(
     provider: .openai,
     providerPath: "v1/responses",
     body: try JSONEncoder().encode([
@@ -110,13 +111,22 @@ let request = try await gateway.authorizedRequest(
         "input": "Summarise today's meals in one sentence."
     ]),
     contentType: "application/json"
-)
+) { try await URLSession.shared.data(for: $0) }
 
-let (data, response) = try await URLSession.shared.data(for: request)
 if let error = GatewayError(response: response as! HTTPURLResponse, body: data) {
     throw error
 }
 ```
+
+The package never performs the request itself, so any session, configuration
+or networking library works in the closure. If the gateway answers `401`, the
+client discards its token, builds the request again with a fresh token and,
+when your app verifies every request, a fresh proof, and calls your closure
+once more. That recovers from an expired gateway token, from an App Attest key
+the gateway no longer knows (the fresh exchange re-registers it), and from an
+app switched to **Every request** after the token was cached. An error your
+closure throws, and every other status, `403` and `429` included, come back
+to you untouched.
 
 `provider` is a provider slug. The constants `.openai`, `.anthropic`, `.xai`,
 `.gemini` and `.perplexity` spell the default slug of each type; use
@@ -124,30 +134,60 @@ if let error = GatewayError(response: response as! HTTPURLResponse, body: data) 
 API path with no leading slash.
 
 Headers the provider needs, such as `anthropic-version` for Anthropic, can be
-added to the returned request; the proof does not cover them. For streaming use
-`URLSession.bytes(for:)` and read the provider's stream as documented by the
-provider. See [Calling the provider proxy](/integrate/proxy) for the paths
-and headers of each provider.
+added to the request inside the closure; the proof does not cover them. See
+[Calling the provider proxy](/integrate/proxy) for the paths and headers of
+each provider.
+
+To stream, send with `URLSession.bytes(for:)`. It returns once the response
+headers arrive, before the body, so the status is known while the stream is
+still unread. Read the provider's stream as documented by the provider:
+
+```swift
+let (bytes, response) = try await gateway.withAuthorizedRequest(
+    provider: .anthropic,
+    providerPath: "v1/messages",
+    body: Data(#"{"model":"claude-sonnet-5","max_tokens":512,"stream":true,"messages":[{"role":"user","content":"Plan tomorrow's meals."}]}"#.utf8),
+    contentType: "application/json"
+) { request in
+    var request = request
+    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    return try await URLSession.shared.bytes(for: request)
+}
+
+let http = response as! HTTPURLResponse
+guard (200..<300).contains(http.statusCode) else {
+    let body = try await bytes.reduce(into: Data()) { $0.append($1) }
+    throw GatewayError(response: http, body: body)!
+}
+for try await line in bytes.lines {
+    print(line)
+}
+```
 
 A [custom endpoint](/integrate/endpoints) is the same call with a slug:
 
 ```swift
-let request = try await gateway.authorizedRequest(
+let (data, response) = try await gateway.withAuthorizedRequest(
     endpointSlug: "chat",
     body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
     contentType: "application/json"
-)
+) { try await URLSession.shared.data(for: $0) }
 ```
+
+`authorizedRequest` takes the same arguments without the closure and returns
+the request alone, for an app that wants to drive the retry itself; see
+**Recovery** under [What the client does for you](#what-the-client-does-for-you).
 
 ## Show the user where they stand
 
-`currentUserRequest()` builds a `GET /v1/apps/{app}/me`, which answers
+`withCurrentUserRequest` sends a `GET /v1/apps/{app}/me`, which answers
 the limits that apply to the caller, its requests today, the month's spend
 against its budget, and whether it is blocked. On an iOS app the request
-counts are the install's and `install_id` names it.
+counts are the install's and `install_id` names it. It retries a `401` the
+same way; `currentUserRequest()` builds the request alone.
 
 ```swift
-let (data, _) = try await URLSession.shared.data(for: try await gateway.currentUserRequest())
+let (data, _) = try await gateway.withCurrentUserRequest { try await URLSession.shared.data(for: $0) }
 ```
 
 Build it with the client rather than from a URL of your own: when your app
@@ -173,8 +213,8 @@ requests are signed:
 
 The token exchange answers with the app's `verify_on`, and the package signs
 requests only when it is `every_request`; a gateway that does not send it is
-treated as `token_exchange`. Build every request with `authorizedRequest`
-either way, and switching the setting needs no change in your app.
+treated as `token_exchange`. Build every request through the package either
+way, and switching the setting needs no change in your app.
 
 Apps created before this setting was added were set to **Token exchange**, so
 builds already in your users' hands, on a package before 1.4, keep working. Switch to
@@ -182,7 +222,8 @@ builds already in your users' hands, on a package before 1.4, keep working. Swit
 on 1.4 or later: from then on a request without a proof is refused with
 `401 assertion_required`. A 1.4 client still holding a token from before the
 switch is refused that way too, until it discards the token and rebuilds the
-request; see **Recovery** under [What the client does for you](#what-the-client-does-for-you).
+request, which `withAuthorizedRequest` does on its own; see **Recovery** under
+[What the client does for you](#what-the-client-does-for-you).
 
 With **Every request**, the client data the key signs is the SHA-256 of these
 lines joined by a newline, with no trailing newline:
@@ -202,10 +243,10 @@ and the header is `v1.<unix seconds>.<random value>.<assertion, base64url>`.
 The timestamp is signed, but the gateway does not compare it with its own
 clock; the assertion counter is what stops a proof being used twice.
 
-`authorizedRequest` computes all of it. What that asks of your code:
+The package computes all of it. What that asks of your code:
 
 - **Set the body before it is signed.** Pass it as `body:`. Changing
-  `httpBody` or the URL after `authorizedRequest` returns invalidates the
+  `httpBody` or the URL of the request it built invalidates the
   proof, and the request is refused with `403 attest_failed`. Other headers
   may be added.
 - **Keep provider paths plain ASCII.** The proof covers the path and query
@@ -215,9 +256,10 @@ clock; the assertion counter is what stops a proof being used twice.
   quotes, `'` in a query, `^` in a path and any non-ASCII character
   percent-encoded, with escapes already present left as they are. A plain
   ASCII path never needs rewriting, so the URL you passed in is the one sent.
-- **One request per proof.** Call `authorizedRequest` for every send,
-  retries included. Replaying a request the gateway has already accepted is
-  refused as a replayed assertion.
+- **One request per proof.** Build a new request for every send, retries
+  included; `withAuthorizedRequest` does so for the one it makes. Replaying a
+  request the gateway has already accepted is refused as a replayed
+  assertion.
 - **Version 1.4 or later.** Earlier versions of the package send no proof,
   so an app that verifies every request refuses their requests with
   `401 assertion_required`. Moving to 1.4 means passing the body to
@@ -246,16 +288,21 @@ prove themselves.
   failure, registers a new key, exchanges it for a token bound to the new key
   and signs once more, whether that happens at the token exchange or while
   signing a request. It also replaces the key once when the gateway answers
-  `attest_failed` at the token exchange. A request you send yourself and see
-  refused with `attest_failed`, `auth_required` or `assertion_required` is
-  yours to handle: call `discardAccessToken()` and build it again with
-  `authorizedRequest`, once. The next exchange re-registers the key if the
-  gateway no longer knows it, and answers the app's current `verify_on`.
-  `assertion_required` on a request built with `authorizedRequest` and sent
-  with its headers intact means the app was switched to **Every request**
-  after its cached token was issued under **Token exchange**; the rebuilt
-  request is signed. A request assembled from `gatewayAccessToken()` by hand
-  gets it whenever the app is on **Every request**.
+  `attest_failed` at the token exchange. When a request sent through
+  `withAuthorizedRequest` is refused with `401`, `auth_required` or
+  `assertion_required`, it discards the token and builds and sends the
+  request once more. The next exchange re-registers the key if the gateway
+  no longer knows it, and answers the app's current `verify_on`.
+  `assertion_required` on a request built by the package and sent with its
+  headers intact means the app was switched to **Every request** after its
+  cached token was issued under **Token exchange**; the rebuilt request is
+  signed. A request assembled from `gatewayAccessToken()` by hand gets it
+  whenever the app is on **Every request**. If you send requests built with
+  `authorizedRequest` instead, a `401` is yours to handle: call
+  `discardAccessToken()` and build the request again, once. A
+  `403 attest_failed` is never retried for you, because it shares its status
+  with refusals a retry cannot help; if it persists on a rebuilt request,
+  discarding the token clears it the same way.
 - **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
   with a `429`, the client remembers how long the wait is and refuses the next
   call itself until it passes, rather than asking Apple for a new key on every
