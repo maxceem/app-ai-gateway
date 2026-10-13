@@ -27,6 +27,7 @@ const USER = {
   attest_key_id: "attest-key",
   attest_registered: true,
   installs: 1,
+  is_install: false,
   created_at: "2026-09-01T00:00:00.000Z",
   last_seen_at: "2026-09-18T00:00:00.000Z",
   is_virtual: false,
@@ -303,6 +304,26 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
     expect(screen.getByTitle(/applies to each install/u).textContent).toBe("$14.00");
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
     expect(screen.queryByText(/\$10\.00/u)).toBeNull();
+  });
+
+  /**
+   * The list is decided per row: after an app moves from signed-in users to
+   * app_install, a signed-in user's history is still one person's spend across
+   * installs, and only the rows that are installs meet the install budget.
+   */
+  it("keeps a signed-in user's history off the install budget after the app moves to app_install", async () => {
+    const install = { ...USER, id: "key-id-1", installs: 1, is_install: true, usage: { ...USER.usage, cost_usd: 4 } };
+    renderSection("users", {
+      config: {
+        authentication: ATTEST({ source: "app_install" }),
+        limits: withBudget({ monthly_usd: 10, scope: "install" }).limits,
+      },
+      users: [spendy, install],
+    });
+    // The history row: cost alone.
+    expect((await screen.findByTitle(/applies to each install/u)).textContent).toBe("$14.00");
+    // The install row: drawn against its own budget.
+    expect(screen.getAllByRole("progressbar", { name: /monthly budget used/i })).toHaveLength(1);
   });
 
   it("draws it against the budget once the budget is the user's", async () => {

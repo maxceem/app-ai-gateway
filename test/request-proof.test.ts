@@ -546,6 +546,32 @@ describe("installs in usage and the user list", () => {
     expect(rowsByUser).toEqual([expect.objectContaining({ id: "user-1", installs: 2, attest_registered: true })]);
   });
 
+  /**
+   * Whether a row is one install is decided from the row, not from the app's
+   * current setting: a signed-in user's history survives a move to
+   * app_install and must not read as an install.
+   */
+  it("marks each row an install or not by its own key, across a change of identity", async () => {
+    const appId = "installs-switch";
+    await seedApp(appId);
+    await registerTestInstall(appId, "person");
+    await registerTestInstall(appId, "person");
+    await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, 'person')").bind(appId).run();
+    // The app moves to app_install, and a first install registers under it.
+    const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(appId).first<{ config_json: string }>();
+    const config = JSON.parse(row!.config_json);
+    config.authentication.end_user = { source: "app_install" };
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify(config), appId).run();
+    clearIsolateCaches();
+    await registerTestInstall(appId, "install-key-1", { keyId: "install-key-1" });
+    await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, 'install-key-1')").bind(appId).run();
+
+    const users = await admin(`${appId}/users`);
+    const { users: rows } = await users.json<{ users: { id: string; installs: number; is_install: boolean }[] }>();
+    expect(rows.find((user) => user.id === "person")).toMatchObject({ installs: 2, is_install: false });
+    expect(rows.find((user) => user.id === "install-key-1")).toMatchObject({ installs: 1, is_install: true });
+  });
+
   it("counts no installs for a server application's users", async () => {
     const key = await seedServerApp("installs-server", { proxy: { provider_mode: "all", model_rewrites: {} } });
     upstream();

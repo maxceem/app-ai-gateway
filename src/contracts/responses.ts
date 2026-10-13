@@ -831,6 +831,9 @@ export const GatewayUserSchema = z.object({
   installs: z.number().int().meta({
     description: "How many App Attest keys the user holds: one per install, that is one copy of the app on one device, and a new one each time the app is reinstalled. Always 0 on server applications.",
   }),
+  is_install: z.boolean().meta({
+    description: "Whether this row's id is itself a registered App Attest key, so the row is one install: every row of an app_install application, and none of a signed-in user's. Decided per row, so history kept from before an application changed its user identity reads as what it was. A per-install budget measures a row's spend only when this is true.",
+  }),
   created_at: z.string(),
   last_seen_at: z.string().nullable(),
   is_virtual: z.boolean(),

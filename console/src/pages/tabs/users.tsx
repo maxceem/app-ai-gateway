@@ -48,10 +48,10 @@ export function UsersTab({
    */
   monthlyBudgetUsd: number | null;
   /**
-   * Whose month `monthlyBudgetUsd` is measured over. A row is one user's
-   * spend across every install they hold, so it is drawn against the budget
-   * only where the budget is that user's — never one install's budget against
-   * several installs' spend.
+   * Whose month `monthlyBudgetUsd` is measured over. A signed-in user's row is
+   * their spend across every install they hold, so an install budget is drawn
+   * only against a row that is itself one install (`is_install`) — never one
+   * install's budget against several installs' spend.
    */
   budgetScope?: "install" | "user";
   /** Whether users hold App Attest keys, one per install, whose count is shown. */
@@ -60,8 +60,10 @@ export function UsersTab({
   installsOnly?: boolean;
 }) {
   const noun = installsOnly ? "install" : "user";
-  // Under app_install a user is one install, so an install budget is theirs.
-  const budgetIsPerRow = budgetScope === "user" || installsOnly;
+  // Whether a row's spend is what the budget measures, decided from the row
+  // itself: an install budget is a row's own only when the row is one
+  // install, and history from before an app moved to app_install is not.
+  const budgetIsRows = (user: GatewayUser) => budgetScope === "user" || user.is_install;
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -195,7 +197,7 @@ export function UsersTab({
                     {/* One user against the budget the app sets for each of
                         them, drawn exactly as the apps list draws an app
                         against its own. */}
-                    {budgetIsPerRow ? (
+                    {budgetIsRows(user) ? (
                       <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
                     ) : (
                       // The budget is each install's, and this is the sum of

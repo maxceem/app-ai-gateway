@@ -26,6 +26,8 @@ export interface EndUserIdentityRow {
   attest_key_id: string | null;
   /** How many App Attest keys — installs — the user holds. */
   installs: number;
+  /** 1 when the row's id is itself a registered App Attest key: an install under `app_install`. */
+  is_install: number;
   created_at: string;
   last_seen_at: string | null;
   is_virtual: number;
@@ -71,13 +73,15 @@ export function endUserIdentities(where: {
              ORDER BY keys.last_seen_at DESC, keys.key_id LIMIT 1) AS attest_key_id,
            (SELECT COUNT(*) FROM app_attest_key AS keys
              WHERE keys.app_id = users.app_id AND keys.user_id = users.id) AS installs,
+           EXISTS (SELECT 1 FROM app_attest_key AS keys
+             WHERE keys.app_id = users.app_id AND keys.key_id = users.id) AS is_install,
            users.created_at, users.last_seen_at, 0 AS is_virtual
       FROM app_user AS users
       JOIN app AS owner ON owner.id = users.app_id
      WHERE ${sql.join(users, sql` AND `)}
     UNION ALL
     SELECT events.app_id, events.user_id AS id, 'active' AS status, NULL AS attest_key_id,
-           0 AS installs,
+           0 AS installs, 0 AS is_install,
            MIN(strftime('%Y-%m-%dT%H:%M:%fZ', events.created_at)) AS created_at,
            MAX(strftime('%Y-%m-%dT%H:%M:%fZ', events.created_at)) AS last_seen_at,
            1 AS is_virtual
@@ -104,6 +108,7 @@ function serializeUser(row: EndUserIdentityRow) {
     attest_key_id: row.attest_key_id,
     attest_registered: row.installs > 0,
     installs: row.installs,
+    is_install: row.is_install === 1,
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
     is_virtual: row.is_virtual === 1,
