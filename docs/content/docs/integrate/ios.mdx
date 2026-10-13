@@ -201,6 +201,20 @@ The gateway accepts a timestamp within five minutes of its own clock.
   means passing the body to `authorizedRequest` instead of assigning it
   afterwards; nothing else in your code changes.
 
+### Legacy mode for builds already shipped
+
+An iOS app that existed before the gateway required proofs starts in a
+**legacy mode**, `unsigned_requests`: for ninety days it still accepts
+requests without a proof, so builds already in your users' hands keep
+working while you ship one on 2.x. Those responses carry `Deprecation` and
+`Sunset` headers. The app's page in the console shows the date and when an
+unsigned request last arrived. Once every build in use is on 2.x, end it
+early with **Disable legacy mode** on the app's page,
+`agw app legacy disable <app> unsigned_requests`, or
+`POST /v1/admin/apps/{app}/legacy/unsigned_requests/disable`. From then on
+requests without a proof are refused. Disabling cannot be undone, and nothing
+extends the date: on it, unsigned requests stop being accepted on their own.
+
 An app whose API-key mode builds server requests sends no proof: API keys
 prove themselves.
 

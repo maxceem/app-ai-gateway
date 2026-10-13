@@ -151,6 +151,12 @@ without sending inference; it does not verify upstream keys, App Attest on a
 device, sign-in or entitlements. Generate the matching client example with
 `app snippet` and address any placeholder notes before using it.
 
+`agw app show` and `agw app check` print an app's warnings. `agw app legacy
+list <app-id>` lists the app's legacy modes with their end date and when an
+unsigned request last arrived; `agw app legacy disable <app-id>
+unsigned_requests` ends one early, after asking, and cannot be undone. Do it
+only once every build in use is on the AppAIGateway Swift package 2.x.
+
 Flag-based `agw app add --type ios` enables both production and development
 App Attest environments. Use `--attest-environments production` for a shipped
 app, and a separate development app when needed. The console and an API body

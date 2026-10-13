@@ -329,6 +329,7 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | `GET /v1/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |
 | `POST /v1/admin/apps/{app}/keys/{key}/revoke` | | |
+| `POST /v1/admin/apps/{app}/legacy/{mode}/disable` | | Ends a legacy mode now; returns the app. Only after the person confirms, see below |
 
 `status` is `active` or `disabled`. A disabled app refuses every request
 with `403 app_disabled` and keeps everything.
@@ -339,6 +340,18 @@ person about every warning and help them act before its date. Warnings are
 read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
 body you write back, or the write is refused, and keep the `revision` from the
 read, which an update requires.
+
+A warning with a `legacy` field names a legacy mode the app is in. The one
+mode today is `unsigned_requests`: the app accepts requests without an App
+Attest proof, for builds still on the AppAIGateway Swift package 1.x, until
+the warning's `until` instant, after which they are refused on their own.
+`unsigned_last_seen_at` says when such a request last arrived, or is `null`
+when none has. `POST /v1/admin/apps/{app}/legacy/{mode}/disable` (CLI
+`agw app legacy disable`, MCP `disable_app_legacy_mode`) ends a mode early and
+cannot be undone; nothing creates or extends one. Disable a mode only after the
+person confirms every shipped build in use is updated, never on your own
+judgement, and never because a recent `unsigned_last_seen_at` is absent or the
+date is near.
 
 ## Application configuration reference
 
