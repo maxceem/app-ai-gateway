@@ -336,8 +336,9 @@ with `403 app_disabled` and keeps everything.
 An app's `warnings` describe behaviour that will stop on the stated date:
 each has a `code`, a `message`, and usually `until` and `docs_url`. Tell the
 person about every warning and help them act before its date. Warnings are
-read-only: leave them out of the body you write back, as you leave out `id`
-and `revision`, or the write is refused.
+read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
+body you write back, or the write is refused, and keep the `revision` from the
+read, which an update requires.
 
 ## Application configuration reference
 
