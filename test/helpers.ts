@@ -68,7 +68,7 @@ export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayI
     credentialType: "api_key",
     installId: null,
     ...overrides,
-  };
+  } as GatewayIdentity;
 }
 
 /**

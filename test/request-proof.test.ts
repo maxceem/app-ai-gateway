@@ -467,21 +467,23 @@ describe("verify_on token_exchange", () => {
     await expect(response.json()).resolves.toMatchObject({ user_id: "user-1", install_id: install.keyId });
   });
 
-  /**
-   * A shipped 1.x client holds a token minted before tokens named their
-   * install for up to an hour after the gateway is updated; an application
-   * that never checks a per-request proof has no reason to refuse it.
-   */
-  it("accepts a token from before tokens named their install, where every_request refuses it", async () => {
-    const { install } = await attestApp("verify-install-less", { verifyOn: "token_exchange" });
-    upstream();
-    const accepted = await send(await proxied(install, await installLessToken("verify-install-less"), { proof: null }));
-    expect(accepted.status).toBe(200);
-
-    const { install: strict } = await attestApp("verify-install-less-strict");
-    const refused = await send(await proxied(strict, await installLessToken("verify-install-less-strict"), { proof: null }));
+  // Every attest token names its install, whatever verify_on says: one
+  // without (as tokens were minted before installs) is refused in either mode.
+  it.each([
+    ["token_exchange", "token_exchange" as const],
+    ["every_request", "every_request" as const],
+  ])("refuses an attest token without an install under %s", async (_label, verifyOn) => {
+    const appId = `verify-install-less-${verifyOn.replace("_", "-")}`;
+    const { install } = await attestApp(appId, { verifyOn });
+    const fetchSpy = upstream();
+    const refused = await send(await proxied(install, await installLessToken(appId), { proof: null }));
     expect(refused.status).toBe(401);
     await expect(errorOf(refused)).resolves.toMatchObject({ code: "auth_required" });
+    const me = await send(new Request(`${ORIGIN}/v1/apps/${appId}/me`, {
+      headers: { authorization: `Bearer ${await installLessToken(appId)}` },
+    }));
+    expect(me.status).toBe(401);
+    expect(fetchSpy).toHaveLength(0);
   });
 
   it("requires a proof again once the app switches to every_request", async () => {

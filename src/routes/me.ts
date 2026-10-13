@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { budgetScope, countsPerInstall, hasUserLevelLimits } from "../shared/app-config";
+import { budgetScope, hasUserLevelLimits } from "../shared/app-config";
 import { appUserBlocked } from "../client-auth/user-status";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
@@ -30,7 +30,8 @@ meRoutes.get("/", async (c) => {
   const now = Date.now();
   // An App Attest caller is counted per install, and its budget measured over
   // the install's month unless the application moved it to the user's.
-  const installId = countsPerInstall(app.config) ? identity.installId : null;
+  // Null only for an API-key identity: every attest token names its install.
+  const installId = identity.installId;
   const limiter = c.env.USER_LIMITER.getByName(
     installId === null ? `${app.id}:${userId}` : `${app.id}:install:${installId}`,
   );

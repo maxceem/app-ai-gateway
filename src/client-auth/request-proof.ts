@@ -162,7 +162,7 @@ export async function verifyRequestProof(input: {
 }): Promise<number> {
   const { app, identity } = input;
   const authentication = app.config.authentication;
-  if (authentication.type !== "apple_app_attest" || identity.installId === null) {
+  if (authentication.type !== "apple_app_attest" || identity.authMethod !== "attest") {
     throw new GatewayError(403, "attest_failed", "This application does not sign requests with App Attest");
   }
   const proof = parseProof(input.header);

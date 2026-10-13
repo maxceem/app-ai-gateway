@@ -96,17 +96,15 @@ export async function issueGatewayToken(
 /**
  * A gateway token's identity, or `401 auth_required`.
  *
- * An attest token must name its install. `installOptional` is the one
- * exception: a token minted before tokens named their install, accepted only
- * for an App Attest application whose `verify_on` is `token_exchange`, so a
- * shipped 1.x client is not locked out for the hour its token has left after
- * the gateway is updated. It comes back with a null `installId`.
+ * An attest token must name its install, in either `verify_on` mode: the
+ * install is what its limits, budget and usage are counted by, and a token
+ * without one (as the gateway minted them before installs existed) is refused
+ * like any other malformed token. An API-key token names none.
  */
 export async function verifyGatewayToken(
   token: string,
   secret: string,
   expectedAppId: string,
-  options: { installOptional?: boolean } = {},
 ): Promise<GatewayIdentity> {
   try {
     const { payload, protectedHeader } = await jwtVerify(token, await key(secret), {
@@ -125,21 +123,20 @@ export async function verifyGatewayToken(
       (payload.auth_method !== "attest" && payload.auth_method !== "api_key") ||
       // An attest token names its install, and only an attest token does.
       (payload.auth_method === "attest"
-        ? payload.install === undefined
-          ? options.installOptional !== true
-          : typeof payload.install !== "string" || payload.install.length === 0
+        ? typeof payload.install !== "string" || payload.install.length === 0
         : payload.install !== undefined)
     ) {
       throw new Error("Required gateway token claims are missing");
     }
-    return {
+    const fields = {
       appId: expectedAppId,
       userId: payload.sub,
-      authMethod: payload.auth_method,
-      credentialType: "gateway_token",
-      installId: payload.auth_method === "attest" && typeof payload.install === "string" ? payload.install : null,
+      credentialType: "gateway_token" as const,
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
+    return payload.auth_method === "attest"
+      ? { ...fields, authMethod: "attest", installId: payload.install as string }
+      : { ...fields, authMethod: "api_key", installId: null };
   } catch {
     throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
   }

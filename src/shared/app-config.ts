@@ -207,13 +207,6 @@ export function budgetScope(config: AppConfig): BudgetScope {
   return config.limits.per_user.spending.scope ?? "install";
 }
 
-/**
- * Whether `per_user` limits count per install: always on an App Attest
- * application, never on a server application, which has none.
- */
-export const countsPerInstall = (config: AppConfig): boolean =>
-  config.authentication.type === "apple_app_attest";
-
 export const hasUserLevelLimits = (config: AppConfig): boolean =>
   scopeHasLimits(config.limits.per_user);
 

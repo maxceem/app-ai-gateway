@@ -2,7 +2,6 @@ import { requireActiveBilling, type BillingRequestCache } from "../billing/gatew
 import { billingQuota } from "../billing/quota";
 import {
   budgetScope,
-  countsPerInstall,
   hasAppLevelLimits,
   hasUserLevelLimits,
   monthlyBudgetMicrousd,
@@ -97,16 +96,19 @@ export function callerLimiter(
   assertionCounter: number | null,
 ): { name: string; scope: "install" | "user"; spend: SpendKey & { scope: "install" | "user" } } | null {
   const config = app.config;
-  const { appId, installId, userId } = identity;
-  if (countsPerInstall(config) && installId !== null) {
+  const { appId, userId } = identity;
+  // An attest identity is an App Attest application's — client
+  // authentication refuses a token minted by the other exchange — and always
+  // names its install.
+  if (identity.authMethod === "attest") {
     if (assertionCounter === null && !hasUserLevelLimits(config)) return null;
     return {
-      name: `${appId}:install:${installId}`,
+      name: `${appId}:install:${identity.installId}`,
       scope: "install",
       // An App Attest identity always names somebody, so `user` has a key.
       spend: budgetScope(config) === "user" && userId !== null
         ? { appId, scope: "user", key: userId }
-        : { appId, scope: "install", key: installId },
+        : { appId, scope: "install", key: identity.installId },
     };
   }
   // `identity.userId` is non-null whenever per-user limits exist: configuring

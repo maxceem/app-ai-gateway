@@ -178,10 +178,6 @@ function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication 
   const authMethod = exchange.type === "app_attest" ? "attest" : "api_key";
   const verifiesEveryRequest = exchange.type === "app_attest"
     && exchange.authentication.app_attest.verify_on === "every_request";
-  // A token minted before tokens named their install can still be good for
-  // the hour it was issued for, and only an application that never checks a
-  // per-request proof can take it: there is no install to check one against.
-  const tokenOptions = { installOptional: exchange.type === "app_attest" && !verifiesEveryRequest };
   return {
     exchange,
     tokenHeader,
@@ -191,7 +187,7 @@ function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication 
     consumedHeaders: tokenHeader === undefined ? [PROOF_HEADER] : [tokenHeader, PROOF_HEADER],
     verifier(env, appId, _headers, credential) {
       return async () => {
-        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId, tokenOptions);
+        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId);
         // A token minted by the exchange this application used to run, before
         // its authentication changed, is not one it would mint now: an API-key
         // token on an App Attest application would skip App Attest altogether,
