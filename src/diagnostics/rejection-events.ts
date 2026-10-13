@@ -10,7 +10,11 @@ import type { RejectionReason, RejectionScope } from "../shared/rejection-reason
 export interface RejectionEventInput {
   env: Env;
   identity: GatewayIdentity;
-  attribution: AttemptAttribution;
+  /**
+   * What the refused request was about to call. A refusal on a route that
+   * calls no provider — `/me` — has a route of its own and nothing else.
+   */
+  attribution: Pick<AttemptAttribution, "providerSlug" | "model" | "route"> | { providerSlug: null; model: null; route: string };
   endpointSlug?: string | null;
   appVersion: string | null;
   reason: RejectionReason;

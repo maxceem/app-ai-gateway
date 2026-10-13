@@ -359,6 +359,18 @@ describe("per-request App Attest proofs", () => {
     const replayed = await send(replay);
     expect(replayed.status).toBe(403);
     await expect(errorOf(replayed)).resolves.toMatchObject({ code: "attest_failed" });
+    // And sampled the way a replayed proxy request is.
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    const row = await env.DB.prepare(
+      "SELECT reason, scope, install_id, route, provider_slug FROM app_rejection_event WHERE app_id = 'proof-me' ORDER BY id DESC LIMIT 1",
+    ).first();
+    expect(row).toEqual({
+      reason: "blocked_replay",
+      scope: "install",
+      install_id: install.keyId,
+      route: "me",
+      provider_slug: null,
+    });
   });
 });
 

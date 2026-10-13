@@ -5,6 +5,7 @@ import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
 import { monthlySpendMicrousd } from "../usage/app-usage-accounting";
+import { recordRejectionEvent } from "../diagnostics/rejection-events";
 
 export const meRoutes = new Hono<{ Bindings: Env; Variables: GatewayVariables }>();
 
@@ -37,6 +38,17 @@ meRoutes.get("/", async (c) => {
   // proof captured off this route is no more replayable than one off a proxy.
   const counter = c.get("assertionCounter");
   if (counter !== null && !(await limiter.advanceCounter(counter)).accepted) {
+    // Sampled exactly as admission samples a replayed proxy request.
+    c.executionCtx.waitUntil(recordRejectionEvent({
+      env: c.env,
+      identity,
+      attribution: { providerSlug: null, model: null, route: "me" },
+      endpointSlug: null,
+      appVersion: c.req.header("x-app-version") ?? null,
+      reason: "blocked_replay",
+      scope: "install",
+      latencyMs: Math.round(Date.now() - now),
+    }));
     throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
   }
   const spendKey = installId !== null && budgetScope(app.config) === "install"
