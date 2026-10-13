@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { parseProof, requestClientData } from "../src/client-auth/request-proof";
+// Shared with the Swift package's tests, byte for byte: both sides must sign
+// the path and query exactly as this runtime's URL parser reads them.
+import urlGolden from "../app-ai-gateway-swift/Tests/AppAIGatewayTests/Fixtures/request-proof-urls.json";
 import {
   clearIsolateCaches,
   registerTestInstall,
@@ -128,6 +131,27 @@ describe("the client data a device signs", () => {
       token: "t", timestamp: "1", nonce: "AAAAAAAAAAAAAAAAAAAAAA",
     });
     expect(text.split("\n")[4]).toBe("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+  });
+
+  /**
+   * The gateway rebuilds the signed path and query from `request.url`, which
+   * the runtime has already read with the WHATWG URL parser. The Swift
+   * package normalizes the URL it sends to that same form before signing;
+   * these fixtures are the contract between the two.
+   */
+  it.each(urlGolden.cases)("reads $name the way the Swift package signs it", async (fixture) => {
+    const url = new URL(`https://gateway.test${fixture.path}${fixture.query === null ? "" : `?${fixture.query}`}`);
+    expect(`${url.pathname}${url.search}`).toBe(fixture.pathAndQuery);
+    const { fixed } = urlGolden;
+    expect(await requestClientData({
+      appId: fixed.appId,
+      method: fixed.method,
+      pathAndQuery: `${url.pathname}${url.search}`,
+      body: new TextEncoder().encode(fixed.body),
+      token: fixed.token,
+      timestamp: fixed.timestamp,
+      nonce: fixed.nonce,
+    })).toBe(fixture.clientData);
   });
 
   it("parses only the v1 shape", () => {

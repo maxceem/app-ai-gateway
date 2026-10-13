@@ -179,6 +179,9 @@ export async function verifyRequestProof(input: {
   if (!authentication.app_attest.environments.includes(key.environment)) {
     throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
   }
+  // The path and query as the runtime's WHATWG parser left them, which is
+  // also the form the Swift package normalizes its URL to before signing; the
+  // shared fixtures in app-ai-gateway-swift/Tests pin the two together.
   const url = new URL(input.url);
   const clientData = await requestClientData({
     appId: app.id,

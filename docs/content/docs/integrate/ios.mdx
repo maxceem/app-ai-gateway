@@ -186,6 +186,13 @@ The gateway accepts a timestamp within five minutes of its own clock.
   `httpBody` or the URL after `authorizedRequest` returns invalidates the
   proof, and the request is refused with `403 attest_failed`. Other headers
   may be added.
+- **Keep provider paths plain ASCII.** The proof covers the path and query
+  as the gateway reads them, which is how a standard (WHATWG) URL parser
+  reads the URL that arrives. The package rewrites the URL it returns into
+  that form before signing it: `.` and `..` segments resolved, and spaces,
+  quotes, `'` in a query, `^` in a path and any non-ASCII character
+  percent-encoded, with escapes already present left as they are. A plain
+  ASCII path never needs rewriting, so the URL you passed in is the one sent.
 - **One request per proof.** Call `authorizedRequest` for every send,
   retries included. Replaying a request the gateway has already accepted is
   refused as a replayed assertion.
