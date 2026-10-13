@@ -59,11 +59,10 @@ export type ErrorCode =
   | "billing_conflict"
   /**
    * An App Attest proof was refused: at the token exchange, or on a request —
-   * an `X-AppAttest-Proof` that is malformed, stale (the device clock is more
-   * than five minutes out), signed by a key the application has no record of
-   * or whose environment it no longer accepts, signed over a different
-   * request, or whose assertion counter was already used. The message says
-   * which.
+   * an `X-AppAttest-Proof` that is malformed, signed by a key the application
+   * has no record of or whose environment it no longer accepts, signed over a
+   * different request, or whose assertion counter was already used. The
+   * message says which.
    */
   | "attest_failed"
   /**

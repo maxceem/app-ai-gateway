@@ -12,9 +12,12 @@
  * base64url without padding. What the device signs is the SHA-256 of the lines
  * {@link requestClientData} joins, so the assertion covers the application,
  * the method, the path and query exactly as sent, the body, the token, and
- * the moment. A token copied off the wire is worthless without the key, and a
- * proof copied with it is worthless for any other request — and, because the
- * install's limiter refuses a counter it has seen, for the same one again.
+ * the device's timestamp. A token copied off the wire is worthless without the
+ * key, and a proof copied with it is worthless for any other request — and,
+ * because the install's limiter refuses a counter it has seen, for the same
+ * one again. That counter window is the whole of the replay protection: the
+ * timestamp is signed, so it cannot be altered, but it is not compared with
+ * the gateway's clock, and a device whose clock is wrong is not refused.
  */
 
 import { and, eq } from "drizzle-orm";
@@ -29,9 +32,6 @@ export const PROOF_HEADER = "x-appattest-proof";
 
 /** The first line of every client data string, which names this format and its version. */
 export const REQUEST_PROOF_DOMAIN = "appaigateway-request-v1";
-
-/** How far a device clock may be from the gateway's, either way. */
-export const PROOF_MAX_SKEW_SECONDS = 300;
 
 /** Far above any real assertion (a few hundred bytes), and well below a header's limit. */
 const MAX_ASSERTION_LENGTH = 8192;
@@ -147,8 +147,8 @@ function registeredKey(env: Env, appId: string, keyId: string): Promise<Register
  * Verifies one request's proof against the install its token names, and
  * answers the assertion's counter for the install's limiter to judge.
  *
- * In the order that costs least for what it refuses: the header's shape, its
- * clock, the key and its environment, and only then the signature.
+ * In the order that costs least for what it refuses: the header's shape, the
+ * key and its environment, and only then the signature.
  */
 export async function verifyRequestProof(input: {
   env: Env;
@@ -159,7 +159,6 @@ export async function verifyRequestProof(input: {
   url: string;
   body: Uint8Array;
   token: string;
-  now?: number;
 }): Promise<number> {
   const { app, identity } = input;
   const authentication = app.config.authentication;
@@ -167,10 +166,6 @@ export async function verifyRequestProof(input: {
     throw new GatewayError(403, "attest_failed", "This application does not sign requests with App Attest");
   }
   const proof = parseProof(input.header);
-  const nowSeconds = Math.floor((input.now ?? Date.now()) / 1000);
-  if (Math.abs(nowSeconds - proof.timestamp) > PROOF_MAX_SKEW_SECONDS) {
-    throw new GatewayError(403, "attest_failed", "App Attest request proof is stale; check the device clock");
-  }
   const key = await registeredKey(input.env, app.id, identity.installId);
   if (!key) throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
   // An assertion carries no aaguid, so the environment recorded at

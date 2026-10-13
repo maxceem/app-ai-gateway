@@ -216,27 +216,26 @@ describe("per-request App Attest proofs", () => {
   });
 
   it.each([
-    ["too old", -301],
-    ["from the future", 301],
-  ])("refuses a proof whose timestamp is %s", async (_label, offset) => {
-    const { install, token } = await attestApp(`proof-stale-${offset}`);
+    ["a day behind", -86_400],
+    ["a day ahead", 86_400],
+  ])("accepts a proof whose device clock is %s: the timestamp is signed, not compared", async (_label, offset) => {
+    const { install, token } = await attestApp(`proof-clock-${offset}`);
+    upstream();
     const response = await send(await proxied(install, token, {
       sign: { timestamp: Math.floor(Date.now() / 1000) + offset },
     }));
-    expect(response.status).toBe(403);
-    await expect(errorOf(response)).resolves.toMatchObject({
-      code: "attest_failed",
-      message: expect.stringContaining("stale"),
-    });
+    expect(response.status).toBe(200);
   });
 
-  it("accepts a clock inside the five minutes either way", async () => {
-    const { install, token } = await attestApp("proof-skew");
-    upstream();
-    const response = await send(await proxied(install, token, {
-      sign: { timestamp: Math.floor(Date.now() / 1000) - 290 },
-    }));
-    expect(response.status).toBe(200);
+  it("refuses a proof whose timestamp was changed after signing", async () => {
+    const { install, token } = await attestApp("proof-timestamp-edited");
+    const signed = await proxied(install, token);
+    const [version, timestamp, nonce, assertion] = signed.headers.get("x-appattest-proof")!.split(".");
+    const headers = new Headers(signed.headers);
+    headers.set("x-appattest-proof", [version, String(Number(timestamp) + 1), nonce, assertion].join("."));
+    const response = await send(new Request(signed.url, { method: "POST", headers, body: BODY }));
+    expect(response.status).toBe(403);
+    await expect(errorOf(response)).resolves.toMatchObject({ code: "attest_failed" });
   });
 
   it.each([
