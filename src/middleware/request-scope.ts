@@ -22,8 +22,8 @@ export interface RequestVariables {
   identityAuthCache: Map<string, Promise<CfAuth>>;
   /**
    * Headers every answer to this request carries, refusals included: the
-   * deprecation notice of a client request accepted under a compatibility
-   * switch. Set by client authentication; absent everywhere else.
+   * deprecation notice of a client request accepted in a legacy mode. Set by
+   * client authentication; absent everywhere else.
    */
   responseHeaders?: Record<string, string>;
 }

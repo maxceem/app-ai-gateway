@@ -13,7 +13,7 @@
  */
 
 import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys";
-import { compatFeature, deprecationHeaders } from "./compat";
+import { deprecationHeaders, legacyMode } from "./legacy";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { verifyGatewayToken } from "./gateway-token";
@@ -238,14 +238,20 @@ export interface AuthenticatedRequest {
    * The counter of the App Attest assertion the request was signed with, for
    * the install's limiter to accept or refuse as a replay. Null where nothing
    * was signed: a server application, or a request accepted without a proof
-   * under `bearer_without_assertion`.
+   * in the `unsigned_requests` legacy mode.
    */
   assertionCounter: number | null;
   /**
    * Response headers the request must be answered with: the deprecation
-   * notice of a request accepted under a compatibility switch. Empty otherwise.
+   * notice of a request accepted in a legacy mode. Empty otherwise.
    */
   responseHeaders: Record<string, string>;
+  /**
+   * Whether the request was accepted unsigned under the `unsigned_requests`
+   * legacy mode, which the caller records with `noteUnsignedRequest` once it
+   * has a `waitUntil` to record it from.
+   */
+  unsignedLegacy: boolean;
 }
 
 /**
@@ -285,29 +291,35 @@ export async function authenticateRequest(input: {
   const header = headers.get(PROOF_HEADER);
   // Only where the request could be accepted unsigned anyway: a token from
   // before installs existed has no install for a proof to be checked against.
-  const compat = header === null ? compatFeature(app, "bearer_without_assertion") : null;
-  const verify = auth.verifier(env, app.id, headers, credential, { legacyAttest: compat !== null });
+  const unsigned = header === null ? legacyMode(app, "unsigned_requests") : null;
+  const verify = auth.verifier(env, app.id, headers, credential, { legacyAttest: unsigned !== null });
   const [verified] = await Promise.allSettled([verify(), input.providers ?? Promise.resolve()]);
   if (verified.status === "rejected") throw verified.reason;
   const identity = verified.value;
   // Only an attest token is signed per request; anything else proved itself
   // with its credential alone, and a proof header beside it is ignored.
   if (identity.authMethod !== "attest") {
-    return { identity, credential, assertionCounter: null, responseHeaders: {} };
+    return { identity, credential, assertionCounter: null, responseHeaders: {}, unsignedLegacy: false };
   }
   if (header === null) {
-    if (compat === null) {
+    if (unsigned === null) {
       throw new GatewayError(
         401,
         "assertion_required",
         "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 2.x.",
       );
     }
-    log("warn", "compat_bearer_without_assertion_used", {
+    log("warn", "legacy_unsigned_requests_used", {
       app: app.id,
-      until: compat.until.toISOString(),
+      until: unsigned.until.toISOString(),
     });
-    return { identity, credential, assertionCounter: null, responseHeaders: deprecationHeaders(compat.until) };
+    return {
+      identity,
+      credential,
+      assertionCounter: null,
+      responseHeaders: deprecationHeaders(unsigned.until),
+      unsignedLegacy: true,
+    };
   }
   const assertionCounter = await verifyRequestProof({
     env,
@@ -319,7 +331,7 @@ export async function authenticateRequest(input: {
     body: await input.body(),
     token: credential.token,
   });
-  return { identity, credential, assertionCounter, responseHeaders: {} };
+  return { identity, credential, assertionCounter, responseHeaders: {}, unsignedLegacy: false };
 }
 
 /**

@@ -286,10 +286,16 @@ export const AuthEventSummarySchema = z.object({
  * accepts it.
  */
 export const AppWarningSchema = z.object({
-  code: z.string().meta({ description: "Stable identifier, for example bearer_without_assertion." }),
+  code: z.string().meta({ description: "Stable identifier, for example legacy_unsigned_requests." }),
   message: z.string().meta({ description: "What will stop, when, and what to do about it, in one sentence or two." }),
+  legacy: z.enum(["unsigned_requests"]).optional().meta({
+    description: "The legacy mode the warning is about. unsigned_requests: requests without an App Attest proof are accepted until `until`. Disable it with POST /v1/admin/apps/{app}/legacy/{mode}/disable once every build in use signs its requests; nothing creates or extends one.",
+  }),
   until: z.string().optional().meta({ description: "ISO 8601 UTC instant the behaviour stops." }),
   docs_url: z.string().optional().meta({ description: "Where the change is described." }),
+  unsigned_last_seen_at: z.string().nullable().optional().meta({
+    description: "For unsigned_requests: when the app last served a request without a proof, to within an hour, or null when none has been seen.",
+  }),
 }).meta({ id: "AppWarning" });
 
 /**

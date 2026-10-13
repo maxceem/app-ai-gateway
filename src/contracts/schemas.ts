@@ -363,8 +363,8 @@ export const BUDGET_SCOPES = ["install", "user"] as const;
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
 
 /**
- * The limits on each of an application's callers. The key is `per_user` for
- * compatibility, but on an App Attest application its request limits count
+ * The limits on each of an application's callers. The key stays `per_user`,
+ * but on an App Attest application its request limits count
  * per install — one copy of the app on one device — and so, by default, does
  * its budget; `spending.scope` moves the budget to the signed-in user, which
  * only an issuer-backed App Attest application can do. A server application

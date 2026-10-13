@@ -999,7 +999,8 @@ describe("how each configuration authenticates its clients", () => {
     status: "active",
     revision: 1,
     config: parseAppConfig(serverConfig({ authentication })),
-    compat: {},
+    legacy: {},
+    unsignedLastSeenAt: null,
   });
   const summary = (authentication: Record<string, unknown>) => {
     const { exchange, tokenHeader, consumedHeaders } = auth(authentication);

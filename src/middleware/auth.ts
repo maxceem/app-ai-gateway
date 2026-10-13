@@ -3,6 +3,7 @@ import { authenticateRequest } from "../client-auth/client-auth";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import { readBodyLimited } from "../providers/request-body";
+import { noteUnsignedRequest } from "../client-auth/legacy";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "./request-scope";
 
@@ -24,7 +25,7 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
   assertAppActive(app);
-  const { identity, assertionCounter, responseHeaders } = await authenticateRequest({
+  const { identity, assertionCounter, responseHeaders, unsignedLegacy } = await authenticateRequest({
     env: c.env,
     app,
     request: c.req.raw,
@@ -34,6 +35,7 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   c.set("identity", identity);
   c.set("assertionCounter", assertionCounter);
   if (Object.keys(responseHeaders).length > 0) c.set("responseHeaders", responseHeaders);
+  if (unsignedLegacy) c.executionCtx.waitUntil(noteUnsignedRequest(c.env.DB, app));
   await next();
   for (const [name, value] of Object.entries(responseHeaders)) c.res.headers.set(name, value);
 };

@@ -127,12 +127,21 @@ export const app = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
     /**
-     * Internal compatibility switches, as JSON, set by hand in D1 and by
-     * nothing else: no API, console, CLI or MCP write reaches it, and it is not
-     * part of the configuration. Each switch carries the date it stops
-     * applying; `src/client-auth/compat.ts` is its only reader.
+     * The legacy modes this application is in, as JSON
+     * `{ "<mode>": { "until": "<ISO UTC>" } }`: behaviour the gateway keeps
+     * for it for a while after moving on, each until a date. Set by migration
+     * 0006 or by hand in D1; the API can only remove a mode, never add or
+     * extend one. Not part of the configuration; `src/client-auth/legacy.ts`
+     * is its reader.
      */
-    compat: text("compat"),
+    legacy: text("legacy"),
+    /**
+     * When the application last served a request under the
+     * `unsigned_requests` legacy mode, written at most once an hour, so the
+     * person deciding whether to disable it can see whether old builds are
+     * still calling.
+     */
+    unsignedLastSeenAt: text("unsigned_last_seen_at"),
   },
   (table) => [
     index("idx_apps_organization_id").on(table.organizationId),

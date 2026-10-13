@@ -10,7 +10,7 @@ import type {
   CreatedAppResponse,
 } from "../contracts/responses";
 import { generateApiKey } from "../client-auth/api-keys";
-import { appWarnings } from "../client-auth/compat";
+import { appWarnings, LEGACY_MODES, type LegacyModeName } from "../client-auth/legacy";
 import {
   appRecordFromRow,
   invalidateAppConfig,
@@ -184,8 +184,8 @@ function serializeApp(stored: StoredApp) {
     created_at: stored.createdAt,
     updated_at: stored.updatedAt,
     revision: stored.revision,
-    // Computed on every read from the row's internal compatibility switches,
-    // which no write can reach: this is the only place they surface.
+    // Computed on every read from the row's legacy modes, which no write can
+    // create or extend: this is the only place they surface.
     warnings: appWarnings(stored),
   };
 }
@@ -469,4 +469,35 @@ export async function deleteApp(
     removed_users: removedUsers.length,
     usage_events_retained: true,
   };
+}
+
+/**
+ * Ends one legacy mode now. One way by design: nothing in the API creates or
+ * extends a mode, so the most a caller can do is give up behaviour early.
+ * Disabling a mode the application is not in changes nothing, and a column
+ * that does not parse (which switches nothing on) is cleared.
+ */
+export async function disableAppLegacyMode(
+  scope: ManagementScope,
+  actor: Actor,
+  existing: AppRow,
+  mode: string,
+): Promise<AppResponse> {
+  if (!(LEGACY_MODES as readonly string[]).includes(mode)) {
+    throw new GatewayError(400, "invalid_request", `Unknown legacy mode; use one of ${LEGACY_MODES.join(", ")}`);
+  }
+  const path = `$.${mode as LegacyModeName}`;
+  const [row] = await database(scope.env.DB)
+    .update(app)
+    .set({
+      legacy: sql`CASE
+        WHEN ${app.legacy} IS NULL OR NOT json_valid(${app.legacy}) THEN NULL
+        WHEN json_remove(${app.legacy}, ${path}) = '{}' THEN NULL
+        ELSE json_remove(${app.legacy}, ${path}) END`,
+    })
+    .where(and(eq(app.id, existing.id), eq(app.organizationId, actor.organizationId)))
+    .returning();
+  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+  invalidateAppConfig(existing.id);
+  return { app: serializeApp(storedAppFromRow(row)) };
 }

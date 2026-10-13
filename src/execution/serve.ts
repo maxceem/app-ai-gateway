@@ -32,6 +32,7 @@ import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../providers/provider-store";
 import { readBodyLimited } from "../providers/request-body";
+import { noteUnsignedRequest } from "../client-auth/legacy";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "../middleware/request-scope";
 import { admitRequest } from "./admission";
@@ -87,7 +88,7 @@ async function authenticated(
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);
-  const { identity, credential, assertionCounter, responseHeaders } = await authenticateRequest({
+  const { identity, credential, assertionCounter, responseHeaders, unsignedLegacy } = await authenticateRequest({
     env: c.env,
     app,
     request: c.req.raw,
@@ -99,6 +100,9 @@ async function authenticated(
   // From here on every answer, refusals included, carries what the request
   // was accepted under.
   if (Object.keys(responseHeaders).length > 0) c.set("responseHeaders", responseHeaders);
+  // Whether old builds are still calling is what tells a person when the
+  // legacy mode can go; recorded at most once an hour per app.
+  if (unsignedLegacy) c.executionCtx.waitUntil(noteUnsignedRequest(c.env.DB, app));
   if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }

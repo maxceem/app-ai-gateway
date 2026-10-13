@@ -74,8 +74,15 @@
           "autoincrement": false,
           "default": "(datetime('now'))"
         },
-        "compat": {
-          "name": "compat",
+        "legacy": {
+          "name": "legacy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "unsigned_last_seen_at": {
+          "name": "unsigned_last_seen_at",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

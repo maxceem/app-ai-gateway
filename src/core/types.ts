@@ -4,7 +4,7 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 import type { AppStatus } from "../shared/app-status.ts";
-import type { AppCompat } from "../client-auth/compat.ts";
+import type { AppLegacy } from "../client-auth/legacy.ts";
 
 /** How a client first proved itself to an application: an API key, or an App Attest key. */
 export type AuthMethod = "attest" | "api_key";
@@ -28,10 +28,12 @@ export interface AppRecord {
   revision: number;
   config: AppConfig;
   /**
-   * The internal compatibility switches set on the row by hand, parsed once
-   * with the configuration and cached with it. Never part of `config`.
+   * The legacy modes the application is in, parsed once with the
+   * configuration and cached with it. Never part of `config`.
    */
-  compat: AppCompat;
+  legacy: AppLegacy;
+  /** When a request was last served under `unsigned_requests`, if ever. */
+  unsignedLastSeenAt: string | null;
 }
 
 export interface GatewayIdentity {

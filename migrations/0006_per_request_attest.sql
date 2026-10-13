@@ -23,7 +23,16 @@ SELECT `app_id`, `attest_key_id`, `attest_public_key`, `attest_env`, `id`, `crea
 FROM `app_user`
 WHERE `attest_key_id` IS NOT NULL AND `attest_public_key` IS NOT NULL AND `attest_env` IS NOT NULL
 ORDER BY COALESCE(`last_seen_at`, `created_at`), `id`;--> statement-breakpoint
-ALTER TABLE `app` ADD `compat` text;--> statement-breakpoint
+ALTER TABLE `app` ADD `legacy` text;--> statement-breakpoint
+ALTER TABLE `app` ADD `unsigned_last_seen_at` text;--> statement-breakpoint
+-- Every App Attest application that exists when this lands has shipped
+-- builds on the 1.x Swift package, which send no per-request proof. Each is
+-- enrolled in the unsigned_requests legacy mode for ninety days, so those
+-- builds keep working while they are updated; the console, the CLI and MCP
+-- surface the date, and the mode can only be disabled early, never extended
+-- through the API. Server applications send no proof and are not enrolled.
+UPDATE `app` SET `legacy` = json_object('unsigned_requests', json_object('until', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+90 days')))
+WHERE json_extract(`config_json`, '$.authentication.type') = 'apple_app_attest' AND `legacy` IS NULL;--> statement-breakpoint
 ALTER TABLE `app_usage_event` ADD `install_id` text;--> statement-breakpoint
 CREATE INDEX `idx_usage_install_month` ON `app_usage_event` (`app_id`,`install_id`,`created_at`);--> statement-breakpoint
 -- The spend triggers name app_usage_spend, which is rebuilt below for its new

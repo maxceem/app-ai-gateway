@@ -97,7 +97,7 @@ export async function issueGatewayToken(
  *
  * An attest token must name its install. `legacyAttest` is the one exception:
  * a token minted before installs existed, accepted only for an application
- * under the `bearer_without_assertion` compatibility switch and only on a
+ * in the `unsigned_requests` legacy mode and only on a
  * request that carries no proof, so a shipped 1.x client is not locked out for
  * the hour its token has left after the gateway is updated. It comes back with
  * a null `installId`.

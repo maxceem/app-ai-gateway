@@ -88,10 +88,11 @@ describe("initial database migration", () => {
       "status",
       "created_at",
       "updated_at",
-      // Internal, hand-set compatibility switches; see src/client-auth/compat.ts.
-      "compat",
+      // Legacy modes and their last-seen signal; see src/client-auth/legacy.ts.
+      "legacy",
+      "unsigned_last_seen_at",
     ]);
-    expect(appColumns.results.find((column) => column.name === "compat"))
+    expect(appColumns.results.find((column) => column.name === "legacy"))
       .toMatchObject({ notnull: 0, dflt_value: null });
     expect(appColumns.results.find((column) => column.name === "auth_type"))
       .toMatchObject({ notnull: 1, dflt_value: null });
@@ -399,6 +400,44 @@ describe("initial database migration", () => {
       .rejects.toThrow(/CHECK constraint failed/u);
     // A replayed App Attest counter is refused per install.
     await insert("migration-rejection-4", "blocked_replay", "install");
+  });
+
+  /**
+   * Every App Attest application that exists when migration 0006 lands has
+   * builds on the 1.x Swift package in its users' hands, so it is enrolled in
+   * the unsigned_requests legacy mode for ninety days. The statement is run
+   * here again, exactly as the migration holds it, over rows that predate it.
+   */
+  it("enrolls existing App Attest apps in unsigned_requests for ninety days, and no server app", async () => {
+    await seedProviderOrganization();
+    const enroll = env.TEST_MIGRATIONS
+      .find((migration) => migration.name.startsWith("0006_"))!
+      .queries.find((query) => query.includes("SET `legacy` = json_object"));
+    expect(enroll).toBeDefined();
+    const insert = (id: string, type: string, legacy: string | null) => env.DB.prepare(
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type, legacy)
+       VALUES (?, 'org-providers', ?, ?, ?, ?)`,
+    ).bind(id, id, JSON.stringify({ authentication: { type } }), type, legacy);
+    const kept = JSON.stringify({ unsigned_requests: { until: "2030-01-01T00:00:00Z" } });
+    await env.DB.batch([
+      insert("enrol-ios", "apple_app_attest", null),
+      insert("enrol-ios-set", "apple_app_attest", kept),
+      insert("enrol-server", "api_key", null),
+    ]);
+    await env.DB.prepare(enroll!).run();
+
+    const legacyOf = async (id: string) => (await env.DB.prepare("SELECT legacy FROM app WHERE id = ?")
+      .bind(id).first<{ legacy: string | null }>())!.legacy;
+    const enrolled = JSON.parse((await legacyOf("enrol-ios"))!) as { unsigned_requests: { until: string } };
+    expect(enrolled.unsigned_requests.until).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u);
+    const days = (Date.parse(enrolled.unsigned_requests.until) - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(89.9);
+    expect(days).toBeLessThan(90.1);
+    // A mode already set is left alone, and a server app sends no proof to miss.
+    expect(await legacyOf("enrol-ios-set")).toBe(kept);
+    expect(await legacyOf("enrol-server")).toBeNull();
+    // Minimal rows no reader could parse: gone before anything else meets them.
+    await env.DB.prepare("DELETE FROM app WHERE id IN ('enrol-ios', 'enrol-ios-set', 'enrol-server')").run();
   });
 
   it("keeps an install's spend beside its user's, and changes both on a reprice", async () => {
