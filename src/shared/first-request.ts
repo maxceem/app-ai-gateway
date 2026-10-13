@@ -295,9 +295,18 @@ export function swiftSnippet(
     "endpoint" in example.target
       ? `endpointSlug: ${JSON.stringify(example.target.endpoint)}`
       : `provider: ${JSON.stringify(example.target.provider)},\n    providerPath: ${JSON.stringify(example.target.path)}`;
-  // The body goes in through `authorizedRequest`, which signs the request
+  // The body goes in through `withAuthorizedRequest`, which signs the request
   // over it where the app verifies App Attest on every request: a body set
   // afterwards is one the proof does not cover, and the gateway refuses it.
+  // The closure sends the request, and is called once more on a 401 with a
+  // request built afresh; a header the provider needs is added inside it.
+  const send = example.anthropic
+    ? `{ request in
+    var request = request
+    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    return try await URLSession.shared.data(for: request)
+}`
+    : "{ try await URLSession.shared.data(for: $0) }";
   const body = example.body
     ? `body: Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
     : `// Supply the provider-native JSON body.\n    body: Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
@@ -312,12 +321,11 @@ let gateway = AppAIGatewayClient(
     authMode: ${authMode}
 )
 
-${example.anthropic ? "var" : "let"} request = try await gateway.authorizedRequest(
+let (data, _) = try await gateway.withAuthorizedRequest(
     ${target},
     ${body},
     contentType: "application/json"
-)
-${example.anthropic ? 'request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")\n' : ""}let (data, _) = try await URLSession.shared.data(for: request)
+) ${send}
 print(String(decoding: data, as: UTF8.self))
 `
   );
