@@ -85,6 +85,16 @@ describe("first request examples", () => {
     expect(swift).toContain("authMode: .appAttestInstall");
     expect(swift).toContain('providerPath: "v1/responses"');
     expect(swift).toContain('Data("{\\"model\\":\\"text-model\\",\\"input\\":\\"Say hello.\\"}".utf8)');
+    expect(swift).toContain("let (data, _) = try await gateway.withAuthorizedRequest(");
+    expect(swift).toContain(") { try await URLSession.shared.data(for: $0) }");
+    expect(swift).not.toContain("gateway.authorizedRequest(");
+  });
+  it("adds Anthropic's version header inside the Swift send closure", () => {
+    const example = firstRequest(routing({ allowed_paths: [{ path: "v1/messages", fixed_model: "fixed-model" }] }), [provider("anthropic")], prices);
+    const swift = swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example });
+    expect(swift).toContain(
+      ') { request in\n    var request = request\n    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")\n    return try await URLSession.shared.data(for: request)\n}\n',
+    );
   });
   it("writes the Swift client's auth mode from the app's own authentication", () => {
     const example = firstRequest(routing(), [provider()], prices);

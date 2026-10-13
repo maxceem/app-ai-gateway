@@ -97,7 +97,11 @@ public actor AppAIGatewayClient {
     private let credentialStore: any GatewayCredentialStoring
     private let session: URLSession
     private var accessToken: AccessToken?
-    private var tokenExchangeTask: Task<String, Error>?
+    private var tokenExchangeTask: Task<AccessToken, Error>?
+    /// Bumped by `discardAccessToken()`. An exchange keeps the generation it
+    /// started in, and its token becomes the cached one only if no discard
+    /// came in between: a discarded exchange may answer an older `verify_on`.
+    private var tokenGeneration = 0
     private var refreshTask: Task<Void, Never>?
     private var rateLimitHold: RateLimitHold?
 
@@ -143,8 +147,15 @@ public actor AppAIGatewayClient {
     /// a perfectly good token.
     public func gatewayAccessToken() async throws -> String {
         if case .apiKey(let key, nil) = authMode { return key }
+        return try await currentAccessToken().value
+    }
+
+    /// The cached token while it is fresh, a new one otherwise. Callers use the
+    /// token returned rather than reading the cache afterwards: an exchange
+    /// that a discard overtook returns its token without caching it.
+    private func currentAccessToken() async throws -> AccessToken {
         if let accessToken, accessToken.refreshAt.timeIntervalSinceNow > 0 {
-            return accessToken.value
+            return accessToken
         }
         return try await refreshGatewayAccessToken()
     }
@@ -176,14 +187,27 @@ public actor AppAIGatewayClient {
         )
     }
 
-    private func refreshGatewayAccessToken() async throws -> String {
+    /// One exchange at a time per generation. Concurrent callers join the one
+    /// in flight; a caller after `discardAccessToken()` starts its own, and the
+    /// overtaken one finishes for those already waiting on it without becoming
+    /// the cached token or scheduling a refresh.
+    private func refreshGatewayAccessToken() async throws -> AccessToken {
         try heldRateLimit()
         if let tokenExchangeTask { return try await tokenExchangeTask.value }
+        let generation = tokenGeneration
         let task = Task {
-            try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+            let token = try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+            if self.tokenGeneration == generation {
+                self.accessToken = token
+                self.scheduleRefresh(for: token)
+            }
+            return token
         }
         tokenExchangeTask = task
-        defer { tokenExchangeTask = nil }
+        defer {
+            // A discard has already cleared it, and may have started another.
+            if tokenGeneration == generation { tokenExchangeTask = nil }
+        }
         return try await task.value
     }
 
@@ -286,6 +310,129 @@ public actor AppAIGatewayClient {
         try await authorizedRequest(url: currentUserURL(), method: "GET", body: nil, contentType: nil)
     }
 
+    /// Builds a request to a provider through the gateway, hands it to `send`,
+    /// and builds it once more if the gateway answers `401`.
+    ///
+    /// The recommended way to send a gateway request. The client never
+    /// performs the request: `send` does, with any session, configuration or
+    /// networking library. Both of these fit it:
+    ///
+    /// ```swift
+    /// { try await URLSession.shared.data(for: $0) }
+    /// { try await URLSession.shared.bytes(for: $0) }
+    /// ```
+    ///
+    /// `bytes(for:)` makes streaming work: it returns as soon as the response
+    /// headers arrive, before the body, so the status is known while the
+    /// stream is still unread.
+    ///
+    /// It recovers from the gateway's two `401`s: `auth_required` for an
+    /// expired gateway token or one that names no install, and
+    /// `assertion_required` for an unsigned request on an app switched to
+    /// verify every request after the token was cached. On a `401` the client
+    /// discards the token, builds the request again — a fresh exchange, which
+    /// picks up the app's current `verify_on`, and a fresh proof, since a
+    /// signed request is good for one send — and calls `send` a second time.
+    /// Whatever that returns is returned, `401` included: a second refusal is
+    /// real. Any `401` counts, its body unread, so one a provider returned
+    /// through the proxy is retried once too.
+    ///
+    /// Nothing else is retried. An error `send` throws is rethrown, and every
+    /// other status, `403` and `429` included, is returned as it is: a `403
+    /// attest_failed` shares its status with refusals a retry cannot help, and
+    /// the body, which may be a stream, is yours to read. Read a refusal with
+    /// ``GatewayError/init(response:body:)``.
+    ///
+    /// `provider` is a provider instance slug, not a provider type. See
+    /// ``ProviderSlug``. The request is built, and signed over its body and
+    /// URL, exactly as `authorizedRequest` builds it: headers other than
+    /// `Authorization` may be added to it inside `send`, but its body and URL
+    /// must stay as they are.
+    public func withAuthorizedRequest<Body: Sendable>(
+        provider: String,
+        providerPath: String,
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse)
+    ) async throws -> (Body, URLResponse) {
+        try await retryingOnce(send: send) {
+            try await self.authorizedRequest(
+                provider: provider,
+                providerPath: providerPath,
+                method: method,
+                body: body,
+                contentType: contentType
+            )
+        }
+    }
+
+    /// Sends a request to a provider through the gateway, rebuilt and sent
+    /// once more on a `401`. See the `provider: String` form.
+    public func withAuthorizedRequest<Body: Sendable>(
+        provider: ProviderSlug,
+        providerPath: String,
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse)
+    ) async throws -> (Body, URLResponse) {
+        try await withAuthorizedRequest(
+            provider: provider.rawValue,
+            providerPath: providerPath,
+            method: method,
+            body: body,
+            contentType: contentType,
+            send: send
+        )
+    }
+
+    /// Sends a request to a custom endpoint, rebuilt and sent once more on a
+    /// `401`. See the `provider: String` form.
+    public func withAuthorizedRequest<Body: Sendable>(
+        endpointSlug: String,
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse)
+    ) async throws -> (Body, URLResponse) {
+        try await retryingOnce(send: send) {
+            try await self.authorizedRequest(
+                endpointSlug: endpointSlug,
+                method: method,
+                body: body,
+                contentType: contentType
+            )
+        }
+    }
+
+    /// Sends ``currentUserRequest()``, rebuilt and sent once more on a `401`.
+    /// See the `provider: String` form of `withAuthorizedRequest`.
+    public func withCurrentUserRequest<Body: Sendable>(
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse)
+    ) async throws -> (Body, URLResponse) {
+        try await retryingOnce(send: send) {
+            try await self.currentUserRequest()
+        }
+    }
+
+    /// The one retry every `with…Request` form shares: on a `401`, discard the
+    /// token and send a request built afresh, never the one already sent.
+    /// Any `401` counts, the body unread, so one a provider returned through
+    /// the proxy — a provider key the provider rejected, say — is retried too,
+    /// at the cost of one extra token exchange and one repeated provider call.
+    private func retryingOnce<Body: Sendable>(
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse),
+        build: () async throws -> URLRequest
+    ) async throws -> (Body, URLResponse) {
+        let first = try await send(try await build())
+        guard let http = first.1 as? HTTPURLResponse, http.statusCode == 401 else {
+            return first
+        }
+        discardAccessToken()
+        return try await send(try await build())
+    }
+
     /// Forgets the gateway token this client holds, so the next request runs
     /// the exchange again. For an app that sent a request itself and was
     /// refused with `auth_required`, `attest_failed` or `assertion_required`:
@@ -293,8 +440,16 @@ public actor AppAIGatewayClient {
     /// longer knows it, and picks up the app's current `verify_on`, so a
     /// request rebuilt after an app was switched to verify every request is
     /// signed. Rebuild the request once; a second refusal is real.
+    /// `withAuthorizedRequest` and `withCurrentUserRequest` do this on a `401`.
+    ///
+    /// An exchange already in flight is not joined afterwards: the next request
+    /// starts a new one, so it cannot pick up a `verify_on` answered before the
+    /// discard. The one in flight is left to finish for whoever already awaits
+    /// it, and its token is never cached.
     public func discardAccessToken() {
         accessToken = nil
+        tokenGeneration += 1
+        tokenExchangeTask = nil
         refreshTask?.cancel()
         refreshTask = nil
     }
@@ -331,15 +486,12 @@ public actor AppAIGatewayClient {
             request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
             return request
         }
-        let value = try await gatewayAccessToken()
-        guard let token = accessToken else {
-            throw GatewayError(code: .attestFailed, message: "No gateway token to sign the request with", statusCode: 0)
-        }
+        let token = try await currentAccessToken()
         // The app verifies App Attest on the token exchange, or the gateway is
         // older than `verify_on`: the assertion was checked when the token was
         // minted, and the token alone is the request's credential.
         guard token.signsEveryRequest else {
-            request.setValue("Bearer \(value)", forHTTPHeaderField: "Authorization")
+            request.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
             return request
         }
         do {
@@ -351,10 +503,7 @@ public actor AppAIGatewayClient {
             // a token bound to it, and sign once more; a second failure is real.
             _ = try await replaceKey(forceIssuerRefresh: false)
             discardAccessToken()
-            _ = try await refreshGatewayAccessToken()
-            guard let replacement = accessToken else {
-                throw GatewayError(code: .attestFailed, message: "No gateway token to sign the request with", statusCode: 0)
-            }
+            let replacement = try await refreshGatewayAccessToken()
             // The replacement's answer decides, should the app have changed
             // its setting in between.
             guard replacement.signsEveryRequest else {
@@ -520,7 +669,8 @@ public actor AppAIGatewayClient {
         return Data(bytes).base64URLEncodedString()
     }
 
-    private func exchangeToken(forceIssuerRefresh: Bool, retryIssuerOnce: Bool) async throws -> String {
+    /// Mints a token; `refreshGatewayAccessToken` decides whether it is cached.
+    private func exchangeToken(forceIssuerRefresh: Bool, retryIssuerOnce: Bool) async throws -> AccessToken {
         do {
             let response: TokenResponse
             var keyID: String?
@@ -532,7 +682,8 @@ public actor AppAIGatewayClient {
                     body: Self.apiKeyTokenBody(issuerToken: issuerToken, apiKey: key)
                 )
             case .apiKey(let key, nil):
-                return key
+                // Never reached: `gatewayAccessToken` returns the key itself.
+                return AccessToken(value: key, refreshAt: .distantFuture, keyID: nil, signsEveryRequest: false)
             case .appAttest, .appAttestInstall:
                 (response, keyID) = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
@@ -543,9 +694,7 @@ public actor AppAIGatewayClient {
                 keyID: keyID,
                 signsEveryRequest: keyID != nil && response.verify_on == Self.verifyOnEveryRequest
             )
-            accessToken = token
-            scheduleRefresh(for: token)
-            return token.value
+            return token
         } catch let error as GatewayError
             where error.code == .issuerClaimsMissing && retryIssuerOnce {
             // The token verified; an entitlement claim has not landed on it yet.

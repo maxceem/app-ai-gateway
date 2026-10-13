@@ -572,9 +572,12 @@ client code.
   returning `{ "access_token", "expires_in": 3600 }`.
 - iOS apps use the AppAIGateway Swift package 1.4 or later, which handles App
   Attest, the token exchange and, when the token exchange answers
-  `verify_on: "every_request"`, the per-request proof. Pass the request body to
-  `authorizedRequest`, never set it afterwards. See the human documentation
-  under Integrate your app.
+  `verify_on: "every_request"`, the per-request proof. Send requests with
+  `withAuthorizedRequest` (1.4.1 or later): it builds the request, hands it to
+  the app's own send closure, and on a `401` discards the token and sends a
+  rebuilt request once. Pass the request body to it, never set it afterwards.
+  `authorizedRequest` builds the request alone, for an app that handles the
+  retry itself. See the human documentation under Integrate your app.
 
 For Auth0's API-identifier preset, `issuer_token` must be a JWT access token
 for that API. Firebase uses its ID token. In every case the configured issuer

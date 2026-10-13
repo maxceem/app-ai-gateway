@@ -1340,4 +1340,337 @@ struct AppAIGatewayClientTests {
         ).sha256
         #expect(signatures.snapshot().last?.hash == expected)
     }
+
+    /// An exchange already in flight when the token is discarded — a
+    /// background refresh, say, answered under token_exchange — is not joined
+    /// by the rebuilt request: that one starts its own exchange, signs with
+    /// its token, and the overtaken result is never cached.
+    @Test
+    func aDiscardedTokenIsNotReplacedByAnExchangeAlreadyInFlight() async throws {
+        let tokens = LockedCounter()
+        // Assertion 1 is the overtaken exchange's, 2 the fresh exchange's,
+        // and 3 the rebuilt request's own proof.
+        let gates = AssertionGates(gated: [1, 2])
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            let issued = tokens.increment()
+            let verifyOn = issued == 1 ? "token_exchange" : "every_request"
+            return response(
+                request,
+                status: 200,
+                body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"\(verifyOn)\"}"
+            )
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: GatedAttestProvider(gates: gates),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        let overtaken = Task { try await client.gatewayAccessToken() }
+        #expect(try await gates.held(1))
+
+        await client.discardAccessToken()
+        let rebuilt = Task {
+            try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: Data("{}".utf8))
+        }
+        // A second exchange started rather than joining the first.
+        let started = try await gates.held(2)
+        #expect(started)
+
+        // The overtaken exchange finishes first, for the caller already on it.
+        gates.open(1)
+        #expect(try await overtaken.value == "token-1")
+        // Asked while the fresh exchange is still held: a cached token-1 would
+        // answer at once, and an uncached one joins the fresh exchange.
+        let probe = Task { try await client.gatewayAccessToken() }
+        gates.open(2)
+        #expect(try await probe.value == "token-2")
+        let request = try await rebuilt.value
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+        // The cache holds the fresh token, and nothing exchanges again.
+        #expect(try await client.gatewayAccessToken() == "token-2")
+        #expect(tokens.snapshot() == 2)
+    }
+
+    // MARK: withAuthorizedRequest
+
+    /// A gateway whose tokens are numbered in the order it mints them, each
+    /// answering `verifyOn(n)`, and a client of it that verifies App Attest.
+    private func numberedTokenClient(
+        tokens: LockedCounter,
+        signatures: SignatureLog = SignatureLog(),
+        verifyOn: @escaping @Sendable (Int) -> String = { _ in "every_request" }
+    ) -> AppAIGatewayClient {
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            let issued = tokens.increment()
+            return response(
+                request,
+                status: 200,
+                body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"\(verifyOn(issued))\"}"
+            )
+        }
+        return AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+    }
+
+    /// A 401 is answered by a request built afresh, a new token and a new
+    /// proof, never by re-sending the one already spent.
+    @Test
+    func withAuthorizedRequestRebuildsAndResendsOnceOnA401() async throws {
+        let tokens = LockedCounter()
+        let client = numberedTokenClient(tokens: tokens)
+        let transport = FakeTransport(statuses: [401, 200])
+        let body = Data(#"{"input":"hi"}"#.utf8)
+        let (data, response) = try await client.withAuthorizedRequest(
+            provider: .openai,
+            providerPath: "v1/responses",
+            body: body,
+            contentType: "application/json",
+            send: transport.send
+        )
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(String(decoding: data, as: UTF8.self) == "attempt-2")
+        let sent = transport.snapshot()
+        #expect(sent.count == 2)
+        #expect(tokens.snapshot() == 2)
+        #expect(sent[0].value(forHTTPHeaderField: "Authorization") == "Bearer token-1")
+        #expect(sent[1].value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        let firstProof = try #require(sent[0].value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        let secondProof = try #require(sent[1].value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        #expect(firstProof != secondProof)
+        for request in sent {
+            #expect(request.url?.absoluteString == "https://gateway.test/v1/apps/test-app/proxy/openai/v1/responses")
+            #expect(request.httpBody == body)
+            #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        }
+    }
+
+    @Test
+    func withAuthorizedRequestSendsOnceWhenTheFirstAnswerIsNot401() async throws {
+        for status in [200, 403, 429, 500] {
+            let tokens = LockedCounter()
+            let client = numberedTokenClient(tokens: tokens)
+            let transport = FakeTransport(statuses: [status, 200])
+            let (data, response) = try await client.withAuthorizedRequest(
+                provider: "openai",
+                providerPath: "v1/responses",
+                body: Data("{}".utf8),
+                send: transport.send
+            )
+            #expect((response as? HTTPURLResponse)?.statusCode == status)
+            #expect(String(decoding: data, as: UTF8.self) == "attempt-1")
+            #expect(transport.snapshot().count == 1)
+            #expect(tokens.snapshot() == 1)
+        }
+    }
+
+    /// Transport failures are the app's: rethrown, not retried, and the token
+    /// the client holds is kept.
+    @Test
+    func withAuthorizedRequestRethrowsWhatSendThrowsWithoutRetrying() async throws {
+        let tokens = LockedCounter()
+        let client = numberedTokenClient(tokens: tokens)
+        let calls = LockedCounter()
+        await #expect(throws: URLError.self) {
+            _ = try await client.withAuthorizedRequest(
+                provider: .openai,
+                providerPath: "v1/responses",
+                body: Data("{}".utf8)
+            ) { (_: URLRequest) async throws -> (Data, URLResponse) in
+                calls.increment()
+                throw URLError(.notConnectedToInternet)
+            }
+        }
+        #expect(calls.snapshot() == 1)
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(tokens.snapshot() == 1)
+    }
+
+    /// A second refusal is real: returned to the caller, never a third send.
+    @Test
+    func withAuthorizedRequestReturnsASecond401WithoutAThirdSend() async throws {
+        let tokens = LockedCounter()
+        let client = numberedTokenClient(tokens: tokens)
+        let transport = FakeTransport(statuses: [401, 401, 200])
+        let (data, response) = try await client.withAuthorizedRequest(
+            provider: .openai,
+            providerPath: "v1/responses",
+            body: Data("{}".utf8),
+            send: transport.send
+        )
+        #expect((response as? HTTPURLResponse)?.statusCode == 401)
+        #expect(String(decoding: data, as: UTF8.self) == "attempt-2")
+        #expect(transport.snapshot().count == 2)
+        #expect(tokens.snapshot() == 2)
+    }
+
+    /// The `assertion_required` case: a token cached under token_exchange
+    /// sends the endpoint request unsigned, and the rebuilt one is signed.
+    @Test
+    func withAuthorizedRequestToAnEndpointPicksUpASwitchToEveryRequest() async throws {
+        let tokens = LockedCounter()
+        let signatures = SignatureLog()
+        let client = numberedTokenClient(
+            tokens: tokens,
+            signatures: signatures,
+            verifyOn: { $0 == 1 ? "token_exchange" : "every_request" }
+        )
+        let transport = FakeTransport(statuses: [401, 200])
+        let (_, response) = try await client.withAuthorizedRequest(
+            endpointSlug: "chat",
+            body: Data("{}".utf8),
+            send: transport.send
+        )
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let sent = transport.snapshot()
+        #expect(sent.count == 2)
+        #expect(sent.allSatisfy { $0.url?.absoluteString == "https://gateway.test/v1/apps/test-app/endpoints/chat" })
+        #expect(sent[0].value(forHTTPHeaderField: "Authorization") == "Bearer token-1")
+        #expect(sent[0].value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+        #expect(sent[1].value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(sent[1].value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+    }
+
+    @Test
+    func withCurrentUserRequestRebuildsMeOnA401() async throws {
+        let tokens = LockedCounter()
+        let client = numberedTokenClient(tokens: tokens)
+        let transport = FakeTransport(statuses: [401, 200])
+        let (_, response) = try await client.withCurrentUserRequest(send: transport.send)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let sent = transport.snapshot()
+        #expect(sent.count == 2)
+        for request in sent {
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.absoluteString == "https://gateway.test/v1/apps/test-app/me")
+        }
+        #expect(sent[1].value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(
+            sent[0].value(forHTTPHeaderField: "X-AppAttest-Proof")
+                != sent[1].value(forHTTPHeaderField: "X-AppAttest-Proof")
+        )
+    }
+
+    /// A body that is a stream, as `URLSession.bytes(for:)` returns: the
+    /// helper is generic over it, and hands back the second attempt's stream.
+    @Test
+    func withAuthorizedRequestPassesAStreamingBodyThrough() async throws {
+        let tokens = LockedCounter()
+        let client = numberedTokenClient(tokens: tokens)
+        let calls = LockedCounter()
+        let (stream, response) = try await client.withAuthorizedRequest(
+            provider: .anthropic,
+            providerPath: "v1/messages",
+            body: Data(#"{"stream":true}"#.utf8),
+            contentType: "application/json"
+        ) { request -> (AsyncStream<String>, URLResponse) in
+            let attempt = calls.increment()
+            let status = attempt == 1 ? 401 : 200
+            let stream = AsyncStream<String> { continuation in
+                continuation.yield("event-\(attempt)-a")
+                continuation.yield("event-\(attempt)-b")
+                continuation.finish()
+            }
+            return (stream, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        var events: [String] = []
+        for await event in stream { events.append(event) }
+        #expect(events == ["event-2-a", "event-2-b"])
+        #expect(calls.snapshot() == 2)
+    }
+}
+
+/// An App Attest provider whose numbered `generateAssertion` calls wait until
+/// the test opens them, to hold a token exchange part way through.
+struct GatedAttestProvider: AppAttestProviding {
+    let gates: AssertionGates
+    var isSupported: Bool { true }
+    func generateKey() async throws -> String { "generated-key" }
+    func attestKey(_ keyID: String, clientDataHash: Data) async throws -> Data { Data("attestation".utf8) }
+    func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
+        await gates.pass()
+        return Data("assertion".utf8)
+    }
+}
+
+final class AssertionGates: @unchecked Sendable {
+    private let lock = NSLock()
+    private let gated: Set<Int>
+    private var calls = 0
+    private var opened: Set<Int> = []
+    private var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
+
+    /// Calls numbered in `gated`, from 1, wait for `open`; the rest pass.
+    init(gated: Set<Int>) { self.gated = gated }
+
+    func pass() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                calls += 1
+                guard gated.contains(calls), !opened.contains(calls) else { return true }
+                waiting[calls] = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func open(_ call: Int) {
+        let continuation = lock.withLock {
+            opened.insert(call)
+            return waiting.removeValue(forKey: call)
+        }
+        continuation?.resume()
+    }
+
+    /// Waits, for a second at most, until call `call` is held at its gate.
+    func held(_ call: Int) async throws -> Bool {
+        for _ in 0..<1000 {
+            if lock.withLock({ waiting[call] != nil }) { return true }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        return false
+    }
+}
+
+/// Stands in for the app's transport: records each request it is handed and
+/// answers the statuses it was given in turn, the last one repeating, with a
+/// body naming the attempt.
+final class FakeTransport: @unchecked Sendable {
+    private let lock = NSLock()
+    private let statuses: [Int]
+    private var requests: [URLRequest] = []
+
+    init(statuses: [Int]) { self.statuses = statuses }
+
+    @Sendable
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        lock.withLock {
+            requests.append(request)
+            let attempt = requests.count
+            let status = statuses[min(attempt, statuses.count) - 1]
+            return (
+                Data("attempt-\(attempt)".utf8),
+                HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            )
+        }
+    }
+
+    func snapshot() -> [URLRequest] { lock.withLock { requests } }
 }
