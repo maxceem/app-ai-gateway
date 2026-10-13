@@ -78,7 +78,24 @@ describe("checkApp", () => {
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",
       ],
+      warnings: [],
     });
+  });
+
+  it("reports an app's warnings without making it any less ready", async () => {
+    const { organizationId, headers } = await account("check-warnings@example.test");
+    await provider(organizationId, "openai", "openai");
+    await seedServerApp("check-warnings-app", { organizationId, proxy: { openai: open } });
+    await env.DB.prepare("UPDATE app SET compat = ? WHERE id = 'check-warnings-app'")
+      .bind(JSON.stringify({ bearer_without_assertion: { until: "2099-01-31T00:00:00Z" } })).run();
+
+    const { status, body } = await check("check-warnings-app", headers);
+    expect(status).toBe(200);
+    expect(body.ready).toBe(true);
+    expect(body.warnings).toEqual([expect.objectContaining({
+      code: "bearer_without_assertion",
+      until: "2099-01-31T00:00:00Z",
+    })]);
   });
 
   it("is ready once one provider it names is active, and lists only the ones it names", async () => {

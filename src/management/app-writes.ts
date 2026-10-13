@@ -18,7 +18,7 @@ export interface AtomicAppWrite {
 }
 
 const RETURNED_COLUMNS = sql.raw(
-  "id, organization_id, name, config_json, status, created_at, updated_at, revision",
+  "id, organization_id, name, config_json, status, created_at, updated_at, revision, compat",
 );
 
 interface ReturnedRow {
@@ -30,6 +30,8 @@ interface ReturnedRow {
   created_at: string;
   updated_at: string;
   revision: number;
+  /** Never written here; returned so the answer carries the row's warnings. */
+  compat: string | null;
 }
 
 /**
@@ -44,6 +46,7 @@ function storedApp(row: ReturnedRow): StoredApp {
     config: JSON.parse(row.config_json),
     status: row.status,
     revision: row.revision,
+    compat: row.compat,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });

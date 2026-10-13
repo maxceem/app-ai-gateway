@@ -51,6 +51,8 @@ URL yourself or act as the person approving it.
 - \`list_providers\`, \`get_provider\`, \`list_provider_gateways\` — the provider
   credentials and provider gateways the account holds, as metadata.
 - \`list_apps\`, \`get_app\` — the apps, and one app's whole stored document.
+  Its \`warnings\` describe behaviour that will stop on the stated date: tell
+  the person, and help them act before then.
 - \`validate_app\` — whether an app document would be accepted, without saving it.
 - \`check_app\` — whether an app can serve requests, without sending one.
 - \`get_app_snippet\` — the first request an app can send.
@@ -72,8 +74,8 @@ one answer as \`before_id\` to the next call. Months are \`YYYY-MM\` and days
 Read before you write. List providers and apps first so you use slugs and ids
 that exist, read an app with \`get_app\` before proposing a change to it, and
 check the change with \`validate_app\` before making it. An app document is
-\`{name, config, status?}\`, as \`get_app\` returns it without its id and
-revision; the gateway assigns an app's id, which never changes, and an update carries the \`revision\` it was read at, so a document
+\`{name, config, status?}\`, as \`get_app\` returns it without its id,
+revision, timestamps and warnings; the gateway assigns an app's id, which never changes, and an update carries the \`revision\` it was read at, so a document
 someone changed since is refused rather than overwritten.
 An update replaces the whole document: preserve every configuration field and
 the current status unless the person asked to change them. Omitting status

@@ -977,7 +977,8 @@ describe("MCP direct changes", () => {
   it("updates an app against the revision it was read at", async () => {
     const owner = await withApp("mcp-update-app@example.test");
     const read = await callTool(owner.key, "get_app", { app: owner.app });
-    const { name: _name, id: _id, revision, created_at: _c, updated_at: _u, ...rest } = read.structuredContent.app;
+    // Warnings are computed on read and refused on write, like the id.
+    const { name: _name, id: _id, revision, created_at: _c, updated_at: _u, warnings: _w, ...rest } = read.structuredContent.app;
     const document = { ...rest, name: "Renamed", revision };
     const updated = await callTool(owner.key, "update_app", { app: owner.app, config: document });
     expect(updated.isError, updated.content[0]?.text).toBeFalsy();
@@ -1141,6 +1142,8 @@ describe("MCP result redaction", () => {
     secret(operation.result.api_key.key);
 
     const read = await callTool(owner.read, "get_app", { app: app.id });
+    // The app's read-only warnings pass through as the API returns them.
+    expect(read.structuredContent.app.warnings).toEqual([]);
     const redactedParams = {
       store: false,
       credentials: REDACTED,

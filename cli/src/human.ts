@@ -325,7 +325,12 @@ function list(command: CommandName, result: RenderedResult, style: Style): strin
  */
 function show(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "app show" && "app" in result && !("guidance" in result)) {
-    return [style.headline(`${result.app.name} (${result.app.id})`), "", style.json(result)];
+    return [
+      style.headline(`${result.app.name} (${result.app.id})`),
+      ...warnings(result.app.warnings ?? [], style),
+      "",
+      style.json(result),
+    ];
   }
   if ("slug" in result)
     return [
@@ -532,6 +537,7 @@ function app(
         style,
       ),
       ...notes(result.limitations),
+      ...warnings(result.warnings ?? [], style),
     ];
   if ("definition" in result) {
     const dryRun = "dryRun" in result;
@@ -559,6 +565,24 @@ function app(
   if ("guidance" in result && "app" in result)
     return written(command, result, context, style);
   return [style.json(result)];
+}
+
+/**
+ * An application's warnings: behaviour that stops on a stated date. Said
+ * apart from the verdict, because none of them is a failure yet, and each
+ * with its date and where to read about it.
+ */
+function warnings(
+  values: readonly { message: string; until?: string; docs_url?: string }[],
+  style: Style,
+): string[] {
+  if (!values.length) return [];
+  return [
+    "",
+    style.warn("Warnings"),
+    ...values.map((warning) =>
+      `- ${warning.message}${warning.docs_url ? ` See ${warning.docs_url}` : ""}`),
+  ];
 }
 
 /** The issue list a verdict is followed by, one per line, or nothing at all. */

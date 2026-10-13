@@ -11,6 +11,7 @@ import {
 import type { Actor } from "./actor";
 import { validateApp } from "./apps";
 import { listProviders } from "./providers";
+import { appWarnings } from "../client-auth/compat";
 import type { ManagementScope } from "./scope";
 
 type AppRow = typeof app.$inferSelect;
@@ -67,5 +68,6 @@ export async function checkApp(
     providers: named.map(({ id, slug, status }) => ({ id, slug, status })),
     ready: stored.status === "active" && reachableProviders(routing, named).length > 0,
     limitations: [...APP_CHECK_LIMITATIONS],
+    warnings: appWarnings(stored),
   };
 }

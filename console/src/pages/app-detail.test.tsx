@@ -26,8 +26,7 @@ const USER = {
   status: "active",
   attest_key_id: "attest-key",
   attest_registered: true,
-  // Carried by the API and deliberately not drawn: see the test below.
-  attest_counter: 42,
+  installs: 1,
   created_at: "2026-09-01T00:00:00.000Z",
   last_seen_at: "2026-09-18T00:00:00.000Z",
   is_virtual: false,
@@ -240,13 +239,83 @@ describe("the users table", () => {
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
   });
 
-  it("keeps the App Attest assertion counter out of the table", async () => {
+  it("says a key is registered, and keeps any counter out of the table", async () => {
     renderSection("users", { config: { limits: limits(4) }, users: [USER] });
 
-    // Registration is worth saying; the number of assertions the key has ever
-    // signed is an implementation detail no operator acts on.
+    // Registration is worth saying; how many assertions a key has signed is an
+    // implementation detail no operator acts on, and the gateway keeps it in
+    // the install's limiter rather than reporting it.
     expect(await screen.findByText("registered")).toBeTruthy();
     expect(screen.queryByText(/counter/i)).toBeNull();
-    expect(screen.queryByText("42")).toBeNull();
+  });
+});
+
+const ATTEST = (endUser: Record<string, unknown>) => ({
+  type: "apple_app_attest",
+  app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app", environments: ["production"] },
+  end_user: endUser,
+});
+const ISSUER_USERS = {
+  source: "issuer",
+  issuer: {
+    jwks_url: "https://issuer.example.test/jwks.json",
+    issuer: ["https://issuer.example.test"],
+    audience: ["my-app"],
+    user_id_claim: "sub",
+    required_claims: [],
+    max_token_lifetime_seconds: 3600,
+  },
+};
+
+describe("App Attest apps' users and installs", () => {
+  it("titles the list Installs when every user is an install", async () => {
+    renderSection("users", { config: { authentication: ATTEST({ source: "app_install" }) }, users: [] });
+    expect(await screen.findByRole("heading", { level: 1, name: "Installs" })).toBeTruthy();
+    expect(await screen.findByText(/No installs yet/u)).toBeTruthy();
+  });
+
+  it("keeps Users for signed-in users, and counts each one's installs", async () => {
+    renderSection("users", {
+      config: { authentication: ATTEST(ISSUER_USERS) },
+      users: [{ ...USER, installs: 3 }],
+    });
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Users");
+    expect(await screen.findByRole("columnheader", { name: "Installs" })).toBeTruthy();
+    expect((await screen.findByTitle(/one per install/u)).textContent).toBe("3");
+  });
+});
+
+describe("an app's warnings", () => {
+  const warning = {
+    code: "bearer_without_assertion",
+    message: "Requests signed only with a gateway token are accepted until 2027-01-31T00:00:00Z. Update the app to AppAIGateway Swift package 2.x, which signs every request with App Attest.",
+    until: "2027-01-31T00:00:00Z",
+    docs_url: "https://docs.appaigateway.com/integrate/ios#per-request-proof",
+  };
+
+  function renderWithWarnings(warnings: unknown[]) {
+    stubApi({
+      [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys: [] } },
+      [`/v1/admin/apps/${APP_ID}`]: { body: { app: { ...APP_ROW, warnings } } },
+    });
+    return renderAuthenticated(
+      <Routes>
+        <Route path="/apps/:appId/:tab/:section?" element={<AppDetailPage />} />
+      </Routes>,
+      { route: `/apps/${APP_ID}/limits` },
+    );
+  }
+
+  it("lists each at the top of every section, with where to read about it", async () => {
+    renderWithWarnings([warning]);
+    expect(await screen.findByText("This app has a warning")).toBeTruthy();
+    expect(screen.getByText(/accepted until 2027-01-31T00:00:00Z/u)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "What to change" }).getAttribute("href")).toBe(warning.docs_url);
+  });
+
+  it("says nothing when there are none", async () => {
+    renderWithWarnings([]);
+    await screen.findByRole("heading", { level: 1, name: "Limits" });
+    expect(screen.queryByText(/This app has/u)).toBeNull();
   });
 });

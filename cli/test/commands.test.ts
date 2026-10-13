@@ -224,7 +224,7 @@ test("creating a server app hands back the request to send, keyed from the file 
   const dir = await mkdtemp(join(tmpdir(), "agw-add-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const keyPath = join(dir, "app.key");
-  const created = { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" };
+  const created = { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] };
   const ctx = stubContext({
     url: "https://gw.test",
     active: null,
@@ -629,7 +629,7 @@ test("explicit key output resumes after a disk failure without minting again", a
         };
       return {
         data: {
-          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
+          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] },
           resolved: null,
         }
       };
@@ -732,7 +732,7 @@ test("a refused key creation releases both its record and its reserved output", 
       }
       return {
         data: {
-          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
+          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] },
           resolved: null,
         }
       };

@@ -6,6 +6,7 @@ import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
 import { isAppStatus } from "../shared/app-status";
 import type { AppRecord } from "./types";
+import { parseCompat } from "../client-auth/compat";
 
 const CONFIG_CACHE_TTL_MS = 60_000;
 
@@ -31,6 +32,8 @@ export const appConfigCache = ttlCache<string, AppRecord>({
 type AppColumns = Pick<typeof app.$inferSelect, "id" | "organizationId" | "name" | "revision"> & {
   config: unknown;
   status: string;
+  /** Absent where a caller selected only the configuration's columns; read as no switches. */
+  compat?: string | null;
 };
 
 /**
@@ -53,6 +56,7 @@ export function appRecordFromRow(row: AppColumns): AppRecord {
       status,
       revision: row.revision,
       config: parseAppConfig(row.config),
+      compat: parseCompat(row.id, row.compat),
     };
   } catch (error) {
     if (error instanceof ConfigError) {
