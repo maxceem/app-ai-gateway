@@ -11,7 +11,6 @@ import {
   meteredTranscriptionFormat,
   namesModelTwice,
   parseForm,
-  readBodyLimited,
   unmeteredTranscriptionFormat,
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
@@ -417,6 +416,8 @@ export function refuseDetachedJob(body: Record<string, unknown>): void {
 
 export async function prepareProxyRequest(input: {
   request: Request;
+  /** The body, read once by the caller; see `PrepareInput.body`. */
+  body: () => Promise<Uint8Array<ArrayBuffer>>;
   app: AppRecord;
   userId: string | null;
   /**
@@ -442,7 +443,7 @@ export async function prepareProxyRequest(input: {
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   assertApiStyleSupported(route.kind, provider, apiStyle);
 
-  const bytes = await readBodyLimited(input.request);
+  const bytes = await input.body();
   const contentType = input.request.headers.get("content-type") ?? "";
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({

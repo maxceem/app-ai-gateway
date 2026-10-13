@@ -9,12 +9,13 @@
  * it branches neither on the configuration nor on the shape of the body.
  */
 
-import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { lookupApiKeyUncached } from "./api-keys";
 import type { ExchangeType, TokenExchange } from "./client-auth";
 import { issueGatewayToken } from "./gateway-token";
 import { verifyIssuerToken } from "./issuer";
+import { invalidateRegisteredKey } from "./request-proof";
 import {
   ApiKeyTokenRequestSchema,
   AppAttestRegisterRequestSchema,
@@ -24,7 +25,7 @@ import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import type { AuthMethod } from "../core/types";
 import { database } from "../db";
-import { appAuthChallenge, appUser } from "../db/schema";
+import { appAttestKey, appAuthChallenge, appUser } from "../db/schema";
 import type {
   AppAttestEndUser,
   AppAttestEnvironment,
@@ -187,7 +188,13 @@ async function attestedUserId(
   return { userId, trusted: true };
 }
 
-async function storeAttestedUser(input: {
+/**
+ * Records a verified key as one install of `userId`, beside any others the user
+ * already has: a person signed in on two devices, or on one they reinstalled
+ * on, holds a key for each. Registering the same key again — a second person
+ * signing in on the same install — moves it to them.
+ */
+async function storeAttestedKey(input: {
   env: Env;
   appId: string;
   userId: string;
@@ -195,27 +202,34 @@ async function storeAttestedUser(input: {
   publicKeyPem: string;
   environment: AppAttestEnvironment;
 }): Promise<void> {
-  await database(input.env.DB)
-    .insert(appUser)
-    .values({
-      appId: input.appId,
-      id: input.userId,
-      attestKeyId: input.keyId,
-      attestPublicKey: input.publicKeyPem,
-      attestCounter: 0,
-      attestEnvironment: input.environment,
-      lastSeenAt: sql`datetime('now')`,
-    })
-    .onConflictDoUpdate({
-      target: [appUser.appId, appUser.id],
-      set: {
-        attestKeyId: input.keyId,
-        attestPublicKey: input.publicKeyPem,
-        attestCounter: 0,
-        attestEnvironment: input.environment,
-        lastSeenAt: sql`datetime('now')`,
-      },
-    });
+  const db = database(input.env.DB);
+  await db.batch([
+    db.insert(appUser)
+      .values({ appId: input.appId, id: input.userId, lastSeenAt: sql`datetime('now')` })
+      .onConflictDoUpdate({
+        target: [appUser.appId, appUser.id],
+        set: { lastSeenAt: sql`datetime('now')` },
+      }),
+    db.insert(appAttestKey)
+      .values({
+        appId: input.appId,
+        keyId: input.keyId,
+        publicKey: input.publicKeyPem,
+        environment: input.environment,
+        userId: input.userId,
+      })
+      .onConflictDoUpdate({
+        target: [appAttestKey.appId, appAttestKey.keyId],
+        set: {
+          publicKey: input.publicKeyPem,
+          environment: input.environment,
+          userId: input.userId,
+          createdAt: sql`datetime('now')`,
+          lastSeenAt: sql`datetime('now')`,
+        },
+      }),
+  ]);
+  invalidateRegisteredKey(input.appId, input.keyId);
 }
 
 /**
@@ -393,7 +407,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
       // Proved now: the attestation verified against this very key id, so recording
       // it as the attempt's identity does not take the caller's word for it.
       attempt.userId = userId;
-      await storeAttestedUser({
+      await storeAttestedKey({
         env,
         appId,
         userId,
@@ -421,63 +435,64 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
   async token({ env, appId, exchange: { authentication: auth }, body, attempt }) {
     const { userId, trusted } = await attestedUserId(body);
     if (trusted) attempt.userId = userId;
-    const user = await database(env.DB).query.appUser.findFirst({
-      columns: {
-        attestKeyId: true,
-        attestPublicKey: true,
-        attestCounter: true,
-        attestEnvironment: true,
-        status: true,
-        // Read alongside the key material rather than in a second round trip:
-        // this exchange already has to fetch the row.
-        claimPendingSince: true,
-      },
-      where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
-    });
+    const db = database(env.DB);
+    const [user, key] = await Promise.all([
+      db.query.appUser.findFirst({
+        // Read alongside the key rather than after it: this exchange already
+        // has to fetch both.
+        columns: { status: true, claimPendingSince: true },
+        where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
+      }),
+      db.query.appAttestKey.findFirst({
+        columns: { publicKey: true, environment: true, userId: true },
+        where: and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id)),
+      }),
+    ]);
     if (user?.status !== undefined && user.status !== "active") {
       throw new GatewayError(403, "auth_required", "User is blocked");
     }
-    if (!user || user.attestKeyId !== body.key_id || !user.attestPublicKey) {
+    // The key has to be registered for this very user: one another person
+    // registered on the same install answers to them, until it is registered
+    // again.
+    if (!key || key.userId !== userId) {
       throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
     }
     // Withdrawing an environment has to stop the keys it admitted, not just new
     // registrations: an assertion carries no aaguid, so the environment the key
-    // was registered in is the only record of it. A stored key always has one.
-    if (
-      user.attestEnvironment === null ||
-      !auth.app_attest.environments.includes(user.attestEnvironment)
-    ) {
+    // was registered in is the only record of it.
+    if (!auth.app_attest.environments.includes(key.environment)) {
       throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
     }
     await consumeChallenge(env, appId, body.challenge);
-    const { verifyAppAssertion } = await import("./app-attest");
+    const { assertionClientData, sha256, verifyAppAssertion } = await import("./app-assertion");
     const counter = await verifyAppAssertion({
-      gatewayAppId: appId,
       rpId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
-      keyId: body.key_id,
-      challenge: body.challenge,
       assertion: body.assertion,
-      publicKeyPem: user.attestPublicKey,
-      previousCounter: user.attestCounter,
+      publicKeyPem: key.publicKey,
+      clientDataHash: await sha256(assertionClientData(appId, body.challenge, body.key_id)),
     });
-    const updated = await database(env.DB)
-      .update(appUser)
-      .set({ attestCounter: counter, lastSeenAt: sql`datetime('now')` })
-      .where(and(
-        eq(appUser.appId, appId),
-        eq(appUser.id, userId),
-        lt(appUser.attestCounter, counter),
-      ))
-      .returning({ id: appUser.id });
-    if (updated.length !== 1) {
+    // The install's limiter owns its counter, for this exchange and for every
+    // request the token it mints will sign: both come from the same key.
+    const { accepted } = await env.USER_LIMITER
+      .getByName(`${appId}:install:${body.key_id}`)
+      .advanceCounter(counter);
+    if (!accepted) {
       throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
     }
+    await db.batch([
+      db.update(appAttestKey)
+        .set({ lastSeenAt: sql`datetime('now')` })
+        .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id))),
+      db.update(appUser)
+        .set({ lastSeenAt: sql`datetime('now')` })
+        .where(and(eq(appUser.appId, appId), eq(appUser.id, userId))),
+    ]);
     // Proved now: the assertion verified against the stored public key for this
     // key id, so the identity is the gateway's own conclusion rather than a
     // string the caller supplied.
     attempt.userId = userId;
-    attempt.claimDelayMs = await settleClaimDelay(env, appId, userId, user.claimPendingSince);
-    return issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest" });
+    attempt.claimDelayMs = await settleClaimDelay(env, appId, userId, user?.claimPendingSince ?? null);
+    return issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest", installId: body.key_id });
   },
 };
 

@@ -14,9 +14,19 @@ import {
 } from "../src/core/endpoint-rate-limit";
 import { verifyGatewayToken } from "../src/client-auth/gateway-token";
 import { database } from "../src/db";
-import { appApiKey, appUser } from "../src/db/schema";
+import { appApiKey, appAttestKey, appUser } from "../src/db/schema";
 import app from "../src/index";
-import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedApp, seedServerApp } from "./helpers";
+import {
+  TEST_AUDIENCE,
+  TEST_ISSUER,
+  clearIsolateCaches,
+  registerTestInstall,
+  seedApp,
+  seedServerApp,
+  testAssertion,
+  type TestInstall,
+} from "./helpers";
+import { assertionClientData } from "../src/client-auth/app-assertion";
 
 interface SigningFixture {
   publicJwk: JWK;
@@ -384,9 +394,13 @@ describe("blocked App Attest users", () => {
       appId: "blocked-attest-register",
       id: "blocked-user",
       status: "blocked",
-      attestKeyId: "registered-key",
-      attestPublicKey: "not-used",
-      attestEnvironment: "production",
+    });
+    await database(env.DB).insert(appAttestKey).values({
+      appId: "blocked-attest-register",
+      keyId: "registered-key",
+      publicKey: "not-used",
+      environment: "production",
+      userId: "blocked-user",
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -420,16 +434,15 @@ describe("blocked App Attest users", () => {
         .first(),
     ).resolves.toEqual({ challenge: "blocked-challenge" });
     await expect(
-      env.DB.prepare(
-        "SELECT attest_key_id, attest_public_key, last_seen_at FROM app_user WHERE app_id = ? AND id = ?",
-      )
+      env.DB.prepare("SELECT last_seen_at FROM app_user WHERE app_id = ? AND id = ?")
         .bind("blocked-attest-register", "blocked-user")
         .first(),
-    ).resolves.toEqual({
-      attest_key_id: "registered-key",
-      attest_public_key: "not-used",
-      last_seen_at: null,
-    });
+    ).resolves.toEqual({ last_seen_at: null });
+    await expect(
+      env.DB.prepare("SELECT key_id, public_key FROM app_attest_key WHERE app_id = ? ORDER BY key_id")
+        .bind("blocked-attest-register")
+        .all(),
+    ).resolves.toMatchObject({ results: [{ key_id: "registered-key", public_key: "not-used" }] });
   });
 });
 
@@ -469,12 +482,13 @@ describe("withdrawing an App Attest environment", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
     // Seeded without an `environments` opt-in, so the app is production-only.
     await seedApp(appId);
-    await database(env.DB).insert(appUser).values({
+    await database(env.DB).insert(appUser).values({ appId, id: "registered-user" });
+    await database(env.DB).insert(appAttestKey).values({
       appId,
-      id: "registered-user",
-      attestKeyId: "registered-key",
-      attestPublicKey: "not-used",
-      attestEnvironment,
+      keyId: "registered-key",
+      publicKey: "not-used",
+      environment: attestEnvironment,
+      userId: "registered-user",
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -510,9 +524,9 @@ describe("withdrawing an App Attest environment", () => {
   it("never stores a key without the environment that attested it", async () => {
     await seedApp("attest-env-missing");
     await expect(env.DB.prepare(
-      `INSERT INTO app_user(app_id, id, attest_key_id, attest_public_key)
-       VALUES ('attest-env-missing', 'registered-user', 'registered-key', 'not-used')`,
-    ).run()).rejects.toThrow(/users_attest_key_check/u);
+      `INSERT INTO app_attest_key(app_id, key_id, public_key, user_id)
+       VALUES ('attest-env-missing', 'registered-key', 'not-used', 'registered-user')`,
+    ).run()).rejects.toThrow(/NOT NULL constraint failed: app_attest_key.environment/u);
   });
 });
 
@@ -633,13 +647,13 @@ describe("App Attest applications identified by installation", () => {
   it("blocks by key id, since that is the identity the operator sees", async () => {
     const appId = "install-blocked";
     await seedApp(appId, { endUser: "app_install" });
-    await database(env.DB).insert(appUser).values({
+    await database(env.DB).insert(appUser).values({ appId, id: "blocked-install-key", status: "blocked" });
+    await database(env.DB).insert(appAttestKey).values({
       appId,
-      id: "blocked-install-key",
-      attestKeyId: "blocked-install-key",
-      attestPublicKey: "not-used",
-      attestEnvironment: "production",
-      status: "blocked",
+      keyId: "blocked-install-key",
+      publicKey: "not-used",
+      environment: "production",
+      userId: "blocked-install-key",
     });
     const response = await exchangeToken(appId, {
       key_id: "blocked-install-key",
@@ -885,5 +899,111 @@ describe("application authentication throttling", () => {
 
     expect(response.status).toBe(429);
     expect(prepares).toBe(0);
+  });
+});
+
+/**
+ * The exchange mints a token bound to the install whose key signed it, and
+ * leaves the key's counter to the install's limiter, which every request the
+ * token signs will pass through too.
+ */
+describe("App Attest token exchange and installs", () => {
+  async function challenge(appId: string): Promise<string> {
+    const value = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+    await env.DB.prepare(
+      "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
+    ).bind(value, appId).run();
+    return value;
+  }
+
+  async function assertionFor(install: TestInstall, value: string, counter: number): Promise<string> {
+    const clientDataHash = new Uint8Array(await crypto.subtle.digest(
+      "SHA-256",
+      Uint8Array.from(assertionClientData(install.appId, value, install.keyId)),
+    ));
+    return (await testAssertion({
+      privateKey: install.privateKey,
+      rpId: `AAAAAAAAAA.com.example.${install.appId}`,
+      counter,
+      clientDataHash,
+    })).toString("base64");
+  }
+
+  function claims(token: string): Record<string, unknown> {
+    return JSON.parse(atob(token.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/")));
+  }
+
+  it("names the install in the token it mints", async () => {
+    const appId = "exchange-install-claim";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "install-key-1", { keyId: "install-key-1" });
+    const value = await challenge(appId);
+    const response = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: value,
+      assertion: await assertionFor(install, value, 1),
+    });
+    expect(response.status).toBe(200);
+    const { access_token } = await response.json<{ access_token: string }>();
+    expect(claims(access_token)).toMatchObject({ sub: "install-key-1", install: "install-key-1", auth_method: "attest" });
+    await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
+      .resolves.toMatchObject({ installId: "install-key-1", userId: "install-key-1" });
+  });
+
+  it("refuses a replayed counter through the install's limiter", async () => {
+    const appId = "exchange-install-replay";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "replay-key", { keyId: "replay-key" });
+    const first = await challenge(appId);
+    expect((await exchangeToken(appId, {
+      key_id: install.keyId, challenge: first, assertion: await assertionFor(install, first, 5),
+    })).status).toBe(200);
+    // A fresh challenge, signed with a counter the key has already used.
+    const second = await challenge(appId);
+    const replay = await exchangeToken(appId, {
+      key_id: install.keyId, challenge: second, assertion: await assertionFor(install, second, 5),
+    });
+    expect(replay.status).toBe(403);
+    await expect(replay.json()).resolves.toMatchObject({
+      error: { code: "attest_failed", message: "App Attest assertion counter was replayed" },
+    });
+    const third = await challenge(appId);
+    expect((await exchangeToken(appId, {
+      key_id: install.keyId, challenge: third, assertion: await assertionFor(install, third, 6),
+    })).status).toBe(200);
+  });
+
+  it("lets one user hold several installs, each exchanging for itself", async () => {
+    const appId = "exchange-several-installs";
+    const fixture = await signingFixture(appId);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    await seedApp(appId);
+    const phone = await registerTestInstall(appId, "same-person");
+    const tablet = await registerTestInstall(appId, "same-person");
+    for (const install of [phone, tablet]) {
+      const value = await challenge(appId);
+      const response = await exchangeToken(appId, {
+        issuer_token: await issuerToken(fixture, { sub: "same-person" }),
+        key_id: install.keyId,
+        challenge: value,
+        assertion: await assertionFor(install, value, 1),
+      });
+      expect(response.status).toBe(200);
+      const { access_token } = await response.json<{ access_token: string }>();
+      expect(claims(access_token)).toMatchObject({ sub: "same-person", install: install.keyId });
+    }
+    // A key registered for somebody else is not this person's.
+    const stranger = await registerTestInstall(appId, "someone-else");
+    const value = await challenge(appId);
+    const refused = await exchangeToken(appId, {
+      issuer_token: await issuerToken(fixture, { sub: "same-person" }),
+      key_id: stranger.keyId,
+      challenge: value,
+      assertion: await assertionFor(stranger, value, 1),
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "attest_failed", message: "No matching registered App Attest key" },
+    });
   });
 });

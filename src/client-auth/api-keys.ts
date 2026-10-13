@@ -196,6 +196,7 @@ export async function verifyApiKey(
     authMethod: "api_key",
     credentialType: "api_key",
     apiKeyId: value.id,
+    installId: null,
   };
 }
 

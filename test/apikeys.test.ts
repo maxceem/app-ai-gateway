@@ -12,7 +12,7 @@ import { clearAllCaches } from "../src/core/ttl-cache";
 import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { database } from "../src/db";
 import { appApiKey } from "../src/db/schema";
-import { gatewayToken, seedApp, seedServerApp } from "./helpers";
+import { gatewayToken, seedApp, seedServerApp, signRequest } from "./helpers";
 
 beforeEach(() => clearAllCaches());
 afterEach(() => vi.restoreAllMocks());
@@ -149,10 +149,10 @@ describe("server tenant API keys", () => {
   it("leaves gateway tokens without an API-key ID unchanged", async () => {
     await seedApp("jwt-no-key-id");
     const token = await gatewayToken("jwt-no-key-id", "customer-42");
-    const response = await exports.default.fetch(
+    const response = await exports.default.fetch(await signRequest(new Request(
       "https://example.test/v1/apps/jwt-no-key-id/me",
       { headers: { authorization: `Bearer ${token}` } },
-    );
+    )));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ user_id: "customer-42" });

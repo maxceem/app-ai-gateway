@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp, signRequest } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -43,7 +43,7 @@ async function workerFetch(
   bindings: Env = env,
 ): Promise<Response> {
   const executionCtx = createExecutionContext();
-  const response = await app.fetch(new Request(input, init), bindings, executionCtx);
+  const response = await app.fetch(await signRequest(new Request(input, init)), bindings, executionCtx);
   pendingExecutionContexts.push(executionCtx);
   return response;
 }

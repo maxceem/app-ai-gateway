@@ -1,4 +1,8 @@
 import { env } from "cloudflare:workers";
+import { Buffer } from "node:buffer";
+import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
+import { encode } from "cbor-x";
+import { PROOF_HEADER, base64url, requestClientData } from "../src/client-auth/request-proof";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { hashApiKey } from "../src/client-auth/api-keys";
@@ -62,6 +66,7 @@ export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayI
     userId: "user-1",
     authMethod: "api_key",
     credentialType: "api_key",
+    installId: null,
     ...overrides,
   };
 }
@@ -187,6 +192,8 @@ export interface SeedOptions {
    */
   limits?: { rpm?: number | null; rpd?: number | null; app_rpm?: number | null; app_rpd?: number | null };
   budgetUsd?: number | null;
+  /** Whose month `budgetUsd` is measured over; the application type's default when absent. */
+  budgetScope?: "install" | "user";
   appBudgetUsd?: number | null;
 }
 
@@ -200,7 +207,10 @@ export function limitsConfig(options: SeedOptions): Record<string, unknown> {
     limits: {
       per_user: {
         requests: { per_minute: options.limits?.rpm ?? null, per_day: options.limits?.rpd ?? null },
-        spending: { monthly_usd: options.budgetUsd ?? null },
+        spending: {
+          monthly_usd: options.budgetUsd ?? null,
+          ...(options.budgetScope === undefined ? {} : { scope: options.budgetScope }),
+        },
       },
       per_app: {
         requests: { per_minute: options.limits?.app_rpm ?? null, per_day: options.limits?.app_rpd ?? null },
@@ -431,9 +441,164 @@ export async function seedServerApp(
   return key;
 }
 
+/** One App Attest install a test signs requests as: its key pair and its counter. */
+export interface TestInstall {
+  appId: string;
+  userId: string;
+  keyId: string;
+  privateKey: KeyObject;
+  publicKeyPem: string;
+  /** The last assertion counter signed; the next proof uses one more. */
+  counter: number;
+}
+
+/**
+ * Registers a fresh App Attest key for `userId`, the way `/auth/register`
+ * would leave one, without asking Apple: a P-256 pair whose public half is
+ * stored as the install's key. Inserted only if the app exists, so a test
+ * about an unknown app can still hold a token for it.
+ */
+export async function registerTestInstall(
+  appId: string,
+  userId = "user-1",
+  options: { keyId?: string; environment?: "production" | "development" } = {},
+): Promise<TestInstall> {
+  const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const publicKeyPem = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const keyId = options.keyId ?? Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+  await env.DB.prepare(
+    `INSERT INTO app_attest_key(app_id, key_id, public_key, environment, user_id)
+     SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM app WHERE id = ?)
+     ON CONFLICT(app_id, key_id) DO UPDATE SET public_key = excluded.public_key,
+       environment = excluded.environment, user_id = excluded.user_id`,
+  ).bind(appId, keyId, publicKeyPem, options.environment ?? "production", userId, appId).run();
+  return { appId, userId, keyId, privateKey: pair.privateKey, publicKeyPem, counter: 0 };
+}
+
+/** Every attest token a test minted, by the token, so a request carrying one can be signed. */
+const installsByToken = new Map<string, TestInstall>();
+
+/**
+ * An App Attest gateway token for `userId`, bound to a freshly registered
+ * install. Requests sent with it must be signed — {@link signRequest} does
+ * that for any request carrying a token minted here.
+ */
 export async function gatewayToken(appId: string, userId = "user-1"): Promise<string> {
-  const issued = await issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest" });
+  const install = await registerTestInstall(appId, userId);
+  return tokenForInstall(install);
+}
+
+/** A gateway token for an install registered with {@link registerTestInstall}. */
+export async function tokenForInstall(install: TestInstall): Promise<string> {
+  const issued = await issueGatewayToken(env.JWT_SECRET, {
+    appId: install.appId,
+    userId: install.userId,
+    authMethod: "attest",
+    installId: install.keyId,
+  });
+  installsByToken.set(issued.token, install);
   return issued.token;
+}
+
+/** `<team id>.<bundle id>` of a stored App Attest application. */
+async function relyingParty(appId: string): Promise<string> {
+  const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(appId)
+    .first<{ config_json: string }>();
+  const config = row ? JSON.parse(row.config_json) as {
+    authentication: { app_attest?: { team_id: string; bundle_id: string } };
+  } : null;
+  const identity = config?.authentication.app_attest;
+  return identity ? `${identity.team_id}.${identity.bundle_id}` : "AAAAAAAAAA.com.example.unknown";
+}
+
+/** An App Attest assertion over `clientDataHash`, as `DCAppAttestService` would produce one. */
+export async function testAssertion(input: {
+  privateKey: KeyObject;
+  rpId: string;
+  counter: number;
+  clientDataHash: Uint8Array;
+}): Promise<Buffer> {
+  const authenticatorData = Buffer.alloc(37);
+  Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.rpId))).copy(authenticatorData, 0);
+  authenticatorData[32] = 1;
+  authenticatorData.writeUInt32BE(input.counter, 33);
+  const nonce = Buffer.from(await crypto.subtle.digest(
+    "SHA-256",
+    Buffer.concat([authenticatorData, Buffer.from(input.clientDataHash)]),
+  ));
+  const signer = createSign("SHA256");
+  signer.update(nonce);
+  return Buffer.from(encode({ signature: signer.sign(input.privateKey), authenticatorData }));
+}
+
+/** The `X-AppAttest-Proof` a device would send with one request. */
+export async function signedProof(input: {
+  appId: string;
+  privateKey: KeyObject;
+  token: string;
+  method: string;
+  url: string;
+  body?: Uint8Array;
+  counter: number;
+  /** Defaults to the stored application's own team and bundle id. */
+  rpId?: string;
+  timestamp?: number;
+  nonce?: string;
+}): Promise<string> {
+  const url = new URL(input.url);
+  const timestamp = String(input.timestamp ?? Math.floor(Date.now() / 1000));
+  const nonce = input.nonce ?? base64url(crypto.getRandomValues(new Uint8Array(16)));
+  const clientData = await requestClientData({
+    appId: input.appId,
+    method: input.method,
+    pathAndQuery: `${url.pathname}${url.search}`,
+    body: input.body ?? new Uint8Array(),
+    token: input.token,
+    timestamp,
+    nonce,
+  });
+  const assertion = await testAssertion({
+    privateKey: input.privateKey,
+    rpId: input.rpId ?? await relyingParty(input.appId),
+    counter: input.counter,
+    clientDataHash: new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(clientData))),
+  });
+  return `v1.${timestamp}.${nonce}.${base64url(assertion)}`;
+}
+
+/** The install whose token a request carries, in whichever header it was sent. */
+function installOf(request: Request): { install: TestInstall; token: string } | null {
+  for (const [, value] of request.headers) {
+    const token = value.toLowerCase().startsWith("bearer ") ? value.slice(7).trim() : value.trim();
+    const install = installsByToken.get(token);
+    if (install) return { install, token };
+  }
+  return null;
+}
+
+/**
+ * The request as the 2.x Swift package would send it: signed with
+ * `X-AppAttest-Proof` when it carries a token {@link gatewayToken} minted and
+ * no proof of its own, unchanged otherwise. The body is read and sent on as
+ * the exact bytes that were signed.
+ */
+export async function signRequest(request: Request): Promise<Request> {
+  const found = installOf(request);
+  if (!found || request.headers.has(PROOF_HEADER)) return request;
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  const body = hasBody ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array();
+  found.install.counter += 1;
+  const headers = new Headers(request.headers);
+  headers.set(PROOF_HEADER, await signedProof({
+    appId: found.install.appId,
+    privateKey: found.install.privateKey,
+    token: found.token,
+    method: request.method,
+    url: request.url,
+    body,
+    counter: found.install.counter,
+  }));
+  return new Request(request.url, { method: request.method, headers, ...(hasBody ? { body } : {}) });
 }
 
 /** An operator with their own organization, and a session to act as them. */

@@ -20,6 +20,12 @@ export interface RequestVariables {
    * options concurrently share one build instead of racing to make two.
    */
   identityAuthCache: Map<string, Promise<CfAuth>>;
+  /**
+   * Headers every answer to this request carries, refusals included: the
+   * deprecation notice of a client request accepted under a compatibility
+   * switch. Set by client authentication; absent everywhere else.
+   */
+  responseHeaders?: Record<string, string>;
 }
 
 /**

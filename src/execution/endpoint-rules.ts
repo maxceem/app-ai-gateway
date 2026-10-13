@@ -20,7 +20,6 @@ import {
   isMultipart,
   jsonObject,
   parseForm,
-  readBodyLimited,
 } from "../providers/request-body";
 import type { AppRecord, EndpointTarget } from "../core/types";
 import type { EndpointApiStyle } from "../shared/capabilities";
@@ -242,12 +241,14 @@ export async function resolveEndpointAttempts(
 
 export async function prepareEndpointRequest(input: {
   request: Request;
+  /** The body, read once by the caller; see `PrepareInput.body`. */
+  body: () => Promise<Uint8Array<ArrayBuffer>>;
   app: AppRecord;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;
 }): Promise<PreparedEndpointRequest> {
-  const bytes = await readBodyLimited(input.request);
+  const bytes = await input.body();
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 

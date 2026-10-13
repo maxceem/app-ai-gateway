@@ -4,6 +4,7 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 import type { AppStatus } from "../shared/app-status.ts";
+import type { AppCompat } from "../client-auth/compat.ts";
 
 /** How a client first proved itself to an application: an API key, or an App Attest key. */
 export type AuthMethod = "attest" | "api_key";
@@ -26,6 +27,11 @@ export interface AppRecord {
   status: AppStatus;
   revision: number;
   config: AppConfig;
+  /**
+   * The internal compatibility switches set on the row by hand, parsed once
+   * with the configuration and cached with it. Never part of `config`.
+   */
+  compat: AppCompat;
 }
 
 export interface GatewayIdentity {
@@ -42,6 +48,12 @@ export interface GatewayIdentity {
    */
   credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
+  /**
+   * The App Attest key id of the install this request came from, which an
+   * attest gateway token carries; null for server applications, which have no
+   * install. Under `app_install` it equals `userId`.
+   */
+  installId: string | null;
 }
 
 /** A modality a model may price apart from text. */

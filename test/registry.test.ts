@@ -56,7 +56,7 @@ import {
   reportsCost,
 } from "../src/shared/providers";
 import { database } from "../src/db";
-import { clearProviderCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, signRequest } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
 const VERCEL = { type: "vercel", config: {} } as const;
@@ -1048,7 +1048,7 @@ describe("declared headers are never client-controlled", () => {
     });
     const executionCtx = createExecutionContext();
     const response = await worker.fetch(
-      new Request(
+      await signRequest(new Request(
         `https://example.test/v1/apps/${input.appId}/proxy/${input.slug}/v1/responses`,
         {
           method: "POST",
@@ -1063,7 +1063,7 @@ describe("declared headers are never client-controlled", () => {
           },
           body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
         },
-      ),
+      )),
       env,
       executionCtx,
     );
@@ -1089,7 +1089,7 @@ describe("declared headers are never client-controlled", () => {
     });
     const executionCtx = createExecutionContext();
     const response = await worker.fetch(
-      new Request(`https://example.test/v1/apps/${APP_ID}/proxy/openai-vercel/v1/responses`, {
+      await signRequest(new Request(`https://example.test/v1/apps/${APP_ID}/proxy/openai-vercel/v1/responses`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${await gatewayToken(APP_ID, userId)}`,
@@ -1097,7 +1097,7 @@ describe("declared headers are never client-controlled", () => {
           "x-app-version": "1.2.3",
         },
         body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-      }),
+      })),
       env,
       executionCtx,
     );
