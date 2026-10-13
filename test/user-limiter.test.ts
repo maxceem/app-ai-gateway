@@ -75,6 +75,61 @@ describe("UserLimiter", () => {
     });
   });
 
+  /**
+   * An install's object is asked for the install's month or the user's as
+   * the app's budget scope changes; a figure cached for one must never answer
+   * for the other.
+   */
+  it("never answers one ledger's month with another's cached figure", async () => {
+    const appId = "user-limiter-scope-change";
+    const limiter = env.USER_LIMITER.getByName(`${appId}:install:key-1`);
+    const now = Date.UTC(2026, 6, 23, 12);
+    await env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('operator-test-organization', ?, 'user', 'person', '2026-07', 2000000)`,
+    ).bind(appId).run();
+    const budget = 1_000_000;
+    // The install has spent nothing, and that figure is now cached.
+    expect(await limiter.checkAndIncrement({
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "install", key: "key-1" },
+    })).toEqual({ allowed: true });
+    // Moved to the user's month within the refresh window: read afresh.
+    expect(await limiter.checkAndIncrement({
+      now: now + 1, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "user", key: "person" },
+    })).toMatchObject({ allowed: false, reason: "budget" });
+    // And back: the install's own figure still answers for the install.
+    expect(await limiter.checkAndIncrement({
+      now: now + 2, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "install", key: "key-1" },
+    })).toEqual({ allowed: true });
+  });
+
+  it("keeps concurrent reads of different ledgers apart", async () => {
+    const appId = "user-limiter-concurrent-ledgers";
+    await env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('operator-test-organization', ?, 'user', 'person', '2026-07', 2000000)`,
+    ).bind(appId).run();
+    const limiter = env.USER_LIMITER.getByName(`${appId}:install:key-1`);
+    const now = Date.UTC(2026, 6, 23, 12);
+    const check = (scope: "install" | "user", key: string) => limiter.checkAndIncrement({
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: 1_000_000, spend: { appId, scope, key },
+    });
+    const [install, user, installAgain, userAgain] = await Promise.all([
+      check("install", "key-1"),
+      check("user", "person"),
+      check("install", "key-1"),
+      check("user", "person"),
+    ]);
+    expect([install, installAgain]).toEqual([{ allowed: true }, { allowed: true }]);
+    expect([user, userAgain]).toMatchObject([
+      { allowed: false, reason: "budget" },
+      { allowed: false, reason: "budget" },
+    ]);
+  });
+
   it("measures a user's budget against that user's own month", async () => {
     const appId = "user-limiter-user-spend";
     const limiter = env.USER_LIMITER.getByName(`${appId}:u1`);

@@ -29,6 +29,9 @@ import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounti
  */
 export const SPEND_REFRESH_MS = 10_000;
 
+/** How many ledgers' figures one object keeps; it is asked for one or two. */
+const MAX_SPEND_LEDGERS = 8;
+
 /** A window's key: the epoch minute, or the UTC date as `YYYY-MM-DD`. */
 type WindowKind = "minute" | "day";
 
@@ -66,10 +69,16 @@ export interface LimiterStatus {
 }
 
 export class UserLimiter extends DurableObject<Env> {
-  /** The last read of the month's spend. Memory only: an evicted object reads again. */
-  private spend: { month: string; microusd: number; readAt: number } | null = null;
-  /** The read in flight, shared by every request that finds the cache stale meanwhile. */
-  private spendRead: { month: string; promise: Promise<number> } | null = null;
+  /**
+   * The last read of each ledger's month, by its full identity — app, scope,
+   * key and month. One object can be asked for more than one: an install's is
+   * asked for the install's month or the user's as the app's budget scope
+   * changes, and a figure read for one must never answer for the other.
+   * Memory only: an evicted object reads again.
+   */
+  private spend = new Map<string, { microusd: number; readAt: number }>();
+  /** The reads in flight, by ledger identity, each shared by every request that finds that ledger stale meanwhile. */
+  private spendReads = new Map<string, Promise<number>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -265,24 +274,30 @@ export class UserLimiter extends DurableObject<Env> {
    */
   private async monthlySpend(key: SpendKey, now: number): Promise<number> {
     const month = this.month(now);
-    const cached = this.spend;
-    if (cached && cached.month === month && now - cached.readAt < SPEND_REFRESH_MS) {
-      return cached.microusd;
-    }
-    if (this.spendRead?.month === month) return this.spendRead.promise;
-    const read = { month, promise: monthlySpendMicrousd(this.env.DB, key, month) };
-    this.spendRead = read;
+    const identity = JSON.stringify([key.appId, key.scope, key.key, month]);
+    const cached = this.spend.get(identity);
+    if (cached && now - cached.readAt < SPEND_REFRESH_MS) return cached.microusd;
+    const pending = this.spendReads.get(identity);
+    if (pending) return pending;
+    const read = monthlySpendMicrousd(this.env.DB, key, month);
+    this.spendReads.set(identity, read);
     try {
-      const microusd = await read.promise;
-      // A slower read of an older window never replaces a newer figure.
-      if (!this.spend || this.spend.month !== month || this.spend.readAt <= now) {
-        this.spend = { month, microusd, readAt: now };
+      const microusd = await read;
+      // A slower read never replaces a newer figure for the same ledger.
+      const current = this.spend.get(identity);
+      if (!current || current.readAt <= now) {
+        // A ledger of another month or scope is never read again by this
+        // object's callers once they have moved on, so the map holds only the
+        // few this object is asked for.
+        if (!current && this.spend.size >= MAX_SPEND_LEDGERS) this.spend.clear();
+        this.spend.set(identity, { microusd, readAt: now });
       }
       return microusd;
     } finally {
-      if (this.spendRead === read) this.spendRead = null;
+      if (this.spendReads.get(identity) === read) this.spendReads.delete(identity);
     }
   }
+
 
   /** Both counters in one statement, which is one row written, not two. */
   private bumpWindows(minuteKey: string, minute: number, dayKey: string, day: number): void {
