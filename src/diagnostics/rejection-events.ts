@@ -10,7 +10,11 @@ import type { RejectionReason, RejectionScope } from "../shared/rejection-reason
 export interface RejectionEventInput {
   env: Env;
   identity: GatewayIdentity;
-  attribution: AttemptAttribution;
+  /**
+   * What the refused request was about to call. A refusal on a route that
+   * calls no provider — `/me` — has a route of its own and nothing else.
+   */
+  attribution: Pick<AttemptAttribution, "providerSlug" | "model" | "route"> | { providerSlug: null; model: null; route: string };
   endpointSlug?: string | null;
   appVersion: string | null;
   reason: RejectionReason;
@@ -39,14 +43,14 @@ export async function recordRejectionEvent(input: RejectionEventInput): Promise<
     // restore history after application or account cleanup has deleted it.
     await env.DB.prepare(`INSERT INTO app_rejection_event
       (event_id, app_id, user_id, api_key_id, reason, scope, provider_slug,
-       model, route, endpoint_slug, app_version, auth_method, latency_ms, created_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       model, route, endpoint_slug, app_version, auth_method, latency_ms, created_at, install_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE EXISTS (SELECT 1 FROM app WHERE id = ?)
       ON CONFLICT(event_id) DO NOTHING`)
       .bind(eventId, identity.appId, identity.userId, identity.apiKeyId ?? null,
         input.reason, input.scope, attribution.providerSlug, attribution.model,
         attribution.route, input.endpointSlug ?? null, storedAppVersion(input.appVersion),
-        identity.authMethod, input.latencyMs, createdAt, identity.appId)
+        identity.authMethod, input.latencyMs, createdAt, identity.installId, identity.appId)
       .run();
   } catch (error) {
     log("warn", "rejection_record_failed", {

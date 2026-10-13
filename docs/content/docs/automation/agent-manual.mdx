@@ -320,7 +320,7 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | Call | Body | Notes |
 | --- | --- | --- |
 | `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
-| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at } }` |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at, warnings } }` |
 | `POST /v1/admin/app-drafts/validate` | `{ name, config, status? }` | `{ valid: true }` or a 400 naming the problem. For an app that does not exist yet |
 | `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id }` or a 400 naming the problem. Judged as an update of that app; 404 if it does not exist |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
@@ -332,6 +332,13 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 
 `status` is `active` or `disabled`. A disabled app refuses every request
 with `403 app_disabled` and keeps everything.
+
+An app's `warnings` describe behaviour that will stop on the stated date:
+each has a `code`, a `message`, and usually `until` and `docs_url`. Tell the
+person about every warning and help them act before its date. Warnings are
+read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
+body you write back, or the write is refused, and keep the `revision` from the
+read, which an update requires.
 
 ## Application configuration reference
 
@@ -359,6 +366,7 @@ Discriminated on `type`.
 | `app_attest.team_id` | string | Apple Team ID |
 | `app_attest.bundle_id` | string | Bundle ID |
 | `app_attest.environments` | `["production"]`, `["development"]` or both; optional | Which App Attest environments are accepted. Omitted means production only |
+| `app_attest.verify_on` | `"every_request"` or `"token_exchange"`; optional | When the install's App Attest assertion is verified. `every_request`, the default when omitted: every request carries `X-AppAttest-Proof`, which needs the Swift package 1.4 or later. `token_exchange`: only at the hourly token exchange, and requests carry the token alone. Apps created before this setting was added were set to `token_exchange`. Switch an app to `every_request` only after the person confirms every build in use is on package 1.4 or later; older builds are refused from then on |
 | `end_user` | object, required | `{ "source": "issuer", "issuer": {…} }` for signed-in users, or `{ "source": "app_install" }` to count each install as a user |
 
 **Server application** (`api_key`):
@@ -418,6 +426,12 @@ Optional. Omit for no limits. Every field is `null` (unlimited) or a number.
 Non-null `per_user` limits require an app that identifies users; an all-null
 block is accepted without user identity. Request limits
 must be positive; a spend budget may be `0` to stop all spend.
+
+On an iOS app, `per_user` request limits count per install (one copy of the
+app on one device), and so does the budget unless
+`per_user.spending.scope` is `"user"`, which needs `end_user.source`
+`issuer`. `scope` defaults to `"install"` on iOS apps and `"user"` on server
+apps, where `"install"` is refused. The gateway writes the default in.
 
 ```json
 "limits": {
@@ -515,7 +529,7 @@ endpoint:
 
 | Call | Query or body | Notes |
 | --- | --- | --- |
-| `GET /v1/admin/apps/{app}/users` | `month=YYYY-MM`, `status=active|blocked`, `query=`, `limit=`, `offset=` | Each user with requests, tokens and cost for the month |
+| `GET /v1/admin/apps/{app}/users` | `month=YYYY-MM`, `status=active|blocked`, `query=`, `limit=`, `offset=` | Each user with requests, tokens and cost for the month, and `installs`: the App Attest keys they hold, one per install |
 | `GET /v1/admin/apps/{app}/users/{user}` | | |
 | `POST /v1/admin/apps/{app}/users/{user}/block` | | New token exchanges are refused immediately; existing gateway tokens stop working within ten seconds. Users named by a backend header cannot be blocked |
 | `POST /v1/admin/apps/{app}/users/{user}/unblock` | | |
@@ -526,15 +540,16 @@ endpoint:
 | --- | --- | --- |
 | `GET /v1/admin/apps/{app}/usage` | `month=YYYY-MM` | Totals: requests, tokens, cost |
 | `GET /v1/admin/apps/{app}/usage/timeseries` | `from=`, `to=` (ISO dates) | Daily buckets by provider |
-| `GET /v1/admin/apps/{app}/usage/breakdown` | `by=`, `from=`, `to=`, `limit=` | Grouped totals. `by` is one of `model`, `model_author`, `provider`, `provider_slug`, `provider_gateway`, `credential_source`, `user`, `status`, `cost_source`, `route`, `endpoint`, `app_version` |
-| `GET /v1/admin/apps/{app}/events` | `limit=`, `status=`, `user=`, `model=`, `before_id=` | Individual provider attempts, newest first. Page with `next_before_id` |
+| `GET /v1/admin/apps/{app}/usage/breakdown` | `by=`, `from=`, `to=`, `limit=` | Grouped totals. `by` is one of `model`, `model_author`, `provider`, `provider_slug`, `provider_gateway`, `credential_source`, `user`, `install`, `status`, `cost_source`, `route`, `endpoint`, `app_version` |
+| `GET /v1/admin/apps/{app}/events` | `limit=`, `status=`, `user=`, `install=`, `model=`, `before_id=` | Individual provider attempts, newest first, each with `install_id` on iOS apps. Page with `next_before_id` |
 | `GET /v1/admin/apps/{app}/auth-events/summary` | `days=` | Token exchange success rate, failures by cause, claim delay percentiles |
 | `GET /v1/admin/apps/{app}/auth-events` | `limit=`, `outcome=`, `before_id=` | Individual token exchanges and registrations |
 | `GET /v1/admin/apps/{app}/rejection-events` | `limit=`, `reason=`, `scope=`, `user=`, `from=`, `to=`, `before_id=` | Sampled requests stopped before a provider call; page with `next_before_id` |
 
 Usage event `status` values: `ok`, `provider_error`. Refusal sample `reason`
 values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
-`blocked_billing`. Samples are limited to one per identity per minute, so
+`blocked_billing`, `blocked_replay` (a replayed App Attest proof). `scope` is
+`install`, `user`, `app` or `account`. Samples are limited to one per identity per minute, so
 sample counts are not exact request totals. Event
 `cost_source` values: `computed`, `reported`, `unresolved`.
 
@@ -546,13 +561,20 @@ client code.
 - Proxy: `{METHOD} /v1/apps/{app}/proxy/{provider_slug}/{provider_path}`
   with the provider's own body. Credential: `Authorization: Bearer <gateway
   token>` plus `X-App-Version` for iOS and signed-in-user apps, or
-  `Authorization: Bearer agw_…` for a server app without user identity.
+  `Authorization: Bearer agw_…` for a server app without user identity. When
+  an iOS app's `verify_on` is `every_request`, every request also carries
+  `X-AppAttest-Proof`, an App Attest assertion over that request; without it
+  the gateway answers `401 assertion_required`. With `token_exchange` the
+  token alone is enough.
 - Custom endpoint: `POST /v1/apps/{app}/endpoints/{slug}`.
 - Token exchange for a server app with signed-in users:
   `POST /v1/apps/{app}/auth/token` with `{ "api_key", "issuer_token" }`,
   returning `{ "access_token", "expires_in": 3600 }`.
-- iOS apps use the AppAIGateway Swift package, which handles App Attest and
-  the token exchange. See the human documentation under Integrate your app.
+- iOS apps use the AppAIGateway Swift package 1.4 or later, which handles App
+  Attest, the token exchange and, when the token exchange answers
+  `verify_on: "every_request"`, the per-request proof. Pass the request body to
+  `authorizedRequest`, never set it afterwards. See the human documentation
+  under Integrate your app.
 
 For Auth0's API-identifier preset, `issuer_token` must be a JWT access token
 for that API. Firebase uses its ID token. In every case the configured issuer

@@ -10,7 +10,7 @@ import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/usage/pric
 import { observeResponse } from "../src/usage/usage-readers";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
-import { clearIsolateCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
+import { clearIsolateCaches, gatewayToken, seedApp, seedProvider, signRequest } from "./helpers";
 import { providerDescriptor, PROVIDER_TYPES, reportsCost } from "../src/shared/providers";
 
 const APP_ID = "usage-attribution";
@@ -42,7 +42,7 @@ async function settle(): Promise<void> {
 
 async function workerFetch(input: string, init: RequestInit): Promise<Response> {
   const executionCtx = createExecutionContext();
-  const response = await worker.fetch(new Request(input, init), env, executionCtx);
+  const response = await worker.fetch(await signRequest(new Request(input, init)), env, executionCtx);
   pending.push(executionCtx);
   return response;
 }

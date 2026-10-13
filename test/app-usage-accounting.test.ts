@@ -120,10 +120,10 @@ describe("app usage accounting", () => {
     const appId = `${PREFIX}read`;
     await insertEvent({ appId, userId: "u1", costUsd: 0.000030, createdAt: "2026-07-10T00:00:00.000Z" });
     await insertEvent({ appId, userId: "u2", costUsd: 0.000012, createdAt: "2026-07-11T00:00:00.000Z" });
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-07")).toBe(42);
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: "u1" }, "2026-07")).toBe(30);
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: "u3" }, "2026-07")).toBe(0);
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-08")).toBe(0);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, "2026-07")).toBe(42);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "user", key: "u1" }, "2026-07")).toBe(30);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "user", key: "u3" }, "2026-07")).toBe(0);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, "2026-08")).toBe(0);
   });
 
   it("runs nightly maintenance on its own trigger and nothing on any other", async () => {
@@ -158,8 +158,8 @@ describe("app usage accounting", () => {
     await persistUsageEvent(env, event);
 
     expect((await spend(appId)).map((row) => row.month)).toEqual(["2026-07", "2026-07"]);
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-07")).toBe(41);
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-08")).toBe(0);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, "2026-07")).toBe(41);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, "2026-08")).toBe(0);
   });
 
   it("captures recordUsageEvent time before awaiting an observer across month rollover", async () => {

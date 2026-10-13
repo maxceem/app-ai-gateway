@@ -9,6 +9,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/field";
 import { MissingProvidersAlert } from "@/components/missing-providers-alert";
+import { AppWarningsAlert } from "@/components/app-warnings-alert";
 import { NoKeysNotice } from "@/components/no-keys-notice";
 import { PageActionProvider } from "@/components/page-action";
 import { useAppDraft, type SaveOutcome } from "@/hooks/use-app-draft";
@@ -105,14 +106,22 @@ export function AppDetailPage() {
     );
   }
 
+  // Under app_install every user is an install — its id is the App Attest key
+  // id — so the list is named for what its rows are.
+  const installsOnly = draft?.config.authentication.type === "apple_app_attest"
+    && draft.config.authentication.end_user.source === "app_install";
+  const title = tab === "users" && installsOnly ? "Installs" : heading.label;
+
   return (
     <div className="space-y-6 pb-24">
       <PageHeader
-        title={heading.label}
+        title={title}
         description={heading.description}
         action={<div ref={setActionSlot} className="flex items-center gap-2 empty:hidden" />}
       />
 
+      {/* The saved app's, which the gateway computed on read: a draft has none. */}
+      <AppWarningsAlert warnings={query.data?.app.warnings ?? []} />
       {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
       {/* Not on Auth policy, where the keys themselves are in view. */}
       {draft && draft.config.authentication.type === "api_key" && tab !== "auth" ? (
@@ -142,6 +151,12 @@ export function AppDetailPage() {
           <UsersTab
             appId={appId}
             monthlyBudgetUsd={draftLimits(draft.config.limits).per_user.spending.monthly_usd}
+            budgetScope={draft.config.authentication.type === "apple_app_attest"
+              && draftLimits(draft.config.limits).per_user.spending.scope !== "user"
+              ? "install"
+              : "user"}
+            appAttest={draft.config.authentication.type === "apple_app_attest"}
+            installsOnly={installsOnly}
           />
         ) : tab === "errors" ? (
           <ErrorsTab appId={appId} />
@@ -150,7 +165,13 @@ export function AppDetailPage() {
         ) : (
           <Suspense fallback={<Skeleton className="h-64 w-full" />}>
             {tab === "usage" ? (
-              <UsageTab appId={appId} />
+              <UsageTab
+                appId={appId}
+                identity={draft.config.authentication.type === "apple_app_attest"
+                  ? draftLimits(draft.config.limits).per_user.spending.scope === "user" ? "user" : "install"
+                  : "user"}
+                showInstalls={draft.config.authentication.type === "apple_app_attest"}
+              />
             ) : (
               <EndpointsTab appId={appId} state={state} />
             )}

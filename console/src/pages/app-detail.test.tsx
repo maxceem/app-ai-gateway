@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Link, Route, Routes } from "react-router-dom";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppDetailPage } from "./app-detail";
 import { renderAuthenticated, stubApi } from "@/test/render";
@@ -26,8 +26,8 @@ const USER = {
   status: "active",
   attest_key_id: "attest-key",
   attest_registered: true,
-  // Carried by the API and deliberately not drawn: see the test below.
-  attest_counter: 42,
+  installs: 1,
+  is_install: false,
   created_at: "2026-09-01T00:00:00.000Z",
   last_seen_at: "2026-09-18T00:00:00.000Z",
   is_virtual: false,
@@ -240,13 +240,134 @@ describe("the users table", () => {
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
   });
 
-  it("keeps the App Attest assertion counter out of the table", async () => {
+  it("says a key is registered, and keeps any counter out of the table", async () => {
     renderSection("users", { config: { limits: limits(4) }, users: [USER] });
 
-    // Registration is worth saying; the number of assertions the key has ever
-    // signed is an implementation detail no operator acts on.
+    // Registration is worth saying; how many assertions a key has signed is an
+    // implementation detail no operator acts on, and the gateway keeps it in
+    // the install's limiter rather than reporting it.
     expect(await screen.findByText("registered")).toBeTruthy();
     expect(screen.queryByText(/counter/i)).toBeNull();
-    expect(screen.queryByText("42")).toBeNull();
   });
 });
+
+const ATTEST = (endUser: Record<string, unknown>) => ({
+  type: "apple_app_attest",
+  app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app", environments: ["production"] },
+  end_user: endUser,
+});
+const ISSUER_USERS = {
+  source: "issuer",
+  issuer: {
+    jwks_url: "https://issuer.example.test/jwks.json",
+    issuer: ["https://issuer.example.test"],
+    audience: ["my-app"],
+    user_id_claim: "sub",
+    required_claims: [],
+    max_token_lifetime_seconds: 3600,
+  },
+};
+
+describe("App Attest apps' users and installs", () => {
+  it("titles the list Installs when every user is an install", async () => {
+    renderSection("users", { config: { authentication: ATTEST({ source: "app_install" }) }, users: [] });
+    expect(await screen.findByRole("heading", { level: 1, name: "Installs" })).toBeTruthy();
+    expect(await screen.findByText(/No installs yet/u)).toBeTruthy();
+  });
+
+  it("keeps Users for signed-in users, and counts each one's installs", async () => {
+    renderSection("users", {
+      config: { authentication: ATTEST(ISSUER_USERS) },
+      users: [{ ...USER, installs: 3 }],
+    });
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Users");
+    expect(await screen.findByRole("columnheader", { name: "Installs" })).toBeTruthy();
+    expect((await screen.findByTitle(/one per install/u)).textContent).toBe("3");
+  });
+});
+
+describe("a signed-in user's spend against an App Attest app's budget", () => {
+  const spendy = { ...USER, installs: 2, usage: { ...USER.usage, cost_usd: 14 } };
+  const withBudget = (spending: Record<string, unknown>) => ({
+    authentication: ATTEST(ISSUER_USERS),
+    limits: {
+      per_user: { requests: { per_minute: null, per_day: null }, spending },
+      per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+    },
+  });
+
+  it("never draws the user's total across installs against one install's budget", async () => {
+    // Phone and tablet spent $7 each against a $10 budget per install: each has
+    // $3 left, so $14 / $10 and an exhausted bar would be false.
+    renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "install" }), users: [spendy] });
+    expect(await screen.findByTitle(/applies to each install/u)).toBeTruthy();
+    expect(screen.getByTitle(/applies to each install/u).textContent).toBe("$14.00");
+    expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
+    expect(screen.queryByText(/\$10\.00/u)).toBeNull();
+  });
+
+  /**
+   * The list is decided per row: after an app moves from signed-in users to
+   * app_install, a signed-in user's history is still one person's spend across
+   * installs, and only the rows that are installs meet the install budget.
+   */
+  it("keeps a signed-in user's history off the install budget after the app moves to app_install", async () => {
+    const install = { ...USER, id: "key-id-1", installs: 1, is_install: true, usage: { ...USER.usage, cost_usd: 4 } };
+    renderSection("users", {
+      config: {
+        authentication: ATTEST({ source: "app_install" }),
+        limits: withBudget({ monthly_usd: 10, scope: "install" }).limits,
+      },
+      users: [spendy, install],
+    });
+    // The history row: cost alone.
+    expect((await screen.findByTitle(/applies to each install/u)).textContent).toBe("$14.00");
+    // The install row: drawn against its own budget.
+    expect(screen.getAllByRole("progressbar", { name: /monthly budget used/i })).toHaveLength(1);
+  });
+
+  it("draws it against the budget once the budget is the user's", async () => {
+    renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "user" }), users: [spendy] });
+    expect(await screen.findByRole("progressbar", { name: /monthly budget used/i })).toBeTruthy();
+    expect(screen.queryByTitle(/applies to each install/u)).toBeNull();
+  });
+});
+
+describe("an app's warnings", () => {
+  // Nothing produces a warning today; the alert is for whatever does.
+  const warning = {
+    code: "example_change",
+    message: "Example: this behaviour stops on 2027-01-31T00:00:00Z. Update the app before then.",
+    until: "2027-01-31T00:00:00Z",
+    docs_url: "https://docs.appaigateway.com/integrate/ios",
+  };
+
+  function renderWithWarnings(warnings: unknown[]) {
+    stubApi({
+      [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys: [] } },
+      [`/v1/admin/apps/${APP_ID}`]: { body: { app: { ...APP_ROW, warnings } } },
+    });
+    renderAuthenticated(
+      <Routes>
+        <Route path="/apps/:appId/:tab/:section?" element={<AppDetailPage />} />
+      </Routes>,
+      { route: `/apps/${APP_ID}/limits` },
+    );
+  }
+
+  it("lists each warning with where to read about it, and offers no action", async () => {
+    renderWithWarnings([warning]);
+    expect(await screen.findByText("This app has a warning")).toBeTruthy();
+    expect(screen.getByText(/^Example: this behaviour stops on/u)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "What to change" }).getAttribute("href")).toBe(warning.docs_url);
+    const alert = screen.getByText("This app has a warning").closest<HTMLElement>("[role='status']")!;
+    expect(within(alert).queryByRole("button")).toBeNull();
+  });
+
+  it("says nothing when there are none", async () => {
+    renderWithWarnings([]);
+    await screen.findByRole("heading", { level: 1, name: "Limits" });
+    expect(screen.queryByText(/This app has/u)).toBeNull();
+  });
+});
+

@@ -2,12 +2,15 @@ import type { MiddlewareHandler } from "hono";
 import { authenticateRequest } from "../client-auth/client-auth";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
+import { readBodyLimited } from "../providers/request-body";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "./request-scope";
 
 export interface GatewayVariables extends RequestVariables {
   app: AppRecord;
   identity: GatewayIdentity;
+  /** The signed request's App Attest counter, which the route hands to the install's limiter. */
+  assertionCounter: number | null;
 }
 
 /**
@@ -21,8 +24,14 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
   assertAppActive(app);
-  const { identity } = await authenticateRequest({ env: c.env, app, headers: c.req.raw.headers });
+  const { identity, assertionCounter } = await authenticateRequest({
+    env: c.env,
+    app,
+    request: c.req.raw,
+    body: () => readBodyLimited(c.req.raw),
+  });
   c.set("app", app);
   c.set("identity", identity);
+  c.set("assertionCounter", assertionCounter);
   await next();
 };

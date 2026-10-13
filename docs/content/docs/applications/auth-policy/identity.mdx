@@ -22,7 +22,14 @@ this app.
 Apple binds an App Attest key to one install of one app on one device, and
 the attestation carries a hash of your team ID and bundle ID. The gateway
 checks that hash, stores the key's public half, and from then on accepts
-assertions signed by that key. The key never leaves the Secure Enclave.
+assertions signed by that key: one at each token exchange and, unless the app
+verifies App Attest on the token exchange only, one on every request. The key
+never leaves the Secure Enclave.
+
+Keys are per install. A signed-in user who uses your app on a phone and a
+tablet holds two keys, and a user who reinstalls the app gets a new one;
+registering a key never replaces another. Each install is counted on its own
+by the [per-install limits](/applications/limits).
 
 ### iOS app environment
 
@@ -38,8 +45,10 @@ team's provisioning profile, which is why Development is off by default and
 why the console warns when you turn it on. Put the opt-in on a development
 bundle ID, never on the one you ship.
 
-Removing an environment also stops the keys it already admitted: their next
-token exchange answers `403 attest_failed` and the app registers a fresh key.
+Removing an environment also stops the keys it already admitted: on their
+next request when the app verifies every request, otherwise at their next
+token exchange, within the hour. The refusal is `403 attest_failed`, and the
+app registers a fresh key in an environment the app still accepts.
 
 Two things no setting changes. App Attest is unavailable in the Simulator,
 because it needs the Secure Enclave. And a development build can be made to
@@ -47,6 +56,25 @@ attest in production instead by setting the
 `com.apple.developer.devicecheck.appattest-environment` entitlement to
 `production`, which is the better answer when a development build only needs
 to reach a production-only app.
+
+### Verify App Attest on
+
+When the gateway checks the install's App Attest assertion.
+
+- **Every request**: each request carries a fresh App Attest assertion, so a
+  gateway token copied off the network is useless without the device.
+  Requires the AppAIGateway Swift package 1.4 or later. The default for new
+  apps.
+- **Token exchange**: the assertion is checked once per hourly token, and
+  requests carry only the token.
+
+Apps created before this setting was added were set to **Token exchange**, so
+their existing installs keep working. Switch to **Every request** once your
+clients are on the Swift package 1.4 or later: from then on a request without
+a proof is refused with `401 assertion_required`, which is what every build
+on an older package receives. Request limits, budgets and usage are counted
+per install either way. See
+[When App Attest is verified](/how-it-works/identity#when-app-attest-is-verified).
 
 ### In the configuration
 
@@ -56,13 +84,16 @@ to reach a production-only app.
   "app_attest": {
     "team_id": "ABCDE12345",
     "bundle_id": "com.example.app.dev",
-    "environments": ["production", "development"]
+    "environments": ["production", "development"],
+    "verify_on": "every_request"
   },
   "end_user": { "source": "app_install" }
 }
 ```
 
-`environments` may be omitted, which means `["production"]`. `end_user` is
+`environments` may be omitted, which means `["production"]`. `verify_on` is
+`every_request` or `token_exchange`, and may be omitted, which means
+`every_request`. `end_user` is
 required on an iOS app and is covered under
 [User authentication](/applications/auth-policy/user-authentication).
 

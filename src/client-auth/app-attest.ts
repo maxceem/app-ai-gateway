@@ -1,10 +1,11 @@
 import { Buffer } from "node:buffer";
-import { createPublicKey, createVerify, X509Certificate } from "node:crypto";
+import { X509Certificate } from "node:crypto";
 import * as asn1js from "asn1js";
 import { decode } from "cbor-x";
 import { Certificate } from "pkijs";
 import { GatewayError } from "../core/errors";
 import type { AppAttestEnvironment } from "../shared/app-config";
+import { bytesEqual, decodeBase64, fail, sha256, uint32 } from "./app-assertion";
 
 const APPLE_APP_ATTEST_ROOT_PEM = `-----BEGIN CERTIFICATE-----
 MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw
@@ -38,42 +39,6 @@ interface AttestationObject {
   fmt: unknown;
   attStmt?: { x5c?: unknown; receipt?: unknown };
   authData?: unknown;
-}
-
-interface AssertionObject {
-  signature?: unknown;
-  authenticatorData?: unknown;
-}
-
-function fail(message = "App Attest proof was rejected"): never {
-  throw new GatewayError(403, "attest_failed", message);
-}
-
-function decodeBase64(value: string, label: string): Buffer {
-  try {
-    const decoded = Buffer.from(value, "base64");
-    if (decoded.byteLength === 0) fail(`${label} is not valid base64`);
-    return decoded;
-  } catch (error) {
-    if (error instanceof GatewayError) throw error;
-    return fail(`${label} is not valid base64`);
-  }
-}
-
-async function sha256(value: Uint8Array): Promise<Buffer> {
-  return Buffer.from(await crypto.subtle.digest("SHA-256", Uint8Array.from(value).buffer));
-}
-
-function uint32(bytes: Uint8Array, offset: number): number {
-  if (bytes.byteLength < offset + 4) fail();
-  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, false);
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  let difference = 0;
-  for (let index = 0; index < left.byteLength; index += 1) difference |= left[index]! ^ right[index]!;
-  return difference === 0;
 }
 
 /**
@@ -201,50 +166,4 @@ export async function verifyAppAttestation(input: {
   const exported = credential.publicKey.export({ type: "spki", format: "pem" });
   if (typeof exported !== "string") fail();
   return { publicKeyPem: exported, environment };
-}
-
-export function assertionClientData(app: string, challenge: string, keyId: string): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ app, challenge, key_id: keyId }));
-}
-
-export async function verifyAppAssertion(input: {
-  gatewayAppId: string;
-  rpId: string;
-  keyId: string;
-  challenge: string;
-  assertion: string;
-  publicKeyPem: string;
-  previousCounter: number;
-}): Promise<number> {
-  let decoded: unknown;
-  try {
-    decoded = decode(decodeBase64(input.assertion, "assertion"));
-  } catch (error) {
-    if (error instanceof GatewayError) throw error;
-    return fail();
-  }
-  if (typeof decoded !== "object" || decoded === null) fail();
-  const assertion = decoded as AssertionObject;
-  if (
-    !(assertion.signature instanceof Uint8Array) ||
-    !(assertion.authenticatorData instanceof Uint8Array) ||
-    assertion.authenticatorData.byteLength < 37
-  ) fail();
-
-  const authenticatorData = Buffer.from(assertion.authenticatorData);
-  const clientDataHash = await sha256(assertionClientData(input.gatewayAppId, input.challenge, input.keyId));
-  const nonce = await sha256(Buffer.concat([authenticatorData, clientDataHash]));
-  let verified = false;
-  try {
-    const verifier = createVerify("SHA256");
-    verifier.update(nonce);
-    verified = verifier.verify(createPublicKey(input.publicKeyPem), Buffer.from(assertion.signature));
-  } catch {
-    return fail();
-  }
-  if (!verified) fail();
-  if (!bytesEqual(authenticatorData.subarray(0, 32), await sha256(Buffer.from(input.rpId)))) fail();
-  const nextCounter = uint32(authenticatorData, 33);
-  if (nextCounter <= input.previousCounter) fail();
-  return nextCounter;
 }

@@ -13,6 +13,7 @@ import {
   gatewayToken,
   seedApp,
   seedProvider,
+  signRequest,
   testProviderSecret,
 } from "./helpers";
 
@@ -33,7 +34,7 @@ async function proxy(input: {
 }): Promise<Response> {
   const executionCtx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`https://example.test/v1/apps/${input.appId}/proxy/${input.path}`, {
+    await signRequest(new Request(`https://example.test/v1/apps/${input.appId}/proxy/${input.path}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${input.token}`,
@@ -41,7 +42,7 @@ async function proxy(input: {
         "x-app-version": "1.2.3",
       },
       body: JSON.stringify(input.body),
-    }),
+    })),
     env,
     executionCtx,
   );
@@ -407,7 +408,7 @@ describe("provider resolution on the hot path", () => {
     // mixed configuration; a deployment that cannot open its vault must say so
     // rather than proxy unauthenticated.
     const response = await worker.fetch(
-      new Request(`https://example.test/v1/apps/${appId}/proxy/openai/v1/responses`, {
+      await signRequest(new Request(`https://example.test/v1/apps/${appId}/proxy/openai/v1/responses`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
@@ -415,7 +416,7 @@ describe("provider resolution on the hot path", () => {
           "x-app-version": "1.2.3",
         },
         body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-      }),
+      })),
       { ...env, SECRET_VAULT_MODE: "kms" },
       executionCtx,
     );

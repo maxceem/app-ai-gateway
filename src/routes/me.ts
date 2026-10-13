@@ -1,10 +1,11 @@
 import { Hono } from "hono";
-import { hasUserLevelLimits } from "../shared/app-config";
+import { budgetScope, hasUserLevelLimits } from "../shared/app-config";
 import { appUserBlocked } from "../client-auth/user-status";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
 import { monthlySpendMicrousd } from "../usage/app-usage-accounting";
+import { recordRejectionEvent } from "../diagnostics/rejection-events";
 
 export const meRoutes = new Hono<{ Bindings: Env; Variables: GatewayVariables }>();
 
@@ -27,9 +28,36 @@ meRoutes.get("/", async (c) => {
   }
   const perUser = app.config.limits.per_user;
   const now = Date.now();
+  // An App Attest caller is counted per install, and its budget measured over
+  // the install's month unless the application moved it to the user's.
+  // Null only for an API-key identity: every attest token names its install.
+  const installId = identity.installId;
+  const limiter = c.env.USER_LIMITER.getByName(
+    installId === null ? `${app.id}:${userId}` : `${app.id}:install:${installId}`,
+  );
+  // A signed request spends its assertion counter here as anywhere else, so a
+  // proof captured off this route is no more replayable than one off a proxy.
+  const counter = c.get("assertionCounter");
+  if (counter !== null && !(await limiter.advanceCounter(counter)).accepted) {
+    // Sampled exactly as admission samples a replayed proxy request.
+    c.executionCtx.waitUntil(recordRejectionEvent({
+      env: c.env,
+      identity,
+      attribution: { providerSlug: null, model: null, route: "me" },
+      endpointSlug: null,
+      appVersion: c.req.header("x-app-version") ?? null,
+      reason: "blocked_replay",
+      scope: "install",
+      latencyMs: Math.round(Date.now() - now),
+    }));
+    throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
+  }
+  const spendKey = installId !== null && budgetScope(app.config) === "install"
+    ? { appId: app.id, scope: "install" as const, key: installId }
+    : { appId: app.id, scope: "user" as const, key: userId };
   const [status, spentMicrousd, blocked] = await Promise.all([
-    c.env.USER_LIMITER.getByName(`${app.id}:${userId}`).getStatus(now),
-    monthlySpendMicrousd(c.env.DB, { appId: app.id, userKey: userId }, new Date(now).toISOString().slice(0, 7)),
+    limiter.getStatus(now),
+    monthlySpendMicrousd(c.env.DB, spendKey, new Date(now).toISOString().slice(0, 7)),
     appUserBlocked(c.env.DB, app.id, userId),
   ]);
   /*
@@ -41,6 +69,7 @@ meRoutes.get("/", async (c) => {
   const counted = hasUserLevelLimits(app.config);
   return c.json({
     user_id: userId,
+    install_id: installId,
     /*
      * The limits this app's operator set on this caller, and where the caller
      * stands against them. Nested rather than spread across the response

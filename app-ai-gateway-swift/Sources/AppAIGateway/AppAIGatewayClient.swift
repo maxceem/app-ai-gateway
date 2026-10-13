@@ -62,12 +62,26 @@ public actor AppAIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
         let refreshAt: Date
+        /// The App Attest key the token is bound to, in the App Attest modes:
+        /// the key that signs the requests it is sent with, where any are.
+        let keyID: String?
+        /// Whether every request sent with this token carries an
+        /// `X-AppAttest-Proof`: only when the gateway answered the exchange
+        /// with `verify_on: "every_request"`.
+        let signsEveryRequest: Bool
     }
 
     private struct TokenResponse: Decodable {
         let access_token: String
         let expires_in: TimeInterval
+        /// When the gateway verifies the install's App Attest assertion:
+        /// `every_request` or `token_exchange`. Absent from an older gateway,
+        /// which verifies it on the exchange alone, and from API-key apps.
+        let verify_on: String?
     }
+
+    /// The `verify_on` value under which every request is signed.
+    static let verifyOnEveryRequest = "every_request"
 
     private struct ChallengeResponse: Decodable {
         let challenge: String
@@ -184,26 +198,49 @@ public actor AppAIGatewayClient {
         proxyURL(provider: provider.rawValue, providerPath: providerPath)
     }
 
+    /// A request to a provider through the gateway, ready to send.
+    ///
+    /// The returned request carries `body` and, when given, `contentType`.
+    /// When the app verifies App Attest on every request — the gateway says
+    /// so in its token response, as `verify_on: "every_request"` — it also
+    /// carries `X-AppAttest-Proof`: an assertion the device's App Attest key
+    /// signed over exactly this method, URL, body and token. Send it as it is.
+    /// Changing the body or the URL afterwards invalidates the proof, and the
+    /// gateway refuses the request with `attest_failed`; headers other than
+    /// `Authorization` may be added freely. Each proof is good for one
+    /// request: build a new one per send. When the app verifies App Attest on
+    /// the token exchange instead, the request carries the token alone.
     public func authorizedRequest(
         provider: String,
         providerPath: String,
-        method: String = "POST"
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil
     ) async throws -> URLRequest {
         try await authorizedRequest(
             url: proxyURL(provider: provider, providerPath: providerPath),
-            method: method
+            method: method,
+            body: body,
+            contentType: contentType
         )
     }
 
+    /// A request to a provider through the gateway, signed over its body and
+    /// URL where the app verifies App Attest on every request: pass the body
+    /// here, and change neither afterwards. See the `provider: String` form.
     public func authorizedRequest(
         provider: ProviderSlug,
         providerPath: String,
-        method: String = "POST"
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil
     ) async throws -> URLRequest {
         try await authorizedRequest(
             provider: provider.rawValue,
             providerPath: providerPath,
-            method: method
+            method: method,
+            body: body,
+            contentType: contentType
         )
     }
 
@@ -214,17 +251,75 @@ public actor AppAIGatewayClient {
         baseURL.appending(path: "v1/apps/\(appID)/endpoints/\(slug)")
     }
 
+    /// A request to a custom endpoint, ready to send. Signed over its body and
+    /// URL exactly as the provider form is, where the app verifies App Attest
+    /// on every request: pass the body here, and change neither afterwards.
     public func authorizedRequest(
         endpointSlug: String,
-        method: String = "POST"
+        method: String = "POST",
+        body: Data? = nil,
+        contentType: String? = nil
     ) async throws -> URLRequest {
-        try await authorizedRequest(url: endpointURL(slug: endpointSlug), method: method)
+        try await authorizedRequest(
+            url: endpointURL(slug: endpointSlug),
+            method: method,
+            body: body,
+            contentType: contentType
+        )
     }
 
-    private func authorizedRequest(url: URL, method: String) async throws -> URLRequest {
-        var request = URLRequest(url: url)
+    /// The gateway's own `/me` route for this app: where the calling install
+    /// or user stands against the limits the app sets.
+    public func currentUserURL() -> URL {
+        baseURL.appending(path: "v1/apps/\(appID)/me")
+    }
+
+    /// A `GET /v1/apps/{app}/me` request, ready to send: the limits that apply
+    /// to the caller, its requests today, the month's spend against its
+    /// budget, and whether it is blocked. Signed like every other gateway
+    /// request where the app verifies App Attest on every request, with the
+    /// same key recovery, so build it here rather than from a URL of your own:
+    /// there a request without a proof is refused with `401 assertion_required`, and
+    /// a signed request whose URL was changed afterwards with
+    /// `403 attest_failed`.
+    public func currentUserRequest() async throws -> URLRequest {
+        try await authorizedRequest(url: currentUserURL(), method: "GET", body: nil, contentType: nil)
+    }
+
+    /// Forgets the gateway token this client holds, so the next request runs
+    /// the exchange again. For an app that sent a request itself and was
+    /// refused with `auth_required`, `attest_failed` or `assertion_required`:
+    /// a fresh exchange re-registers the App Attest key if the gateway no
+    /// longer knows it, and picks up the app's current `verify_on`, so a
+    /// request rebuilt after an app was switched to verify every request is
+    /// signed. Rebuild the request once; a second refusal is real.
+    public func discardAccessToken() {
+        accessToken = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
+    /// Whether this client exchanges an App Attest assertion for its token,
+    /// and so may have to sign the requests it sends with it.
+    private var usesAppAttest: Bool {
+        switch authMode {
+        case .appAttest, .appAttestInstall: return true
+        case .apiKey: return false
+        }
+    }
+
+    private func authorizedRequest(
+        url: URL,
+        method: String,
+        body: Data?,
+        contentType: String?
+    ) async throws -> URLRequest {
+        // Sent exactly as the gateway's URL parser will read it, so the path
+        // and query this client signs are the ones the gateway rebuilds.
+        var request = URLRequest(url: Self.whatwgNormalized(url))
         request.httpMethod = method
-        request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if case .apiKey(_, nil) = authMode, let endUserId {
             // Whatever the application configured. The gateway *requires* the
             // header once a header source is set, so a mismatched name here is
@@ -232,12 +327,203 @@ public actor AppAIGatewayClient {
             request.setValue(endUserId, forHTTPHeaderField: endUserHeader)
         }
         request.setValue(Self.appVersion, forHTTPHeaderField: "X-App-Version")
+        guard usesAppAttest else {
+            request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
+            return request
+        }
+        let value = try await gatewayAccessToken()
+        guard let token = accessToken else {
+            throw GatewayError(code: .attestFailed, message: "No gateway token to sign the request with", statusCode: 0)
+        }
+        // The app verifies App Attest on the token exchange, or the gateway is
+        // older than `verify_on`: the assertion was checked when the token was
+        // minted, and the token alone is the request's credential.
+        guard token.signsEveryRequest else {
+            request.setValue("Bearer \(value)", forHTTPHeaderField: "Authorization")
+            return request
+        }
+        do {
+            return try await signed(request, with: token)
+        } catch is LocalSigningFailure {
+            // The key the token is bound to cannot sign on this device any more —
+            // the app was reinstalled or restored, and its Secure Enclave key
+            // went with the old install. Register a replacement, exchange it for
+            // a token bound to it, and sign once more; a second failure is real.
+            _ = try await replaceKey(forceIssuerRefresh: false)
+            discardAccessToken()
+            _ = try await refreshGatewayAccessToken()
+            guard let replacement = accessToken else {
+                throw GatewayError(code: .attestFailed, message: "No gateway token to sign the request with", statusCode: 0)
+            }
+            // The replacement's answer decides, should the app have changed
+            // its setting in between.
+            guard replacement.signsEveryRequest else {
+                request.setValue("Bearer \(replacement.value)", forHTTPHeaderField: "Authorization")
+                return request
+            }
+            do {
+                return try await signed(request, with: replacement)
+            } catch let failure as LocalSigningFailure {
+                throw failure.underlying
+            }
+        }
+    }
+
+    /// `generateAssertion` failing on the device, kept apart from every other
+    /// failure so only it triggers a key replacement.
+    private struct LocalSigningFailure: Error {
+        let underlying: any Error
+    }
+
+    /// The request with its token and its proof.
+    private func signed(_ request: URLRequest, with token: AccessToken) async throws -> URLRequest {
+        let stored = token.keyID == nil ? try credentialStore.appAttestKeyID(for: appID) : nil
+        guard let keyID = token.keyID ?? stored else {
+            throw GatewayError(code: .attestFailed, message: "No App Attest key to sign the request with", statusCode: 0)
+        }
+        var request = request
+        request.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let nonce = Self.randomNonce()
+        let clientData = Self.requestClientData(
+            appID: appID,
+            method: request.httpMethod ?? "GET",
+            pathAndQuery: Self.pathAndQuery(of: request.url!),
+            body: request.httpBody,
+            token: token.value,
+            timestamp: timestamp,
+            nonce: nonce
+        )
+        let assertion: Data
+        do {
+            assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
+        } catch {
+            throw LocalSigningFailure(underlying: error)
+        }
+        request.setValue(
+            Self.proofHeader(timestamp: timestamp, nonce: nonce, assertion: assertion),
+            forHTTPHeaderField: "X-AppAttest-Proof"
+        )
         return request
+    }
+
+    /// The first line of every signed request's client data, naming the format.
+    static let requestProofDomain = "appaigateway-request-v1"
+
+    /// What the device signs for one request: these lines joined by `\n`,
+    /// with no trailing newline. The gateway rebuilds the same bytes from the
+    /// request it receives; the golden test pins them on both sides.
+    static func requestClientData(
+        appID: String,
+        method: String,
+        pathAndQuery: String,
+        body: Data?,
+        token: String,
+        timestamp: Int,
+        nonce: String
+    ) -> Data {
+        let lines = [
+            requestProofDomain,
+            appID,
+            method.uppercased(),
+            pathAndQuery,
+            (body ?? Data()).sha256.base64URLEncodedString(),
+            Data(token.utf8).sha256.base64URLEncodedString(),
+            String(timestamp),
+            nonce,
+        ]
+        return Data(lines.joined(separator: "\n").utf8)
+    }
+
+    /// The URL's path and query as the gateway reads them: Foundation's
+    /// percent-encoded form, normalized the way the WHATWG URL parser
+    /// normalizes it. An empty query is no query.
+    static func pathAndQuery(of url: URL) -> String {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+        let path = whatwgPath(components?.percentEncodedPath ?? url.path)
+        guard let query = components?.percentEncodedQuery, !query.isEmpty else { return path }
+        return "\(path)?\(whatwgQuery(query))"
+    }
+
+    /// The URL rewritten so its path and query are exactly what the WHATWG URL
+    /// parser makes of them: the gateway's runtime reads every request that
+    /// way, and Foundation's own encoding differs on a few bytes — `'` in a
+    /// query, `^` in a path, dot segments. Returned unchanged if it cannot be
+    /// rebuilt.
+    static func whatwgNormalized(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return url }
+        components.percentEncodedPath = ""
+        components.percentEncodedQuery = nil
+        components.fragment = nil
+        guard let origin = components.string else { return url }
+        return URL(string: origin + pathAndQuery(of: url)) ?? url
+    }
+
+    /// The WHATWG path percent-encode set beyond controls and non-ASCII:
+    /// space, `"`, `#`, `<`, `>`, `?`, `^`, `` ` ``, `{` and `}`.
+    private static let pathEncodeSet: Set<UInt8> = [0x20, 0x22, 0x23, 0x3C, 0x3E, 0x3F, 0x5E, 0x60, 0x7B, 0x7D]
+    /// The WHATWG special-scheme query percent-encode set beyond controls and
+    /// non-ASCII: space, `"`, `#`, `<`, `>` and `'`.
+    private static let queryEncodeSet: Set<UInt8> = [0x20, 0x22, 0x23, 0x3C, 0x3E, 0x27]
+
+    /// Percent-encodes what the WHATWG parser would, byte by byte. `%` is never
+    /// encoded, so an escape already present — valid or not — is left as is.
+    private static func whatwgEncode(_ value: Substring, extra: Set<UInt8>) -> String {
+        var output = ""
+        for byte in value.utf8 {
+            if byte < 0x20 || byte > 0x7E || extra.contains(byte) {
+                output += String(format: "%%%02X", byte)
+            } else {
+                output.unicodeScalars.append(Unicode.Scalar(byte))
+            }
+        }
+        return output
+    }
+
+    /// A path as the WHATWG parser leaves it for an `https` URL: `\` read as
+    /// `/`, `.` and `..` segments (`%2e` spelled or not) resolved, and the
+    /// path percent-encode set applied to what remains.
+    static func whatwgPath(_ path: String) -> String {
+        var segments = path.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+        if segments.first == "" { segments.removeFirst() }
+        var output: [String] = []
+        for (index, segment) in segments.enumerated() {
+            let lowered = segment.lowercased()
+            let isLast = index == segments.count - 1
+            if lowered == "." || lowered == "%2e" {
+                if isLast { output.append("") }
+            } else if ["..", ".%2e", "%2e.", "%2e%2e"].contains(lowered) {
+                if !output.isEmpty { output.removeLast() }
+                if isLast { output.append("") }
+            } else {
+                output.append(whatwgEncode(segment, extra: pathEncodeSet))
+            }
+        }
+        return "/" + output.joined(separator: "/")
+    }
+
+    /// A query as the WHATWG parser leaves it for an `https` URL.
+    static func whatwgQuery(_ query: String) -> String {
+        whatwgEncode(query[...], extra: queryEncodeSet)
+    }
+
+    /// `v1.<timestamp>.<nonce>.<assertion>`, the value of `X-AppAttest-Proof`.
+    static func proofHeader(timestamp: Int, nonce: String, assertion: Data) -> String {
+        "v1.\(timestamp).\(nonce).\(assertion.base64URLEncodedString())"
+    }
+
+    /// Sixteen random bytes, base64url without padding.
+    static func randomNonce() -> String {
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        return Data(bytes).base64URLEncodedString()
     }
 
     private func exchangeToken(forceIssuerRefresh: Bool, retryIssuerOnce: Bool) async throws -> String {
         do {
             let response: TokenResponse
+            var keyID: String?
             switch authMode {
             case .apiKey(let key, .some(let issuerTokenProvider)):
                 let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
@@ -248,12 +534,14 @@ public actor AppAIGatewayClient {
             case .apiKey(let key, nil):
                 return key
             case .appAttest, .appAttestInstall:
-                response = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
+                (response, keyID) = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
             let now = Date()
             let token = AccessToken(
                 value: response.access_token,
-                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in))
+                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in)),
+                keyID: keyID,
+                signsEveryRequest: keyID != nil && response.verify_on == Self.verifyOnEveryRequest
             )
             accessToken = token
             scheduleRefresh(for: token)
@@ -281,7 +569,10 @@ public actor AppAIGatewayClient {
         // retryable error — see `GatewayError.isRetryable`.
     }
 
-    private func productionExchange(forceIssuerRefresh: Bool) async throws -> TokenResponse {
+    /// The token, and the key it is bound to: the gateway mints it for the
+    /// install whose key signed the exchange, and where it verifies every
+    /// request, refuses each one that another key signed.
+    private func productionExchange(forceIssuerRefresh: Bool) async throws -> (TokenResponse, String) {
         guard attestProvider.isSupported else {
             throw GatewayError(code: .attestFailed, message: "App Attest is unavailable on this device", statusCode: 0)
         }
@@ -295,12 +586,12 @@ public actor AppAIGatewayClient {
         let signed = try await signedAssertion(for: keyID, forceIssuerRefresh: forceIssuerRefresh)
         let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
         do {
-            return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
+            return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed)), signed.keyID)
         } catch let error as GatewayError where error.code == .attestFailed {
             // The gateway holds a key this device is no longer signing with.
             let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
             let retry = try await sign(with: replacement)
-            return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry))
+            return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry)), retry.keyID)
         }
     }
 

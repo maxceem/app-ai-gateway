@@ -91,7 +91,9 @@ function monthlyCost(name: string): Promise<number> {
   const [appId, userKey] = name.split(":");
   return monthlySpendMicrousd(
     env.DB,
-    { appId: appId!, userKey: userKey ?? null },
+    userKey === undefined
+      ? { appId: appId!, scope: "app", key: null }
+      : { appId: appId!, scope: "user", key: userKey },
     new Date().toISOString().slice(0, 7),
   );
 }

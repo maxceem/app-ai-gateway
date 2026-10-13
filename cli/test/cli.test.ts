@@ -729,6 +729,7 @@ test("an operation reuses its saved token after a lost response, and a new one f
               status: "active",
               created_at: "now",
               updated_at: "now",
+              warnings: [],
             },
             api_key: null,
           },
@@ -846,6 +847,7 @@ test("advanced public app config and provider gateway IDs survive response parsi
       status: "active",
       created_at: "now",
       updated_at: "now",
+      warnings: [],
     },
   });
   // Parsed, so the schema's own defaults are there too; everything the body
@@ -945,6 +947,7 @@ test("fresh onboarding output includes exact free access dates without managemen
                   status: "active",
                   created_at: "now",
                   updated_at: "now",
+                  warnings: [],
                 },
                 api_key: null,
               },
@@ -1087,6 +1090,7 @@ function appResponse(id: string) {
       status: "active",
       created_at: "now",
       updated_at: "now",
+      warnings: [],
     },
     api_key: null,
   };

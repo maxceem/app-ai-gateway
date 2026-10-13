@@ -175,7 +175,8 @@ describe("a server application", () => {
      * this asserts is that every number in it is unlimited.
      */
     expect(attempts[0]?.config?.limits).toEqual({
-      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+      // A server application's budget is per user, written in by the schema.
+      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null, scope: "user" } },
       per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
     });
   });
@@ -259,11 +260,18 @@ describe("an iOS application", () => {
         team_id: "ABCDE12345",
         bundle_id: "com.example.calories",
         environments: ["production"],
+        // A new app verifies App Attest on every request.
+        verify_on: "every_request",
       },
       end_user: { source: "app_install" },
     });
     // Every install is a stranger, so a mobile app starts rate limited.
-    expect(attempts[0]?.config?.limits).toEqual(mobileDefaultLimits());
+    // Counted per install, the budget included, which the schema writes in.
+    const defaults = mobileDefaultLimits();
+    expect(attempts[0]?.config?.limits).toEqual({
+      ...defaults,
+      per_user: { ...defaults.per_user, spending: { ...defaults.per_user.spending, scope: "install" } },
+    });
   });
 
   it("sign-in adds an identity provider step and a subscription step", async () => {
@@ -301,6 +309,8 @@ describe("an iOS application", () => {
         team_id: "ABCDE12345",
         bundle_id: "com.example.calories",
         environments: ["production"],
+        // A new app verifies App Attest on every request.
+        verify_on: "every_request",
       },
       end_user: {
         source: "issuer",

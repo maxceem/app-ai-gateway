@@ -172,6 +172,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
                 <SelectItem value="blocked_app_budget">App budget</SelectItem>
                 <SelectItem value="blocked_billing">Account allowance</SelectItem>
                 <SelectItem value="blocked_user">Blocked user</SelectItem>
+                <SelectItem value="blocked_replay">Replayed App Attest proof</SelectItem>
               </SelectContent>
             </Select>
             <Select
@@ -187,6 +188,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               <SelectContent>
                 <SelectItem value="all">All scopes</SelectItem>
                 <SelectItem value="user">User</SelectItem>
+                <SelectItem value="install">Install</SelectItem>
                 <SelectItem value="app">App</SelectItem>
                 <SelectItem value="account">Account</SelectItem>
               </SelectContent>

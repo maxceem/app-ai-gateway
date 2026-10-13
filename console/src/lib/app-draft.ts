@@ -158,13 +158,29 @@ function switchEndUserSource(
    * the card once the source is `none` — so leaving the numbers behind would
    * be a save that fails against fields the operator can no longer see.
    */
+  const perUser = current.config.limits?.per_user;
   const config = identifiesEndUsers(next)
-    ? current.config
+    ? next.type === "apple_app_attest" && next.end_user.source === "app_install"
+      && perUser?.spending.scope === "user"
+      // Under app_install the install is the user, and the gateway refuses a
+      // budget measured per user there: it moves back to the install.
+      ? {
+        ...current.config,
+        limits: {
+          ...current.config.limits,
+          per_user: { ...perUser, spending: { ...perUser.spending, scope: "install" as const } },
+        },
+      }
+      : current.config
     : {
       ...current.config,
       limits: {
         ...current.config.limits,
-        per_user: unlimitedScope(),
+        // Unlimited, keeping the scope the schema wrote, so a round trip back
+        // to the stored source leaves the draft as it was.
+        per_user: perUser?.spending.scope === undefined
+          ? unlimitedScope()
+          : { ...unlimitedScope(), spending: { monthly_usd: null, scope: perUser.spending.scope } },
       },
     };
   return {

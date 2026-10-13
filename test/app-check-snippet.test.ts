@@ -78,6 +78,7 @@ describe("checkApp", () => {
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",
       ],
+      warnings: [],
     });
   });
 

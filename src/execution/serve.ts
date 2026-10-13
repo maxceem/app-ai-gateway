@@ -13,6 +13,10 @@
  *   5. admission, the one place the request is counted;
  *   6. execution.
  *
+ * The body is read at most once, by whichever step first needs it — the App
+ * Attest proof, which signs it, or the plan — and both see the same bytes,
+ * before anything rewrites them.
+ *
  * The provider rows are the one read that overlaps the others. It starts in
  * step 1 because every served request needs them, and it is awaited inside
  * step 3 beside the credential, so the rows are cached by the time step 4 reads
@@ -27,6 +31,7 @@ import { authenticateRequest } from "../client-auth/client-auth";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../providers/provider-store";
+import { readBodyLimited } from "../providers/request-body";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "../middleware/request-scope";
 import { admitRequest } from "./admission";
@@ -46,12 +51,24 @@ export interface ServedVariables extends RequestVariables {
 
 type ServedContext = Context<{ Bindings: Env; Variables: ServedVariables }>;
 
+/** The request body, read the first time it is asked for and shared after. */
+function bodyOnce(request: Request): () => Promise<Uint8Array<ArrayBuffer>> {
+  let read: Promise<Uint8Array<ArrayBuffer>> | undefined;
+  return () => (read ??= readBodyLimited(request));
+}
+
 /** Everything up to and including the credential: whose request this is. */
 async function authenticated(
   c: ServedContext,
   timings: ServedTimings,
   providerSlug: string | undefined,
-): Promise<{ app: AppRecord; identity: GatewayIdentity; credentialHeader: string }> {
+  body: () => Promise<Uint8Array<ArrayBuffer>>,
+): Promise<{
+  app: AppRecord;
+  identity: GatewayIdentity;
+  credentialHeader: string;
+  assertionCounter: number | null;
+}> {
   const start = performance.now();
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
@@ -69,10 +86,11 @@ async function authenticated(
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);
-  const { identity, credential } = await authenticateRequest({
+  const { identity, credential, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,
-    headers: c.req.raw.headers,
+    request: c.req.raw,
+    body,
     providerSlug,
     providers,
   });
@@ -80,7 +98,7 @@ async function authenticated(
   if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
-  return { app, identity, credentialHeader: credential.headerName };
+  return { app, identity, credentialHeader: credential.headerName, assertionCounter };
 }
 
 async function serve(
@@ -90,8 +108,10 @@ async function serve(
 ): Promise<Response> {
   const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
   c.set("servedTimings", timings);
-  const { app, identity, credentialHeader } = await authenticated(c, timings, providerSlug);
-  const plan = await prepare({ env: c.env, request: c.req.raw, app, identity, credentialHeader });
+  const body = bodyOnce(c.req.raw);
+  const { app, identity, credentialHeader, assertionCounter } =
+    await authenticated(c, timings, providerSlug, body);
+  const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
   const appVersion = c.req.header("x-app-version") ?? null;
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
   await admitRequest(
@@ -101,6 +121,7 @@ async function serve(
       billingCache: c.get("billingRequestCache"),
       app,
       identity,
+      assertionCounter,
       plan,
       appVersion,
       waitUntil,

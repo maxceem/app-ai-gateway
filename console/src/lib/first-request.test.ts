@@ -97,7 +97,7 @@ describe("first request examples", () => {
       required_claims: [],
       max_token_lifetime_seconds: 86400,
     };
-    const app_attest = { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production" as const] };
+    const app_attest = { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production" as const], verify_on: "every_request" as const };
     const signedIn = {
       type: "apple_app_attest" as const,
       app_attest,

@@ -1,7 +1,7 @@
 import { jwtVerify, SignJWT } from "jose";
 import { GatewayError } from "../core/errors";
 import { ttlCache } from "../core/ttl-cache";
-import type { AuthMethod, GatewayIdentity } from "../core/types";
+import type { GatewayIdentity } from "../core/types";
 
 const encoder = new TextEncoder();
 
@@ -58,17 +58,31 @@ function key(secret: string): Promise<CryptoKey> {
   return imported;
 }
 
-/** A gateway token for one user of one application, naming the API key it was minted from, if any. */
+/**
+ * What a gateway token says: one user of one application, and how they proved
+ * it — the API key it was minted from, or the App Attest key of the install
+ * it was minted for.
+ */
+export type GatewayTokenClaims =
+  | { appId: string; userId: string; authMethod: "api_key"; apiKeyId?: string }
+  | { appId: string; userId: string; authMethod: "attest"; installId: string };
+
+/** A gateway token for one user of one application. */
 export async function issueGatewayToken(
   secret: string,
-  claims: { appId: string; userId: string; authMethod: AuthMethod; apiKeyId?: string },
+  claims: GatewayTokenClaims,
 ): Promise<{ token: string; expiresIn: number }> {
   const expiresIn = GATEWAY_TOKEN_TTL_SECONDS;
   const now = Math.floor(Date.now() / 1000);
   const token = await new SignJWT({
     app: claims.appId,
     auth_method: claims.authMethod,
-    ...(claims.apiKeyId === undefined ? {} : { api_key_id: claims.apiKeyId }),
+    ...(claims.authMethod === "api_key" && claims.apiKeyId !== undefined ? { api_key_id: claims.apiKeyId } : {}),
+    // The install is the App Attest key id: limits and budgets count per
+    // install, and where the application verifies every request, each one
+    // has to carry an assertion that key signed, so a copied token is worth
+    // nothing without the device it was minted on.
+    ...(claims.authMethod === "attest" ? { install: claims.installId } : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(claims.userId)
@@ -79,6 +93,14 @@ export async function issueGatewayToken(
   return { token, expiresIn };
 }
 
+/**
+ * A gateway token's identity, or `401 auth_required`.
+ *
+ * An attest token must name its install, in either `verify_on` mode: the
+ * install is what its limits, budget and usage are counted by, and a token
+ * without one (as the gateway minted them before installs existed) is refused
+ * like any other malformed token. An API-key token names none.
+ */
 export async function verifyGatewayToken(
   token: string,
   secret: string,
@@ -98,17 +120,23 @@ export async function verifyGatewayToken(
       typeof payload.exp !== "number" ||
       (payload.api_key_id !== undefined &&
         (typeof payload.api_key_id !== "string" || payload.api_key_id.length === 0)) ||
-      (payload.auth_method !== "attest" && payload.auth_method !== "api_key")
+      (payload.auth_method !== "attest" && payload.auth_method !== "api_key") ||
+      // An attest token names its install, and only an attest token does.
+      (payload.auth_method === "attest"
+        ? typeof payload.install !== "string" || payload.install.length === 0
+        : payload.install !== undefined)
     ) {
       throw new Error("Required gateway token claims are missing");
     }
-    return {
+    const fields = {
       appId: expectedAppId,
       userId: payload.sub,
-      authMethod: payload.auth_method,
-      credentialType: "gateway_token",
+      credentialType: "gateway_token" as const,
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
+    return payload.auth_method === "attest"
+      ? { ...fields, authMethod: "attest", installId: payload.install as string }
+      : { ...fields, authMethod: "api_key", installId: null };
   } catch {
     throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
   }

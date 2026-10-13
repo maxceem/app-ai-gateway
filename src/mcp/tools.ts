@@ -926,10 +926,14 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_app",
     title: "Get an app",
     description:
-      "Returns one app's whole stored document: name, status, revision and its complete configuration. Read it before proposing a change: a change is judged against this document and must carry its revision. Answers app_not_found for an id that is not one of your apps.",
+      "Returns one app's whole stored document: name, status, revision and its complete configuration, plus its read-only warnings. Read it before proposing a change: a change is judged against this document and must carry its revision. A warning describes behaviour that stops on its stated date: tell the person about each one. Answers app_not_found for an id that is not one of your apps.",
     operation: "getApp",
     summary: (result) =>
-      `App "${result.app.name}" (${result.app.id}) is ${result.app.status}, at revision ${result.app.revision}.`,
+      `App "${result.app.name}" (${result.app.id}) is ${result.app.status}, at revision ${result.app.revision}.${
+        result.app.warnings.length === 0
+          ? ""
+          : ` Warnings: ${result.app.warnings.map((warning) => warning.message).join(" ")}`
+      }`,
   }),
   {
     name: "validate_app",

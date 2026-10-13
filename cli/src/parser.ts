@@ -62,14 +62,14 @@ export const commands = {
   "app add": {
     args: 0,
     flags:
-      "type name team-id bundle-id attest-environments provider* status file key-output dry-run!",
+      "type name team-id bundle-id attest-environments verify-on provider* status file key-output dry-run!",
   },
   "app list": { args: 0, flags: "" },
   "app show": { args: 1, flags: "" },
   "app update": {
     args: 1,
     flags:
-      "name team-id bundle-id attest-environments provider* all-providers! status file dry-run!",
+      "name team-id bundle-id attest-environments verify-on provider* all-providers! status file dry-run!",
   },
   "app validate": { args: 0, flags: "file" },
   "app check": { args: 1, flags: "" },
@@ -128,6 +128,7 @@ export interface Flags {
   "team-id"?: string;
   "bundle-id"?: string;
   "attest-environments"?: string;
+  "verify-on"?: string;
   file?: string;
   "key-output"?: string;
   output?: string;

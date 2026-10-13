@@ -25,6 +25,7 @@ import {
   seedApp,
   seedProvider,
   seedServerApp,
+  signRequest,
 } from "./helpers";
 import { shippedRates } from "./shipped-rates";
 
@@ -217,7 +218,7 @@ async function workerFetch(
   stream = false,
 ): Promise<Response> {
   const executionCtx = createExecutionContext();
-  const response = await app.fetch(new Request(input, init), bindings, executionCtx);
+  const response = await app.fetch(await signRequest(new Request(input, init)), bindings, executionCtx);
   pendingExecutionContexts.push(executionCtx);
   return stream ? response : new Response(await response.arrayBuffer(), response);
 }

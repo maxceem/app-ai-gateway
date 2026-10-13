@@ -11,6 +11,11 @@ import { preparedExecutionAttempt, type ExecutionPlan } from "./plan";
 export interface PrepareInput {
   env: Env;
   request: Request;
+  /**
+   * The request body, read once and shared with authentication, which checks
+   * the App Attest proof over these same bytes. Never read from `request`.
+   */
+  body: () => Promise<Uint8Array<ArrayBuffer>>;
   app: AppRecord;
   identity: GatewayIdentity;
   /** The header the credential arrived in, which is never forwarded upstream. */
@@ -36,6 +41,7 @@ export async function prepareProxyPlan(
   const resolved = await requireProvider(input.env, input.app.organizationId, providerSlug);
   const prepared = await prepareProxyRequest({
     request: input.request,
+    body: input.body,
     app: input.app,
     userId: input.identity.userId,
     resolved,
@@ -63,6 +69,7 @@ export async function prepareEndpointPlan(
   }
   const prepared = await prepareEndpointRequest({
     request: input.request,
+    body: input.body,
     app,
     slug,
     endpoint,

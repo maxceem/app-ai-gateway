@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { gatewayToken, seedApp } from "./helpers";
+import { gatewayToken, seedApp, signRequest } from "./helpers";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,10 +22,11 @@ describe("proxy hot-path latency", () => {
     const durations: number[] = [];
     const executionContexts: ExecutionContext[] = [];
     for (let index = 0; index < 100; index += 1) {
-      const startedAt = performance.now();
       const executionCtx = createExecutionContext();
       executionContexts.push(executionCtx);
-      const response = await app.fetch(
+      // Signed before the clock starts: the device's signing is not the
+      // gateway's latency, and verifying it is.
+      const request = await signRequest(
         new Request("https://example.test/v1/apps/proxy-benchmark/proxy/openai/v1/responses", {
           method: "POST",
           headers: {
@@ -35,6 +36,10 @@ describe("proxy hot-path latency", () => {
           },
           body: JSON.stringify({ model: "gpt-5.6-sol", input: "ping" }),
         }),
+      );
+      const startedAt = performance.now();
+      const response = await app.fetch(
+        request,
         env,
         executionCtx,
       );

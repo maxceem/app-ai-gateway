@@ -48,7 +48,7 @@ describe("initial database migration", () => {
     expect(rejectionColumns.results.map((column) => column.name)).toEqual([
       "id", "event_id", "app_id", "user_id", "api_key_id", "reason", "scope",
       "provider_slug", "model", "route", "endpoint_slug", "app_version",
-      "auth_method", "latency_ms", "created_at",
+      "auth_method", "latency_ms", "created_at", "install_id",
     ]);
     expect(rejectionColumns.results.find((column) => column.name === "created_at"))
       .toMatchObject({ notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" });
@@ -121,6 +121,7 @@ describe("initial database migration", () => {
     expect(appTables.results.map((row) => row.name)).toEqual([
       "app",
       "app_api_key",
+      "app_attest_key",
       "app_auth_challenge",
       "app_auth_event",
       "app_rejection_event",
@@ -152,6 +153,25 @@ describe("initial database migration", () => {
     ]);
     expect(authEventColumns.results.find((column) => column.name === "user_id")?.notnull).toBe(0);
     expect(authEventColumns.results.find((column) => column.name === "outcome")?.notnull).toBe(1);
+    // Keys moved to app_attest_key, and the counter out of D1 altogether.
+    expect(userColumns.results.map((column) => column.name)).toEqual([
+      "app_id", "id", "status", "created_at", "last_seen_at", "claim_pending_since",
+    ]);
+    const attestKeyColumns = await env.DB.prepare("PRAGMA table_info(app_attest_key)")
+      .all<{ name: string; notnull: number; pk: number }>();
+    expect(attestKeyColumns.results.map((column) => column.name)).toEqual([
+      "app_id", "key_id", "public_key", "environment", "user_id", "created_at", "last_seen_at",
+    ]);
+    expect(attestKeyColumns.results.filter((column) => column.pk > 0).map((column) => column.name))
+      .toEqual(["app_id", "key_id"]);
+    expect(attestKeyColumns.results.find((column) => column.name === "user_id")?.notnull).toBe(0);
+    const attestKeyIndexes = await env.DB.prepare("PRAGMA index_list(app_attest_key)")
+      .all<{ name: string }>();
+    expect(attestKeyIndexes.results.map((index) => index.name)).toContain("idx_attest_keys_app_user");
+    expect(usageColumns.results.find((column) => column.name === "install_id"))
+      .toMatchObject({ notnull: 0, dflt_value: null });
+    const usageIndexes = await env.DB.prepare("PRAGMA index_list(app_usage_event)").all<{ name: string }>();
+    expect(usageIndexes.results.map((index) => index.name)).toContain("idx_usage_install_month");
     // Nullable: most identities never enter the pending-claim state at all.
     expect(userColumns.results.find((column) => column.name === "claim_pending_since")).toMatchObject({
       notnull: 0,
@@ -373,6 +393,85 @@ describe("initial database migration", () => {
       .rejects.toThrow(/CHECK constraint failed/u);
     await expect(insert("migration-rejection-3", "blocked_user", "other"))
       .rejects.toThrow(/CHECK constraint failed/u);
+    // A replayed App Attest counter is refused per install.
+    await insert("migration-rejection-4", "blocked_replay", "install");
+  });
+
+  /**
+   * Every App Attest application that exists when migration 0006 lands has
+   * builds on the 1.x Swift package in its users' hands, which sign no
+   * request, so it is set to verify App Attest on the token exchange. The
+   * statement is run here again, exactly as the migration holds it, over rows
+   * that predate it.
+   */
+  it("sets existing App Attest apps to verify on the token exchange, and leaves server apps alone", async () => {
+    await seedProviderOrganization();
+    const flip = env.TEST_MIGRATIONS
+      .find((migration) => migration.name.startsWith("0006_"))!
+      .queries.find((query) => query.includes("'$.authentication.app_attest.verify_on', 'token_exchange'"));
+    expect(flip).toBeDefined();
+    const ios = (verifyOn?: string) => JSON.stringify({
+      authentication: {
+        type: "apple_app_attest",
+        app_attest: {
+          team_id: "AAAAAAAAAA",
+          bundle_id: "com.example.flip",
+          environments: ["production"],
+          ...(verifyOn === undefined ? {} : { verify_on: verifyOn }),
+        },
+        end_user: { source: "app_install" },
+      },
+    });
+    const server = JSON.stringify({ authentication: { type: "api_key", end_user: { source: "none" } } });
+    const insert = (id: string, type: string, config: string) => env.DB.prepare(
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type)
+       VALUES (?, 'org-providers', ?, ?, ?)`,
+    ).bind(id, id, config, type);
+    await env.DB.batch([
+      insert("flip-ios", "apple_app_attest", ios()),
+      insert("flip-ios-set", "apple_app_attest", ios("every_request")),
+      insert("flip-server", "api_key", server),
+    ]);
+    await env.DB.prepare(flip!).run();
+
+    const configOf = async (id: string) => JSON.parse((await env.DB.prepare("SELECT config_json FROM app WHERE id = ?")
+      .bind(id).first<{ config_json: string }>())!.config_json) as {
+      authentication: { app_attest?: Record<string, unknown> };
+    };
+    // Only the field is added: the rest of the stored document is untouched.
+    expect((await configOf("flip-ios")).authentication.app_attest).toEqual({
+      team_id: "AAAAAAAAAA",
+      bundle_id: "com.example.flip",
+      environments: ["production"],
+      verify_on: "token_exchange",
+    });
+    // A value already written is kept, and a server app has nothing to verify.
+    expect((await configOf("flip-ios-set")).authentication.app_attest?.verify_on).toBe("every_request");
+    expect(await configOf("flip-server")).toEqual(JSON.parse(server));
+    // Minimal rows no reader could parse: gone before anything else meets them.
+    await env.DB.prepare("DELETE FROM app WHERE id IN ('flip-ios', 'flip-ios-set', 'flip-server')").run();
+  });
+
+  it("keeps an install's spend beside its user's, and changes both on a reprice", async () => {
+    await seedProviderOrganization();
+    const appId = "migration-install-spend";
+    await env.DB.prepare(
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, install_id, provider_type, model, route, cost_usd, status, created_at)
+       VALUES ('migration-install-spend-1', 'org-providers', ?, 'user-1', 'key-1', 'openai', 'm', 'r', 0.25, 'ok', '2026-03-04 05:06:07')`,
+    ).bind(appId).run();
+    await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 1 WHERE event_id = 'migration-install-spend-1'").run();
+    const rows = await env.DB.prepare(
+      "SELECT scope, user_key, month, microusd FROM app_usage_spend WHERE app_id = ? ORDER BY scope",
+    ).bind(appId).all();
+    expect(rows.results).toEqual([
+      { scope: "app", user_key: "", month: "2026-03", microusd: 1_000_000 },
+      { scope: "install", user_key: "key-1", month: "2026-03", microusd: 1_000_000 },
+      { scope: "user", user_key: "user-1", month: "2026-03", microusd: 1_000_000 },
+    ]);
+    await expect(env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('org-providers', ?, 'device', 'x', '2026-03', 1)`,
+    ).bind(appId).run()).rejects.toThrow(/CHECK constraint failed/u);
   });
 
   it("allows one provider row per organization and slug, whatever its status", async () => {

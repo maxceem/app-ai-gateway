@@ -120,7 +120,7 @@ export async function assertAccountAccess(
  * Accounts one cleanup pass deletes.
  *
  * The batch is not what bounds a night's work — the loop below is — but a pass
- * costs the same eighteen statements whether it collects one account or two
+ * costs the same nineteen statements whether it collects one account or two
  * hundred, so collecting one at a time would make the query allowance, not the
  * database, the thing that decides how fast an expired backlog drains. The
  * ceiling on the batch is transaction size: every statement in a pass is one
@@ -132,6 +132,7 @@ export const ACCOUNT_CLEANUP_BATCH = 200;
 /** Tables whose rows belong to an application of an expired account. */
 const APP_SCOPED_TABLES = [
   "app_api_key",
+  "app_attest_key",
   "app_user",
   "app_usage_event",
   "app_usage_rollup",

@@ -171,7 +171,9 @@ describe("AuthPolicyTab application identity", () => {
     expect(screen.getByLabelText(/bundle id/i)).toHaveProperty("value", "com.example.test");
     expect(screen.getByRole("link", { name: /membership details/i })).toBeTruthy();
     expect(screen.getByText(/ios app environment/i)).toBeTruthy();
-    expect(screen.queryByRole("radiogroup")).toBeNull();
+    // The one question here is when App Attest is verified.
+    expect(screen.getAllByRole("radiogroup").map((group) => group.getAttribute("aria-label")))
+      .toEqual(["Verify App Attest on"]);
   });
 
   it("shows a server app's keys as how it proves itself", async () => {
@@ -194,6 +196,58 @@ describe("AuthPolicyTab application identity", () => {
     expect(state.updateAuthentication).toHaveBeenCalledWith(
       expect.objectContaining({ app_attest: expect.objectContaining({ team_id: "AAAAAAAAAAB" }) }),
     );
+  });
+});
+
+describe("AuthPolicyTab Verify App Attest on", () => {
+  const withVerifyOn = (verifyOn: "every_request" | "token_exchange"): AuthenticationDraft => ({
+    type: "apple_app_attest",
+    app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test", verify_on: verifyOn },
+    end_user: { source: "app_install" },
+  });
+
+  it("reads an absent field as Every request, and says what each answer means", async () => {
+    stubKeys();
+    renderTab(draftFor(appInstallApp()), "identity");
+
+    const group = await screen.findByRole("radiogroup", { name: "Verify App Attest on" });
+    expect(within(group).getByRole("radio", { name: /every request/i }).getAttribute("aria-checked")).toBe("true");
+    expect(within(group).getByRole("radio", { name: /token exchange/i }).getAttribute("aria-checked")).toBe("false");
+    expect(group.textContent).toContain(
+      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 1.4 or later.",
+    );
+    expect(group.textContent).toContain("The assertion is checked once per hourly token. Requests carry only the token.");
+    expect(screen.getByText(/apps created before this release were set to token exchange/i).textContent)
+      .toMatch(/Swift package 1\.4 or later/u);
+  });
+
+  it("reopens on the stored answer, and writes a new one through the draft", async () => {
+    stubKeys();
+    const state = draftFor(withVerifyOn("token_exchange"));
+    renderTab(state, "identity");
+
+    expect((await option(/token exchange/i)).getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(await option(/every request/i));
+    expect(state.updateAuthentication).toHaveBeenCalledWith(
+      expect.objectContaining({ app_attest: expect.objectContaining({ verify_on: "every_request" }) }),
+    );
+  });
+
+  it("keeps the answer when the environments change", async () => {
+    stubKeys();
+    const state = draftFor(withVerifyOn("token_exchange"));
+    renderTab(state, "identity");
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /development/i }));
+    expect(state.updateAuthentication).toHaveBeenCalledWith(expect.objectContaining({
+      app_attest: expect.objectContaining({ verify_on: "token_exchange", environments: ["production", "development"] }),
+    }));
+  });
+
+  it("disables the question for a read-only member", async () => {
+    stubKeys();
+    renderTab(draftFor(appInstallApp()), "identity", "member");
+    expect(await option(/every request/i)).toHaveProperty("disabled", true);
   });
 });
 

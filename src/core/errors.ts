@@ -57,7 +57,22 @@ export type ErrorCode =
   | "billing_not_found"
   | "billing_action_forbidden"
   | "billing_conflict"
+  /**
+   * An App Attest proof was refused: at the token exchange, or on a request —
+   * an `X-AppAttest-Proof` that is malformed, signed by a key the application
+   * has no record of or whose environment it no longer accepts, signed over a
+   * different request, or whose assertion counter was already used. The
+   * message says which.
+   */
   | "attest_failed"
+  /**
+   * A request authenticated with the gateway token of an App Attest
+   * application whose `verify_on` is `every_request` arrived without the
+   * `X-AppAttest-Proof` header every such request must carry. The client is
+   * older than that setting needs: AppAIGateway Swift package 1.x. The message
+   * stands alone for clients that show unknown codes' messages verbatim.
+   */
+  | "assertion_required"
   | "issuer_token_rejected"
   /**
    * The issuer token verified, but the app's `required_claims` are not all

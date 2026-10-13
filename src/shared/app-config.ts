@@ -26,6 +26,8 @@ import type { OutputClampStyle } from "./capabilities.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
+  APP_ATTEST_VERIFY_ON,
+  BUDGET_SCOPES,
   DEFAULT_END_USER_HEADER,
   ENDPOINT_SLUG,
   ENTITLEMENT_CHECKS,
@@ -41,11 +43,13 @@ export type {
   ApiKeyEndUser,
   AppAttestEndUser,
   AppAttestEnvironment,
+  AppAttestVerifyOn,
   AppConfig,
   AppConfigInput,
   AppleAppAttestAuthentication,
   AuthenticationConfig,
   AuthenticationConfigInput,
+  BudgetScope,
   ClaimRequirement,
   EndUserSource,
   EndpointConfig,
@@ -56,12 +60,14 @@ export type {
   IssuerProvider,
   LimitScopeConfig,
   LimitsConfig,
+  PerUserLimitScopeConfig,
   ProviderPolicy,
   RoutingConfig,
 } from "../contracts/schemas.ts";
 
 import {
   scopeHasLimits,
+  type BudgetScope,
   type ProviderPolicy,
   type RoutingConfig,
 } from "../contracts/schemas.ts";
@@ -189,6 +195,16 @@ export function monthlyBudgetMicrousd(scope: LimitScopeConfig): number | null {
   return scope.spending.monthly_usd === null
     ? null
     : Math.round(scope.spending.monthly_usd * 1_000_000);
+}
+
+/**
+ * Whose month the `per_user` budget is measured over. Always written on a
+ * parsed configuration; the fallback is the same default, for a value built
+ * by hand.
+ */
+export function budgetScope(config: AppConfig): BudgetScope {
+  if (config.authentication.type === "api_key") return "user";
+  return config.limits.per_user.spending.scope ?? "install";
 }
 
 export const hasUserLevelLimits = (config: AppConfig): boolean =>

@@ -12,6 +12,7 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
   return {
     id: 1,
     user_id: "user-1",
+    install_id: null,
     api_key_id: null,
     provider: "openai",
     provider_slug: "openai",
@@ -41,7 +42,10 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
   };
 }
 
-function renderUsage(events: UsageEvent[]) {
+function renderUsage(
+  events: UsageEvent[],
+  props: { identity?: "user" | "install"; showInstalls?: boolean } = {},
+) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}/usage/timeseries`]: {
       body: { app_id: APP_ID, from: "2026-08-01", to: "2026-08-01", buckets: [] },
@@ -53,7 +57,7 @@ function renderUsage(events: UsageEvent[]) {
       body: { app_id: APP_ID, limit: 25, next_before_id: null, events },
     },
   });
-  return renderAuthenticated(<UsageTab appId={APP_ID} />, { route: `/apps/${APP_ID}/usage` });
+  return renderAuthenticated(<UsageTab appId={APP_ID} {...props} />, { route: `/apps/${APP_ID}/usage` });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -215,5 +219,46 @@ describe("UsageTab event statuses", () => {
     await userEvent.click(trigger);
     expect((await screen.findAllByRole("option")).map((option) => option.textContent))
       .toEqual(["All statuses", "ok", "provider_error"]);
+  });
+});
+
+describe("UsageTab callers", () => {
+  async function breakdownOptions(): Promise<string[]> {
+    const trigger = (await screen.findAllByRole("combobox"))
+      .find((option) => option.textContent === "By model")!;
+    await userEvent.click(trigger);
+    return (await screen.findAllByRole("option")).map((option) => option.textContent ?? "");
+  }
+
+  it("breaks a server app down by user, as before", async () => {
+    renderUsage([]);
+    const options = await breakdownOptions();
+    expect(options).toContain("By user");
+    expect(options).not.toContain("By install");
+  });
+
+  it("breaks an App Attest app down by install, by default", async () => {
+    renderUsage([], { identity: "install", showInstalls: true });
+    const options = await breakdownOptions();
+    expect(options).toContain("By install");
+    expect(options).not.toContain("By user");
+    // The default dimension is still the model.
+    expect(options[0]).toBe("By model");
+  });
+
+  it("breaks it down by user once its budget is measured per user", async () => {
+    renderUsage([], { identity: "user", showInstalls: true });
+    const options = await breakdownOptions();
+    expect(options).toContain("By user");
+    expect(options).not.toContain("By install");
+  });
+
+  it("names the install beside the user on an App Attest app's events", async () => {
+    renderUsage([event({ user_id: "person-1", install_id: "key-abc", auth_method: "attest" })], {
+      identity: "install",
+      showInstalls: true,
+    });
+    expect(await screen.findByText("key-abc")).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "User / install" })).toBeTruthy();
   });
 });

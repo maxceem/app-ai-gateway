@@ -216,6 +216,13 @@ authRoutes.post("/token", async (c) => {
       );
     }
     const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt });
-    return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
+    return c.json({
+      access_token: issued.token,
+      expires_in: issued.expiresIn,
+      // Whether the client signs every request it sends this token with, so
+      // the Swift package follows the application's setting without one of
+      // its own.
+      ...(exchange.type === "app_attest" ? { verify_on: exchange.authentication.app_attest.verify_on } : {}),
+    });
   });
 });

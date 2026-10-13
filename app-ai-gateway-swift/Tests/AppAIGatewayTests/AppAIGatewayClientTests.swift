@@ -31,6 +31,11 @@ struct MockAttestProvider: AppAttestProviding {
     /// Counts the attestations Apple would have been asked for. A reference so
     /// the provider can stay the value type the client takes.
     var attestations: LockedCounter?
+    /// Keys that stop signing part way through a test, for a reinstall that
+    /// happens after a token was already minted.
+    var dying: DyingKeys?
+    /// Every assertion signed, with the key and the client data hash it was over.
+    var signatures: SignatureLog?
 
     var isSupported: Bool { true }
     func generateKey() async throws -> String { "generated-key" }
@@ -40,9 +45,26 @@ struct MockAttestProvider: AppAttestProviding {
     }
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
         // `DCError.invalidInput` is what iOS actually raises here.
-        if deadKeyIDs.contains(keyID) { throw URLError(.userAuthenticationRequired) }
+        if deadKeyIDs.contains(keyID) || dying?.isDead(keyID) == true {
+            throw URLError(.userAuthenticationRequired)
+        }
+        signatures?.record(keyID: keyID, hash: clientDataHash)
         return Data("assertion".utf8)
     }
+}
+
+final class DyingKeys: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dead: Set<String> = []
+    func kill(_ keyID: String) { lock.withLock { _ = dead.insert(keyID) } }
+    func isDead(_ keyID: String) -> Bool { lock.withLock { dead.contains(keyID) } }
+}
+
+final class SignatureLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(keyID: String, hash: Data)] = []
+    func record(keyID: String, hash: Data) { lock.withLock { entries.append((keyID, hash)) } }
+    func snapshot() -> [(keyID: String, hash: Data)] { lock.withLock { entries } }
 }
 
 final class MemoryCredentialStore: GatewayCredentialStoring, @unchecked Sendable {
@@ -869,5 +891,453 @@ struct AppAIGatewayClientTests {
         _ = try? await client.gatewayAccessToken()
         #expect(requests.snapshot() == spent)
         #expect(registerCalls.snapshot() == 0)
+    }
+
+    // MARK: Per-request App Attest proofs
+
+    /// The exact bytes the gateway rebuilds for one request; its own golden
+    /// test in `test/request-proof.test.ts` pins the same string.
+    @Test
+    func requestClientDataMatchesTheGatewayByteForByte() {
+        let data = AppAIGatewayClient.requestClientData(
+            appID: "my-app",
+            method: "post",
+            pathAndQuery: "/v1/apps/my-app/proxy/openai/v1/responses?x=1",
+            body: Data(#"{"model":"gpt-5.6-sol"}"#.utf8),
+            token: "token-value",
+            timestamp: 1_767_225_600,
+            nonce: "AAAAAAAAAAAAAAAAAAAAAA"
+        )
+        #expect(String(data: data, encoding: .utf8) == [
+            "appaigateway-request-v1",
+            "my-app",
+            "POST",
+            "/v1/apps/my-app/proxy/openai/v1/responses?x=1",
+            "-PUEzjp5RIbD6WFR4AYaosj8uORXKjdf9GqkXTE8ZjY",
+            "5sAqV0LqnU3liOubnee-1D3BcBFVIYa-0-mLLFlY_0o",
+            "1767225600",
+            "AAAAAAAAAAAAAAAAAAAAAA",
+        ].joined(separator: "\n"))
+    }
+
+    @Test
+    func anAbsentOrEmptyBodyHashesAsTheEmptyString() {
+        let emptyHash = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+        for body in [nil, Data()] as [Data?] {
+            let data = AppAIGatewayClient.requestClientData(
+                appID: "a", method: "GET", pathAndQuery: "/", body: body,
+                token: "t", timestamp: 1, nonce: "AAAAAAAAAAAAAAAAAAAAAA"
+            )
+            let lines = String(data: data, encoding: .utf8)!.split(separator: "\n", omittingEmptySubsequences: false)
+            #expect(lines[4] == Substring(emptyHash))
+        }
+    }
+
+    @Test
+    func pathAndQueryAreReadAsSent() {
+        #expect(
+            AppAIGatewayClient.pathAndQuery(of: URL(string: "https://g.test/v1/apps/a/proxy/openai/v1/responses?x=1&y=%20")!)
+                == "/v1/apps/a/proxy/openai/v1/responses?x=1&y=%20"
+        )
+        #expect(AppAIGatewayClient.pathAndQuery(of: URL(string: "https://g.test/v1/apps/a/me?")!) == "/v1/apps/a/me")
+    }
+
+    @Test
+    func appAttestRequestsCarryAWellFormedProofOverTheirBody() async throws {
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"every_request"}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        let body = Data(#"{"model":"gpt-5.6-sol","input":"hi"}"#.utf8)
+        let request = try await client.authorizedRequest(
+            provider: .openai,
+            providerPath: "v1/responses",
+            body: body,
+            contentType: "application/json"
+        )
+        #expect(request.httpBody == body)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
+        let proof = try #require(request.value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        let parts = proof.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        #expect(parts.count == 4)
+        #expect(parts[0] == "v1")
+        let timestamp = try #require(Int(parts[1]))
+        #expect(abs(Double(timestamp) - Date().timeIntervalSince1970) < 60)
+        #expect(parts[2].count == 22)
+        #expect(parts[2].allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        #expect(parts[3] == Data("assertion".utf8).base64URLEncodedString())
+
+        // The last signature is the request's, over exactly what was sent.
+        let signed = try #require(signatures.snapshot().last)
+        #expect(signed.keyID == "existing-key")
+        let expected = AppAIGatewayClient.requestClientData(
+            appID: "test-app",
+            method: "POST",
+            pathAndQuery: "/v1/apps/test-app/proxy/openai/v1/responses",
+            body: body,
+            token: "gateway-token",
+            timestamp: timestamp,
+            nonce: parts[2]
+        ).sha256
+        #expect(signed.hash == expected)
+
+        // Each request is signed afresh: a proof is good for one send.
+        let second = try await client.authorizedRequest(endpointSlug: "chat", body: body)
+        #expect(second.value(forHTTPHeaderField: "X-AppAttest-Proof") != proof)
+    }
+
+    /// An app that verifies App Attest on the token exchange, and an older
+    /// gateway that says nothing about it: the token alone, nothing signed.
+    @Test
+    func requestsCarryOnlyTheTokenUnlessTheGatewayVerifiesEveryRequest() async throws {
+        for tokenBody in [
+            #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"token_exchange"}"#,
+            #"{"access_token":"gateway-token","expires_in":3600}"#,
+        ] {
+            let signatures = SignatureLog()
+            MockURLProtocol.handler = { request in
+                if request.url!.path.hasSuffix("/auth/challenge") {
+                    return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+                }
+                return response(request, status: 200, body: tokenBody)
+            }
+            let client = AppAIGatewayClient(
+                appID: "test-app",
+                baseURL: URL(string: "https://gateway.test")!,
+                authMode: .appAttestInstall,
+                attestProvider: MockAttestProvider(signatures: signatures),
+                credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+                session: session()
+            )
+            let body = Data("{}".utf8)
+            let request = try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: body)
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
+            #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+            #expect(request.httpBody == body)
+            let me = try await client.currentUserRequest()
+            #expect(me.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
+            #expect(me.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+            // The exchange's own assertion is the only one the key signed.
+            #expect(signatures.snapshot().count == 1)
+        }
+    }
+
+    /// The app is switched to verify every request while this client holds a
+    /// token issued under token_exchange: its requests go unsigned and are
+    /// refused with `assertion_required`, until the app discards the token and
+    /// rebuilds the request, which re-exchanges and signs.
+    @Test
+    func aDiscardedTokenPicksUpASwitchToEveryRequest() async throws {
+        let signatures = SignatureLog()
+        let tokens = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            let issued = tokens.increment()
+            let verifyOn = issued == 1 ? "token_exchange" : "every_request"
+            return response(
+                request,
+                status: 200,
+                body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"\(verifyOn)\"}"
+            )
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        let body = Data("{}".utf8)
+        let unsigned = try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: body)
+        #expect(unsigned.value(forHTTPHeaderField: "Authorization") == "Bearer token-1")
+        #expect(unsigned.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+        // Still cached: nothing changes until the app discards the token.
+        let stillUnsigned = try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: body)
+        #expect(stillUnsigned.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+        #expect(tokens.snapshot() == 1)
+
+        // The gateway refused it with assertion_required; the app recovers.
+        await client.discardAccessToken()
+        let signed = try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: body)
+        #expect(tokens.snapshot() == 2)
+        #expect(signed.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(signed.value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+        #expect(signatures.snapshot().last?.keyID == "existing-key")
+    }
+
+    @Test
+    func apiKeyModesSendNoProof() async throws {
+        MockURLProtocol.handler = { request in
+            response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"every_request"}"#)
+        }
+        for mode in [
+            GatewayAuthMode.apiKey(key: "agw_machine-key"),
+            GatewayAuthMode.apiKey(key: "agw_test-key", issuerTokenProvider: { _ in "issuer" }),
+        ] {
+            let client = AppAIGatewayClient(
+                appID: "test-app",
+                baseURL: URL(string: "https://gateway.test")!,
+                authMode: mode,
+                session: session()
+            )
+            let request = try await client.authorizedRequest(
+                provider: .openai, providerPath: "v1/responses", body: Data("{}".utf8)
+            )
+            #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+            #expect(request.httpBody == Data("{}".utf8))
+        }
+    }
+
+    /// A reinstall after the token was minted: the key the token is bound to
+    /// can no longer sign, so the client registers a replacement, exchanges it
+    /// for a token bound to the new key, and signs the request once more.
+    @Test
+    func aKeyThatStopsSigningIsReplacedAndTheRequestSignedOnceMore() async throws {
+        let dying = DyingKeys()
+        let signatures = SignatureLog()
+        let registers = LockedCounter()
+        let tokens = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                registers.increment()
+                return response(request, status: 200, body: #"{"user_id":"generated-key"}"#)
+            }
+            let issued = tokens.increment()
+            return response(request, status: 200, body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let store = MemoryCredentialStore(keyID: "existing-key")
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(dying: dying, signatures: signatures),
+            credentialStore: store,
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        dying.kill("existing-key")
+
+        let request = try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: Data("{}".utf8))
+        #expect(registers.snapshot() == 1)
+        #expect(try store.appAttestKeyID(for: "test-app") == "generated-key")
+        // Bound to the new key: a token for the old one would be refused.
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+        #expect(signatures.snapshot().last?.keyID == "generated-key")
+    }
+
+    @Test
+    func theNewCodesDecode() {
+        #expect(GatewayErrorCode(rawValue: "assertion_required") == .assertionRequired)
+        let error = GatewayError(
+            code: .appRateLimited, message: "", statusCode: 429, data: ["scope": .string("install")]
+        )
+        #expect(error.limitScope == "install")
+    }
+
+    /// `/me` is a gateway request like any other: signed in the App Attest
+    /// modes, over a `GET` with no body, by the key the token is bound to.
+    @Test
+    func currentUserRequestIsASignedGetOfMe() async throws {
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"every_request"}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test/base")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        #expect(await client.currentUserURL().absoluteString == "https://gateway.test/base/v1/apps/test-app/me")
+        let request = try await client.currentUserRequest()
+        #expect(request.httpMethod == "GET")
+        #expect(request.httpBody == nil)
+        #expect(request.url?.absoluteString == "https://gateway.test/base/v1/apps/test-app/me")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
+        let proof = try #require(request.value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        let parts = proof.split(separator: ".").map(String.init)
+        let expected = AppAIGatewayClient.requestClientData(
+            appID: "test-app",
+            method: "GET",
+            pathAndQuery: "/base/v1/apps/test-app/me",
+            body: nil,
+            token: "gateway-token",
+            timestamp: try #require(Int(parts[1])),
+            nonce: parts[2]
+        ).sha256
+        let signed = try #require(signatures.snapshot().last)
+        #expect(signed.keyID == "existing-key")
+        #expect(signed.hash == expected)
+    }
+
+    @Test
+    func currentUserRequestRecoversADeadKeyLikeAnyOtherRequest() async throws {
+        let dying = DyingKeys()
+        let registers = LockedCounter()
+        let tokens = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                registers.increment()
+                return response(request, status: 200, body: #"{"user_id":"generated-key"}"#)
+            }
+            let issued = tokens.increment()
+            return response(request, status: 200, body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(dying: dying),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        _ = try await client.gatewayAccessToken()
+        dying.kill("existing-key")
+        let request = try await client.currentUserRequest()
+        #expect(registers.snapshot() == 1)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+    }
+
+    @Test
+    func currentUserRequestInAPIKeyModeCarriesTheKeyAndNoProof() async throws {
+        MockURLProtocol.handler = { request in response(request, status: 500, body: "{}") }
+        let client = AppAIGatewayClient(
+            appID: "machine-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(key: "agw_machine-key"),
+            endUserId: "customer-42",
+            session: session()
+        )
+        let request = try await client.currentUserRequest()
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer agw_machine-key")
+        #expect(request.value(forHTTPHeaderField: "X-End-User-ID") == "customer-42")
+        #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") == nil)
+    }
+
+    // MARK: The URL as the gateway reads it
+
+    private struct URLGolden: Decodable {
+        struct Fixed: Decodable {
+            let appId: String
+            let method: String
+            let body: String
+            let token: String
+            let timestamp: String
+            let nonce: String
+        }
+        struct Case: Decodable {
+            let name: String
+            let path: String
+            let query: String?
+            let pathAndQuery: String
+            let clientData: String
+        }
+        let fixed: Fixed
+        let cases: [Case]
+    }
+
+    /// The same file `test/request-proof.test.ts` reads, where each
+    /// `pathAndQuery` is checked against the gateway runtime's own URL parser.
+    private func urlGolden() throws -> URLGolden {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appending(path: "Fixtures/request-proof-urls.json")
+        return try JSONDecoder().decode(URLGolden.self, from: Data(contentsOf: file))
+    }
+
+    @Test
+    func pathsAndQueriesAreSignedAsTheGatewayReadsThem() throws {
+        let golden = try urlGolden()
+        #expect(golden.cases.count >= 5)
+        for fixture in golden.cases {
+            let path = AppAIGatewayClient.whatwgPath(fixture.path)
+            let pathAndQuery = fixture.query.map { "\(path)?\(AppAIGatewayClient.whatwgQuery($0))" } ?? path
+            #expect(pathAndQuery == fixture.pathAndQuery, "\(fixture.name)")
+            let clientData = AppAIGatewayClient.requestClientData(
+                appID: golden.fixed.appId,
+                method: golden.fixed.method,
+                pathAndQuery: pathAndQuery,
+                body: Data(golden.fixed.body.utf8),
+                token: golden.fixed.token,
+                timestamp: Int(golden.fixed.timestamp)!,
+                nonce: golden.fixed.nonce
+            )
+            #expect(String(data: clientData, encoding: .utf8) == fixture.clientData, "\(fixture.name)")
+            // Normalizing what is already normal changes nothing, so signing
+            // the URL that is sent signs the same bytes again.
+            #expect(AppAIGatewayClient.whatwgPath(path) == path, "\(fixture.name)")
+        }
+    }
+
+    /// The URL that is sent is the normalized one, not only the string that
+    /// is signed: a query with an apostrophe travels as `%27`, which is what
+    /// the gateway's parser would have made of it anyway.
+    @Test
+    func theSentURLIsTheNormalizedOne() throws {
+        let url = try #require(URL(string: "https://gateway.test/base/v1/apps/a/proxy/openai/./v1/x/../responses?q=it's"))
+        let normalized = AppAIGatewayClient.whatwgNormalized(url)
+        #expect(normalized.absoluteString == "https://gateway.test/base/v1/apps/a/proxy/openai/v1/responses?q=it%27s")
+        #expect(AppAIGatewayClient.pathAndQuery(of: normalized) == "/base/v1/apps/a/proxy/openai/v1/responses?q=it%27s")
+        let withPort = try #require(URL(string: "http://localhost:8787/v1/apps/a/me"))
+        #expect(AppAIGatewayClient.whatwgNormalized(withPort).absoluteString == "http://localhost:8787/v1/apps/a/me")
+    }
+
+    @Test
+    func aSignedRequestTravelsOnTheNormalizedURL() async throws {
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"every_request"}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        let request = try await client.authorizedRequest(
+            provider: .openai, providerPath: "v1/./models/../responses", body: Data("{}".utf8)
+        )
+        #expect(request.url?.absoluteString == "https://gateway.test/v1/apps/test-app/proxy/openai/v1/responses")
+        let parts = try #require(request.value(forHTTPHeaderField: "X-AppAttest-Proof")).split(separator: ".").map(String.init)
+        let expected = AppAIGatewayClient.requestClientData(
+            appID: "test-app", method: "POST",
+            pathAndQuery: "/v1/apps/test-app/proxy/openai/v1/responses",
+            body: Data("{}".utf8), token: "gateway-token",
+            timestamp: try #require(Int(parts[1])), nonce: parts[2]
+        ).sha256
+        #expect(signatures.snapshot().last?.hash == expected)
     }
 }
