@@ -37,6 +37,7 @@ export async function listAppRejectionEvents(
     events: rows.map((row) => ({
       id: row.id,
       user_id: row.userId,
+      install_id: row.installId,
       api_key_id: row.apiKeyId,
       reason: row.reason,
       scope: row.scope,

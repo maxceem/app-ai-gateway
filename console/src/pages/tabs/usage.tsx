@@ -74,7 +74,9 @@ const BREAKDOWNS = [
   // provider alone cannot answer, so each gets its own dimension.
   { value: "provider_gateway", label: "By gateway" },
   { value: "credential_source", label: "By credential source" },
+  // Who made the traffic; which of these an app offers is decided below.
   { value: "user", label: "By user" },
+  { value: "install", label: "By install" },
   { value: "status", label: "By status" },
   { value: "cost_source", label: "By cost source" },
   { value: "route", label: "By route" },
@@ -94,7 +96,22 @@ function BreakdownMark({ dimension, value }: { dimension: string; value: string 
   return null;
 }
 
-export function UsageTab({ appId }: { appId: string }) {
+export function UsageTab({
+  appId,
+  identity = "user",
+  showInstalls = false,
+}: {
+  appId: string;
+  /**
+   * Who an app's traffic is broken down by: an App Attest app's install, or
+   * its user when its budget is measured per user; a server app's user.
+   */
+  identity?: "user" | "install";
+  /** Whether events name the install that made them: App Attest apps only. */
+  showInstalls?: boolean;
+}) {
+  const breakdowns = BREAKDOWNS.filter((entry) =>
+    entry.value === "user" || entry.value === "install" ? entry.value === identity : true);
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_usd");
   const [dimension, setDimension] = useState<UsageBreakdownDimension>("model");
@@ -228,7 +245,7 @@ export function UsageTab({ appId }: { appId: string }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {BREAKDOWNS.map((entry) => (
+                  {breakdowns.map((entry) => (
                     <SelectItem key={entry.value} value={entry.value}>
                       {entry.label}
                     </SelectItem>
@@ -329,7 +346,7 @@ export function UsageTab({ appId }: { appId: string }) {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead>When</TableHead>
-                <TableHead>User / key</TableHead>
+                <TableHead>{showInstalls ? "User / install" : "User / key"}</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Route</TableHead>
                 <TableHead className="text-right">Tokens</TableHead>
@@ -367,6 +384,12 @@ export function UsageTab({ appId }: { appId: string }) {
                       {/* Key attribution is absent for attested traffic, so only render it when set. */}
                       {event.api_key_id ? (
                         <span className="block text-muted-foreground">{event.api_key_id}</span>
+                      ) : null}
+                      {/* Under app_install the install is the user, already named above. */}
+                      {showInstalls && event.install_id && event.install_id !== event.user_id ? (
+                        <span className="block text-muted-foreground" title="Install (App Attest key id)">
+                          {event.install_id}
+                        </span>
                       ) : null}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>

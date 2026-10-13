@@ -357,6 +357,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       appId: identity.appId,
       organizationId: input.organizationId,
       userId: identity.userId,
+      installId: identity.installId,
       apiKeyId: identity.apiKeyId ?? null,
       providerType: attribution.provider,
       providerId: attribution.providerId,

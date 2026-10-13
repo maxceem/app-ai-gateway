@@ -45,6 +45,7 @@ export const USAGE_BREAKDOWN_DIMENSIONS = [
   "credential_source",
   "model_author",
   "user",
+  "install",
   "status",
   "cost_source",
   "route",
@@ -58,7 +59,7 @@ export const ErrorResponseSchema = z.object({
     code: z.string(),
     message: z.string(),
     data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().meta({
-      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; a billing_plan_limit_reached rejection carries limit and used; an app_rate_limited or app_budget_exhausted rejection carries scope, either user or app; a rate_limited rejection carries scope naming the endpoint policy that refused, plus limit, windowSeconds, retryAfterSeconds and resetAt.",
+      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; a billing_plan_limit_reached rejection carries limit and used; an app_rate_limited or app_budget_exhausted rejection carries scope, one of user, install or app; a rate_limited rejection carries scope naming the endpoint policy that refused, plus limit, windowSeconds, retryAfterSeconds and resetAt.",
     }),
   }),
 }).meta({ id: "ErrorResponse" });
@@ -107,13 +108,16 @@ export const GatewayTokenResponseSchema = z.object({
  */
 export const CurrentUserResponseSchema = z.object({
   user_id: z.string(),
+  install_id: z.string().nullable().meta({
+    description: "The App Attest key id of the install making the request, on App Attest applications, whose request limits are counted per install. Null on server applications.",
+  }),
   limits: z.object({
-    requests_today: z.number().int().nullable().meta({ description: "Requests this user has made so far in the current UTC day. Null when the application sets no per-user limit, in which case requests are not counted at all." }),
+    requests_today: z.number().int().nullable().meta({ description: "Requests made so far in the current UTC day: by this install on an App Attest application, by this user on a server application. Null when the application sets no per-user limit, in which case requests are not counted at all." }),
     requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
-    requests_per_minute: z.number().nullable().meta({ description: "The per-user per-minute limit this app sets. Null means unlimited." }),
-    requests_per_day: z.number().nullable().meta({ description: "The per-user per-day limit this app sets. Null means unlimited." }),
-    monthly_cost_usd: z.number().meta({ description: "What this user's traffic has cost so far in the current UTC calendar month." }),
-    monthly_budget_usd: z.number().nullable().meta({ description: "The per-user monthly spending budget this app sets. Null means unlimited." }),
+    requests_per_minute: z.number().nullable().meta({ description: "The per-minute limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
+    requests_per_day: z.number().nullable().meta({ description: "The per-day limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
+    monthly_cost_usd: z.number().meta({ description: "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user." }),
+    monthly_budget_usd: z.number().nullable().meta({ description: "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited." }),
     blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
   }).meta({
     description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",
@@ -124,6 +128,9 @@ export const UsageEventSchema = z.object({
   id: z.number().int(),
   /** Null for an application that identifies no end users. */
   user_id: z.string().nullable(),
+  install_id: z.string().nullable().meta({
+    description: "The App Attest key id of the install that made the request, on App Attest applications; null for server applications.",
+  }),
   api_key_id: z.string().nullable().meta({
     description: "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token.",
   }),
@@ -209,6 +216,9 @@ export const AuthEventListSchema = z.object({
 export const RejectionEventSchema = z.object({
   id: z.number().int(),
   user_id: z.string().nullable(),
+  install_id: z.string().nullable().meta({
+    description: "The App Attest key id of the refused install, on App Attest applications; null for server applications and for samples recorded before installs were.",
+  }),
   api_key_id: z.string().nullable(),
   reason: z.enum(REJECTION_REASONS),
   scope: z.enum(REJECTION_SCOPES).nullable().meta({ description: "Null on historical samples whose limit scope cannot be recovered." }),
@@ -271,6 +281,18 @@ export const AuthEventSummarySchema = z.object({
 }).meta({ id: "AuthEventSummary" });
 
 /**
+ * Something about an application that will stop working on a stated date,
+ * computed by the gateway when the application is read. Read-only: no write
+ * accepts it.
+ */
+export const AppWarningSchema = z.object({
+  code: z.string().meta({ description: "Stable identifier, for example bearer_without_assertion." }),
+  message: z.string().meta({ description: "What will stop, when, and what to do about it, in one sentence or two." }),
+  until: z.string().optional().meta({ description: "ISO 8601 UTC instant the behaviour stops." }),
+  docs_url: z.string().optional().meta({ description: "Where the change is described." }),
+}).meta({ id: "AppWarning" });
+
+/**
  * The one shape every single-application route answers with. Reading an app,
  * creating one and updating one all return the same object, so a client parses
  * one type and never has to ask which route produced it.
@@ -289,6 +311,9 @@ export const AppResponseSchema = z.object({
     status: z.enum(APP_STATUSES),
     created_at: z.string(),
     updated_at: z.string(),
+    warnings: z.array(AppWarningSchema).meta({
+      description: "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date.",
+    }),
   }),
 }).meta({ id: "AppResponse" });
 
@@ -638,6 +663,7 @@ export type RejectionEvent = z.infer<typeof RejectionEventSchema>;
 export type RejectionEventList = z.infer<typeof RejectionEventListSchema>;
 export type AuthEventSummary = z.infer<typeof AuthEventSummarySchema>;
 export type AppResponse = z.infer<typeof AppResponseSchema>;
+export type AppWarning = z.infer<typeof AppWarningSchema>;
 export type AppDeleteResponse = z.infer<typeof AppDeleteResponseSchema>;
 export type ManagementKeySummary = z.infer<typeof ManagementKeySummarySchema>;
 export type OAuthConsentDetailsResponse = z.infer<typeof OAuthConsentDetailsResponseSchema>;
@@ -740,6 +766,9 @@ export const AppCheckResponseSchema = z.object({
   limitations: z.array(z.string()).meta({
     description: "What this check did not exercise, one sentence each.",
   }),
+  warnings: z.array(AppWarningSchema).meta({
+    description: "The application's warnings, as reading it returns them: behaviour that will stop on a stated date. They never make an application not ready.",
+  }),
 });
 
 /** The first request an application can send, in the language its callers authenticate with. */
@@ -795,9 +824,13 @@ export const ApiKeyRevokeResponseSchema = z.object({
 export const GatewayUserSchema = z.object({
   id: z.string(),
   status: z.enum(["active", "blocked"]),
-  attest_key_id: z.string().nullable(),
-  attest_registered: z.boolean(),
-  attest_counter: z.number(),
+  attest_key_id: z.string().nullable().meta({
+    description: "The user's most recently seen App Attest key id, if they hold any. Under app_install it is the user's own id.",
+  }),
+  attest_registered: z.boolean().meta({ description: "Whether the user holds at least one App Attest key." }),
+  installs: z.number().int().meta({
+    description: "How many App Attest keys the user holds: one per install, that is one copy of the app on one device, and a new one each time the app is reinstalled. Always 0 on server applications.",
+  }),
   created_at: z.string(),
   last_seen_at: z.string().nullable(),
   is_virtual: z.boolean(),
@@ -926,7 +959,8 @@ export const PricesResponseSchema = z.object({
 export const OperationResultSchema = z.object({
   /** The account a claim settled, a login landed in, or a bootstrap created. */
   accountId: z.string().optional(),
-  app: AppResponseSchema.shape.app.optional(),
+  // An outcome recorded before warnings existed has none.
+  app: AppResponseSchema.shape.app.extend({ warnings: AppResponseSchema.shape.app.shape.warnings.optional() }).optional(),
   api_key: AppKeyMetadataSchema.nullable().optional(),
   provider: ProviderSummarySchema.optional(),
   gateway: ProviderGatewaySummarySchema.optional(),
@@ -961,7 +995,7 @@ export const RevealedOperationResponseSchema = z.object({
   id: z.string(),
   kind: z.string(),
   result: z.object({
-    app: AppResponseSchema.shape.app.optional(),
+    app: AppResponseSchema.shape.app.extend({ warnings: AppResponseSchema.shape.app.shape.warnings.optional() }).optional(),
     /** `key` is the plaintext. It is shown this once; the gateway keeps only a hash. */
     api_key: CreatedApiKeySchema.nullable().optional(),
   }),

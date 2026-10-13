@@ -35,6 +35,8 @@ const PAGE_SIZE = 25;
 export function UsersTab({
   appId,
   monthlyBudgetUsd,
+  appAttest = false,
+  installsOnly = false,
 }: {
   appId: string;
   /**
@@ -44,7 +46,12 @@ export function UsersTab({
    * differs. `null` is unlimited.
    */
   monthlyBudgetUsd: number | null;
+  /** Whether users hold App Attest keys, one per install, whose count is shown. */
+  appAttest?: boolean;
+  /** Under app_install every user is one install, and is named as one. */
+  installsOnly?: boolean;
 }) {
+  const noun = installsOnly ? "install" : "user";
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -86,7 +93,7 @@ export function UsersTab({
           <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
-            placeholder="Search user id"
+            placeholder={installsOnly ? "Search install id" : "Search user id"}
             className="h-9 pl-8 font-mono text-xs"
             onChange={(event) => {
               setSearch(event.target.value);
@@ -105,7 +112,7 @@ export function UsersTab({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All users</SelectItem>
+            <SelectItem value="all">{installsOnly ? "All installs" : "All users"}</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="blocked">Blocked</SelectItem>
           </SelectContent>
@@ -117,8 +124,8 @@ export function UsersTab({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead>User</TableHead>
-              <TableHead>Attestation</TableHead>
+              <TableHead>{installsOnly ? "Install" : "User"}</TableHead>
+              <TableHead>{appAttest && !installsOnly ? "Installs" : "Attestation"}</TableHead>
               <TableHead>Last seen</TableHead>
               <TableHead className="text-right">Requests</TableHead>
               <TableHead className="text-right">Tokens</TableHead>
@@ -138,7 +145,7 @@ export function UsersTab({
             ) : users.data?.users.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
-                  No users yet. A row appears once a client completes its first token exchange.
+                  No {noun}s yet. A row appears once a client completes its first token exchange.
                 </TableCell>
               </TableRow>
             ) : (
@@ -151,7 +158,11 @@ export function UsersTab({
                     </div>
                   </TableCell>
                   <TableCell>
-                    {user.attest_registered ? (
+                    {appAttest && !installsOnly && user.installs > 0 ? (
+                      <span className="tabular text-xs" title="App Attest keys this user holds: one per install">
+                        {formatNumber(user.installs)}
+                      </span>
+                    ) : user.attest_registered ? (
                       <Badge variant="secondary" className="text-[11px] font-normal">
                         registered
                       </Badge>
@@ -206,7 +217,7 @@ export function UsersTab({
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          {formatNumber(total)} users · page {page + 1} of {pages}
+          {formatNumber(total)} {noun}s · page {page + 1} of {pages}
         </span>
         <div className="flex gap-2">
           <Button

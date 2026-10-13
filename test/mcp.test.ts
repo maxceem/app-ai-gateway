@@ -387,7 +387,7 @@ describe("MCP handshake", () => {
     // `app` is the argument every app tool takes, and the catalog's query fields ride beside it.
     const events = tools.find((tool) => tool.name === "list_app_events")!.inputSchema;
     expect(events.required).toEqual(["app"]);
-    expect(Object.keys(events.properties)).toEqual(["app", "limit", "status", "provider", "user", "model", "before_id"]);
+    expect(Object.keys(events.properties)).toEqual(["app", "limit", "status", "provider", "user", "install", "model", "before_id"]);
     // validate_app advertises the catalog's app document, nested configuration included.
     const validate = tools.find((tool) => tool.name === "validate_app")!.inputSchema;
     expect(validate.required).toEqual(["config"]);
