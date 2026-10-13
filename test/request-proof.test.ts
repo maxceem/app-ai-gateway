@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { parseProof, requestClientData } from "../src/client-auth/request-proof";
+import { legacyMode, noteUnsignedRequest } from "../src/client-auth/legacy";
+import { appConfigCache, loadApp } from "../src/core/app-records";
 // Shared with the Swift package's tests, byte for byte: both sides must sign
 // the path and query exactly as this runtime's URL parser reads them.
 import urlGolden from "../app-ai-gateway-swift/Tests/AppAIGatewayTests/Fixtures/request-proof-urls.json";
@@ -768,5 +770,143 @@ describe("disabling a legacy mode", () => {
     }
     const row = await env.DB.prepare("SELECT legacy FROM app WHERE id = 'legacy-write'").first();
     expect(row).toEqual({ legacy: null });
+  });
+});
+
+describe("a failing last-seen write", () => {
+  /** The deployment's database, with the last-seen write failing and counted. */
+  function failingWrites(counter: { attempts: number }): D1Database {
+    return new Proxy(env.DB, {
+      get: (target, property, receiver) => property === "prepare"
+        ? (query: string) => {
+          if (!query.includes("SET unsigned_last_seen_at")) return target.prepare(query);
+          counter.attempts += 1;
+          return {
+            bind: () => ({ run: () => Promise.reject(new Error("D1 is not accepting writes")) }),
+          } as unknown as D1PreparedStatement;
+        }
+        : Reflect.get(target, property, receiver),
+    });
+  }
+
+  it("leaves the responses alone and is not retried on every request", async () => {
+    const appId = "legacy-seen-outage";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
+    clearIsolateCaches();
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    upstream();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const counter = { attempts: 0 };
+    const bindings = new Proxy(env, {
+      get: (target, property, receiver) =>
+        property === "DB" ? failingWrites(counter) : Reflect.get(target, property, receiver),
+    }) as Env;
+    for (let index = 0; index < 5; index += 1) {
+      expect((await send(await proxied(install, token, { proof: null }), bindings)).status).toBe(200);
+    }
+    await Promise.all(pending.splice(0).map((context) => waitOnExecutionContext(context)));
+    expect(counter.attempts).toBe(1);
+  });
+
+  it("backs off five minutes, doubling, and writes again once the backoff has passed", async () => {
+    const appId = "legacy-seen-backoff";
+    await seedApp(appId);
+    clearIsolateCaches();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const counter = { attempts: 0 };
+    const db = failingWrites(counter);
+    const record = { id: appId, unsignedLastSeenAt: null };
+    const start = Date.now();
+    const minute = 60_000;
+    await noteUnsignedRequest(db, record, start);
+    expect(counter.attempts).toBe(1);
+    // Inside the first backoff, nothing is tried.
+    await noteUnsignedRequest(db, record, start + 1_000);
+    await noteUnsignedRequest(db, record, start + 4 * minute);
+    expect(counter.attempts).toBe(1);
+    // Past it, one more try, which fails and doubles the wait.
+    await noteUnsignedRequest(db, record, start + 5 * minute);
+    expect(counter.attempts).toBe(2);
+    await noteUnsignedRequest(db, record, start + 14 * minute);
+    expect(counter.attempts).toBe(2);
+    await noteUnsignedRequest(db, record, start + 15 * minute);
+    expect(counter.attempts).toBe(3);
+    // Once D1 takes writes again, the next try past the backoff lands.
+    await noteUnsignedRequest(env.DB, record, start + 35 * minute);
+    const row = await env.DB.prepare("SELECT unsigned_last_seen_at AS at FROM app WHERE id = ?")
+      .bind(appId).first<{ at: string | null }>();
+    expect(row?.at).toBe(new Date(start + 35 * minute).toISOString());
+  });
+});
+
+describe("the cached app record and a disable that races a read", () => {
+  it("never lets a read that began before the disable put the mode back", async () => {
+    const appId = "legacy-read-race";
+    await seedApp(appId);
+    await env.DB.prepare("UPDATE app SET legacy = ? WHERE id = ?")
+      .bind(JSON.stringify({ unsigned_requests: { until: "2099-01-31T00:00:00Z" } }), appId).run();
+    clearIsolateCaches();
+    // A read whose answer is held back until the test releases it, having
+    // already been read from D1 with the mode enabled.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let read!: () => void;
+    const readDone = new Promise<void>((resolve) => { read = resolve; });
+    const held = (value: unknown) => { read(); return gate.then(() => value); };
+    const slowDb = new Proxy(env.DB, {
+      get: (target, property, receiver) => property === "prepare"
+        ? (query: string) => new Proxy(target.prepare(query), {
+          get: (statement, name, statementReceiver) => {
+            const member = Reflect.get(statement, name, statementReceiver);
+            if (name === "bind") {
+              return (...values: unknown[]) => new Proxy(statement.bind(...values), {
+                get: (bound, method) => {
+                  const fn = Reflect.get(bound, method) as unknown;
+                  return typeof fn === "function" && ["all", "raw", "first", "run"].includes(String(method))
+                    ? (...args: unknown[]) => (fn as (...a: unknown[]) => Promise<unknown>).apply(bound, args).then(held)
+                    : typeof fn === "function" ? (fn as (...a: unknown[]) => unknown).bind(bound) : fn;
+                },
+              });
+            }
+            return typeof member === "function" && ["all", "raw", "first", "run"].includes(String(name))
+              ? (...args: unknown[]) => (member as (...a: unknown[]) => Promise<unknown>).apply(statement, args).then(held)
+              : typeof member === "function" ? (member as (...a: unknown[]) => unknown).bind(statement) : member;
+          },
+        })
+        : Reflect.get(target, property, receiver),
+    });
+    const slow = new Proxy(env, {
+      get: (target, property, receiver) => property === "DB" ? slowDb : Reflect.get(target, property, receiver),
+    }) as Env;
+
+    const stale = loadApp(slow, appId);
+    await readDone;
+    // The disable commits and invalidates while that read is still out.
+    const disabled = await send(new Request(`${ORIGIN}/v1/admin/apps/${appId}/legacy/unsigned_requests/disable`, {
+      method: "POST",
+      headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
+    }));
+    expect(disabled.status).toBe(200);
+    release();
+    // The read in flight answers what it read...
+    expect(legacyMode(await stale, "unsigned_requests")).not.toBeNull();
+    // ...but did not cache it: the next request sees the mode gone.
+    expect(appConfigCache.peek(appId)).toBeUndefined();
+    expect(legacyMode(await loadApp(env, appId), "unsigned_requests")).toBeNull();
+  });
+
+  it("measures the cached record's window from the read's start", async () => {
+    const appId = "legacy-read-window";
+    await seedApp(appId);
+    clearIsolateCaches();
+    const before = Date.now();
+    await loadApp(env, appId);
+    const entry = appConfigCache.peek(appId)!;
+    expect(entry.storedAt).toBeGreaterThanOrEqual(before);
+    expect(entry.storedAt).toBeLessThanOrEqual(Date.now());
+    expect(entry.expiresAt - entry.storedAt).toBe(60_000);
   });
 });

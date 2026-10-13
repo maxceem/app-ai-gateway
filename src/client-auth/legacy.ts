@@ -135,12 +135,19 @@ export function deprecationHeaders(until: Date): Record<string, string> {
 /** How stale `unsigned_last_seen_at` may get: at most one write per app per hour. */
 export const UNSIGNED_SEEN_INTERVAL_MS = 60 * 60_000;
 
+/** How long after a failed write the next one may be tried; doubled per consecutive failure. */
+export const UNSIGNED_SEEN_RETRY_MS = 5 * 60_000;
+
 /**
- * The apps this isolate has recorded an unsigned request for within the hour.
- * The cached app record trails a write by up to its own TTL, so without this
- * every request in that minute would issue the statement again.
+ * The apps this isolate has recorded an unsigned request for, or failed to,
+ * and when it may write again: an hour after a write, and after a failure a
+ * backoff of five minutes that doubles with each failure in a row, up to the
+ * hour. The cached app record trails a write by up to its own TTL, so without
+ * this every request in that minute would issue the statement again; and
+ * without the backoff a D1 write outage would cost one failing statement per
+ * unsigned request.
  */
-const unsignedSeenWrites = ttlCache<string, true>({
+const unsignedSeenWrites = ttlCache<string, { failures: number }>({
   name: "legacy-unsigned-seen",
   ttlMs: UNSIGNED_SEEN_INTERVAL_MS,
   maxEntries: 10_000,
@@ -149,9 +156,10 @@ const unsignedSeenWrites = ttlCache<string, true>({
 /**
  * Records that `app` just served a request under `unsigned_requests`, unless
  * it already did within the hour, by the cached record or by this isolate's
- * own memory. The statement re-checks the hour in D1, so a write that loses a
- * race to another isolate changes nothing. Never throws: this is a signal for
- * a person, and the request has been served.
+ * own memory, or a recent attempt failed and its backoff has not passed. The
+ * statement re-checks the hour in D1, so a write that loses a race to another
+ * isolate changes nothing. Never throws: this is a signal for a person, and
+ * the request has been served.
  */
 export async function noteUnsignedRequest(
   db: D1Database,
@@ -161,16 +169,20 @@ export async function noteUnsignedRequest(
   const threshold = new Date(now - UNSIGNED_SEEN_INTERVAL_MS).toISOString();
   if (app.unsignedLastSeenAt !== null && app.unsignedLastSeenAt > threshold) return;
   if (unsignedSeenWrites.get(app.id, now)) return;
-  unsignedSeenWrites.set(app.id, true, { storedAt: now });
+  // The failures before this attempt, from a backoff marker that has expired.
+  const failures = unsignedSeenWrites.peek(app.id)?.value.failures ?? 0;
+  unsignedSeenWrites.set(app.id, { failures: 0 }, { storedAt: now });
   try {
     await db.prepare(
       `UPDATE app SET unsigned_last_seen_at = ?
        WHERE id = ? AND (unsigned_last_seen_at IS NULL OR unsigned_last_seen_at <= ?)`,
     ).bind(new Date(now).toISOString(), app.id, threshold).run();
   } catch (error) {
-    unsignedSeenWrites.delete(app.id);
+    const backoff = Math.min(UNSIGNED_SEEN_RETRY_MS * 2 ** failures, UNSIGNED_SEEN_INTERVAL_MS);
+    unsignedSeenWrites.set(app.id, { failures: failures + 1 }, { storedAt: now, ttlMs: backoff });
     log("warn", "legacy_unsigned_seen_write_failed", {
       app: app.id,
+      retryInMs: backoff,
       error: error instanceof Error ? error.message : String(error),
     });
   }
