@@ -151,6 +151,10 @@ export function AppDetailPage() {
           <UsersTab
             appId={appId}
             monthlyBudgetUsd={draftLimits(draft.config.limits).per_user.spending.monthly_usd}
+            budgetScope={draft.config.authentication.type === "apple_app_attest"
+              && draftLimits(draft.config.limits).per_user.spending.scope !== "user"
+              ? "install"
+              : "user"}
             appAttest={draft.config.authentication.type === "apple_app_attest"}
             installsOnly={installsOnly}
           />

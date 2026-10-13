@@ -26,7 +26,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MonthPicker } from "@/components/pickers";
 import { UserStatusBadge } from "@/components/status-badge";
 import { BudgetCell } from "@/components/budget";
-import { currentMonth, formatCompact, formatNumber, formatRelative, totalTokens } from "@/lib/format";
+import { currentMonth, formatCompact, formatCost, formatNumber, formatRelative, totalTokens } from "@/lib/format";
 import { useUserAction, useUsers } from "@/lib/queries";
 import type { GatewayUser } from "@/lib/types";
 
@@ -35,6 +35,7 @@ const PAGE_SIZE = 25;
 export function UsersTab({
   appId,
   monthlyBudgetUsd,
+  budgetScope = "user",
   appAttest = false,
   installsOnly = false,
 }: {
@@ -46,12 +47,21 @@ export function UsersTab({
    * differs. `null` is unlimited.
    */
   monthlyBudgetUsd: number | null;
+  /**
+   * Whose month `monthlyBudgetUsd` is measured over. A row is one user's
+   * spend across every install they hold, so it is drawn against the budget
+   * only where the budget is that user's — never one install's budget against
+   * several installs' spend.
+   */
+  budgetScope?: "install" | "user";
   /** Whether users hold App Attest keys, one per install, whose count is shown. */
   appAttest?: boolean;
   /** Under app_install every user is one install, and is named as one. */
   installsOnly?: boolean;
 }) {
   const noun = installsOnly ? "install" : "user";
+  // Under app_install a user is one install, so an install budget is theirs.
+  const budgetIsPerRow = budgetScope === "user" || installsOnly;
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -185,7 +195,21 @@ export function UsersTab({
                     {/* One user against the budget the app sets for each of
                         them, drawn exactly as the apps list draws an app
                         against its own. */}
-                    <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
+                    {budgetIsPerRow ? (
+                      <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
+                    ) : (
+                      // The budget is each install's, and this is the sum of
+                      // the user's installs: no single bar says where any of
+                      // them stands, so the cost is shown on its own.
+                      <span
+                        className="whitespace-nowrap"
+                        title={monthlyBudgetUsd === null
+                          ? "No monthly budget"
+                          : `Spent across this user's installs; the ${formatCost(monthlyBudgetUsd)} budget applies to each install`}
+                      >
+                        {formatCost(user.usage.cost_usd)}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     <GuardedButton

@@ -285,6 +285,33 @@ describe("App Attest apps' users and installs", () => {
   });
 });
 
+describe("a signed-in user's spend against an App Attest app's budget", () => {
+  const spendy = { ...USER, installs: 2, usage: { ...USER.usage, cost_usd: 14 } };
+  const withBudget = (spending: Record<string, unknown>) => ({
+    authentication: ATTEST(ISSUER_USERS),
+    limits: {
+      per_user: { requests: { per_minute: null, per_day: null }, spending },
+      per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+    },
+  });
+
+  it("never draws the user's total across installs against one install's budget", async () => {
+    // Phone and tablet spent $7 each against a $10 budget per install: each has
+    // $3 left, so $14 / $10 and an exhausted bar would be false.
+    renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "install" }), users: [spendy] });
+    expect(await screen.findByTitle(/applies to each install/u)).toBeTruthy();
+    expect(screen.getByTitle(/applies to each install/u).textContent).toBe("$14.00");
+    expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
+    expect(screen.queryByText(/\$10\.00/u)).toBeNull();
+  });
+
+  it("draws it against the budget once the budget is the user's", async () => {
+    renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "user" }), users: [spendy] });
+    expect(await screen.findByRole("progressbar", { name: /monthly budget used/i })).toBeTruthy();
+    expect(screen.queryByTitle(/applies to each install/u)).toBeNull();
+  });
+});
+
 describe("an app's warnings", () => {
   const warning = {
     code: "bearer_without_assertion",
