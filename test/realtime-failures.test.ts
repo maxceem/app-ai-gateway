@@ -402,6 +402,31 @@ describe('realtime failure boundaries', () => {
       await coordinator.alarm(); expect(await next('gateway.error')).toMatchObject({ error: { code: 'auth_required' } });
     }, env, 'header');
   });
+  it('a transient maintenance failure retries while the leases hold, and a policy refusal still closes', async () => {
+    await withSockets(async ({ coordinator, socket, next }) => {
+      const backend = Reflect.get(coordinator, 'backend') as import('../src/realtime/backend').SessionBackend;
+      const maintain = backend.maintain;
+      let failures = 1;
+      backend.maintain = async (...args) => { if (failures-- > 0) throw new Error('D1 unavailable'); return maintain(...args); };
+      Reflect.set(coordinator, 'nextMaintenance', Date.now() - 1);
+      await coordinator.alarm(); await Reflect.get(coordinator, 'maintenance');
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      expect(Reflect.get(coordinator, 'nextMaintenance')).toBeLessThanOrEqual(Date.now() + 5_000);
+      backend.maintain = async () => { throw new GatewayError(429, 'app_budget_exhausted', 'Exhausted'); };
+      Reflect.set(coordinator, 'nextMaintenance', Date.now() - 1);
+      await coordinator.alarm(); expect(await next('gateway.error')).toMatchObject({ error: { code: 'app_budget_exhausted' } });
+    });
+  });
+  it('a second utterance committed while a turn is pending joins it instead of closing the session', async () => {
+    await withSockets(async ({ coordinator, socket }) => {
+      const effect = Reflect.get(coordinator, 'effect') as (...args: unknown[]) => Promise<void>;
+      const trigger = { type: 'response.create', response: { max_output_tokens: 4096 } };
+      await effect.call(coordinator, { kind: 'pendingAuto', frame: trigger, correlation: 'first' }, 'server', 0);
+      await effect.call(coordinator, { kind: 'pendingAuto', frame: trigger, correlation: 'second' }, 'server', 0);
+      expect(Reflect.get(coordinator, 'pendingAuto')).toMatchObject({ correlation: 'second' });
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+  });
   it('audio frames do not scan the journal or rewrite unchanged live alarms', async () => {
     await withSockets(async ({ socket, upstream, coordinator, state }) => {
       let forwarded = 0; let complete!: () => void; const done = new Promise<void>(resolve => { complete = resolve; });

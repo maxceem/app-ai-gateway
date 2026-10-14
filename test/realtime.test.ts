@@ -115,6 +115,18 @@ function collector(socket: WebSocket) {
     expect(() => adapter.client({ type: 'response.create' }, manual)).toThrow();
     expect(adapter.server({ type: 'input_audio_buffer.speech_started' }, { ...manual, active: true })[0]).toEqual({ kind: 'cancel' });
   });
+  it('applies VAD input bounds and interruption when the app creates responses itself', () => {
+    const adapter = new OpenAIAdapter('gpt-realtime', 1024);
+    adapter.client({ type: 'session.update', session: { audio: { input: { turn_detection: { type: 'server_vad', create_response: false, interrupt_response: true } } } } }, manual);
+    const append = { type: 'input_audio_buffer.append', audio: 'AAAA' };
+    expect(adapter.client(append, manual)).toMatchObject([{ input: false }]);
+    expect(adapter.server({ type: 'input_audio_buffer.speech_started' }, { ...manual, active: true })[0]).toEqual({ kind: 'cancel' });
+    expect(adapter.client(append, manual)).toMatchObject([{ input: true }]);
+    // The utterance stays this turn's input until the app's own response.create.
+    expect(adapter.server({ type: 'input_audio_buffer.committed', item_id: 'item-1' }, manual).map(effect => effect.kind)).toEqual(['forward']);
+    expect(adapter.client(append, manual)).toMatchObject([{ input: false }]);
+    expect(adapter.client({ type: 'response.create' }, manual)[0]).toMatchObject({ kind: 'generate' });
+  });
   it('preserves a lower session cap across manual/VAD triggers and unrelated updates', () => {
     const adapter = new OpenAIAdapter('gpt-realtime', 4096);
     expect(adapter.client({ type: 'session.update', session: { max_output_tokens: 32 } }, manual)[0]).toMatchObject({ frame: { session: { max_output_tokens: 32 } } });

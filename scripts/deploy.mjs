@@ -95,7 +95,8 @@ async function wrangler(args, options = {}) {
     child.stderr?.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
     child.on("close", (status) => resolve({ status, stdout, stderr }));
-    if (options.input !== undefined) child.stdin.end(options.input);
+    // A Wrangler that exits before reading its input must fail as itself, not as an EPIPE.
+    if (options.input !== undefined) child.stdin?.on("error", reject).end(options.input);
   });
 
   if (result.status !== 0 && !options.allowFailure) {

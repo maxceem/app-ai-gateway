@@ -1,4 +1,5 @@
 import { AdmissionReceipts } from "./admission-receipts";
+import { REALTIME_LIMITS } from "../realtime/limits";
 import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
@@ -361,7 +362,7 @@ export class UserLimiter extends DurableObject<Env> {
       if (existing) return { allowed: true, expiresAt: existing.expires_at };
       const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM session_leases").one().count;
       if (count >= cap) return { allowed: false, expiresAt: 0 };
-      const expiresAt = now + 90_000;
+      const expiresAt = now + REALTIME_LIMITS.leaseMs;
       this.ctx.storage.sql.exec("INSERT INTO session_leases VALUES (?, ?)", sessionId, expiresAt);
       return { allowed: true, expiresAt };
     });
@@ -369,7 +370,7 @@ export class UserLimiter extends DurableObject<Env> {
 
   renewSession(sessionId: string): { allowed: boolean; expiresAt: number } {
     const now = Date.now();
-    const expiresAt = now + 90_000;
+    const expiresAt = now + REALTIME_LIMITS.leaseMs;
     const rows = this.ctx.storage.sql.exec("UPDATE session_leases SET expires_at = ? WHERE session_id = ? AND expires_at > ? RETURNING session_id", expiresAt, sessionId, now).toArray();
     return { allowed: rows.length === 1, expiresAt: rows.length ? expiresAt : 0 };
   }

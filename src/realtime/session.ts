@@ -209,7 +209,10 @@ export class SessionCoordinator {
         return;
       case 'generate': await this.generate(effect.frame, effect.inputActivity === true); return;
       case 'pendingAuto':
-        if (this.pendingAuto) invalid('Realtime automatic turn backlog exceeded');
+        // Speech committed while a response runs is all in the provider's
+        // conversation already, so one response after it answers every such
+        // utterance: a later one joins the pending turn instead of ending the
+        // session.
         this.pendingAuto = effect; return;
       case 'cancel': { const frame = this.adapter!.cancel(); if (frame) send(this.upstream, frame); else this.terminate(null, 1000); return; }
       case 'created':
@@ -458,7 +461,18 @@ export class SessionCoordinator {
       this.terminate(new GatewayError(expired ? 401 : 408, expired ? 'auth_required' : 'realtime_protocol_error', expired ? 'Realtime session expired' : 'Realtime deadline exceeded'), expired ? 1000 : 1008); return;
     }
     if (!this.maintenance && Date.now() >= this.nextMaintenance) {
-      this.maintenance = this.maintain().catch(error => this.fail(error)).finally(() => { this.maintenance = null; this.ctx.waitUntil(this.schedule()); });
+      this.maintenance = this.maintain().catch(error => {
+        // An outage is not a refusal. While the leases still cover the session
+        // it tries again shortly; only a policy answer, or leases about to
+        // lapse, end the conversation.
+        const transient = !(error instanceof GatewayError) || error.status >= 500;
+        if (transient && Date.now() + L.maintenanceRetryMs < this.leaseExpiry - L.leaseSafetyMs) {
+          log('warn', 'realtime_maintenance_retry', { sessionId: this.bootstrap.sessionId, error: error instanceof Error ? error.message : String(error) });
+          this.nextMaintenance = Date.now() + L.maintenanceRetryMs;
+          return;
+        }
+        this.fail(error);
+      }).finally(() => { this.maintenance = null; this.ctx.waitUntil(this.schedule()); });
       this.ctx.waitUntil(this.maintenance);
     }
   }

@@ -7,6 +7,7 @@ import { join, dirname, resolve } from 'node:path';
 
 /** Compatibility declarations are reviewed on changes; migrations stay expand-only. */
 export const RELEASE_COMPATIBILITY = { backend: REALTIME_BACKEND_CONTRACT, schema: 1, classes: 1 } as const;
+/** Also written into migrations/0008_realtime_releases.sql's promotion trigger; a test pins the two equal. */
 export const RELEASE_RETENTION_MS = (REALTIME_MAX_SESSION_SECONDS + 60 + 3600) * 1000 + REALTIME_LIMITS.outboxRetentionMs;
 const LEASE_MS = 10 * 60_000;
 /** How often a running release renews its lease, well inside {@link LEASE_MS}. */

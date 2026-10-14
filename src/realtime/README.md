@@ -28,7 +28,10 @@ horizon and margin. Cleanup failures after promotion leave a successful deploy
 with cleanup pending; explicit cleanup failures remain errors.
 
 Retained runtimes require backward-compatible backend, schema and Durable
-Object lifecycle changes. Compatibility declarations are human-reviewed;
+Object lifecycle changes. `REALTIME_BACKEND_CONTRACT` is effectively frozen:
+a deploy refuses while any retained release declares another contract, and the
+active release always declares the current one, so evolve the backend
+additively instead of bumping it. Compatibility declarations are human-reviewed;
 there is no SQL safety inference or database rollback. Rollback coordinates a
 recorded compatible main version and realtime pointer. Release tooling must not
 modify retained realtime Workers.

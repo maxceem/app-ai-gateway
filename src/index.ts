@@ -17,6 +17,7 @@ import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
+import { ttlCache } from "./core/ttl-cache";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
 import { serveRealtime, discoverRealtime } from "./realtime/serve";
@@ -51,26 +52,29 @@ const app = new Hono<AppEnv>();
 
 app.use("*", requestScope);
 
-/** How long one isolate reuses its last database and Durable Object probe. */
-const HEALTH_PROBE_MS = 5_000;
-const healthProbes = new WeakMap<D1Database, { at: number; state: Promise<{ active_realtime_id: string | null } | null> }>();
-
 /**
  * Whether the database and the Durable Object namespace answer, and which
  * realtime release is active. The route is public, so one isolate probes at
- * most once per {@link HEALTH_PROBE_MS} however often it is called; a deploy
- * polls it every second and a half, and needs only a fresh `buildId`, which is
- * read from the Worker's own binding on every call.
+ * most once every five seconds however often it is called; a deploy polls it
+ * every second and a half, and needs only a fresh `buildId`, which is read from
+ * the Worker's own binding on every call. One isolate serves one deployment,
+ * so the one entry needs no key.
  */
+const healthProbes = ttlCache<"probe", Promise<{ active_realtime_id: string | null } | null>>({
+  name: "health-probe",
+  ttlMs: 5_000,
+  maxEntries: 1,
+});
+
 function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | null> {
-  const cached = healthProbes.get(env.DB);
-  if (cached && Date.now() - cached.at < HEALTH_PROBE_MS) return cached.state;
+  const cached = healthProbes.get("probe");
+  if (cached) return cached;
   const state = (async () => {
     const row = await env.DB.prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1").first<{ active_realtime_id: string | null }>();
     await env.ORG_QUOTA.getByName("__deployment_health__").usage("health");
     return row;
   })();
-  healthProbes.set(env.DB, { at: Date.now(), state });
+  healthProbes.set("probe", state);
   return state;
 }
 

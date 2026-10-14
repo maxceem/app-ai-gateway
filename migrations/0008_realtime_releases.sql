@@ -29,6 +29,7 @@ CREATE TABLE gateway_deployment (
 );
 
 -- A pointer update and its retirement changes are one SQLite transaction.
+-- 610260000 is RELEASE_RETENTION_MS in scripts/seamless.ts; test/seamless-deploy.node.mjs pins them equal.
 CREATE TRIGGER realtime_release_promotion AFTER UPDATE OF active_realtime_id ON gateway_release_state
 WHEN NEW.active_realtime_id IS NOT OLD.active_realtime_id
 BEGIN

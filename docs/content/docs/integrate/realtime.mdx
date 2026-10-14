@@ -73,11 +73,14 @@ its finite ceiling to the session and every response.
 For managed VAD, send `session.update` with `audio.input.turn_detection.type`
 set to `server_vad`. Your requested `create_response` and `interrupt_response`
 behavior is managed by the gateway. Upstream these fields are forced to `false`;
-the acknowledgement shows the actual effective configuration. The gateway admits
-one response for each committed speech item. Do not also send manual
-`response.create` in this mode. Interruption cancels the active response and
-waits for its terminal usage before admitting the next one. Only one pending
-automatic turn is buffered.
+the acknowledgement shows the actual effective configuration. With
+`create_response` left on, the gateway admits one response for each committed
+speech item; do not also send manual `response.create` in this mode. Speech
+committed while a response is still running is answered by one response after
+it, however many utterances it holds. With `create_response: false`, voice
+detection only commits your audio, and you send `response.create` yourself.
+Either way, interruption cancels the active response and waits for its terminal
+usage before admitting the next one.
 
 Function tools run in your application. Send results for outstanding calls with
 `conversation.item.create`, then request another admitted response. Cancellation
@@ -94,10 +97,11 @@ cap). Gateway tokens bound the session to their verified expiry. Each caller
 may discover 30 times and open 10 sessions per minute; a server app that sends
 no end-user header shares those across everything using its API key.
 
-A turn's input is what is sent before its response starts. Under managed VAD it
-starts when the provider detects speech and ends when that speech is committed,
-so a microphone left streaming silence between turns does not use it up. In
-manual mode it is everything appended or added since the last response.
+A turn's input is what is sent before its response starts. Under VAD only
+audio sent while the provider hears speech counts, so a microphone left
+streaming silence between turns does not use it up; with automatic responses,
+each committed utterance starts a new turn. Without VAD it is everything
+appended or added since the last response.
 
 Client JSON frames are limited to 256 KiB; provider frames to 1 MiB. Queued input
 is limited to 256 events and 1 MiB, input per turn to 4 MiB, and output per

@@ -7,7 +7,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
   private auto = false;
   private interrupt = false;
   /**
-   * Whether managed VAD has heard speech it has not committed yet. Only that
+   * Whether VAD has heard speech it has not committed yet. Under VAD only that
    * audio is a turn's input: between turns the microphone keeps streaming
    * silence the provider discards, and it must not run out the turn's bounds.
    */
@@ -96,7 +96,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       case 'input_audio_buffer.append':
         keys(frame, ['type', 'event_id', 'audio']);
         if (typeof frame.audio !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.audio)) invalid('Expected base64 PCM audio');
-        return [{ kind: 'forward', frame, useful: true, input: !this.auto || this.speaking }];
+        return [{ kind: 'forward', frame, useful: true, input: this.requestedVad === null || this.speaking }];
       case 'input_audio_buffer.commit':
       case 'input_audio_buffer.clear':
         keys(frame, ['type', 'event_id']);
@@ -141,11 +141,13 @@ export class OpenAIAdapter implements ProtocolAdapter {
       if ((this.requestedVad === null) !== (vad === null)) invalid('Unexpected upstream turn detection');
       return [{ kind: 'ready' }, { kind: 'forward', frame }];
     }
-    if (frame.type === 'input_audio_buffer.speech_started' && this.auto) {
+    // Interruption is the gateway's under any VAD, automatic responses or not:
+    // upstream it is always off, so the requested behaviour is applied here.
+    if (frame.type === 'input_audio_buffer.speech_started' && this.requestedVad !== null) {
       this.speaking = true;
       if (this.interrupt && state.active) return [{ kind: 'cancel' }, { kind: 'forward', frame }];
     }
-    if (frame.type === 'input_audio_buffer.speech_stopped') this.speaking = false;
+    if (frame.type === 'input_audio_buffer.speech_stopped' || frame.type === 'input_audio_buffer.committed') this.speaking = false;
     // Only under managed VAD, where every commit is its own admitted turn: in
     // manual mode audio committed before a clear still belongs to the turn.
     if (frame.type === 'input_audio_buffer.cleared' && this.auto) { this.speaking = false; return [{ kind: 'forward', frame }, { kind: 'inputReset' }]; }
