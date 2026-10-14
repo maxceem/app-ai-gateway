@@ -104,7 +104,16 @@ const app: AppResponse = {
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    warnings: [],
   },
+};
+
+// Nothing produces a warning today; the rendering is for whatever does.
+const warning = {
+  code: "example_change",
+  message: "Example: this behaviour stops on 2027-01-31T00:00:00Z. Update the app before then.",
+  until: "2027-01-31T00:00:00Z",
+  docs_url: "https://docs.appaigateway.com/integrate/ios",
 };
 
 const account: CliAccountResponse = {
@@ -257,6 +266,18 @@ const cases: Case[] = [
     command: "app show",
     result: app,
     includes: ["Example (app_1)", '"revision": 1'],
+    excludes: ["Warnings"],
+  },
+  {
+    name: "app show heads the document with the app's warnings",
+    command: "app show",
+    result: { app: { ...app.app, warnings: [warning] } },
+    includes: [
+      "Warnings",
+      "- Example: this behaviour stops on 2027-01-31T00:00:00Z.",
+      "See https://docs.appaigateway.com/integrate/ios",
+      '"warnings": [',
+    ],
   },
   {
     name: "provider update confirms in one line and prints only the hint",
@@ -432,8 +453,24 @@ const cases: Case[] = [
       providers: [{ id: "prv_1", slug: "openai", status: "active" }],
       ready: true,
       limitations: ["No inference was sent."],
+      warnings: [],
     },
     includes: ["app_1 is ready to serve requests.", "Active providers:", "- No inference was sent."],
+    excludes: ["Warnings"],
+  },
+  {
+    name: "app check reports warnings beside a ready verdict, not as a failure",
+    command: "app check",
+    result: {
+      appId: "app_1",
+      validation: { valid: true, app_id: "app_1" },
+      status: "active",
+      providers: [{ id: "prv_1", slug: "openai", status: "active" }],
+      ready: true,
+      limitations: ["No inference was sent."],
+      warnings: [warning],
+    },
+    includes: ["app_1 is ready to serve requests.", "Warnings", "stops on 2027-01-31T00:00:00Z"],
   },
   {
     name: "app validate reports what it could and could not check",

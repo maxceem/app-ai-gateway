@@ -9,7 +9,7 @@ import { seamlessRelease, releaseFingerprint, companionEnvironment, RELEASE_RETE
 async function fixture(t, empty = false) {
   const directory = await mkdtemp(join(tmpdir(), 'seamless-release-'));
   const db = new DatabaseSync(':memory:');
-  if (!empty) db.exec(await readFile(new URL('../migrations/0007_realtime_releases.sql', import.meta.url), 'utf8'));
+  if (!empty) db.exec(await readFile(new URL('../migrations/0008_realtime_releases.sql', import.meta.url), 'utf8'));
   t.after(async () => { db.close(); await rm(directory, { recursive: true, force: true }); });
   const main = join(directory, 'index.js'); const rt = join(directory, 'worker.js');
   await writeFile(main, 'main'); await writeFile(rt, 'realtime');
@@ -112,7 +112,7 @@ test('empty control DB bootstrap is retryable and owns lease before migrations',
   const f = await fixture(t, true);
   const input = { ...f.input, prepare: async () => {
     assert.ok(active(f).deployment_owner);
-    f.db.exec(await readFile(new URL('../migrations/0007_realtime_releases.sql', import.meta.url), 'utf8'));
+    f.db.exec(await readFile(new URL('../migrations/0008_realtime_releases.sql', import.meta.url), 'utf8'));
   } };
   const first = await seamlessRelease(input, f.driver);
   const retried = await seamlessRelease({ ...f.input, prepare: async () => {} }, f.driver);

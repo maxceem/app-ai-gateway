@@ -22,6 +22,45 @@ describe("gateway JWT auth method", () => {
       code: "auth_required",
     });
   });
+
+  /**
+   * An attest token is bound to the install whose key signs every request it
+   * is sent with. One without an install could not be checked against any
+   * key, and an API-key token that claimed one would be naming a proof it was
+   * never asked for.
+   */
+  it("requires an install on an attest token, and refuses one anywhere else", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const sign = (claims: Record<string, unknown>) => new SignJWT({ app: "method-app", ...claims })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setSubject("method-user")
+      .setJti(crypto.randomUUID())
+      .setIssuedAt(now)
+      .setExpirationTime(now + 300)
+      .sign(new TextEncoder().encode(secret));
+
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest" }), secret, "method-app"))
+      .rejects.toMatchObject({ status: 401, code: "auth_required" });
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "" }), secret, "method-app"))
+      .rejects.toMatchObject({ status: 401, code: "auth_required" });
+    await expect(verifyGatewayToken(await sign({ auth_method: "api_key", install: "k" }), secret, "method-app"))
+      .rejects.toMatchObject({ status: 401, code: "auth_required" });
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "key-1" }), secret, "method-app"))
+      .resolves.toMatchObject({ authMethod: "attest", installId: "key-1" });
+    await expect(verifyGatewayToken(await sign({ auth_method: "api_key" }), secret, "method-app"))
+      .resolves.toMatchObject({ authMethod: "api_key", installId: null });
+  });
+
+  it("issues the install claim on attest tokens", async () => {
+    const { token } = await issueGatewayToken(secret, {
+      appId: "method-app",
+      userId: "method-user",
+      authMethod: "attest",
+      installId: "key-2",
+    });
+    const payload = JSON.parse(atob(token.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/")));
+    expect(payload).toMatchObject({ auth_method: "attest", install: "key-2", sub: "method-user" });
+  });
 });
 
 /**
@@ -38,6 +77,7 @@ describe("the imported HMAC key", () => {
       appId: "key-cache-app",
       userId: "user-1",
       authMethod: "attest",
+      installId: "key-cache-install",
     });
     expect(importKey).toHaveBeenCalledTimes(1);
 
@@ -48,6 +88,7 @@ describe("the imported HMAC key", () => {
         userId: "user-1",
         authMethod: "attest",
         credentialType: "gateway_token",
+        installId: "key-cache-install",
       });
     }
     expect(importKey).toHaveBeenCalledTimes(1);
@@ -58,6 +99,7 @@ describe("the imported HMAC key", () => {
       appId: "key-cache-app",
       userId: "user-2",
       authMethod: "attest",
+      installId: "key-cache-install-2",
     });
     expect(importKey).toHaveBeenCalledTimes(2);
     await expect(verifyGatewayToken(other.token, secretOne, "key-cache-app"))

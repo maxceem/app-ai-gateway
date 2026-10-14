@@ -10,15 +10,41 @@ import { realtimePolicy } from './policy';
 import type { Bootstrap } from './types';
 import { activeRealtimeRelease } from './releases';
 import { resolveDeployment } from '../policy/deployment';
+import { recordRejectionEvent } from '../diagnostics/rejection-events';
+import type { GatewayIdentity } from '../core/types';
+import { realtimeCaller } from './caller';
 
-export async function prepareRealtime(env: Env, request: Request, appId: string, providerSlug: string, origin: string, action: 'realtime_connect' | 'realtime_discover' = 'realtime_connect'): Promise<{ bootstrap: Bootstrap; headers: Headers }> {
+/** A handshake is a `GET`: there is no body for its App Attest proof to sign. */
+const NO_BODY = async () => new Uint8Array();
+
+/**
+ * Spends the handshake's App Attest assertion counter, as every signed request
+ * spends its own, so a discovery or handshake proof captured off the wire is
+ * refused the second time rather than opening another session.
+ */
+async function spendAssertionCounter(env: Env, identity: GatewayIdentity, counter: number | null, providerSlug: string, model: string,
+  appVersion: string | null, waitUntil: (promise: Promise<unknown>) => void): Promise<void> {
+  if (counter === null || identity.authMethod !== 'attest') return;
+  const start = Date.now();
+  const { accepted } = await env.USER_LIMITER.getByName(realtimeCaller(identity)).advanceCounter(counter);
+  if (accepted) return;
+  // Sampled exactly as admission samples a replayed proxy request.
+  waitUntil(recordRejectionEvent({ env, identity, attribution: { providerSlug, model, route: `${providerSlug}/realtime` }, endpointSlug: null,
+    appVersion, reason: 'blocked_replay', scope: 'install', latencyMs: Date.now() - start }));
+  throw new GatewayError(403, 'attest_failed', 'App Attest assertion counter was replayed');
+}
+
+export async function prepareRealtime(env: Env, request: Request, appId: string, providerSlug: string, origin: string,
+  action: 'realtime_connect' | 'realtime_discover' = 'realtime_connect',
+  waitUntil: (promise: Promise<unknown>) => void = promise => { void promise.catch(() => {}); }): Promise<{ bootstrap: Bootstrap; headers: Headers }> {
   const url = new URL(request.url);
   const params = [...url.searchParams.keys()];
   const model = url.searchParams.get('model');
   if (!model || model.length > 200 || params.length !== 1 || params[0] !== 'model') throw new GatewayError(400, 'invalid_request', 'Specify exactly one model query parameter');
   if (!/^Bearer \S+$/iu.test(request.headers.get('authorization') ?? '')) throw new GatewayError(401, 'auth_required', 'Authorization: Bearer is required');
-  const { app, identity } = await authenticatedAccess({ env: env, deployment: resolveDeployment(env, origin), appId, headers: request.headers, providerSlug });
-  await enforceEndpointRateLimit(env, action, JSON.stringify([app.id, identity.userId ?? ['key', identity.apiKeyId]]));
+  const { app, identity, assertionCounter } = await authenticatedAccess({ env, deployment: resolveDeployment(env, origin), appId, request, body: NO_BODY, providerSlug });
+  await spendAssertionCounter(env, identity, assertionCounter, providerSlug, model, request.headers.get('x-app-version'), waitUntil);
+  await enforceEndpointRateLimit(env, action, realtimeCaller(identity));
   const provider = await requireProvider(env, app.organizationId, providerSlug);
   const policy = realtimePolicy(app, provider, model);
   const quota = await billingQuota(resolveDeployment(env, origin), env, app.organizationId, new Map());
@@ -48,13 +74,15 @@ function localOrigin(origin: string): boolean {
 export const serveRealtime: Handler<{ Bindings: Env; Variables: ServedVariables }> = async c => {
   if (c.req.method !== 'GET' || c.req.header('upgrade')?.toLowerCase() !== 'websocket') throw new GatewayError(426, 'upgrade_required', 'Discover the realtime URL before opening a WebSocket', { Upgrade: 'websocket' });
   if (!c.env.GATEWAY_BUILD_ID && localOrigin(c.req.url)) {
-    const { bootstrap, headers } = await prepareRealtime(c.env, c.req.raw, c.req.param('app')!, c.req.param('provider')!, new URL(c.req.url).origin);
+    const { bootstrap, headers } = await prepareRealtime(c.env, c.req.raw, c.req.param('app')!, c.req.param('provider')!, new URL(c.req.url).origin,
+      'realtime_connect', promise => c.executionCtx.waitUntil(promise));
     return c.env.REALTIME_SESSION.get(c.env.REALTIME_SESSION.newUniqueId()).fetch(new Request('https://realtime.internal/', { headers: { ...Object.fromEntries(headers), 'x-realtime-bootstrap': JSON.stringify(bootstrap) } }));
   }
   throw new GatewayError(409, 'conflict', 'Discover the realtime URL before opening a WebSocket');
 };
 export const discoverRealtime: Handler<{ Bindings: Env; Variables: ServedVariables }> = async c => {
-  const { bootstrap } = await prepareRealtime(c.env, c.req.raw, c.req.param('app')!, c.req.param('provider')!, new URL(c.req.url).origin, 'realtime_discover');
+  const { bootstrap } = await prepareRealtime(c.env, c.req.raw, c.req.param('app')!, c.req.param('provider')!, new URL(c.req.url).origin,
+    'realtime_discover', promise => c.executionCtx.waitUntil(promise));
   const local = !c.env.GATEWAY_BUILD_ID && localOrigin(c.req.url);
   const release = local ? { id: 'local', url: new URL(c.req.url).origin.replace(/^http/u, 'ws') } : await activeRealtimeRelease(c.env.DB);
   const url = new URL(release.url);

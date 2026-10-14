@@ -172,6 +172,26 @@ describe("usage extraction", () => {
     );
   });
 
+  it("reads Mistral's billed audio seconds beside its transcription tokens", () => {
+    const usage = extracted(
+      JSON.stringify({
+        model: "voxtral-mini-latest",
+        text: "hello",
+        language: "en",
+        usage: { prompt_tokens: 4, completion_tokens: 10, total_tokens: 14, prompt_audio_seconds: 12 },
+      }),
+      "application/json",
+      "audio_transcription",
+    );
+    expect(usage).toEqual({
+      inputTokens: 4,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 10,
+      audioSeconds: 12,
+    });
+  });
+
   it("bills generated Gemini image tokens at the image rate", () => {
     const usage = extracted(
       JSON.stringify({
@@ -262,6 +282,250 @@ describe("usage extraction", () => {
     // A text model prices no modality apart, so the same breakdown changes nothing.
     const flash = shippedRates("gemini", "gemini-3.5-flash");
     expect(computeCost("gemini", "gemini-3.5-flash", usage)).toBeCloseTo((1000 * flash.input) / 1e6, 12);
+  });
+
+  it("bills an OpenAI image edit's input images at the image input rate", () => {
+    // The Images API response, as its reference documents it: the image is
+    // `b64_json`, and usage splits the prompt into text and image tokens.
+    const usage = extracted(
+      JSON.stringify({
+        created: 1713833628,
+        data: [{ b64_json: "iVBORw0KGgo=" }],
+        background: "opaque",
+        output_format: "png",
+        quality: "medium",
+        size: "1024x1024",
+        usage: {
+          input_tokens: 1360,
+          input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+          output_tokens: 1056,
+          total_tokens: 2416,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1056,
+      modalityTokens: { input: { image: 1310 } },
+    });
+    const image = shippedRates("openai", "gpt-image-2");
+    expect(computeCost("openai", "gpt-image-2", usage)).toBeCloseTo(
+      (50 * image.input + 1310 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+    // Without the split nothing says the prompt was text, so it all bills as image.
+    expect(computeCost("openai", "gpt-image-2", { ...usage, modalityTokens: undefined })).toBeCloseTo(
+      (1360 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+  });
+
+  it("reads a streamed OpenAI image edit from its completed event", () => {
+    const usage = extracted(
+      [
+        `event: image_edit.partial_image\ndata: ${JSON.stringify({
+          type: "image_edit.partial_image",
+          b64_json: "iVBORw0KGgo=",
+          partial_image_index: 0,
+        })}`,
+        `event: image_edit.completed\ndata: ${JSON.stringify({
+          type: "image_edit.completed",
+          b64_json: "iVBORw0KGgo=",
+          created_at: 1620000000,
+          size: "1024x1024",
+          quality: "high",
+          background: "transparent",
+          output_format: "png",
+          usage: {
+            total_tokens: 100,
+            input_tokens: 50,
+            output_tokens: 50,
+            input_tokens_details: { text_tokens: 10, image_tokens: 40 },
+          },
+        })}`,
+        "",
+      ].join("\n\n"),
+      "text/event-stream",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 50,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 50,
+      modalityTokens: { input: { image: 40 } },
+    });
+  });
+
+  it("bills an OpenAI image model's text output apart from its image output", () => {
+    const body = (outputDetails?: Record<string, number>) => JSON.stringify({
+      created: 1713833628,
+      data: [{ b64_json: "iVBORw0KGgo=" }],
+      usage: {
+        input_tokens: 30,
+        input_tokens_details: { text_tokens: 30, image_tokens: 0 },
+        output_tokens: 4260,
+        ...(outputDetails && { output_tokens_details: outputDetails }),
+        total_tokens: 4290,
+      },
+    });
+    const split = extracted(body({ text_tokens: 100, image_tokens: 4160 }), "application/json", "other");
+    // An all-text prompt says so: nothing on the input side is an image.
+    expect(split.modalityTokens).toEqual({ input: {}, output: { image: 4160 } });
+    const image = shippedRates("openai", "gpt-image-1.5");
+    expect(computeCost("openai", "gpt-image-1.5", split)).toBeCloseTo(
+      (30 * image.input + 100 * image.output + 4160 * image.image_output) / 1e6,
+      12,
+    );
+    // An output side that is not broken down bills at the image rate.
+    const whole = extracted(body(), "application/json", "other");
+    expect(whole.modalityTokens).toEqual({ input: {} });
+    expect(computeCost("openai", "gpt-image-1.5", whole)).toBeCloseTo(
+      (30 * image.input + 4260 * image.image_output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills uncached OpenAI prompt tokens as images first when part of the prompt was cached", () => {
+    // `cached_tokens` does not say which modality was cached, and the split
+    // counts the whole prompt. Taking the cached part to be text could bill an
+    // image at the text rate, so the uncached part is billed as image first:
+    // never under what the provider charged, possibly over it.
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          input_tokens: 2000,
+          input_tokens_details: { text_tokens: 1000, image_tokens: 1000, cached_tokens: 1000 },
+          output_tokens: 0,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toMatchObject({ inputTokens: 1000, cachedInputTokens: 1000, modalityTokens: { input: { image: 1000 } } });
+    const image = shippedRates("openai", "gpt-image-1.5");
+    expect(computeCost("openai", "gpt-image-1.5", usage)).toBeCloseTo(
+      (1000 * image.image_input + 1000 * image.cached_input) / 1e6,
+      12,
+    );
+  });
+
+  it("counts OpenAI tokens the split does not account for as unknown, and bills them high", () => {
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          input_tokens: 500,
+          input_tokens_details: { image_tokens: 300 },
+          output_tokens: 1056,
+        },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage.modalityTokens).toEqual({ input: { image: 300, unknown: 200 } });
+    const image = shippedRates("openai", "gpt-image-2");
+    expect(computeCost("openai", "gpt-image-2", usage)).toBeCloseTo(
+      (500 * image.image_input + 1056 * image.output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills a per-image model by the images the response says it billed", () => {
+    const usage = extracted(
+      JSON.stringify({
+        model: "dola-seedream-5-0-flash-260915",
+        created: 1757323224,
+        data: [{ url: "https://example.test/a.jpeg", size: "1760x2368" }],
+        usage: { generated_images: 1, input_images: 2, output_tokens: 16280, total_tokens: 16280 },
+      }),
+      "application/json",
+      "other",
+    );
+    expect(usage).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 16280,
+      images: 1,
+    });
+    const flash = shippedRates("bytedance", "dola-seedream-5-0-flash-260915");
+    // Pixels are not priced: one image costs one image's price at any size.
+    expect(computeCost("bytedance", "dola-seedream-5-0-flash-260915", usage)).toBeCloseTo(flash.per_image, 12);
+    expect(reportsPricedMeasure("bytedance", "dola-seedream-5-0-flash-260915", usage)).toBe(true);
+    // An image withheld by moderation is not billed, and not counted.
+    const withheld = { ...usage, images: 0, outputTokens: 0 };
+    expect(computeCost("bytedance", "dola-seedream-5-0-flash-260915", withheld)).toBe(0);
+    expect(reportsPricedMeasure("bytedance", "dola-seedream-5-0-flash-260915", withheld)).toBe(true);
+  });
+
+  it("reads a streamed Seedream image count from its completed event", () => {
+    const usage = extracted(
+      [
+        `data: ${JSON.stringify({
+          type: "image_generation.partial_succeeded",
+          model: "seedream-4-5-251128",
+          created: 1589478378,
+          image_index: 0,
+          url: "https://example.test/a.jpeg",
+          size: "2048x2048",
+        })}`,
+        `data: ${JSON.stringify({
+          type: "image_generation.completed",
+          model: "seedream-4-5-251128",
+          created: 1589478378,
+          usage: { generated_images: 2, output_tokens: 32768, total_tokens: 32768 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n"),
+      "text/event-stream",
+      "other",
+    );
+    expect(usage.images).toBe(2);
+    expect(computeCost("bytedance", "seedream-4-5-251128", usage)).toBeCloseTo(
+      2 * shippedRates("bytedance", "seedream-4-5-251128").per_image,
+      12,
+    );
+  });
+
+  it("does not bill a per-image model whose response counted no images", () => {
+    // Tokens alone are not the measure an image price is in, so this records
+    // as unresolved rather than as a confident $0.
+    const usage = extracted(
+      JSON.stringify({ usage: { output_tokens: 16384, total_tokens: 16384 } }),
+      "application/json",
+      "other",
+    );
+    expect(usage.images).toBeUndefined();
+    expect(reportsPricedMeasure("bytedance", "seedream-4-0-250828", usage)).toBe(false);
+    // And an image count never turns a token-priced model into an image-priced one.
+    const counted = { ...usage, images: 3 };
+    expect(reportsPricedMeasure("openai", "gpt-image-2", counted)).toBe(true);
+    expect(computeCost("openai", "gpt-image-2", counted)).toBeCloseTo(
+      (16384 * shippedRates("openai", "gpt-image-2").output) / 1e6,
+      12,
+    );
+  });
+
+  it("takes no modality split from a Chat Completions usage that does not give one", () => {
+    // `audio_tokens` and `reasoning_tokens` alone do not say what the rest was.
+    const usage = extracted(
+      JSON.stringify({
+        usage: {
+          prompt_tokens: 100,
+          prompt_tokens_details: { cached_tokens: 20, audio_tokens: 0 },
+          completion_tokens: 40,
+          completion_tokens_details: { reasoning_tokens: 10, audio_tokens: 0 },
+        },
+      }),
+      "application/json",
+      "chat_completions",
+    );
+    expect(usage).toEqual({ inputTokens: 80, cachedInputTokens: 20, cacheWriteTokens: 0, outputTokens: 40 });
   });
 
   it("bills an OpenAI embedding's input tokens", () => {
@@ -528,6 +792,7 @@ describe("provider self-reports", () => {
       })),
       "application/json",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.usage).toEqual({
@@ -555,6 +820,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.report?.costUsd).toBe(0.00009);
@@ -563,7 +829,7 @@ describe("provider self-reports", () => {
 
   it("calls the credential byok only when the response says so", () => {
     const byok = (usage: Record<string, unknown>) =>
-      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter", "chat_completions")
+      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter", "direct", "chat_completions")
         .report?.credentialSource;
     expect(byok({ cost: 0, is_byok: true })).toBe("byok");
     // The upstream's own charge is a figure OpenRouter only has when the
@@ -594,6 +860,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "direct",
       "chat_completions",
     );
     expect(seen.report).toMatchObject({ costUsd: 0.5, servedModel: "late/model" });
@@ -607,6 +874,7 @@ describe("provider self-reports", () => {
         wholeBody(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } })),
         "application/json",
         "openrouter",
+        "direct",
         "chat_completions",
       ).report,
     ).toBeNull();
@@ -619,6 +887,7 @@ describe("provider self-reports", () => {
       wholeBody(completion({ cost: 9.99 })),
       "application/json",
       "openai",
+      "direct",
       "chat_completions",
     );
     expect(seen.report).toBeNull();
@@ -1108,7 +1377,7 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     expect(observed.totalBytes).toBeGreaterThan(SIX_MB);
     // An embeddings call is `other`: no cross-provider contract classifies it.
-    const usage = observeResponse(observed, "application/json", "openai", "other").usage;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "other").usage;
     expect(usage).toEqual({
       inputTokens: 120000,
       cachedInputTokens: 0,
@@ -1118,13 +1387,99 @@ describe("large response bodies", () => {
     expect(computeCost("openai", "gpt-5.6-sol", usage!)).toBeGreaterThan(0);
   });
 
+  it.each([
+    { name: "as the stream's last event", done: false },
+    { name: "before a closing [DONE]", done: true },
+  ])("prices a streamed image whose completed event outgrows the tail window, $name", async ({ done }) => {
+    // OpenAI's completed event carries the whole base64 image and the usage
+    // together, so the one event that reports is cut off at the window's start.
+    const event = (value: unknown) => `event: x\ndata: ${JSON.stringify(value)}\n\n`;
+    const text = event({ type: "image_edit.partial_image", b64_json: "B".repeat(SIX_MB), partial_image_index: 0 })
+      + event({
+        type: "image_edit.completed",
+        b64_json: "A".repeat(SIX_MB),
+        usage: {
+          input_tokens: 1360,
+          input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+          output_tokens: 6240,
+          total_tokens: 7600,
+        },
+      })
+      + (done ? "data: [DONE]\n\n" : "");
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "text/event-stream", "openai", "direct", "other").usage;
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 6240,
+      modalityTokens: { input: { image: 1310 } },
+    });
+  });
+
+  it("still prefers a whole tail event's usage to the cut-off one before it", async () => {
+    const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+    const text = event({ type: "image_edit.partial_image", b64_json: "B".repeat(SIX_MB), usage: { input_tokens: 1, output_tokens: 1 } })
+      + event({ type: "image_edit.completed", usage: { input_tokens: 40, output_tokens: 4160 } });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "text/event-stream", "openai", "direct", "other").usage;
+    expect(usage).toMatchObject({ inputTokens: 40, outputTokens: 4160 });
+  });
+
+  it("prices a 6 MB image response from the usage after its base64 image", async () => {
+    // A generated image arrives inline, so the usage behind it is in the tail.
+    const text = JSON.stringify({
+      created: 1713833628,
+      data: [{ b64_json: "A".repeat(SIX_MB) }],
+      usage: {
+        input_tokens: 1360,
+        input_tokens_details: { text_tokens: 50, image_tokens: 1310 },
+        output_tokens: 6240,
+        total_tokens: 7600,
+      },
+    });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "other").usage;
+    expect(usage).toEqual({
+      inputTokens: 1360,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 6240,
+      modalityTokens: { input: { image: 1310 } },
+    });
+  });
+
+  it("prices a long verbose transcription by the duration at its head", async () => {
+    // Groq's verbose_json states its duration before the segments, which a
+    // long recording grows past both windows; the tail carries no usage at all.
+    const segment = { id: 0, start: 0, end: 1, text: "lorem ipsum ".repeat(20), tokens: [1, 2, 3] };
+    const text = JSON.stringify({
+      task: "transcribe",
+      language: "english",
+      duration: 7200,
+      text: "lorem ipsum",
+      segments: Array.from({ length: Math.ceil(SIX_MB / JSON.stringify(segment).length) }, () => segment),
+    });
+    const observed = await observe(text);
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "groq", "direct", "audio_transcription").usage;
+    expect(usage).toMatchObject({ audioSeconds: 7200, durationOnly: true });
+    expect(computeCost("groq", "whisper-large-v3", usage!)).toBeCloseTo(
+      (7200 / 3600) * shippedRates("groq", "whisper-large-v3").per_hour,
+      12,
+    );
+  });
+
   it("prices a 6 MB Anthropic stream from both of its ends", async () => {
     const observed = await observe(anthropicStream(SIX_MB));
     expect(observed.truncated).toBe(true);
     // Input tokens are only in `message_start` at the head, output tokens only
     // in `message_delta` at the tail: one window alone would halve the bill.
     expect(
-      observeResponse(observed, "text/event-stream", "anthropic", "anthropic_messages").usage,
+      observeResponse(observed, "text/event-stream", "anthropic", "direct", "anthropic_messages").usage,
     ).toEqual({
       inputTokens: 1200,
       cachedInputTokens: 300,
@@ -1144,7 +1499,7 @@ describe("large response bodies", () => {
       usage: { type: "duration", seconds: 3600 },
     }));
     expect(observed.truncated).toBe(true);
-    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "audio_transcription").usage;
     expect(usage?.audioSeconds).toBe(3600);
     expect(computeCost("openai", "whisper-1", usage!))
       .toBeCloseTo(60 * shippedRates("openai", "whisper-1").per_minute, 12);
@@ -1159,7 +1514,7 @@ describe("large response bodies", () => {
       usage: { type: "tokens", input_tokens: 140, output_tokens: 12 },
     }));
     expect(observed.truncated).toBe(true);
-    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage!;
+    const usage = observeResponse(observed, "application/json", "openai", "direct", "audio_transcription").usage!;
     expect(usage).toMatchObject({ inputTokens: 140, outputTokens: 12, audioSeconds: 30 });
     expect(reportsPricedMeasure("openai", "whisper-1", usage)).toBe(true);
     expect(computeCost("openai", "whisper-1", usage))
@@ -1175,7 +1530,7 @@ describe("large response bodies", () => {
       usage: { input_tokens: 50, cache_read_input_tokens: 20, output_tokens: 9 },
     }));
     expect(observed.truncated).toBe(true);
-    expect(observeResponse(observed, "application/json", "anthropic", "other").usage).toEqual({
+    expect(observeResponse(observed, "application/json", "anthropic", "direct", "other").usage).toEqual({
       inputTokens: 50,
       cachedInputTokens: 20,
       cacheWriteTokens: 0,
@@ -1188,7 +1543,7 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     // Unresolved, exactly as an intact response carrying no usage is: nothing
     // here may read as a measured zero.
-    expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
+    expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toBeNull();
   });
 
   it("reads the usage object out of a tail full of braces and quotes", async () => {
@@ -1198,7 +1553,7 @@ describe("large response bodies", () => {
       + `"completion_tokens":7}`;
     const observed = await observe(`{"filler":"${"x".repeat(SIX_MB)}","usage":${usage}}`);
     expect(observed.truncated).toBe(true);
-    expect(observeResponse(observed, "application/json", "openai", "other").usage).toEqual({
+    expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toEqual({
       inputTokens: 42,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
@@ -1213,7 +1568,7 @@ describe("large response bodies", () => {
       // object leaves nothing to read: the scan has to end rather than keep
       // finding the same first occurrence.
       const observed = { head: "", tail: '"usage": 5, "x": 1}', truncated: true };
-      expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
+      expect(observeResponse(observed, "application/json", "openai", "direct", "other").usage).toBeNull();
     },
     1000,
   );
@@ -1229,7 +1584,7 @@ describe("large response bodies", () => {
     expect(text.length).toBeGreaterThan(OBSERVER_HEAD_BYTES);
     expect(observed).toMatchObject({ head: text, tail: "", truncated: false, aborted: false });
     expect(
-      observeResponse(observed, "application/json", "openai", "chat_completions").usage,
+      observeResponse(observed, "application/json", "openai", "direct", "chat_completions").usage,
     ).toEqual({
       inputTokens: 30,
       cachedInputTokens: 0,
@@ -1289,6 +1644,12 @@ describe("the shipped price catalog", () => {
           expect([where, field, (value as number) >= 0]).toEqual([where, field, true]);
         }
         if (entry.per_minute !== undefined || entry.per_hour !== undefined) continue;
+        if (entry.per_image !== undefined) {
+          // Dollars per image: a few cents, never a per-1M figure entered by mistake.
+          const perImage = entry.per_image as number;
+          expect([where, perImage > 0 && perImage < 10]).toEqual([where, true]);
+          continue;
+        }
         // Per-1M units: a $3/1M model is `3`, not `0.000003` and not `300`.
         // Nothing real sits outside this band, and both mistakes leave it.
         for (const field of ["input", "output", "image_input", "audio_input", "video_input", "image_output", "cached_input", "cache_write"]) {
@@ -1440,8 +1801,10 @@ describe("the shipped price catalog", () => {
     // their traffic waits for an operator price rather than billing $0.
     for (const type of ["fireworks", "huggingface"] as const) {
       expect(catalog[type]).toBeUndefined();
-      expect(isBillable(type, "any/model")).toBe(false);
-      expect(isBillable(type, "any/model", { "any/model": { input: 1, output: 2 } })).toBe(true);
+      expect(isBillable(type, "direct", "chat_completions", "any/model")).toBe(false);
+      expect(
+        isBillable(type, "direct", "chat_completions", "any/model", { "any/model": { input: 1, output: 2 } }),
+      ).toBe(true);
     }
   });
 });

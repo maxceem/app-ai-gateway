@@ -23,6 +23,7 @@ const BREAKDOWN_COLUMNS = {
   credential_source: appUsageEvent.credentialSource,
   model_author: appUsageEvent.modelAuthor,
   user: appUsageEvent.userId,
+  install: appUsageEvent.installId,
   status: appUsageEvent.status,
   cost_source: appUsageEvent.costSource,
   route: appUsageEvent.route,
@@ -76,6 +77,7 @@ export const usageHandlers = {
     if (query.status) filters.push(eq(appUsageEvent.status, query.status));
     if (query.provider) filters.push(eq(appUsageEvent.providerType, query.provider));
     if (query.user) filters.push(eq(appUsageEvent.userId, query.user));
+    if (query.install) filters.push(eq(appUsageEvent.installId, query.install));
     if (query.model) filters.push(eq(appUsageEvent.model, query.model));
     if (query.before_id !== undefined) filters.push(lt(appUsageEvent.id, query.before_id));
 
@@ -93,6 +95,7 @@ export const usageHandlers = {
       events: rows.map((row) => ({
         id: row.id,
         user_id: row.userId,
+        install_id: row.installId,
         api_key_id: row.apiKeyId,
         provider: row.providerType,
         provider_slug: row.providerSlug,

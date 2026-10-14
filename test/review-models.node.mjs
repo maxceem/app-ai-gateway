@@ -28,7 +28,7 @@ test("discovery: exact skip acknowledgements leave other models pending and stil
   assert.deepEqual(catalogEdits(decision), []);
   assert.equal(needsHuman(decision), false);
   const report = renderReport({ ...decision, modelChoices: [choice("new"), choice("skipped-next", "skip")] });
-  const [trigger, additional] = report.split("## Additional information");
+  const [trigger, additional] = report.split("## ℹ️ Additional information");
   assert.match(trigger, /Newly discovered models[\s\S]*`openai\/new` \| \*\*✅ Add\*\*/u);
   assert.match(trigger, /`openai\/skipped-next` \| \*\*⏭️ Skip\*\*/u);
   assert.match(trigger, /comment on this PR/u);
@@ -238,7 +238,7 @@ test("PR state: loads only the bot's fixed review JSON at its immutable head SHA
 test("report: proposal reasons are visible and inert; informative changes stay separate", () => {
   const report = renderReport({ changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [{ provider: "openai", model: "old", field: "input", value: 3, date: "2027-01-01" }], noSource: [], sources: [], newModels: [{ provider: "openai", ids: ["new"] }], modelChoices: [choice("new", "skip", "ai", "<script>[evil](url) | text")] });
   assert.doesNotMatch(report, /<script>|(?<!\\)\[evil\]/u);
-  const [trigger, additional] = report.split("## Additional information");
+  const [trigger, additional] = report.split("## ℹ️ Additional information");
   assert.match(trigger, /\*\*⏭️ Skip\*\*[\s\S]*gpt-6-luna/u);
   assert.doesNotMatch(trigger, /2027-01-01/u);
   assert.match(additional, /2027-01-01/u);

@@ -59,9 +59,14 @@ describe("the provider list the console offers", () => {
   it("knows which types bill on a cost the upstream reports", () => {
     // Mirrors `reportsCost` on the Worker: it decides whether the console tells
     // an operator a model needs a price before it will proxy.
-    expect(reportsCost("openrouter")).toBe(true);
-    for (const type of PROVIDERS.filter((value) => value !== "openrouter")) {
-      expect([type, reportsCost(type)]).toEqual([type, false]);
+    expect(reportsCost("openrouter", "direct", "chat_completions")).toBe(true);
+    expect(reportsCost("xai", "direct", "chat_completions")).toBe(true);
+    // Not through a gateway that answers in its own words, and not on an API
+    // whose responses carry no report.
+    expect(reportsCost("xai", "vercel", "chat_completions")).toBe(false);
+    expect(reportsCost("xai", "direct", "anthropic_messages")).toBe(false);
+    for (const type of PROVIDERS.filter((value) => value !== "openrouter" && value !== "xai")) {
+      expect([type, reportsCost(type, "direct", null)]).toEqual([type, false]);
     }
   });
 });

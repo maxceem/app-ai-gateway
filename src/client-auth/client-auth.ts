@@ -15,6 +15,7 @@
 import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "./gateway-token";
+import { PROOF_HEADER, verifyRequestProof } from "./request-proof";
 import { organizationProviders, type OrganizationProviders } from "../providers/provider-store";
 import { providerDescriptor, type ProviderType } from "../shared/providers";
 import {
@@ -125,13 +126,25 @@ export interface ClientAuth {
    */
   readonly consumedHeaders: readonly string[];
   /**
+   * Whether every request an attest gateway token is sent with must carry an
+   * `X-AppAttest-Proof`: an App Attest application whose `verify_on` is
+   * `every_request`. Where it is `token_exchange`, the assertion was verified
+   * when the token was minted, and the token alone authenticates a request.
+   */
+  readonly verifiesEveryRequest: boolean;
+  /**
    * The verification a request's credential needs, ready to start. Whatever
    * the request must name besides its credential is read before anything is
    * verified — a request that names no user is refused for that, not for its
    * credential — and the returned function is what the caller overlaps with
    * its other reads.
    */
-  verifier(env: Env, appId: string, headers: Headers, credential: RequestCredential): () => Promise<GatewayIdentity>;
+  verifier(
+    env: Env,
+    appId: string,
+    headers: Headers,
+    credential: RequestCredential,
+  ): () => Promise<GatewayIdentity>;
 }
 
 /**
@@ -143,7 +156,9 @@ function apiKeyAuth(endUserHeader: string | null): ClientAuth {
   return {
     exchange: null,
     tokenHeader: undefined,
-    consumedHeaders: endUserHeader === null ? [] : [endUserHeader],
+    verifiesEveryRequest: false,
+    // A proof sent to a server application is ignored, and never forwarded.
+    consumedHeaders: endUserHeader === null ? [PROOF_HEADER] : [endUserHeader, PROOF_HEADER],
     verifier(env, appId, headers, credential) {
       const userId = endUserHeader === null ? null : requiredEndUserId(headers, endUserHeader);
       return () => verifyApiKey(credential.token, env, appId, userId);
@@ -158,13 +173,28 @@ function apiKeyAuth(endUserHeader: string | null): ClientAuth {
  */
 function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication | undefined): ClientAuth {
   const tokenHeader = issuer?.token_header?.toLowerCase();
+  // The proof a token minted by an exchange answers to: App Attest's, or the
+  // API key it names.
+  const authMethod = exchange.type === "app_attest" ? "attest" : "api_key";
+  const verifiesEveryRequest = exchange.type === "app_attest"
+    && exchange.authentication.app_attest.verify_on === "every_request";
   return {
     exchange,
     tokenHeader,
-    consumedHeaders: tokenHeader === undefined ? [] : [tokenHeader],
+    verifiesEveryRequest,
+    // Consumed in either mode: a proof sent where none is checked is ignored,
+    // and never forwarded.
+    consumedHeaders: tokenHeader === undefined ? [PROOF_HEADER] : [tokenHeader, PROOF_HEADER],
     verifier(env, appId, _headers, credential) {
       return async () => {
         const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId);
+        // A token minted by the exchange this application used to run, before
+        // its authentication changed, is not one it would mint now: an API-key
+        // token on an App Attest application would skip App Attest altogether,
+        // and an attest token on an API-key one would skip the key's revocation.
+        if (identity.authMethod !== authMethod) {
+          throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
+        }
         if (identity.apiKeyId !== undefined) {
           const apiKey = await lookupActiveApiKeyById(env, identity.apiKeyId);
           if (!apiKey || apiKey.appId !== appId) {
@@ -210,9 +240,24 @@ export function clientAuth(app: AppRecord): ClientAuth {
   return auth;
 }
 
+/** What an authenticated request proved, beyond whose it is. */
+export interface AuthenticatedRequest {
+  identity: GatewayIdentity;
+  credential: RequestCredential;
+  /**
+   * The counter of the App Attest assertion the request was signed with, for
+   * the install's limiter to accept or refuse as a replay. Null where nothing
+   * was signed: a server application, or an App Attest one that verifies on
+   * the token exchange.
+   */
+  assertionCounter: number | null;
+}
+
 /**
  * Authenticates one client request against its application: which credential
- * it carried, and whose identity that credential proves.
+ * it carried, whose identity that credential proves and, for an App Attest
+ * application that verifies on every request, that the install's key signed
+ * this very request.
  *
  * `providerSlug` is the proxied provider, where the route names one; it is read
  * only when `authorization` carried nothing, because that is when the provider
@@ -222,15 +267,27 @@ export function clientAuth(app: AppRecord): ClientAuth {
  * cached by the time the request is prepared. Its own failure is left to
  * whoever needs a provider — verification decides first, and a rejection here
  * is never the provider read's.
+ *
+ * `body` reads the request body, once: the caller shares the same bytes with
+ * whatever prepares the request afterwards, so the proof is checked over
+ * exactly what is forwarded from, before anything rewrites it.
+ *
+ * `proofVerified` is set only by a realtime session re-checking, while it
+ * runs, the credential its WebSocket handshake carried. The handshake's proof
+ * signed that one request and its counter is spent, so the session re-verifies
+ * the token and the application, not a proof it no longer has.
  */
 export async function authenticateRequest(input: {
   env: Env;
   app: AppRecord;
-  headers: Headers;
+  request: Request;
+  body: () => Promise<Uint8Array>;
   providerSlug?: string | undefined;
   providers?: Promise<OrganizationProviders> | undefined;
-}): Promise<{ identity: GatewayIdentity; credential: RequestCredential }> {
-  const { env, app, headers } = input;
+  proofVerified?: boolean;
+}): Promise<AuthenticatedRequest> {
+  const { env, app, request } = input;
+  const headers = request.headers;
   const auth = clientAuth(app);
   const credential = authorizationCredential(headers) ?? requestCredential(
     headers,
@@ -240,7 +297,33 @@ export async function authenticateRequest(input: {
   const verify = auth.verifier(env, app.id, headers, credential);
   const [verified] = await Promise.allSettled([verify(), input.providers ?? Promise.resolve()]);
   if (verified.status === "rejected") throw verified.reason;
-  return { identity: verified.value, credential };
+  const identity = verified.value;
+  // Only an attest token on an application that verifies every request is
+  // signed per request; anything else proved itself with its credential
+  // alone, and a proof header beside it is ignored: not verified, and its
+  // counter never reaches the install's limiter.
+  if (identity.authMethod !== "attest" || !auth.verifiesEveryRequest || input.proofVerified === true) {
+    return { identity, credential, assertionCounter: null };
+  }
+  const header = headers.get(PROOF_HEADER);
+  if (header === null) {
+    throw new GatewayError(
+      401,
+      "assertion_required",
+      "This app requires every request to be signed with App Attest. Update the AppAIGateway Swift package to 1.4 or later.",
+    );
+  }
+  const assertionCounter = await verifyRequestProof({
+    env,
+    app,
+    identity,
+    header,
+    method: request.method,
+    url: request.url,
+    body: await input.body(),
+    token: credential.token,
+  });
+  return { identity, credential, assertionCounter };
 }
 
 /**

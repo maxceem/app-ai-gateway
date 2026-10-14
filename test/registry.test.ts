@@ -56,7 +56,7 @@ import {
   reportsCost,
 } from "../src/shared/providers";
 import { database } from "../src/db";
-import { clearProviderCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, signRequest } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
 const VERCEL = { type: "vercel", config: {} } as const;
@@ -359,10 +359,12 @@ describe("the capability matrix the console shares", () => {
    */
   it("publishes exactly the descriptor keys as the provider list", () => {
     expect([...PROVIDER_TYPES]).toEqual(Object.keys(SHARED_PROVIDERS.PROVIDER_DESCRIPTORS));
-    // And the cost-reporting set is the descriptors that declare how to read
-    // one, rather than a name list beside them.
-    expect([...SHARED_PROVIDERS.COST_REPORTING_PROVIDER_TYPES])
-      .toEqual(PROVIDER_TYPES.filter((type) => reportsCost(type)));
+    // And cost reporting is the descriptors that declare how to read one,
+    // rather than a name list beside them.
+    for (const type of PROVIDER_TYPES) {
+      expect([type, reportsCost(type, "direct", null)])
+        .toEqual([type, providerDescriptor(type).costReport !== undefined]);
+    }
   });
 
   /**
@@ -474,7 +476,7 @@ describe("provider descriptor entries", () => {
       header: "authorization",
       scheme: "Bearer ",
     });
-    expect(reportsCost("openrouter")).toBe(true);
+    expect(reportsCost("openrouter", "direct", "chat_completions")).toBe(true);
     // The header that makes OpenRouter name the host it routed to. Declared on
     // the descriptor, so the sanitizer strips a client's version everywhere.
     expect(providerRequestHeaders("openrouter")).toEqual({ "x-openrouter-metadata": "enabled" });
@@ -524,7 +526,7 @@ describe("provider descriptor entries", () => {
     // Fail-closed default: only a route that really returns a per-request cost
     // may bill without a local price, and none of these do.
     for (const type of OPENAI_COMPATIBLE_PROVIDERS) {
-      expect([type, reportsCost(type)]).toEqual([type, false]);
+      expect([type, reportsCost(type, "direct", null)]).toEqual([type, false]);
     }
   });
 });
@@ -1046,7 +1048,7 @@ describe("declared headers are never client-controlled", () => {
     });
     const executionCtx = createExecutionContext();
     const response = await worker.fetch(
-      new Request(
+      await signRequest(new Request(
         `https://example.test/v1/apps/${input.appId}/proxy/${input.slug}/v1/responses`,
         {
           method: "POST",
@@ -1061,7 +1063,7 @@ describe("declared headers are never client-controlled", () => {
           },
           body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
         },
-      ),
+      )),
       env,
       executionCtx,
     );
@@ -1087,7 +1089,7 @@ describe("declared headers are never client-controlled", () => {
     });
     const executionCtx = createExecutionContext();
     const response = await worker.fetch(
-      new Request(`https://example.test/v1/apps/${APP_ID}/proxy/openai-vercel/v1/responses`, {
+      await signRequest(new Request(`https://example.test/v1/apps/${APP_ID}/proxy/openai-vercel/v1/responses`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${await gatewayToken(APP_ID, userId)}`,
@@ -1095,7 +1097,7 @@ describe("declared headers are never client-controlled", () => {
           "x-app-version": "1.2.3",
         },
         body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-      }),
+      })),
       env,
       executionCtx,
     );

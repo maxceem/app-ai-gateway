@@ -29,8 +29,9 @@ status and provider request ID when present, and inspect **Usage** and
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Refresh an expired gateway token once; otherwise check the app credential and the user status in the console |
-| `attest_failed` | 403 | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted | Register a new key. The Swift package does this once automatically |
+| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Refresh an expired gateway token once. On iOS, `withAuthorizedRequest` in the Swift package 1.4.1 or later does this for you on a `401` and returns a `403` as it is; if you send a request built with `authorizedRequest`, call `discardAccessToken()` and build it again, once. If it persists, check the app credential and the user status in the console |
+| `assertion_required` | 401 | A request with an iOS app's gateway token arrived without the `X-AppAttest-Proof` header, on an app whose **Verify App Attest on** is **Every request**. Only that setting answers this code | On the Swift package 1.4 or later, a request built by the package sees this only when the app was switched to **Every request** after the client's token was issued. `withAuthorizedRequest`, in 1.4.1 or later, handles it: it discards the token and sends a rebuilt, signed request once. If you send a request built with `authorizedRequest`, call `discardAccessToken()` and build the request again, once. A request assembled by hand from `gatewayAccessToken()` must be built with the package instead. On an earlier package, update to 1.4 or later, or set **Verify App Attest on** to **Token exchange** while older builds are still in use |
+| `attest_failed` | 403 | An App Attest proof was refused. At the token exchange: the attestation or assertion did not verify. On a request: the `X-AppAttest-Proof` header is malformed, signed by a key that is not registered or whose environment is no longer accepted, signed over a different request, or its assertion counter was already used. The message says which | `withAuthorizedRequest` in the Swift package returns it to you rather than retrying it. Build a new request and send it once. If it persists, call `discardAccessToken()` and build the request again: the fresh exchange re-registers the key when the gateway no longer knows it. That does not help when the key's environment is no longer accepted or the request was changed after signing |
 | `issuer_token_rejected` | 403 | The sign-in token did not verify | Refresh the ID token, retry once, then treat as signed out |
 | `issuer_claims_missing` | 403 | The token verified but the required entitlement claim is not there yet | Wait and retry. Do not sign the user in again. Sync the purchase if you can |
 | `issuer_verification_unavailable` | 503 | The identity provider's keys could not be fetched | Retry with backoff |
@@ -46,7 +47,7 @@ app below, and nothing in the console changes it.
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `user` or `app` | Wait `Retry-After` seconds. A `user` scope means slow this user down; an `app` scope means the whole app is busy |
+| `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. An `install` or `user` scope means slow this caller down; an `app` scope means the whole app is busy |
 | `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. Same `data.scope` | Wait for the next month, or raise the budget in the console |
 | `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
 | `billing_unavailable` | 503 | The gateway could not check the account, so it refused rather than guess | Retry after `Retry-After`. Not an account problem |
@@ -94,8 +95,8 @@ These refusals concern the gateway account, not your app's end-user sign-in:
   `Retry-After`. A budget or account refusal needs the action in its row above.
   Avoid automatically replaying inference after a partial response or a lost
   connection: the provider may already have processed and charged for it.
-- On `app_rate_limited` with scope `user`, back that user off for
-  `Retry-After` seconds. With scope `app`, show a "busy, try again shortly"
+- On `app_rate_limited` with scope `install` or `user`, back that caller off
+  for `Retry-After` seconds. An iOS app counts request limits per install. With scope `app`, show a "busy, try again shortly"
   state rather than hammering.
 - On `issuer_claims_missing`, keep the user signed in and poll gently.
 - Send `X-App-Version` on every request, so the console can tell you which

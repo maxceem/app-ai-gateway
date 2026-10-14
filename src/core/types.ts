@@ -28,23 +28,34 @@ export interface AppRecord {
   config: AppConfig;
 }
 
-export interface GatewayIdentity {
+interface GatewayIdentityFields {
   appId: string;
   userId: string | null;
   /**
-   * How the client proved itself, which a gateway token carries over from its
-   * exchange: one minted from an API key is `api_key` here.
-   */
-  authMethod: AuthMethod;
-  /**
-   * What this request presented, which is a different fact: that same token
-   * is a `gateway_token`, and only a key sent on every request is `api_key`.
+   * What this request presented, which is a different fact from how the
+   * client proved itself: a gateway token is a `gateway_token` whatever its
+   * exchange, and only a key sent on every request is `api_key`.
    */
   credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
   /** Verified gateway-token expiration, epoch milliseconds. */
   expiresAt?: number;
 }
+
+/**
+ * Who a request is, and how the client proved it. `authMethod` is how the
+ * client first proved itself, which a gateway token carries over from its
+ * exchange: one minted from an API key is `api_key` here.
+ *
+ * `installId` is the App Attest key id of the install the request came from.
+ * Every attest gateway token names one, in either `verify_on` mode — one that
+ * does not is refused — so an attest identity always has it, and under
+ * `app_install` it equals `userId`. An API-key identity has none: a server
+ * application has no installs.
+ */
+export type GatewayIdentity =
+  | (GatewayIdentityFields & { authMethod: "attest"; installId: string })
+  | (GatewayIdentityFields & { authMethod: "api_key"; installId: null });
 
 /** A modality a model may price apart from text. */
 export type Modality = "image" | "audio" | "video";

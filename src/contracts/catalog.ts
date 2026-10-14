@@ -267,10 +267,14 @@ const TranscriptionStyleBodySchema = z.object({
   response_format: z.string().optional(),
 }).meta({ description: "Body for endpoints whose api_style is audio_transcription." });
 
-/** The two hints an application client may send with a proxied request. */
+/** What an application client sends beside its credential. */
 const GatewayClientHeadersSchema = z.object({
   "x-app-version": z.string().optional().meta({
     description: "Required for gateway-token clients; optional for issuer-less API-key clients.",
+  }),
+  "x-appattest-proof": z.string().regex(/^v1\.[0-9]{1,12}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/).optional().meta({
+    description:
+      "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
   }),
   "x-end-user-id": z.string().optional().meta({
     description: "Optional configured end-user identity for issuer-less API-key applications.",
@@ -428,7 +432,7 @@ export const CATALOG = {
     path: "/v1/apps/{app}/auth/token",
     tags: ["Application authentication"],
     summary: "Exchange issuer identity and client proof for a gateway token",
-    description: "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
+    description: "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
     security: "public",
     params: APP_PARAM,
     request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
@@ -442,8 +446,10 @@ export const CATALOG = {
     path: "/v1/apps/{app}/me",
     tags: ["Application"],
     summary: "Get the current user's limits, spend and block state",
+    description: "On an App Attest application the request limits and, by default, the budget are the install's; install_id names it. Signed with X-AppAttest-Proof like every other request where the application verifies App Attest on every request.",
     security: "gateway",
     params: APP_PARAM,
+    headers: GatewayClientHeadersSchema,
     response: CurrentUserResponseSchema,
     responseDescription: "Current user state.",
     errors: { 402: NO_PLAN, 404: NO_END_USERS },
@@ -452,7 +458,7 @@ export const CATALOG = {
   discoverRealtime: {
     method: "GET", path: "/v1/apps/{app}/realtime/{provider}/connection",
     tags: ["Provider proxy"], summary: "Discover the current realtime release",
-    description: "Authenticate with your usual gateway headers. Open the returned release-specific WebSocket URL with the same headers. Discover again for each new conversation; existing sockets remain on their immutable release through gateway updates.",
+    description: "Authenticate with your usual gateway headers. Open the returned release-specific WebSocket URL with the same headers, except that an App Attest app verifying every request signs the handshake with its own X-AppAttest-Proof: a proof is good for one request. Discover again for each new conversation; existing sockets remain on their immutable release through gateway updates.",
     security: "gateway", params: { app: APP_PARAM.app, provider: { example: "openai-dev", pattern: PROVIDER_SLUG_PATTERN } },
     query: z.object({ model: z.string().min(1).max(200) }), headers: GatewayClientHeadersSchema,
     response: z.object({ url: z.string().url(), releaseId: z.string() }), responseDescription: "Trusted release-specific connection URL.",
@@ -970,6 +976,7 @@ export const CATALOG = {
       status: z.enum(USAGE_STATUSES).optional(),
       provider: z.string().optional(),
       user: z.string().optional(),
+      install: z.string().optional().meta({ description: "Only events of this install: an App Attest key id." }),
       model: z.string().optional(),
       before_id: BeforeIdSchema,
     }),
@@ -1171,7 +1178,7 @@ export const CATALOG = {
     params: APP_PARAM,
     query: RangeQuerySchema.extend({
       by: z.enum(USAGE_BREAKDOWN_DIMENSIONS).default("model")
-        .meta({ description: "Which dimension to group by. Defaults to model." }),
+        .meta({ description: "Which dimension to group by. Defaults to model. install groups an App Attest application's traffic by the install — the App Attest key — that made it; server applications have none." }),
       limit: PageLimitSchema,
     }),
     response: BreakdownResponseSchema,

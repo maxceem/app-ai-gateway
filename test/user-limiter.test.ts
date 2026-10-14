@@ -16,7 +16,7 @@ async function spent(appId: string, userKey: string | null, month: string, micro
  * An application's own limits: the month's spend read from D1 and fixed windows.
  */
 describe("UserLimiter", () => {
-  it("keeps request windows and separate session leases without billing data", async () => {
+  it("keeps only request windows, the install's counter and session leases in its own storage", async () => {
     const limiter = env.USER_LIMITER.getByName("user-limiter:tables");
     await limiter.getStatus(Date.now());
     await runInDurableObject(limiter, async (_instance, state) => {
@@ -26,7 +26,7 @@ describe("UserLimiter", () => {
         )
         .toArray()
         .map((row) => row.name);
-      expect(tables).toEqual(["request_windows", "session_leases"]);
+      expect(tables).toEqual(["assertion_counter", "request_windows", "session_leases"]);
       expect(await state.storage.getAlarm()).toBeNull();
     });
   });
@@ -36,7 +36,7 @@ describe("UserLimiter", () => {
     const limiter = env.USER_LIMITER.getByName(appId);
     const now = Date.UTC(2026, 6, 23, 12);
     const check = (at: number) => limiter.checkAndIncrement({
-      now: at, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: null },
+      now: at, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, scope: "app", key: null },
     });
     await spent(appId, null, "2026-07", 400);
     expect(await check(now)).toEqual({ allowed: true });
@@ -68,11 +68,66 @@ describe("UserLimiter", () => {
       const now = Date.UTC(2026, 6, 23, 12);
       const results = await Promise.all(Array.from({ length: 20 }, () =>
         (instance as UserLimiter).checkAndIncrement({
-          now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: null },
+          now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, scope: "app", key: null },
         })));
       expect(results.every((result) => result.allowed)).toBe(true);
       expect(reads).toBe(1);
     });
+  });
+
+  /**
+   * An install's object is asked for the install's month or the user's as
+   * the app's budget scope changes; a figure cached for one must never answer
+   * for the other.
+   */
+  it("never answers one ledger's month with another's cached figure", async () => {
+    const appId = "user-limiter-scope-change";
+    const limiter = env.USER_LIMITER.getByName(`${appId}:install:key-1`);
+    const now = Date.UTC(2026, 6, 23, 12);
+    await env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('operator-test-organization', ?, 'user', 'person', '2026-07', 2000000)`,
+    ).bind(appId).run();
+    const budget = 1_000_000;
+    // The install has spent nothing, and that figure is now cached.
+    expect(await limiter.checkAndIncrement({
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "install", key: "key-1" },
+    })).toEqual({ allowed: true });
+    // Moved to the user's month within the refresh window: read afresh.
+    expect(await limiter.checkAndIncrement({
+      now: now + 1, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "user", key: "person" },
+    })).toMatchObject({ allowed: false, reason: "budget" });
+    // And back: the install's own figure still answers for the install.
+    expect(await limiter.checkAndIncrement({
+      now: now + 2, rpm: null, rpd: null, monthlyBudgetMicrousd: budget,
+      spend: { appId, scope: "install", key: "key-1" },
+    })).toEqual({ allowed: true });
+  });
+
+  it("keeps concurrent reads of different ledgers apart", async () => {
+    const appId = "user-limiter-concurrent-ledgers";
+    await env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('operator-test-organization', ?, 'user', 'person', '2026-07', 2000000)`,
+    ).bind(appId).run();
+    const limiter = env.USER_LIMITER.getByName(`${appId}:install:key-1`);
+    const now = Date.UTC(2026, 6, 23, 12);
+    const check = (scope: "install" | "user", key: string) => limiter.checkAndIncrement({
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: 1_000_000, spend: { appId, scope, key },
+    });
+    const [install, user, installAgain, userAgain] = await Promise.all([
+      check("install", "key-1"),
+      check("user", "person"),
+      check("install", "key-1"),
+      check("user", "person"),
+    ]);
+    expect([install, installAgain]).toEqual([{ allowed: true }, { allowed: true }]);
+    expect([user, userAgain]).toMatchObject([
+      { allowed: false, reason: "budget" },
+      { allowed: false, reason: "budget" },
+    ]);
   });
 
   it("measures a user's budget against that user's own month", async () => {
@@ -82,7 +137,7 @@ describe("UserLimiter", () => {
     await spent(appId, null, "2026-07", 10_000);
     await spent(appId, "u1", "2026-07", 100);
     expect(await limiter.checkAndIncrement({
-      now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: "u1" },
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, scope: "user", key: "u1" },
     })).toEqual({ allowed: true });
   });
 });
@@ -101,7 +156,7 @@ describe("UserLimiter request windows", () => {
     rpm: null,
     rpd: null,
     monthlyBudgetMicrousd: null,
-    spend: { appId: "windows", userKey: null },
+    spend: { appId: "windows", scope: "app" as const, key: null },
   };
 
   it("admits up to the per-minute limit and refuses the next", async () => {
@@ -207,7 +262,7 @@ describe("UserLimiter request windows", () => {
     await spent("windows-budget", null, new Date(now).toISOString().slice(0, 7), 500);
 
     expect(await limiter.checkAndIncrement({
-      now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 500, spend: { appId: "windows-budget", userKey: null },
+      now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 500, spend: { appId: "windows-budget", scope: "app", key: null },
     })).toMatchObject({ allowed: false, reason: "budget" });
     // Nothing was counted: the budget is decided before the windows are touched.
     expect((await limiter.getStatus(now)).requestsToday).toBe(0);
@@ -239,5 +294,93 @@ describe("UserLimiter request windows", () => {
     expect((await limiter.checkAndIncrement({ ...unlimited, now: Number.NaN, rpm: 1 })).allowed)
       .toBe(true);
     expect((await limiter.getStatus(Date.now())).requestsToday).toBe(1);
+  });
+});
+
+/**
+ * An install's App Attest counters: each accepted once, out of order within a
+ * window behind the highest, never behind it. A replay is refused before
+ * anything is counted.
+ */
+describe("UserLimiter assertion counters", () => {
+  const unlimited = {
+    rpm: null,
+    rpd: null,
+    monthlyBudgetMicrousd: null,
+    spend: { appId: "counters", scope: "install" as const, key: "key" },
+  };
+  const now = Date.UTC(2026, 0, 15, 10, 30, 0);
+
+  it("accepts the first counter it sees, whatever it is, and each later one once", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:first");
+    expect(await limiter.advanceCounter(1000)).toEqual({ accepted: true });
+    expect(await limiter.advanceCounter(1000)).toEqual({ accepted: false });
+    expect(await limiter.advanceCounter(1001)).toEqual({ accepted: true });
+  });
+
+  it("accepts counters out of order inside the window, once each", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:window");
+    expect((await limiter.advanceCounter(10)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(15)).accepted).toBe(true);
+    // Signed before 15, arriving after it.
+    expect((await limiter.advanceCounter(12)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(11)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(12)).accepted).toBe(false);
+    expect((await limiter.advanceCounter(10)).accepted).toBe(false);
+    expect((await limiter.advanceCounter(15)).accepted).toBe(false);
+  });
+
+  it("refuses a counter at or past the window's far edge", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:far");
+    expect((await limiter.advanceCounter(100)).accepted).toBe(true);
+    // 100 - 63 is the oldest still inside a 64-wide window; 100 - 64 is not.
+    expect((await limiter.advanceCounter(100 - 63)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(100 - 64)).accepted).toBe(false);
+    expect((await limiter.advanceCounter(1)).accepted).toBe(false);
+  });
+
+  it("saturates the mask on a jump wider than the window", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:jump");
+    expect((await limiter.advanceCounter(5)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(6)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(5 + 1000)).accepted).toBe(true);
+    // Everything the jump left behind inside the new window is unused.
+    expect((await limiter.advanceCounter(1005 - 1)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(1005 - 63)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(6)).accepted).toBe(false);
+    // A shift of exactly the window clears every old bit too.
+    expect((await limiter.advanceCounter(1005 + 64)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(1005 + 1)).accepted).toBe(true);
+    expect((await limiter.advanceCounter(1005)).accepted).toBe(false);
+  });
+
+  it("refuses a counter that is not a non-negative whole number", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:nonsense");
+    expect((await limiter.advanceCounter(-1)).accepted).toBe(false);
+    expect((await limiter.advanceCounter(1.5)).accepted).toBe(false);
+    expect((await limiter.advanceCounter(Number.NaN)).accepted).toBe(false);
+  });
+
+  it("refuses a replay before counting it, and shares the sequence with the exchange", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:requests");
+    const check = (assertionCounter: number) =>
+      limiter.checkAndIncrement({ ...unlimited, rpm: 10, now, assertionCounter });
+    expect(await check(1)).toEqual({ allowed: true });
+    expect(await check(1)).toEqual({ allowed: false, reason: "replay" });
+    // The exchange signs from the same key, so its counter is spent here too.
+    expect((await limiter.advanceCounter(2)).accepted).toBe(true);
+    expect(await check(2)).toEqual({ allowed: false, reason: "replay" });
+    expect(await check(3)).toEqual({ allowed: true });
+    // Two requests counted, the replays not at all.
+    expect((await limiter.getStatus(now)).requestsToday).toBe(2);
+  });
+
+  it("spends the counter even when a request limit then refuses", async () => {
+    const limiter = env.USER_LIMITER.getByName("counters:install:rate");
+    const check = (assertionCounter: number) =>
+      limiter.checkAndIncrement({ ...unlimited, rpm: 1, now, assertionCounter });
+    expect(await check(1)).toEqual({ allowed: true });
+    expect(await check(2)).toMatchObject({ allowed: false, reason: "rate" });
+    expect(await check(2)).toEqual({ allowed: false, reason: "replay" });
   });
 });

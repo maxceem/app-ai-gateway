@@ -29,6 +29,7 @@ const APPLE_AUTH: AuthenticationDraft = {
     team_id: "AAAAAAAAAA",
     bundle_id: "com.example.test",
     environments: ["production"] as const,
+    verify_on: "every_request",
   },
   end_user: { source: "issuer", issuer: APPLE_ISSUER },
 };

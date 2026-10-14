@@ -134,7 +134,7 @@
                     }
                   ]
                 },
-                "description": "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; a billing_plan_limit_reached rejection carries limit and used; an app_rate_limited or app_budget_exhausted rejection carries scope, either user or app; a rate_limited rejection carries scope naming the endpoint policy that refused, plus limit, windowSeconds, retryAfterSeconds and resetAt."
+                "description": "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; a billing_plan_limit_reached rejection carries limit and used; an app_rate_limited or app_budget_exhausted rejection carries scope, one of user, install or app; a rate_limited rejection carries scope naming the endpoint policy that refused, plus limit, windowSeconds, retryAfterSeconds and resetAt."
               }
             },
             "required": [
@@ -420,6 +420,15 @@
                         "default": [
                           "production"
                         ]
+                      },
+                      "verify_on": {
+                        "type": "string",
+                        "enum": [
+                          "every_request",
+                          "token_exchange"
+                        ],
+                        "default": "every_request",
+                        "description": "When the install's App Attest assertion is verified. every_request (the default): every gateway request carries X-AppAttest-Proof, a fresh assertion over that request; needs the AppAIGateway Swift package 1.4 or later. token_exchange: the assertion is verified once, when the hourly gateway token is exchanged, and requests carry only the token."
                       }
                     },
                     "required": [
@@ -790,6 +799,14 @@
                           "null"
                         ],
                         "minimum": 0
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "install",
+                          "user"
+                        ],
+                        "description": "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration."
                       }
                     },
                     "required": [
@@ -971,6 +988,31 @@
           "routing"
         ],
         "additionalProperties": false
+      },
+      "AppWarning": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable identifier of what the warning is about."
+          },
+          "message": {
+            "type": "string",
+            "description": "What will stop, when, and what to do about it, in one sentence or two."
+          },
+          "until": {
+            "type": "string",
+            "description": "ISO 8601 UTC instant the behaviour stops."
+          },
+          "docs_url": {
+            "type": "string",
+            "description": "Where the change is described."
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
       },
       "AppWrite": {
         "type": "object",
@@ -1278,6 +1320,13 @@
               },
               "updated_at": {
                 "type": "string"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AppWarning"
+                },
+                "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
               }
             },
             "required": [
@@ -1287,7 +1336,8 @@
               "config",
               "status",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "warnings"
             ]
           }
         },
@@ -2112,6 +2162,13 @@
               "null"
             ]
           },
+          "install_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The App Attest key id of the install that made the request, on App Attest applications; null for server applications."
+          },
           "api_key_id": {
             "type": [
               "string",
@@ -2303,6 +2360,7 @@
         "required": [
           "id",
           "user_id",
+          "install_id",
           "api_key_id",
           "provider",
           "provider_slug",
@@ -2420,7 +2478,8 @@
                     "blocked_app_rate",
                     "blocked_app_budget",
                     "blocked_billing",
-                    "blocked_user"
+                    "blocked_user",
+                    "blocked_replay"
                   ]
                 },
                 "scope": {
@@ -2430,6 +2489,7 @@
                   ],
                   "enum": [
                     "user",
+                    "install",
                     "app",
                     "account",
                     null
@@ -2612,6 +2672,13 @@
               "null"
             ]
           },
+          "install_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The App Attest key id of the refused install, on App Attest applications; null for server applications and for samples recorded before installs were."
+          },
           "api_key_id": {
             "type": [
               "string",
@@ -2624,7 +2691,8 @@
               "blocked_app_rate",
               "blocked_app_budget",
               "blocked_billing",
-              "blocked_user"
+              "blocked_user",
+              "blocked_replay"
             ]
           },
           "scope": {
@@ -2634,6 +2702,7 @@
             ],
             "enum": [
               "user",
+              "install",
               "app",
               "account",
               null
@@ -2695,6 +2764,7 @@
         "required": [
           "id",
           "user_id",
+          "install_id",
           "api_key_id",
           "reason",
           "scope",
@@ -2845,6 +2915,13 @@
               },
               "updated_at": {
                 "type": "string"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AppWarning"
+                },
+                "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
               }
             },
             "required": [
@@ -2932,6 +3009,13 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "warnings": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/AppWarning"
+                    },
+                    "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
                   }
                 },
                 "required": [
@@ -3750,7 +3834,7 @@
         ],
         "operationId": "exchangeGatewayToken",
         "summary": "Exchange issuer identity and client proof for a gateway token",
-        "description": "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
+        "description": "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
         "parameters": [
           {
             "schema": {
@@ -3792,6 +3876,14 @@
                     },
                     "expires_in": {
                       "type": "number"
+                    },
+                    "verify_on": {
+                      "type": "string",
+                      "enum": [
+                        "every_request",
+                        "token_exchange"
+                      ],
+                      "description": "On App Attest applications, when the gateway verifies the install's assertion: every_request means every request sent with this token must carry X-AppAttest-Proof; token_exchange means requests carry only the token. Absent on other applications."
                     }
                   },
                   "required": [
@@ -3882,6 +3974,7 @@
         ],
         "operationId": "getCurrentUser",
         "summary": "Get the current user's limits, spend and block state",
+        "description": "On an App Attest application the request limits and, by default, the budget are the install's; install_id names it. Signed with X-AppAttest-Proof like every other request where the application verifies App Attest on every request.",
         "security": [
           {
             "GatewayBearer": []
@@ -3896,6 +3989,37 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
+            },
+            "required": false,
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^v1\\.[0-9]{1,12}\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]+$",
+              "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it."
+            },
+            "required": false,
+            "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
+            "name": "x-appattest-proof",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
+            "name": "x-end-user-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -3909,6 +4033,13 @@
                     "user_id": {
                       "type": "string"
                     },
+                    "install_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The App Attest key id of the install making the request, on App Attest applications, whose request limits are counted per install. Null on server applications."
+                    },
                     "limits": {
                       "type": "object",
                       "properties": {
@@ -3917,7 +4048,7 @@
                             "integer",
                             "null"
                           ],
-                          "description": "Requests this user has made so far in the current UTC day. Null when the application sets no per-user limit, in which case requests are not counted at all."
+                          "description": "Requests made so far in the current UTC day: by this install on an App Attest application, by this user on a server application. Null when the application sets no per-user limit, in which case requests are not counted at all."
                         },
                         "requests_remaining": {
                           "type": [
@@ -3931,25 +4062,25 @@
                             "number",
                             "null"
                           ],
-                          "description": "The per-user per-minute limit this app sets. Null means unlimited."
+                          "description": "The per-minute limit this app sets on each install (App Attest) or user (server). Null means unlimited."
                         },
                         "requests_per_day": {
                           "type": [
                             "number",
                             "null"
                           ],
-                          "description": "The per-user per-day limit this app sets. Null means unlimited."
+                          "description": "The per-day limit this app sets on each install (App Attest) or user (server). Null means unlimited."
                         },
                         "monthly_cost_usd": {
                           "type": "number",
-                          "description": "What this user's traffic has cost so far in the current UTC calendar month."
+                          "description": "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user."
                         },
                         "monthly_budget_usd": {
                           "type": [
                             "number",
                             "null"
                           ],
-                          "description": "The per-user monthly spending budget this app sets. Null means unlimited."
+                          "description": "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited."
                         },
                         "blocked": {
                           "type": "boolean",
@@ -3970,6 +4101,7 @@
                   },
                   "required": [
                     "user_id",
+                    "install_id",
                     "limits"
                   ]
                 }
@@ -4036,7 +4168,7 @@
         ],
         "operationId": "discoverRealtime",
         "summary": "Discover the current realtime release",
-        "description": "Authenticate with your usual gateway headers. Open the returned release-specific WebSocket URL with the same headers. Discover again for each new conversation; existing sockets remain on their immutable release through gateway updates.",
+        "description": "Authenticate with your usual gateway headers. Open the returned release-specific WebSocket URL with the same headers, except that an App Attest app verifying every request signs the handshake with its own X-AppAttest-Proof: a proof is good for one request. Discover again for each new conversation; existing sockets remain on their immutable release through gateway updates.",
         "security": [
           {
             "GatewayBearer": []
@@ -4080,6 +4212,17 @@
             "required": false,
             "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^v1\\.[0-9]{1,12}\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]+$",
+              "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it."
+            },
+            "required": false,
+            "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
+            "name": "x-appattest-proof",
             "in": "header"
           },
           {
@@ -4236,6 +4379,17 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^v1\\.[0-9]{1,12}\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]+$",
+              "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it."
+            },
+            "required": false,
+            "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
+            "name": "x-appattest-proof",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Optional configured end-user identity for issuer-less API-key applications."
             },
             "required": false,
@@ -4373,6 +4527,17 @@
             "required": false,
             "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^v1\\.[0-9]{1,12}\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]+$",
+              "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it."
+            },
+            "required": false,
+            "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
+            "name": "x-appattest-proof",
             "in": "header"
           },
           {
@@ -4531,6 +4696,17 @@
             "required": false,
             "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^v1\\.[0-9]{1,12}\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]+$",
+              "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it."
+            },
+            "required": false,
+            "description": "Required on every request sent with the gateway token of an App Attest application whose authentication.app_attest.verify_on is every_request; ignored, and never forwarded, where verify_on is token_exchange and for API-key clients. Format `v1.<timestamp>.<nonce>.<assertion>`: decimal unix seconds from the device clock (signed, but not compared with the gateway's clock), 16 random bytes as base64url without padding, and the CBOR assertion from DCAppAttestService.generateAssertion as base64url without padding. The assertion's client data is the SHA-256 of these lines joined by \\n with no trailing newline: `appaigateway-request-v1`, the app id, the upper-case HTTP method, the URL path and query exactly as sent, base64url(sha256(body bytes)) (an absent body hashes as empty), base64url(sha256(the bearer token)), the timestamp, and the nonce. Missing answers 401 assertion_required; refused answers 403 attest_failed. The AppAIGateway Swift package 1.4 or later computes it.",
+            "name": "x-appattest-proof",
             "in": "header"
           },
           {
@@ -4955,6 +5131,13 @@
                         },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "warnings": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/AppWarning"
+                          },
+                          "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
                         }
                       },
                       "required": [
@@ -4964,7 +5147,8 @@
                         "config",
                         "status",
                         "created_at",
-                        "updated_at"
+                        "updated_at",
+                        "warnings"
                       ]
                     },
                     "api_key": {
@@ -6417,6 +6601,13 @@
                         "type": "string"
                       },
                       "description": "What this check did not exercise, one sentence each."
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AppWarning"
+                      },
+                      "description": "The application's warnings, as reading it returns them: behaviour that will stop on a stated date. They never make an application not ready."
                     }
                   },
                   "required": [
@@ -6425,7 +6616,8 @@
                     "status",
                     "providers",
                     "ready",
-                    "limitations"
+                    "limitations",
+                    "warnings"
                   ]
                 }
               }
@@ -8994,6 +9186,16 @@
           },
           {
             "schema": {
+              "type": "string",
+              "description": "Only events of this install: an App Attest key id."
+            },
+            "required": false,
+            "description": "Only events of this install: an App Attest key id.",
+            "name": "install",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string"
             },
             "required": false,
@@ -9386,7 +9588,8 @@
                 "blocked_app_rate",
                 "blocked_app_budget",
                 "blocked_billing",
-                "blocked_user"
+                "blocked_user",
+                "blocked_replay"
               ]
             },
             "required": false,
@@ -9398,6 +9601,7 @@
               "type": "string",
               "enum": [
                 "user",
+                "install",
                 "app",
                 "account"
               ]
@@ -10027,13 +10231,20 @@
                             "type": [
                               "string",
                               "null"
-                            ]
+                            ],
+                            "description": "The user's most recently seen App Attest key id, if they hold any. Under app_install it is the user's own id."
                           },
                           "attest_registered": {
-                            "type": "boolean"
+                            "type": "boolean",
+                            "description": "Whether the user holds at least one App Attest key."
                           },
-                          "attest_counter": {
-                            "type": "number"
+                          "installs": {
+                            "type": "integer",
+                            "description": "How many App Attest keys the user holds: one per install, that is one copy of the app on one device, and a new one each time the app is reinstalled. Always 0 on server applications."
+                          },
+                          "is_install": {
+                            "type": "boolean",
+                            "description": "Whether this row's id is itself a registered App Attest key, so the row is one install: every row of an app_install application, and none of a signed-in user's. Decided per row, so history kept from before an application changed its user identity reads as what it was. A per-install budget measures a row's spend only when this is true."
                           },
                           "created_at": {
                             "type": "string"
@@ -10088,7 +10299,8 @@
                           "status",
                           "attest_key_id",
                           "attest_registered",
-                          "attest_counter",
+                          "installs",
+                          "is_install",
                           "created_at",
                           "last_seen_at",
                           "is_virtual",
@@ -10229,13 +10441,20 @@
                           "type": [
                             "string",
                             "null"
-                          ]
+                          ],
+                          "description": "The user's most recently seen App Attest key id, if they hold any. Under app_install it is the user's own id."
                         },
                         "attest_registered": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "Whether the user holds at least one App Attest key."
                         },
-                        "attest_counter": {
-                          "type": "number"
+                        "installs": {
+                          "type": "integer",
+                          "description": "How many App Attest keys the user holds: one per install, that is one copy of the app on one device, and a new one each time the app is reinstalled. Always 0 on server applications."
+                        },
+                        "is_install": {
+                          "type": "boolean",
+                          "description": "Whether this row's id is itself a registered App Attest key, so the row is one install: every row of an app_install application, and none of a signed-in user's. Decided per row, so history kept from before an application changed its user identity reads as what it was. A per-install budget measures a row's spend only when this is true."
                         },
                         "created_at": {
                           "type": "string"
@@ -10290,7 +10509,8 @@
                         "status",
                         "attest_key_id",
                         "attest_registered",
-                        "attest_counter",
+                        "installs",
+                        "is_install",
                         "created_at",
                         "last_seen_at",
                         "is_virtual",
@@ -11054,6 +11274,7 @@
                 "credential_source",
                 "model_author",
                 "user",
+                "install",
                 "status",
                 "cost_source",
                 "route",
@@ -11061,10 +11282,10 @@
                 "app_version"
               ],
               "default": "model",
-              "description": "Which dimension to group by. Defaults to model."
+              "description": "Which dimension to group by. Defaults to model. install groups an App Attest application's traffic by the install — the App Attest key — that made it; server applications have none."
             },
             "required": false,
-            "description": "Which dimension to group by. Defaults to model.",
+            "description": "Which dimension to group by. Defaults to model. install groups an App Attest application's traffic by the install — the App Attest key — that made it; server applications have none.",
             "name": "by",
             "in": "query"
           },
@@ -11101,6 +11322,7 @@
                         "credential_source",
                         "model_author",
                         "user",
+                        "install",
                         "status",
                         "cost_source",
                         "route",
@@ -11277,6 +11499,10 @@
                             },
                             "per_hour": {
                               "type": "number"
+                            },
+                            "per_image": {
+                              "type": "number",
+                              "description": "USD per generated image, for a model billed per image rather than per token."
                             },
                             "long_context_threshold": {
                               "type": "number"
@@ -11839,6 +12065,13 @@
                             },
                             "updated_at": {
                               "type": "string"
+                            },
+                            "warnings": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/AppWarning"
+                              },
+                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
                             }
                           },
                           "required": [
@@ -11848,7 +12081,8 @@
                             "config",
                             "status",
                             "created_at",
-                            "updated_at"
+                            "updated_at",
+                            "warnings"
                           ]
                         },
                         "api_key": {
@@ -12656,6 +12890,13 @@
                             },
                             "updated_at": {
                               "type": "string"
+                            },
+                            "warnings": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/AppWarning"
+                              },
+                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
                             }
                           },
                           "required": [
@@ -12665,7 +12906,8 @@
                             "config",
                             "status",
                             "created_at",
-                            "updated_at"
+                            "updated_at",
+                            "warnings"
                           ]
                         },
                         "api_key": {
@@ -13450,6 +13692,13 @@
                             },
                             "updated_at": {
                               "type": "string"
+                            },
+                            "warnings": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/AppWarning"
+                              },
+                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
                             }
                           },
                           "required": [
@@ -13459,7 +13708,8 @@
                             "config",
                             "status",
                             "created_at",
-                            "updated_at"
+                            "updated_at",
+                            "warnings"
                           ]
                         },
                         "api_key": {

@@ -28,7 +28,7 @@ async function setup(endUser: "none" | "header" = "none") {
   app.config.limits.per_app.requests.per_day = 1;
   await database(env.DB).update(appTable).set({ config: app.config }).where(eq(appTable.id, appId)); clearIsolateCaches();
   const headers = new Headers({ Authorization: `Bearer ${key}`, ...(endUser === "header" ? { "x-end-user-id": "u" } : {}) });
-  const identity = (await authenticateRequest({ env, app: await loadApp(env, appId), headers })).identity;
+  const identity = (await authenticateRequest({ env, app: await loadApp(env, appId), request: new Request('https://gateway.test/', { headers }), body: async () => new Uint8Array() })).identity;
   const provider = await requireProvider(env, TEST_ORGANIZATION_ID, appId);
   const bootstrap: Bootstrap = { sessionId: crypto.randomUUID(), appId, organizationId: TEST_ORGANIZATION_ID, providerId: provider.id,
     providerSlug: appId, model: 'gpt-realtime', requestedModel: 'gpt-realtime', protocol: 'openai_realtime', identity, appVersion: null, origin: 'https://gateway.test' };

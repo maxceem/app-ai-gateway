@@ -30,6 +30,13 @@ API keys that identify users. Credentials in query parameters, cookies, or
 WebSocket subprotocols are unsupported. Native iOS and server clients can supply
 authentication headers; browser clients and WebRTC are outside this release.
 
+On an iOS app whose **Verify App Attest on** is **Every request**, discovery and
+the WebSocket handshake are two requests, and each carries its own
+`X-AppAttest-Proof`, signed over its own URL. A proof is good for one request:
+a handshake sent twice with the same proof is refused with `403 attest_failed`.
+Once a session is open, nothing sent over the socket is signed. The Swift
+package builds and signs both requests for you.
+
 ## Supported profiles
 
 | Provider | Models | Modes |
@@ -50,8 +57,8 @@ socket count as twenty requests. Connection setup, configuration, audio chunks,
 and output deltas add no requests. Failed, cancelled, or disconnected attempts
 remain counted after admission. A refusal before admission does not count.
 
-The gateway checks your user's limits, your app's limits, and access before
-sending a generation trigger. Only one provider response can be active. Usage
+The gateway checks the limits you set per user — per install on an iOS app —
+your app's limits, and access before sending a generation trigger. Only one provider response can be active. Usage
 must be durably recorded and delivered before the next response starts. Monthly
 spending is based on completed usage; concurrent in-flight responses can exceed
 a spending budget before their final costs are known.
@@ -79,7 +86,8 @@ active attempt.
 
 ## Limits and errors
 
-Defaults: 30-minute session, 10 concurrent sessions per app and 2 per identity,
+Defaults: 30-minute session, 10 concurrent sessions per app and 2 per caller —
+an install on an iOS app, a user or else an API key on a server app —
 10-second setup, 120-second useful-activity idle timeout, 60-second input turn,
 120-second response, 1,000 generations, and 4,096 output tokens (or a lower app
 cap). Gateway tokens bound the session to their verified expiry.
@@ -130,6 +138,11 @@ work unchanged. No Gemini profile is available until its usage snapshots and
 output cap pass a real-provider conformance check.
 
 ## Swift
+
+Realtime needs the AppAIGateway Swift package 1.5 or later.
+`authorizedRealtimeRequest` discovers the connection URL, retrying discovery
+once on a `401` as `withAuthorizedRequest` does, and returns a handshake signed
+for that one connection.
 
 ```swift
 let request = try await gateway.authorizedRealtimeRequest(

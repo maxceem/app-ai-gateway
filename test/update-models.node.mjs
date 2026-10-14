@@ -19,7 +19,7 @@ import { parseTogether } from "../scripts/models/parsers/together.mjs";
 import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/models/parsers/xai.mjs";
 import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/models/price.mjs";
-import { renderReport } from "../scripts/models/report.mjs";
+import { renderReport, renderTitle } from "../scripts/models/report.mjs";
 import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
 
@@ -108,6 +108,35 @@ test("openai: fails on a renamed header, an added column, an unknown cell or a d
   assertFails(parseOpenai, replaceOnce(text, "Transcription models", "Speech models"), wanted, /missing/);
 });
 
+test("openai: reads the Standard image generation table, one price from two modality rows", () => {
+  const text = fixture("openai.md");
+  const prices = parse(parseOpenai, text, ["gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"]);
+  // Text output is "-": the model writes only images, so its image output is
+  // every output token's rate. Standard, not the Batch table below it.
+  assert.deepEqual(prices.get("gpt-image-2"), { input: 5, output: 30, image_input: 8, cached_input: 2 });
+  // A model that also writes text keeps its image output rate apart.
+  assert.deepEqual(prices.get("gpt-image-1.5"), { input: 5, output: 10, image_input: 8, image_output: 32, cached_input: 2 });
+  // Cached tokens are not split by modality, so the higher cached rate is kept.
+  assert.deepEqual(prices.get("gpt-image-1-mini"), { input: 2, output: 8, image_input: 2.5, cached_input: 0.25 });
+  // Discovered, not read.
+  assert.equal(prices.get("chatgpt-image-latest"), null);
+});
+
+test("openai: fails on an image table it was not written against", () => {
+  const text = fixture("openai.md");
+  const wanted = ["gpt-image-2"];
+  assertFails(parseOpenai, replaceOnce(text, "Image generation models", "Image models"), wanted, /missing/);
+  assertFails(parseOpenai, replaceOnce(text, "Prices per 1M tokens.\n\nStandard", "Prices per image.\n\nStandard"), wanted, /Standard per-1M-token/);
+  assertFails(parseOpenai, replaceOnce(text, "\nStandard\n\n      For image", "\nBatch\n\n      For image"), wanted, /Standard per-1M-token/);
+  assertFails(parseOpenai, replaceOnce(text, "| Model | Modality | Input | Cached input | Output |", "| Model | Modality | Input | Cached input | Output / image |"), wanted, /header changed/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Audio | $5.00 |"), wanted, /unexpected modality "Audio"/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Image | $5.00 |"), wanted, /two Image rows/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 | $30.00 |", "| gpt-image-2 | Image | $8.00 | $2.00 | $0.04 / image |"), wanted, /plain decimal/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 | $30.00 |", "| gpt-image-2 | Image | $8.00 | $2.00 | - |"), wanted, /image output price/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 |", "| gpt-image-2 | Image | $8.00 | - |"), wanted, /only one modality has a cached price/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 | $1.25 | - |\n", ""), wanted, /both a Text and an Image row/);
+});
+
 test("anthropic: reads display names, footnotes and the 5-minute cache write", () => {
   const prices = parse(parseAnthropic, fixture("anthropic.md"), ["claude-mythos-5", "claude-sonnet-5", "claude-haiku-4-5"]);
   assert.deepEqual(prices.get("claude-mythos-5"), { input: 10, cached_input: 1, cache_write: 12.5, output: 50 });
@@ -123,6 +152,25 @@ test("anthropic: fails on a changed header or price grammar", () => {
   assertFails(parseAnthropic, replaceOnce(text, "| 5m cache writes |", "| 5-minute cache writes |"), wanted, /header changed/);
   assertFails(parseAnthropic, replaceOnce(text, "| $1 / MTok             | $1.25", "| $1 per MTok           | $1.25"), wanted, /MTok/);
   assertFails(parseAnthropic, replaceOnce(text, "## Model pricing", "## Models"), wanted, /missing/);
+});
+
+test("anthropic: pairs prompt-length rows into long-context prices", () => {
+  const text = fixture("anthropic.md");
+  const wanted = ["claude-haiku-5-5"];
+  assert.deepEqual(parse(parseAnthropic, text, wanted).get("claude-haiku-5-5"), {
+    input: 0.1,
+    cached_input: 0.01,
+    cache_write: 0.125,
+    output: 0.5,
+    long_context_threshold: 100000,
+    long_input: 0.5,
+    long_cached_input: 0.05,
+    long_cache_write: 0.625,
+    long_output: 2.5,
+  });
+  assert.equal(parse(parseAnthropic, text, ["claude-haiku-4-5"]).get("claude-haiku-5-5"), null);
+  assertFails(parseAnthropic, replaceOnce(text, "(for prompts over 100,000 tokens)", "(for prompts over 200,000 tokens)"), wanted, /long-context row/);
+  assertFails(parseAnthropic, replaceOnce(text, "(for prompts up to 100,000 tokens)", "(for prompts over 100,000 tokens)"), wanted, /without its base row/);
 });
 
 test("gemini: reads dated, long-context and per-modality prices", () => {
@@ -255,6 +303,18 @@ test("together: reads escaped prices by API model string", () => {
   assertFails(parseTogether, replaceOnce(text, "| API model string |", "| Model string |"), ["openai/gpt-oss-120b"], /header changed/);
 });
 
+test("together: discovers image models and refuses a per-image or per-megapixel price", () => {
+  const text = fixture("together.md");
+  const prices = parse(parseTogether, text, ["openai/gpt-oss-120b"]);
+  assert.equal(prices.get("black-forest-labs/FLUX.1.1-pro"), null);
+  assert.equal(prices.get("openai/gpt-image-2"), null);
+  assertFails(parseTogether, text, ["black-forest-labs/FLUX.1.1-pro"], /billed per megapixel, which the catalog cannot price/);
+  assertFails(parseTogether, text, ["openai/gpt-image-2"], /billed per image, which the catalog cannot price/);
+  assertFails(parseTogether, replaceOnce(text, "| `image` |", "| `1M tokens` |"), ["openai/gpt-image-2"], /unknown billing unit/);
+  assertFails(parseTogether, replaceOnce(text, "| Unit | Price |", "| Billing unit | Price |"), ["openai/gpt-oss-120b"], /header changed/);
+  assertFails(parseTogether, replaceOnce(text, "## Image models", "## Images"), ["openai/gpt-oss-120b"], /missing/);
+});
+
 test("groq: reads the link id, token, hourly and contact-sales prices", () => {
   const text = fixture("groq.md");
   const prices = parse(parseGroq, text, ["openai/gpt-oss-120b", "whisper-large-v3", "llama-3.3-70b-versatile", "qwen/qwen3.8-27b"]);
@@ -368,6 +428,9 @@ test("anthropic deprecations: a promise is not a date, a retirement is", () => {
   assert.deepEqual(dates.get("claude-opus-4-1-20250805"), { date: "2026-08-05" });
   // The catalog names aliases; the table names the snapshot behind them.
   assert.equal(sourceId(SOURCES.anthropic.deprecations, "claude-opus-4-5"), "claude-opus-4-5-20251101");
+  // A routed model is priced as its replacement but keeps its own deprecation row.
+  assert.equal(sourceId(SOURCES.gemini.official, "gemini-3.7-flash"), "gemini-3.8-flash");
+  assert.equal(sourceId(SOURCES.gemini.deprecations, "gemini-3.7-flash"), "gemini-3.7-flash");
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Current state |", "| State         |"), wanted, /header changed/);
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Active        | N/A               | Not sooner than June 9, 2027", "| Active        | N/A               | Soon                        "), wanted, /active model/);
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Retired       |", "| Sunset        |"), wanted, /unknown state/);
@@ -480,6 +543,13 @@ const cases = [
     changes: [],
     attention: ["cerebras: parser failed"],
     noSource: ["cerebras/a", "cerebras/b", "cerebras/c"],
+  },
+  {
+    name: "a per-image price is compared as one, never against token prices",
+    catalog: { cerebras: { a: { input: 1.0, output: 2.0 }, i: { per_image: 0.03 }, j: { per_image: 0.04 }, k: { per_image: 0.04 } } },
+    official: { cerebras: page({ a: { input: 1, output: 2 }, i: { per_image: 0.03 }, j: { per_image: 0.045 }, k: { input: 1, output: 2 } }) },
+    changes: [["cerebras/j", "per_image", 0.04, 0.045, "official"]],
+    attention: ["cerebras/k: cannot compare"],
   },
   {
     name: "parser failed, lists agree: update from the lists",
@@ -856,26 +926,43 @@ for (const changed of [false, true]) {
     });
     const report = renderReport(decision);
     assert.deepEqual(report.match(/^## .+$/gmu), [
-      "## Changes that trigger a pull request",
-      "## Additional information",
+      ...(changed ? ["## ✅ Current price changes"] : []),
+      "## ℹ️ Additional information",
     ]);
-    const [trigger, additional] = report.split("## Additional information");
+    const [trigger, additional] = report.split("## ℹ️ Additional information");
     assert.doesNotMatch(trigger, /Retirement dates|Upcoming price changes|2027-01-01|2027-02-26/u);
-    assert.match(additional, /does not trigger a pull request/u);
+    assert.match(additional, /For information only/u);
     assert.match(additional, /### Retirement dates[\s\S]*2027-02-26/u);
     assert.match(additional, /### Upcoming price changes[\s\S]*2027-01-01/u);
-    assert.doesNotMatch(additional, /### Current price changes/u);
+    assert.doesNotMatch(additional, /Current price changes/u);
     if (changed) {
-      assert.match(trigger, /### Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
+      assert.match(trigger, /## ✅ Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
       assert.doesNotMatch(trigger, /No pull request is needed/u);
       assert.ok(catalogEdits(decision).length > 0);
     } else {
       assert.match(trigger, /No current price changes or newly discovered models\. No pull request is needed\./u);
-      assert.doesNotMatch(trigger, /### Current price changes/u);
+      assert.doesNotMatch(trigger, /Current price changes/u);
       assert.deepEqual(catalogEdits(decision), []);
     }
   });
 }
+
+test("title: counts what the pull request holds, with a short date", () => {
+  const empty = { changes: [], newModels: [], attention: [] };
+  assert.equal(renderTitle(empty, "2026-10-10"), "Model catalog: no changes (Oct 10)");
+  // One model with several changed fields is one price change.
+  const changes = [
+    { provider: "p", model: "a", field: "input" },
+    { provider: "p", model: "a", field: "output" },
+    { provider: "q", model: "a", field: "input" },
+  ];
+  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model catalog: 2 price changes (Jan 5)");
+  assert.equal(
+    renderTitle({ changes: changes.slice(0, 1), newModels: [{ provider: "p", ids: ["x", "y"] }, { provider: "q", ids: ["z"] }], attention: [{}] }, "2026-12-31"),
+    "Model catalog: 1 price change, 3 new models, 1 needs attention (Dec 31)",
+  );
+  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model catalog: 1 new model, 2 need attention (Oct 10)");
+});
 
 test("report: fetched text is escaped", () => {
   const report = renderReport({
@@ -895,8 +982,14 @@ test("report: fetched text is escaped", () => {
   assert.match(report, /&lt;img/u);
   const row = report.split("\n").find((line) => line.startsWith("| `p/m"));
   assert.equal(row.split(/(?<!\\)\|/u).length, 6, "the model id must not add a table cell");
-  assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*### Newly discovered models[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources/u);
-  assert.match(report, /These items fail the workflow but do not trigger a pull request/u);
+  assert.deepEqual(report.match(/^## .+$/gmu), [
+    "## ✅ Current price changes",
+    "## ✅ Newly discovered models",
+    "## ❌ Needs your attention",
+    "## ℹ️ Additional information",
+  ]);
+  assert.match(report, /## ❌ Needs your attention[\s\S]*parser failed[\s\S]*## ℹ️ Additional information[\s\S]*<summary>Sources<\/summary>/u);
+  assert.doesNotMatch(report.split("## ℹ️ Additional information")[1], /parser failed/u);
 });
 
 test("openai realtime: retains independent audio and cached audio prices", () => {

@@ -27,10 +27,53 @@ to say what you set, such as "1 endpoint · 1 model · up to 4,096 output tokens
 
 ## Endpoints this provider serves
 
-**All inference endpoints** allows Responses, Chat Completions, Anthropic
-Messages, Gemini `generateContent` and transcription. Choose **Selected endpoints** to allow only the ones you list, which is also
-how you opt into any other provider operation. The list starts with one empty
-row; removing the last row is the same as choosing all again.
+**All inference endpoints** allows every endpoint that runs a model and
+answers in the same response:
+
+- Responses, Chat Completions, Anthropic Messages, Gemini `generateContent`,
+  and transcription, on every provider.
+- Each provider's own image generation, embedding, speech and legacy
+  completion endpoints, listed below.
+
+Nothing else is allowed by default: files, batches, fine-tuning, model lists,
+moderation, token counting and agent sessions stay blocked. So do video
+generation and other jobs whose result arrives on a later poll, because the
+gateway forwards only POST requests and cannot fetch or bill that result. A
+model still needs a price, or a provider that reports its own cost, before
+any request reaches it.
+
+| Provider | Endpoints beyond the default APIs |
+| --- | --- |
+| OpenAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/audio/speech` |
+| xAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/completions` |
+| Gemini | `v1beta/models/{model}:embedContent`, `v1/models/{model}:embedContent` |
+| Perplexity | `v1/agent`, `router/v1/chat/completions`, `router/v1/responses`, `router/v1/messages`, `v1/embeddings`, `v1/contextualizedembeddings` |
+| DeepSeek | `responses`, `beta/completions`, `anthropic/v1/messages` |
+| Groq | `openai/v1/audio/speech` |
+| Mistral | `v1/embeddings`, `v1/fim/completions`, `v1/audio/speech` |
+| Together AI | `v1/completions`, `v1/images/generations`, `v1/audio/speech`, `v1/embeddings` |
+| Fireworks AI | `inference/v1/completions`, `inference/v1/messages`, `inference/v1/responses`, `inference/v1/embeddings` |
+| Cerebras | `v1/completions` |
+| Moonshot AI | `anthropic/v1/messages` |
+| ByteDance | `responses`, `images/generations`, `embeddings/multimodal` |
+| Anthropic, Hugging Face, Baseten, OpenRouter | None |
+
+The console lists these under the field, too. **Max output tokens** applies
+to the text endpoints among them, such as completions and the Anthropic-format
+APIs, as it does to the default APIs. Image, embedding and speech endpoints are
+never capped, because they have no output tokens to cap.
+A provider routed through a gateway that publishes its own URL space, such as
+Vercel, serves only the APIs that gateway carries.
+
+Choose **Selected endpoints** to allow only the ones you list, which is also
+how you opt into any other provider operation. A list replaces the defaults, so
+list every path the app calls. The list starts with one empty row; removing
+the last row is the same as choosing all again.
+
+A request that asks the provider to run detached, with `"background": true`
+or xAI's `"deferred": true`, is refused with `400 invalid_request` on every
+endpoint. Its result and cost arrive only on a later poll, which the gateway
+cannot serve.
 
 An endpoint is named by its path: the provider's own API path without a leading slash, for example
 `v1/responses` or `v1/messages`. Paths are matched exactly, except that
@@ -70,9 +113,10 @@ the cap.
 
 ## Embeddings
 
-Embedding requests are not among the default inference endpoints, so allow
-their path explicitly. Give it `"clamp": "none"`: an embedding has no output to
-cap, and injecting a limit into its body would make the provider refuse it.
+Embedding endpoints are among the default inference endpoints. If you list an
+app's endpoints yourself, give an embedding path `"clamp": "none"`: an
+embedding has no output to cap, and injecting a limit into its body would make
+the provider refuse it.
 
 ```json
 "openai": {

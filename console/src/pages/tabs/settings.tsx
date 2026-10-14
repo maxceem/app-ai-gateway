@@ -24,6 +24,12 @@ import { useDeleteApp } from "@/lib/queries";
 export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }) {
   const draft = state.draft!;
   const realtime = { enabled: false, max_session_seconds: 1800, max_concurrent_sessions: 10, max_concurrent_sessions_per_identity: 2, ...draft.config.realtime };
+  // Who one session's concurrency cap is counted for, as the gateway keys it:
+  // an install on an App Attest app, else the user, else the API key.
+  const authentication = draft.config.authentication;
+  const sessionCaller = authentication.type === "apple_app_attest"
+    ? "install"
+    : authentication.end_user.source === "none" ? "API key" : "user";
   const navigate = useNavigate();
   const deleteApp = useDeleteApp();
   const { readOnly, capabilities } = useConsoleSession();
@@ -67,7 +73,7 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
             <Switch aria-label="Enable realtime WebSockets" checked={realtime.enabled} disabled={readOnly} onCheckedChange={enabled => state.updateConfig({ realtime: { ...realtime, enabled } })} />
           </div>
           {realtime.enabled && <div className="grid gap-4 sm:grid-cols-3">
-            {([['max_session_seconds', 'Session duration (seconds)', 1800], ['max_concurrent_sessions', 'Concurrent sessions per app', 100], ['max_concurrent_sessions_per_identity', 'Concurrent sessions per identity', 10]] as const).map(([key, label, max]) => <Field key={key} label={label} htmlFor={`realtime-${key}`}><Input id={`realtime-${key}`} type="number" min={1} max={max} disabled={readOnly} value={realtime[key]} onChange={event => state.updateConfig({ realtime: { ...realtime, [key]: Number(event.target.value) } })} /></Field>)}
+            {([['max_session_seconds', 'Session duration (seconds)', 1800], ['max_concurrent_sessions', 'Concurrent sessions per app', 100], ['max_concurrent_sessions_per_identity', `Concurrent sessions per ${sessionCaller}`, 10]] as const).map(([key, label, max]) => <Field key={key} label={label} htmlFor={`realtime-${key}`}><Input id={`realtime-${key}`} type="number" min={1} max={max} disabled={readOnly} value={realtime[key]} onChange={event => state.updateConfig({ realtime: { ...realtime, [key]: Number(event.target.value) } })} /></Field>)}
           </div>}
         </CardContent>
       </Card>

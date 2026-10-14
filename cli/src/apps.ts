@@ -26,6 +26,7 @@ import { shellQuote } from "../../src/shared/first-request.ts";
 import {
   selectedProviderPolicies,
   type AppAttestEnvironment,
+  type AppAttestVerifyOn,
 } from "../../src/shared/app-config.ts";
 import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 
@@ -103,7 +104,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     const ios = type === "ios";
     if (
       !ios &&
-      ["team-id", "bundle-id", "attest-environments"].some((k) => flags[k as keyof Flags])
+      IOS_FLAGS.some((k) => flags[k])
     )
       fail("invalid_input", "Server apps cannot use iOS flags.");
     const bundle = ios
@@ -141,7 +142,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   const auth = doc.config.authentication;
   if (
     auth.type === "api_key" &&
-    ["team-id", "bundle-id", "attest-environments"].some((k) => flags[k as keyof Flags])
+    IOS_FLAGS.some((k) => flags[k])
   )
     fail("invalid_input", "Server apps cannot use iOS flags.");
   if (auth.type === "apple_app_attest") {
@@ -151,6 +152,10 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     if (flags["bundle-id"]) auth.app_attest.bundle_id = flags["bundle-id"];
     if (flags["attest-environments"])
       auth.app_attest.environments = attestEnvironments(flags["attest-environments"]);
+    // Passed through as typed, for `localApp` to refuse anything but
+    // every_request or token_exchange.
+    if (flags["verify-on"])
+      auth.app_attest.verify_on = flags["verify-on"].trim() as AppAttestVerifyOn;
   }
   const selectedProviders = flagList(flags.provider);
   if (selectedProviders.length) {
@@ -165,6 +170,9 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   if (flags["all-providers"]) doc.config.routing.providers = { mode: "all" };
   return localApp(doc);
 }
+
+/** The flags only an iOS (App Attest) application takes. */
+const IOS_FLAGS = ["team-id", "bundle-id", "attest-environments", "verify-on"] as const satisfies readonly (keyof Flags)[];
 
 /**
  * `--attest-environments` as the configuration's own list. Names are passed
@@ -290,7 +298,7 @@ export async function appCommand(
         ...(key ? { applicationKey: key } : {}),
         guidance:
           doc.config.authentication.type === "apple_app_attest"
-            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.0.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
+            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.4.1, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
             : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
     }

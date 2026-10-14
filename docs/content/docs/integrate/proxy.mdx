@@ -14,7 +14,8 @@ The proxy route forwards a provider-native request to one of your providers:
   or a custom slug such as `openai-dev`. It names one of your provider keys,
   not a provider type.
 - `{provider_path}` is the provider's own API path, verbatim and without a
-  leading slash. New apps allow inference endpoints. Other operations need an
+  leading slash. New apps allow inference endpoints, including each provider's
+  image, embedding and speech endpoints. Other operations need an
   explicit [allowed path](/applications/provider-access), and a fixed model
   for pricing when the request does not name one. The provider route must
   support the operation too.
@@ -26,13 +27,26 @@ The provider's documentation is the reference for both.
 
 | App | Header |
 | --- | --- |
-| iOS app, or server app with signed-in users | `Authorization: Bearer <gateway token>` and `X-App-Version: <your app's version>` |
+| iOS app | `Authorization: Bearer <gateway token>` and `X-App-Version: <your app's version>`, plus `X-AppAttest-Proof: <proof>` when the app verifies App Attest on every request |
+| Server app with signed-in users | `Authorization: Bearer <gateway token>` and `X-App-Version: <your app's version>` |
 | Server app without signed-in users | `Authorization: Bearer agw_…` |
 
 `X-App-Version` is required whenever the credential is a gateway token. It is
 recorded on every request and is how the console's **By app version**
 breakdown tells one release from another. The Swift package sets it from the
 bundle's version.
+
+When an iOS app's **Verify App Attest on** is **Every request**, the default
+for new apps, every request with its gateway token must carry
+`X-AppAttest-Proof`, an App Attest assertion signed over that request. It
+covers the method, the path and query, the body and the token, so build the
+request completely, body included, before it is signed, and send it
+unchanged. A missing proof answers `401 assertion_required`; one that does not
+match the request answers `403 attest_failed`. With **Token exchange** the
+gateway token alone is enough, and a proof sent anyway is ignored. The header
+is consumed by the gateway and never reaches the provider, and a server app's
+requests do not need it. The Swift package computes it: see
+[Per-request proof](/integrate/ios#per-request-proof).
 
 The credential may also be sent in the provider's own key header, such as
 `x-api-key` for Anthropic or `x-goog-api-key` for Gemini. That is what lets a
@@ -55,6 +69,22 @@ provider SDK work with the gateway token in place of the provider key. The
 A provider routed through Vercel AI Gateway accepts only `v1/responses`,
 `v1/chat/completions` and `v1/messages`. The full table with each provider's
 caveats is on [Supported providers](/providers/supported-providers).
+
+### Transcription response formats
+
+A transcription is billed by the tokens or the audio duration its answer
+reports, and a plain-text answer reports neither. So the gateway refuses a
+`response_format` of `text`, `srt` or `vtt` with `400 invalid_request` on
+OpenAI, Groq and Together AI. On OpenAI, use the default `json`, or
+`verbose_json` or `diarized_json` where the model supports them. Groq and
+Together AI report the duration only in `verbose_json`, so the gateway sends
+their transcriptions in that format when the request names `json` or no format
+at all. The answer still carries the same `text` field, plus timing details.
+
+On these providers a transcription must be a `multipart/form-data` upload
+that names `response_format` at most once. On every provider, an upload that
+names `model` more than once is refused. Both are refused with
+`400 invalid_request`.
 
 For an SDK, the base URL is the proxy URL up to the provider's version
 prefix, for example `…/proxy/openai/v1`; the SDK appends `responses` or
@@ -128,6 +158,7 @@ credentials as a proxy request:
 ```json
 {
   "user_id": "firebase-uid",
+  "install_id": "c2lnbmVkLWtleS1pZA==",
   "limits": {
     "requests_today": 12,
     "requests_remaining": 9988,
@@ -140,7 +171,9 @@ credentials as a proxy request:
 }
 ```
 
-`requests_today` is `null` when the app sets no per-user limit, because
+`install_id` is the App Attest key id of the calling install on an iOS app,
+whose request counts and, by default, spend are per install; it is `null` on
+a server app. `requests_today` is `null` when the app sets no per-user limit, because
 requests are then not counted. An app with no user identity answers
 `404 auth_method_not_supported`.
 

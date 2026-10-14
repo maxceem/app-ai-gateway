@@ -10,6 +10,7 @@ import type {
   CreatedAppResponse,
 } from "../contracts/responses";
 import { generateApiKey } from "../client-auth/api-keys";
+import { appWarnings } from "./app-warnings";
 import {
   appRecordFromRow,
   invalidateAppConfig,
@@ -27,6 +28,7 @@ import { guardedInsert, prepared, type WriteStatement } from "../db/sql";
 import {
   app,
   appApiKey,
+  appAttestKey,
   appAuthChallenge,
   appAuthEvent,
   appRejectionEvent,
@@ -182,6 +184,8 @@ function serializeApp(stored: StoredApp) {
     created_at: stored.createdAt,
     updated_at: stored.updatedAt,
     revision: stored.revision,
+    // Computed on every read, never stored or written.
+    warnings: appWarnings(stored),
   };
 }
 
@@ -304,7 +308,7 @@ export async function createApp(
       key_prefix: generated.keyPrefix, created_at: now,
     } : null;
     const outcome = {
-      app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now },
+      app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now, warnings: [] },
       api_key: createdKey,
     };
     // The app cap guards the app row alone. The default key rides along with the
@@ -444,6 +448,7 @@ export async function deleteApp(
   // users belonging to no application.
   const [removedUsers] = await db.batch([
     db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id }),
+    db.delete(appAttestKey).where(eq(appAttestKey.appId, appId)),
     db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId)),
     // Authentication history is diagnostic and reachable only under
     // `/apps/:app`, so it dies with the app it describes. Usage is the

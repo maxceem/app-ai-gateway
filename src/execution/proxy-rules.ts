@@ -7,14 +7,22 @@ import {
   finishJsonBody,
   isMultipart,
   jsonObjectFromText,
+  judgesTranscriptionFormat,
+  meteredTranscriptionFormat,
+  namesModelTwice,
   parseForm,
-  readBodyLimited,
+  unmeteredTranscriptionFormat,
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
 import { isBillable } from "../usage/pricing";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
-import { providerPolicyFor, DEFAULT_END_USER_HEADER, type ProviderPolicy } from "../shared/app-config";
+import {
+  defaultInferencePaths,
+  providerPolicyFor,
+  DEFAULT_END_USER_HEADER,
+  type ProviderPolicy,
+} from "../shared/app-config";
 import type { AllowedPath, AllowedPathConfig, AppRecord } from "../core/types";
 import type { ProviderType } from "../shared/providers";
 
@@ -75,24 +83,35 @@ function modelIsAllowed(allowedModels: string[], requestedModel: string): boolea
   return allowedModels.length === 0 || allowedModels.includes(requestedModel);
 }
 
-/**
- * The allowlist entry a path matches, and the model it captured if it names
- * one. An app that names no paths allows every default inference style, which
- * the caller has already checked; the classifier's own capture is the model
- * then, so a native Gemini path is judged by the model in its URL.
- */
-function matchedPath(path: string, allowed: AllowedPath[], model: { value: string; template: string } | undefined): MatchedPath | null {
-  if (allowed.length === 0) {
-    return model
-      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
-      : { entry: { path } };
-  }
+/** The entry of `allowed` a path matches, and the model it captured if it names one. */
+function listedPath(path: string, allowed: readonly AllowedPath[]): MatchedPath | null {
   for (const rawEntry of allowed) {
     const entry = normalizedPath(rawEntry);
     const match = path.match(pathPattern(entry.path));
     if (match) return { entry, ...(match[1] ? { modelFromPath: decodedModel(match[1]) } : {}) };
   }
   return null;
+}
+
+/**
+ * What an app whose policy names no paths may call: every default API style,
+ * judged by the model the classifier captured where the path carries one, and
+ * the provider type's own inference operations, each capped in the clamp style
+ * its entry names — none at all for an image, embedding or speech body, which a
+ * `max_tokens` would only get refused.
+ */
+function defaultPath(
+  path: string,
+  provider: ProviderType,
+  style: ApiStyle,
+  model: { value: string; template: string } | undefined,
+): MatchedPath | null {
+  if (isDefaultProxyApiStyle(style)) {
+    return model
+      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
+      : { entry: { path } };
+  }
+  return listedPath(path, defaultInferencePaths(provider));
 }
 
 /** A model segment of an allowed path, decoded; malformed escapes are the client's error. */
@@ -332,6 +351,8 @@ function resolveModel(input: {
   policy: ProviderPolicy;
   rewrites: Record<string, string> | undefined;
   resolved: ResolvedProvider;
+  /** The API the request speaks, which decides whether a cost report covers it. */
+  style: ApiStyle;
 }): { requestedModel: string; actualModel: string; wireModel: string } {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
@@ -344,7 +365,7 @@ function resolveModel(input: {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
   const actualModel = lookup(input.rewrites, requestedModel) ?? requestedModel;
-  if (!isBillable(provider, actualModel, input.resolved.pricing)) {
+  if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
   // Everything above judged the canonical model; only the outbound request
@@ -374,8 +395,29 @@ function modelPlacement(
   return match.entry.fixed_model ? null : { bodyModel: model.wireModel };
 }
 
+/**
+ * Refuses a request that asks the provider to run it detached: OpenAI's,
+ * Gemini's and Perplexity's `background: true` and xAI's `deferred: true`. Such
+ * an answer is an acknowledgement with no usage in it; the result and its cost
+ * arrive only on a later poll, a GET this gateway does not proxy. Forwarded, it
+ * would spend the provider key on something no client can collect, recorded as
+ * unresolved at $0 and so outside every budget. Only a literal `true` counts:
+ * OpenAI's image `background` is a string naming the image's transparency.
+ */
+export function refuseDetachedJob(body: Record<string, unknown>): void {
+  if (body.background === true || body.deferred === true) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "Background and deferred requests are not supported: their result and cost arrive on a later poll the gateway cannot serve",
+    );
+  }
+}
+
 export async function prepareProxyRequest(input: {
   request: Request;
+  /** The body, read once by the caller; see `PrepareInput.body`. */
+  body: () => Promise<Uint8Array<ArrayBuffer>>;
   app: AppRecord;
   userId: string | null;
   /**
@@ -395,14 +437,13 @@ export async function prepareProxyRequest(input: {
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const classified = classifyPath(input.providerPath);
   const apiStyle = classified.protocol.style;
-  if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
-    throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-  }
-  const match = matchedPath(input.providerPath, config.allowed_paths, classified.model);
+  const match = config.allowed_paths.length === 0
+    ? defaultPath(input.providerPath, provider, apiStyle, classified.model)
+    : listedPath(input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   assertApiStyleSupported(route.kind, provider, apiStyle);
 
-  const bytes = await readBodyLimited(input.request);
+  const bytes = await input.body();
   const contentType = input.request.headers.get("content-type") ?? "";
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({
@@ -423,6 +464,9 @@ export async function prepareProxyRequest(input: {
     // already names it, and parsing the upload to confirm that would copy every
     // byte of it for nothing.
     const parsed = match.modelFromPath ? null : await parseForm(bytes, contentType);
+    if (parsed && namesModelTwice(parsed)) {
+      throw new GatewayError(400, "invalid_request", "The form names its model more than once");
+    }
     const modelField = parsed?.get("model");
     const model = resolveModel({
       match,
@@ -430,12 +474,19 @@ export async function prepareProxyRequest(input: {
       policy: config,
       rewrites: input.app.config.routing.model_rewrites,
       resolved,
+      style: apiStyle,
     });
     const placement = modelPlacement(match, model);
-    if (placement && "bodyModel" in placement && parsed) {
+    // A transcription is only forwarded in a format whose answer can be priced.
+    const format = apiStyle === "audio_transcription" && parsed
+      ? meteredTranscriptionFormat(provider, parsed)
+      : null;
+    if (format === "refuse") throw unmeteredTranscriptionFormat(provider);
+    if (parsed && ((placement && "bodyModel" in placement) || format)) {
       // Re-encoded only here, so fetch writes a fresh boundary for it; an
       // untouched upload keeps its original bytes and boundary.
-      parsed.set("model", placement.bodyModel);
+      if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
+      if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
       return prepared(parsed, input.providerPath, model.actualModel);
     }
@@ -443,10 +494,15 @@ export async function prepareProxyRequest(input: {
     return prepared(bytes, path, model.actualModel);
   }
 
+  if (apiStyle === "audio_transcription" && judgesTranscriptionFormat(provider)) {
+    throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
+  }
+
   // Decoded once and read twice: the parse below and, where nothing rewrote
   // the body, the outbound request itself.
   const text = new TextDecoder().decode(bytes);
   const parsed = jsonObjectFromText(text);
+  refuseDetachedJob(parsed);
   const model = resolveModel({
     match,
     bodyModel: typeof parsed.model === "string" && parsed.model.length > 0
@@ -455,6 +511,7 @@ export async function prepareProxyRequest(input: {
     policy: config,
     rewrites: input.app.config.routing.model_rewrites,
     resolved,
+    style: apiStyle,
   });
   const placement = modelPlacement(match, model);
   let bodyChanged = false;

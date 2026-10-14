@@ -1,4 +1,3 @@
-import { authenticatedAccess } from "./authenticated-access";
 /**
  * One served client request — a proxied provider call or a custom endpoint —
  * from its application to the provider's answer, as one function.
@@ -14,6 +13,10 @@ import { authenticatedAccess } from "./authenticated-access";
  *   5. admission, the one place the request is counted;
  *   6. execution.
  *
+ * The body is read at most once, by whichever step first needs it — the App
+ * Attest proof, which signs it, or the plan — and both see the same bytes,
+ * before anything rewrites them.
+ *
  * The provider rows are the one read that overlaps the others. It starts in
  * step 1 because every served request needs them, and it is awaited inside
  * step 3 beside the credential, so the rows are cached by the time step 4 reads
@@ -23,7 +26,9 @@ import { authenticatedAccess } from "./authenticated-access";
  */
 
 import type { Context, Handler } from "hono";
+import { readBodyLimited } from "../providers/request-body";
 import type { RequestVariables } from "../middleware/request-scope";
+import { authenticatedAccess } from "./authenticated-access";
 import { admitRequest } from "./admission";
 import { execute } from "./execute";
 import type { ExecutionPlan } from "./plan";
@@ -41,6 +46,11 @@ export interface ServedVariables extends RequestVariables {
 
 type ServedContext = Context<{ Bindings: Env; Variables: ServedVariables }>;
 
+/** The request body, read the first time it is asked for and shared after. */
+function bodyOnce(request: Request): () => Promise<Uint8Array<ArrayBuffer>> {
+  let read: Promise<Uint8Array<ArrayBuffer>> | undefined;
+  return () => (read ??= readBodyLimited(request));
+}
 
 async function serve(
   c: ServedContext,
@@ -49,8 +59,17 @@ async function serve(
 ): Promise<Response> {
   const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
   c.set("servedTimings", timings);
-  const { app, identity, credentialHeader } = await authenticatedAccess({ env: c.env, deployment: c.get("deployment"), headers: c.req.raw.headers, appId: c.req.param("app"), providerSlug, timings });
-  const plan = await prepare({ env: c.env, request: c.req.raw, app, identity, credentialHeader });
+  const body = bodyOnce(c.req.raw);
+  const { app, identity, credentialHeader, assertionCounter } = await authenticatedAccess({
+    env: c.env,
+    deployment: c.get("deployment"),
+    appId: c.req.param("app"),
+    request: c.req.raw,
+    body,
+    providerSlug,
+    timings,
+  });
+  const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
   const appVersion = c.req.header("x-app-version") ?? null;
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
   await admitRequest(
@@ -60,6 +79,7 @@ async function serve(
       billingCache: c.get("billingRequestCache"),
       app,
       identity,
+      assertionCounter,
       plan,
       appVersion,
       waitUntil,

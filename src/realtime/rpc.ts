@@ -36,7 +36,7 @@ export class RealtimeBackend extends WorkerEntrypoint<Env> {
     return result(async () => {
       this.contract(version);
       await requireRealtimeAdmission(this.env.DB, releaseId);
-      return prepareRealtime(this.env, request, appId, provider, origin);
+      return prepareRealtime(this.env, request, appId, provider, origin, 'realtime_connect', promise => this.ctx.waitUntil(promise));
     });
   }
   async revalidate(version: number, b: Bootstrap, headers: Headers) {

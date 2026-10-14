@@ -6,10 +6,11 @@
 // can override those choices; nothing is added until the PR is merged. Run daily by
 // .github/workflows/update-models.yml, which opens the pull request.
 //
-//   node scripts/update-models.mjs [--dry-run] [--classify] [--report <path>] [--review <path>] [--overrides <path>] [--today YYYY-MM-DD]
+//   node scripts/update-models.mjs [--dry-run] [--classify] [--report <path>] [--title <path>] [--review <path>] [--overrides <path>] [--today YYYY-MM-DD]
 //
 //   --dry-run  print the report and write nothing
 //   --report   also write the Markdown report to <path>
+//   --title    also write the pull request title to <path>
 //   --classify call AI even in a dry run (paid inference; otherwise dry runs do not)
 //   --review   read cached choices from the rolling PR
 //   --overrides read validated choices from a PR comment
@@ -27,7 +28,7 @@ import { applyEdits } from "./models/catalog-edit.mjs";
 import { createClassifier, DEFAULT_REVIEW_MODEL, recommendModels } from "./models/ai-review.mjs";
 import { applyChoices, collectCandidates, REVIEW_PATH, validateChoices } from "./models/choices.mjs";
 import { fetchText, readSource } from "./models/read-source.mjs";
-import { renderReport } from "./models/report.mjs";
+import { renderReport, renderTitle } from "./models/report.mjs";
 import { catalogEdits, decide, needsHuman } from "./models/rules.mjs";
 import { LITELLM_URL, MODELS_DEV_URL, SOURCES } from "./models/sources.mjs";
 
@@ -36,12 +37,13 @@ const ACKNOWLEDGED = fileURLToPath(new URL("./models/acknowledged.json", import.
 const REVIEW = fileURLToPath(new URL(`../${REVIEW_PATH}`, import.meta.url));
 
 function parseArgs(argv) {
-  const options = { dryRun: false, classify: false, report: null, review: null, overrides: null, today: new Date().toISOString().slice(0, 10) };
+  const options = { dryRun: false, classify: false, report: null, title: null, review: null, overrides: null, today: new Date().toISOString().slice(0, 10) };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--classify") options.classify = true;
     else if (arg === "--report") options.report = argv[++index];
+    else if (arg === "--title") options.title = argv[++index];
     else if (arg === "--review") options.review = argv[++index];
     else if (arg === "--overrides") options.overrides = argv[++index];
     else if (arg === "--today") options.today = argv[++index];
@@ -50,6 +52,7 @@ function parseArgs(argv) {
   if (options.review === undefined) throw new Error("--review needs a path");
   if (options.overrides === undefined) throw new Error("--overrides needs a path");
   if (options.report === undefined) throw new Error("--report needs a path");
+  if (options.title === undefined) throw new Error("--title needs a path");
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(options.today ?? "")) throw new Error("--today needs YYYY-MM-DD");
   return options;
 }
@@ -123,6 +126,7 @@ async function main() {
     if (decision.newModels.length || decision.changes.length) await writeFile(REVIEW, `${JSON.stringify(recommendations.choices, null, 2)}\n`);
     if (options.report) await writeFile(options.report, report);
     else console.log(report);
+    if (options.title) await writeFile(options.title, `${renderTitle(decision, options.today)}\n`);
   }
   console.error(
     `${decision.changes.length} price change(s), ${candidates.length} new model(s), ${decision.retirements.length} retirement date(s), ` +

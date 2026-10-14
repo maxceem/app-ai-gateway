@@ -11,14 +11,15 @@ import { providerDescriptor, type ProviderType } from "../shared/providers";
 import { routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
 import type { ExecutionAttempt } from "./plan";
-import { sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxy-rules";
+import { refuseDetachedJob, sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxy-rules";
 import {
   finishJsonBody,
   formWithModel,
+  meteredTranscriptionFormat,
+  unmeteredTranscriptionFormat,
   isMultipart,
   jsonObject,
   parseForm,
-  readBodyLimited,
 } from "../providers/request-body";
 import type { AppRecord, EndpointTarget } from "../core/types";
 import type { EndpointApiStyle } from "../shared/capabilities";
@@ -106,7 +107,11 @@ export function endpointAttemptRequest(
   const wireModel = routeWireModel(route, provider, target.model);
   let body: BodyInit;
   if (prepared.form) {
-    body = formWithModel(prepared.form, wireModel);
+    const form = formWithModel(prepared.form, wireModel);
+    // The plan already dropped a target no format could price this for.
+    const format = meteredTranscriptionFormat(provider, form);
+    if (format && format !== "refuse") form.set("response_format", format.send);
+    body = form;
   } else {
     const json = { ...prepared.json, model: wireModel };
     // The endpoint's own style is the contract, so it names the protocol
@@ -188,7 +193,13 @@ export async function resolveEndpointAttempts(
       }
       continue;
     }
-    if (!isBillable(entry.type, target.model, entry.pricing)) {
+    // A transcription this target would answer in plain text cannot be priced,
+    // which is the same as no price at all.
+    if (prepared.form && meteredTranscriptionFormat(entry.type, prepared.form) === "refuse") {
+      if (primary) throw unmeteredTranscriptionFormat(entry.type);
+      continue;
+    }
+    if (!isBillable(entry.type, entry.route.kind, endpoint.api_style, target.model, entry.pricing)) {
       if (primary) {
         throw new GatewayError(
           400,
@@ -230,12 +241,14 @@ export async function resolveEndpointAttempts(
 
 export async function prepareEndpointRequest(input: {
   request: Request;
+  /** The body, read once by the caller; see `PrepareInput.body`. */
+  body: () => Promise<Uint8Array<ArrayBuffer>>;
   app: AppRecord;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;
 }): Promise<PreparedEndpointRequest> {
-  const bytes = await readBodyLimited(input.request);
+  const bytes = await input.body();
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 
@@ -264,6 +277,7 @@ export async function prepareEndpointRequest(input: {
   }
 
   const merged = deepMerge(jsonObject(bytes), input.endpoint.params ?? {});
+  refuseDetachedJob(merged);
   headers.set("content-type", "application/json");
   return {
     slug: input.slug,

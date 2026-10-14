@@ -1,32 +1,45 @@
 ---
 title: Limits
-description: Cap how many requests and how much spend each user and the whole app may have.
+description: Cap how many requests and how much spend each install, each user and the whole app may have.
 ---
 
-The **Limits** page sets the limits you place on your app's own users and on
+The **Limits** page sets the limits you place on your app's own callers and on
 the app as a whole. Edits take up to a minute to apply everywhere.
 
-## Per-user limits
+## Per-install and per-user limits
 
-Applied independently to every identified user.
+On an iOS app the card is called **Per-install limits**; on a server app,
+**Per-user limits**. An install is one copy of your app on one device:
+reinstalling the app starts a new one, and a person who uses the app on two
+devices is two installs.
 
-- **Requests per minute**
-- **Requests per day**
-- **Monthly spending budget (USD)**
+- **Requests per minute**: per install on an iOS app, per user on a server app.
+- **Requests per day**: the same.
+- **Monthly spending budget (USD)**: per install on an iOS app unless you
+  choose otherwise, per user on a server app.
+- **Budget measured per** (iOS apps only): **Install**, the default, or
+  **User**. **User** adds up every install of one signed-in person, and is
+  available only when the app uses **Signed-in users only**; with
+  **Unauthenticated users** every install is its own user. The switch is
+  yours to make: nothing changes it for you.
 
 Rate limits answer `429 app_rate_limited`. An exhausted budget answers
-`429 app_budget_exhausted`. Both carry `data.scope: "user"` and a
-`Retry-After` header. The budget is settled from completed requests, so it
-stops a request within about ten seconds of the one that crosses it.
+`429 app_budget_exhausted`. Both carry a `Retry-After` header and
+`data.scope`: `install` for a request limit on an iOS app or an install
+budget, `user` for a server app's limits or a budget measured per user. The
+budget is settled from completed requests, so it stops a request within about
+ten seconds of the one that crosses it. Spend is recorded per install and per
+user alike, so switching the budget's scope part-way through a month counts
+what the month has already spent.
 
-This card needs an app that identifies users. For an app with **No user
+This card needs an app that identifies its callers. For an app with **No user
 identity** its fields are disabled, and a notice at its top links to the
 **Auth policy** page where user authentication is turned on, because there
 is nobody for a per-user limit to apply to until then.
 
 ## Per-app limits
 
-Shared across all users and keys of the app. The same three fields, with
+Shared across all installs, users and keys of the app. The same three fields, with
 `data.scope: "app"` on refusals. An `app` refusal is everybody's traffic, so
 a client backing off one user will not clear it.
 
@@ -43,7 +56,7 @@ are counted.
 "limits": {
   "per_user": {
     "requests": { "per_minute": 30, "per_day": 1000 },
-    "spending": { "monthly_usd": 10 }
+    "spending": { "monthly_usd": 10, "scope": "install" }
   },
   "per_app": {
     "requests": { "per_minute": null, "per_day": null },
@@ -55,3 +68,9 @@ are counted.
 The block is optional: omit it and the app is unlimited. Every field is
 nullable, and `null` means unlimited for that field alone. Non-null per-user limits
 on an app with no user identity are refused; an all-null block is accepted.
+
+The key stays `per_user` on every app type. `spending.scope` is `install` or
+`user`. It defaults to `install` on an iOS app and to `user` on a server app,
+and the gateway writes the default in when it stores the configuration.
+`user` on an iOS app needs `end_user.source` `issuer`, and `install` on a
+server app is refused: a server app has no installs.

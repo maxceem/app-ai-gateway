@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clientAuth } from "../src/client-auth/client-auth";
 import { providersForEndpointStyle } from "../src/shared/providers";
 import { AppConfigSchema } from "../src/contracts/schemas";
-import { parseAppConfig } from "../src/shared/app-config";
+import { budgetScope, parseAppConfig } from "../src/shared/app-config";
 import { serverConfig, validateConfig } from "./helpers";
 
 /**
@@ -84,7 +84,8 @@ describe("the application configuration grammar", () => {
     });
     expect(parsed.endpoints).toEqual({});
     expect(parsed.limits).toEqual({
-      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+      // A server application's budget is per user: it has no installs.
+      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null, scope: "user" } },
       per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
     });
   });
@@ -323,6 +324,18 @@ describe("the application configuration grammar", () => {
         .toThrowError("authentication.app_attest.environments");
     });
 
+    it("verifies on every request unless the configuration says token_exchange", () => {
+      // A stored configuration without the field reads the default too.
+      expect(parsedAttest(appleConfig()).verify_on).toBe("every_request");
+      expect(parsedAttest(appleConfig({ verify_on: "token_exchange" })).verify_on).toBe("token_exchange");
+      expect(parsedAttest(appleConfig({ verify_on: "every_request" })).verify_on).toBe("every_request");
+    });
+
+    it.each(["sometimes", "", null, true])("refuses verify_on %s", (verify_on) => {
+      expect(() => parseAppConfig(appleConfig({ verify_on })))
+        .toThrowError("verify_on must be one of every_request, token_exchange");
+    });
+
     // Moved here from the CLI, which was the only thing that ever checked them.
     it.each(["abcde12345", "AAAAAAAAA", "AAAAAAAAAAA", ""])(
       "refuses the team id %s",
@@ -453,7 +466,64 @@ describe("the application configuration grammar", () => {
 
     it("keeps a configured block through the round trip", () => {
       expect(parseAppConfig(withLimits({ per_user: scope(), per_app: scope() })).limits)
-        .toEqual({ per_user: scope(), per_app: scope() });
+        .toEqual({ per_user: scope({ spending: { monthly_usd: 5, scope: "user" } }), per_app: scope() });
+    });
+
+    describe("the budget's scope", () => {
+      const attest = (endUser: Record<string, unknown>, spending: Record<string, unknown>) => ({
+        ...withUsers(),
+        authentication: {
+          type: "apple_app_attest",
+          app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
+          end_user: endUser,
+        },
+        limits: { per_user: scope({ spending }), per_app: scope() },
+      });
+      const issuerUser = {
+        source: "issuer",
+        issuer: {
+          jwks_url: "https://issuer.test/jwks",
+          issuer: "https://issuer.test/",
+          audience: "aud",
+          user_id_claim: "sub",
+          required_claims: [],
+          max_token_lifetime_seconds: 3600,
+        },
+      };
+
+      it("defaults to install on an App Attest application, and fills it in", () => {
+        const parsed = parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5 }));
+        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "install" });
+        expect(budgetScope(parsed)).toBe("install");
+      });
+
+      it("moves to user only on an issuer-backed App Attest application", () => {
+        const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5, scope: "user" }));
+        expect(budgetScope(parsed)).toBe("user");
+        expect(() => parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5, scope: "user" })))
+          .toThrowError(/limits\.per_user\.spending\.scope.*end_user\.source is issuer/u);
+      });
+
+      it("refuses install on a server application, which has none", () => {
+        expect(() => parseAppConfig(withLimits({
+          per_user: scope({ spending: { monthly_usd: 5, scope: "install" } }),
+          per_app: scope(),
+        }))).toThrowError(/server applications have no install; the budget is per user/u);
+      });
+
+      it("keeps a stored configuration written before it existed", () => {
+        // Rows stored before the field still parse, and read the default.
+        const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5 }));
+        expect(parsed.limits.per_user.spending.scope).toBe("install");
+        expect(parseAppConfig(parsed)).toEqual(parsed);
+      });
+
+      it("is not accepted on per_app", () => {
+        expect(() => parseAppConfig(withLimits({
+          per_user: scope(),
+          per_app: scope({ spending: { monthly_usd: 5, scope: "user" } }),
+        }))).toThrowError(/limits\.per_app\.spending/u);
+      });
     });
 
     it("fills in a scope the configuration did not write", () => {
@@ -593,6 +663,23 @@ describe("organization-scoped configuration references", () => {
         },
       },
     }))).toThrowError("has no configured price");
+  });
+
+  /**
+   * A model is judged against the APIs its allowed paths can speak. xAI
+   * reports the cost of an image, so an unpriced image model saves where image
+   * generation is allowed, and is refused where only its Messages API is,
+   * which would refuse every request the app could make.
+   */
+  it("judges an allowlisted model by the APIs its paths allow", () => {
+    const allowing = (paths: string[]) => serverConfig({
+      proxy: { xai: { allowed_paths: paths, allowed_models: ["grok-imagine-image-2.0"] } },
+    });
+    expect(() => validateConfig(allowing(["v1/images/generations"]))).not.toThrow();
+    expect(() => validateConfig(allowing(["v1/messages", "v1/images/generations"]))).not.toThrow();
+    expect(() => validateConfig(allowing(["v1/messages"]))).toThrowError("has no configured price");
+    // No paths means the default inference APIs, which include ones xAI reports on.
+    expect(() => validateConfig(allowing([]))).not.toThrow();
   });
 
   it("accepts an unpriced client alias when it rewrites to a priced provider model", () => {
@@ -787,10 +874,21 @@ describe("organization-scoped configuration references", () => {
           api_style: "responses",
           provider: "openai",
           model: "gpt-5.6-luna",
-          fallback: [{ provider: "xai", model: "released-today" }],
+          fallback: [{ provider: "openai", model: "released-today" }],
         },
       },
     }))).toThrowError("endpoints.chat.fallback[0].model");
+  });
+
+  /**
+   * xAI states what each Responses request cost, so an endpoint on that API
+   * needs no local price for its model — the same predicate the request is
+   * judged by.
+   */
+  it("accepts an unpriced model on an endpoint whose API reports its cost", () => {
+    expect(() => validateConfig(serverConfig({
+      endpoints: { chat: { api_style: "responses", provider: "xai", model: "released-today" } },
+    }))).not.toThrow();
   });
 
   it.each(["gemini", "anthropic", "perplexity"])(
@@ -920,16 +1018,33 @@ describe("how each configuration authenticates its clients", () => {
   };
 
   it("settles the five configurations into three ways of authenticating", () => {
+    // The App Attest proof header is consumed everywhere: required beside an
+    // attest token where App Attest is verified on every request, ignored
+    // anywhere else, and forwarded never.
     expect(summary({ type: "api_key", end_user: { source: "none" } }))
-      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: [] });
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
     expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
-      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user"] });
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user", "x-appattest-proof"] });
     expect(summary({ type: "api_key", end_user: { source: "issuer", issuer } }))
-      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token", "x-appattest-proof"] });
     expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "issuer", issuer } }))
-      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token", "x-appattest-proof"] });
     expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "app_install" } }))
-      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: [] });
+      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: ["x-appattest-proof"] });
+  });
+
+  it("asks for a per-request proof only where App Attest is verified on every request", () => {
+    const attest = (verifyOn?: string) => auth({
+      type: "apple_app_attest",
+      app_attest: { ...appAttest, ...(verifyOn === undefined ? {} : { verify_on: verifyOn }) },
+      end_user: { source: "app_install" },
+    });
+    expect(attest().verifiesEveryRequest).toBe(true);
+    expect(attest("every_request").verifiesEveryRequest).toBe(true);
+    expect(attest("token_exchange").verifiesEveryRequest).toBe(false);
+    // Still consumed where it is not checked: never forwarded upstream.
+    expect(attest("token_exchange").consumedHeaders).toEqual(["x-appattest-proof"]);
+    expect(auth({ type: "api_key", end_user: { source: "none" } }).verifiesEveryRequest).toBe(false);
   });
 
   it("refuses a request that names no end user before verifying its credential", () => {

@@ -151,10 +151,20 @@ without sending inference; it does not verify upstream keys, App Attest on a
 device, sign-in or entitlements. Generate the matching client example with
 `app snippet` and address any placeholder notes before using it.
 
+`agw app show` and `agw app check` print an app's warnings.
+
 Flag-based `agw app add --type ios` enables both production and development
 App Attest environments. Use `--attest-environments production` for a shipped
 app, and a separate development app when needed. The console and an API body
 that omits environments default to production only.
+
+`--verify-on every_request` or `--verify-on token_exchange`, on `agw app add
+--type ios` or `agw app update`, sets when the app verifies App Attest. A new
+app verifies every request, which needs clients on the AppAIGateway Swift
+package 1.4 or later; `token_exchange` checks the assertion once per hourly
+token. Apps created before this setting was added were set to
+`token_exchange`, so switch one to `every_request` only once every build in
+use is on 1.4 or later.
 
 Application keys are written only to a private file. Select a path with
 `--key-output`, or use the default managed private file.

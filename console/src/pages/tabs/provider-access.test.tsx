@@ -146,6 +146,27 @@ describe("ProviderAccessTab", () => {
     expect(screen.getByText("All inference endpoints · all models · no output cap")).toBeTruthy();
   });
 
+  it("says what all inference endpoints allow on each provider, and that a list replaces them", async () => {
+    renderTab(selectedRouting({
+      "openai-dev": { allowed_paths: [], allowed_models: [] },
+      claude: { allowed_paths: [], allowed_models: [] },
+    }));
+
+    await screen.findAllByText("All inference endpoints · all models · no output cap");
+    await expand("openai-dev");
+    // OpenAI's own inference operations are named beside the default APIs.
+    expect(screen.getByText("v1/images/generations")).toBeTruthy();
+    expect(screen.getByText("v1/embeddings")).toBeTruthy();
+
+    await choose(ENDPOINTS, "Selected endpoints");
+    expect(screen.getByText(/Listed endpoints replace the defaults/u)).toBeTruthy();
+    expect(screen.queryByText("v1/images/generations")).toBeNull();
+
+    // Anthropic serves nothing beyond the default APIs, so nothing more is named.
+    await expand("claude");
+    expect(screen.getByText(/Responses, Chat Completions, Anthropic Messages/u).querySelector("code")).toBeNull();
+  });
+
   it("keeps an endpoint list through a detour to all endpoints", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: [] } }));
 

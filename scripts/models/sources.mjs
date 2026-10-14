@@ -87,6 +87,12 @@ export const SOURCES = {
       url: "https://ai.google.dev/gemini-api/docs/pricing.md.txt",
       type: MARKDOWN,
       parse: parseGemini,
+      // Deprecated models Google serves with their replacement. The pricing
+      // page drops them; the deprecation table still lists them by their own id.
+      aliases: {
+        "gemini-3.7-flash": "gemini-3.8-flash",
+        "gemini-3.5-flash": "gemini-3.6-flash",
+      },
     },
     deprecations: {
       url: "https://ai.google.dev/gemini-api/docs/deprecations.md.txt",

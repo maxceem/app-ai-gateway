@@ -256,6 +256,7 @@ describe("ErrorsTab", () => {
     const rejection: RejectionEvent = {
       id: 9,
       user_id: "user-1",
+      install_id: null,
       api_key_id: null,
       reason: "blocked_app_rate",
       scope: "user",

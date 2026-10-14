@@ -20,7 +20,7 @@ import {
   type UsageObservation,
 } from "./pricing";
 import { observeResponse } from "./usage-readers";
-import { type ProviderType, reportsCost } from "../shared/providers";
+import { type ProviderType, routeCostReport } from "../shared/providers";
 import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
 import { database } from "../db/index";
@@ -93,6 +93,8 @@ export interface UsageEvent {
    * value is the sole record of what a transcription cost was computed from.
    */
   audioSeconds?: number;
+  /** Generated images for per-image models, log-only for the same reason. */
+  images?: number;
 }
 
 const RECORD_ATTEMPTS = 3;
@@ -205,6 +207,7 @@ export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<vo
     modalityTokens: event.row.modalityTokens,
     // Undefined for token-priced traffic, where JSON.stringify drops the field.
     audioSeconds: event.audioSeconds,
+    images: event.images,
     costUsd: event.row.costUsd,
     costSource: event.row.costSource,
   });
@@ -243,6 +246,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         body,
         input.contentType,
         attribution.provider,
+        attribution.providerRoute.kind,
         attribution.apiStyle,
       );
       observed = seen.usage;
@@ -276,7 +280,12 @@ export function buildUsageEvent(input: UsageBuildInput): UsageEvent {
   const { attribution, identity, eventId, createdAt, observed } = input;
   const report = input.report ?? null;
   const aborted = input.aborted ?? false;
-  const reporting = reportsCost(attribution.provider);
+  const integration = routeCostReport(
+    attribution.provider,
+    attribution.providerRoute.kind,
+    attribution.apiStyle,
+  );
+  const reporting = integration !== null;
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
   const price = computeCost(
@@ -385,17 +394,19 @@ export function buildUsageEvent(input: UsageBuildInput): UsageEvent {
       appId: identity.appId,
       organizationId: input.organizationId,
       userId: identity.userId,
+      installId: identity.installId,
       apiKeyId: identity.apiKeyId ?? null,
       providerType: attribution.provider,
       providerId: attribution.providerId,
       providerSlug: attribution.providerSlug,
       providerGatewayId: gateway?.id ?? null,
       providerGatewayType: gateway?.type ?? null,
-      // On a reporting route the configuration settles nothing: the
+      // Behind an aggregator the configuration settles nothing: the
       // organization's own key always pays *that* service, and the question the
       // column answers is whose key paid for the inference behind it — which
-      // only the response can say, per request.
-      credentialSource: reporting
+      // only the response can say, per request. A provider that reports only
+      // its own charge leaves the route's answer standing.
+      credentialSource: integration?.readsCredentialSource
         ? (report?.credentialSource ?? null)
         : attribution.providerRoute.adapter.credentialSource,
       modelAuthor: resolveModelAuthor(attribution.provider, attribution.model),
@@ -429,5 +440,6 @@ export function buildUsageEvent(input: UsageBuildInput): UsageEvent {
       createdAt,
     },
     audioSeconds: usage.audioSeconds,
+    images: usage.images,
   };
 }

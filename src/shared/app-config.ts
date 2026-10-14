@@ -21,9 +21,13 @@ import {
   type LimitScopeConfig,
 } from "../contracts/schemas.ts";
 import { schemaIssueMessage } from "./schema-issues.ts";
+import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "./providers.ts";
+import type { OutputClampStyle } from "./capabilities.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
+  APP_ATTEST_VERIFY_ON,
+  BUDGET_SCOPES,
   DEFAULT_END_USER_HEADER,
   ENDPOINT_SLUG,
   ENTITLEMENT_CHECKS,
@@ -39,11 +43,13 @@ export type {
   ApiKeyEndUser,
   AppAttestEndUser,
   AppAttestEnvironment,
+  AppAttestVerifyOn,
   AppConfig,
   AppConfigInput,
   AppleAppAttestAuthentication,
   AuthenticationConfig,
   AuthenticationConfigInput,
+  BudgetScope,
   ClaimRequirement,
   EndUserSource,
   EndpointConfig,
@@ -54,12 +60,14 @@ export type {
   IssuerProvider,
   LimitScopeConfig,
   LimitsConfig,
+  PerUserLimitScopeConfig,
   ProviderPolicy,
   RoutingConfig,
 } from "../contracts/schemas.ts";
 
 import {
   scopeHasLimits,
+  type BudgetScope,
   type ProviderPolicy,
   type RoutingConfig,
 } from "../contracts/schemas.ts";
@@ -131,6 +139,31 @@ export function selectedProviderPolicies(routing: RoutingConfig): Record<string,
   return routing.providers.mode === "selected" ? routing.providers.selected : {};
 }
 
+/** An `allowed_paths` entry a default policy allows, as it would be written. */
+export interface DefaultInferencePath {
+  path: string;
+  clamp: OutputClampStyle;
+}
+
+const DEFAULT_INFERENCE_PATHS: ReadonlyMap<ProviderType, readonly DefaultInferencePath[]> = new Map(
+  PROVIDER_TYPES.map((type) => [
+    type,
+    (providerDescriptor(type).inferencePaths ?? []).map((entry) =>
+      typeof entry === "string" ? { path: entry, clamp: "none" as const } : { ...entry }),
+  ]),
+);
+
+/**
+ * The provider-native inference operations a policy that names no paths allows
+ * on a provider type, beyond the default API styles, as the `allowed_paths`
+ * entries that would allow them, each with the clamp style its body is capped
+ * in. Built once, because the proxy asks on every request that falls outside
+ * the default styles.
+ */
+export function defaultInferencePaths(provider: ProviderType): readonly DefaultInferencePath[] {
+  return DEFAULT_INFERENCE_PATHS.get(provider) ?? [];
+}
+
 /**
  * The policy an application applies to one provider instance, or undefined
  * when it may not reach that instance at all. All-mode reaches every instance
@@ -162,6 +195,16 @@ export function monthlyBudgetMicrousd(scope: LimitScopeConfig): number | null {
   return scope.spending.monthly_usd === null
     ? null
     : Math.round(scope.spending.monthly_usd * 1_000_000);
+}
+
+/**
+ * Whose month the `per_user` budget is measured over. Always written on a
+ * parsed configuration; the fallback is the same default, for a value built
+ * by hand.
+ */
+export function budgetScope(config: AppConfig): BudgetScope {
+  if (config.authentication.type === "api_key") return "user";
+  return config.limits.per_user.spending.scope ?? "install";
 }
 
 export const hasUserLevelLimits = (config: AppConfig): boolean =>

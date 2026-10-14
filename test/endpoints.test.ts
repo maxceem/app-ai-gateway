@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp, signRequest } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -43,7 +43,7 @@ async function workerFetch(
   bindings: Env = env,
 ): Promise<Response> {
   const executionCtx = createExecutionContext();
-  const response = await app.fetch(new Request(input, init), bindings, executionCtx);
+  const response = await app.fetch(await signRequest(new Request(input, init)), bindings, executionCtx);
   pendingExecutionContexts.push(executionCtx);
   return response;
 }
@@ -160,6 +160,25 @@ afterEach(async () => {
 });
 
 describe("custom endpoints", () => {
+  it("refuses a background request, whose cost only a poll would carry", async () => {
+    const appId = "endpoint-background";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello", background: true }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("overwrites the model, deep-merges configured params, and clamps output tokens", async () => {
     const appId = "endpoint-responses";
     await seedApp(appId, {
@@ -650,6 +669,38 @@ describe("custom endpoints", () => {
       route: "openai/v1/audio/transcriptions",
       endpoint_slug: "transcribe",
     });
+  });
+
+  it("refuses a transcription endpoint request answered as plain text, which nothing could price", async () => {
+    const appId = "endpoint-transcribe-text";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const form = new FormData();
+    form.set("response_format", "text");
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+    const response = await endpointRequest({ appId, slug: "transcribe", token, body: form });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a transcription endpoint request naming two formats", async () => {
+    const appId = "endpoint-transcribe-two-formats";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const form = new FormData();
+    form.append("response_format", "json");
+    form.append("response_format", "text");
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+    const response = await endpointRequest({ appId, slug: "transcribe", token, body: form });
+
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("routes an xAI transcription endpoint to the grok speech-to-text path", async () => {

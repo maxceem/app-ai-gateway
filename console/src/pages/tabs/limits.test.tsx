@@ -134,3 +134,72 @@ describe("LimitsTab", () => {
       .toBeTruthy();
   });
 });
+
+describe("LimitsTab on an App Attest app", () => {
+  function renderAttest(endUser: Record<string, unknown>, spending: Record<string, unknown> = { monthly_usd: 5 }) {
+    stubApi({
+      [`/v1/admin/apps/${APP_ID}`]: {
+        body: {
+          app: {
+            ...appRow(),
+            config: {
+              authentication: {
+                type: "apple_app_attest",
+                app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app", environments: ["production"] },
+                end_user: endUser,
+              },
+              routing: { providers: { mode: "all" }, model_rewrites: {} },
+              limits: {
+                per_user: { requests: { per_minute: null, per_day: null }, spending },
+                per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+              },
+            },
+          },
+        },
+      },
+    });
+    return renderAuthenticated(<Harness />);
+  }
+
+  const issuer = {
+    source: "issuer",
+    issuer: {
+      jwks_url: "https://issuer.example.test/jwks.json",
+      issuer: ["https://issuer.example.test"],
+      audience: ["my-app"],
+      user_id_claim: "sub",
+      required_claims: [],
+      max_token_lifetime_seconds: 3600,
+    },
+  };
+
+  it("calls the card per-install and measures the budget per install by default", async () => {
+    renderAttest({ source: "app_install" });
+    expect(await screen.findByText("Per-install limits")).toBeTruthy();
+    expect(screen.getByText(/per install per month/u)).toBeTruthy();
+    const scope = screen.getByRole("combobox", { name: "Budget measured per" });
+    expect(scope.textContent).toBe("Install");
+  });
+
+  it("offers per user only where an issuer names the user", async () => {
+    renderAttest({ source: "app_install" });
+    await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
+    const user = await screen.findByRole("option", { name: "User" });
+    expect(user.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("moves the budget to the user on an issuer-backed app", async () => {
+    renderAttest(issuer, { monthly_usd: 5, scope: "install" });
+    await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
+    await userEvent.click(await screen.findByRole("option", { name: "User" }));
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Budget measured per" }).textContent).toBe("User"));
+    expect(screen.getByText(/per user per month/u)).toBeTruthy();
+  });
+
+  it("keeps the per-user card and no scope choice on a server app", async () => {
+    renderTab(configured);
+    expect(await screen.findByText("Per-user limits")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Budget measured per" })).toBeNull();
+  });
+});

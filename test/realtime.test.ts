@@ -29,7 +29,7 @@ import { CATALOG } from '../src/contracts/catalog';
 import { createOpenAPIDocument } from '../src/contracts/openapi';
 import { INFERENCE_ROUTES } from '../src/contracts/inference-routes';
 import type { Bootstrap, JsonObject } from '../src/realtime/types';
-import { clearIsolateCaches, seedProvider, seedServerApp, TEST_ORGANIZATION_ID } from './helpers';
+import { clearIsolateCaches, registerTestInstall, seedApp, seedProvider, seedServerApp, signedProof, tokenForInstall, TEST_ORGANIZATION_ID } from './helpers';
 
 const soak = process.env.REALTIME_SOAK === '1';
 const manual = { ready: true, configuring: false, active: false, responseId: null };
@@ -48,7 +48,7 @@ async function seeded(enabled = true) {
   await database(env.DB).update(appTable).set({ config: loaded.config }).where(eq(appTable.id, appId));
   clearIsolateCaches();
   const headers = new Headers({ Authorization: `Bearer ${key}` });
-  const identity = (await authenticateRequest({ env, app: await loadApp(env, appId), headers })).identity;
+  const identity = (await authenticateRequest({ env, app: await loadApp(env, appId), request: new Request('https://gateway.test/', { headers }), body: async () => new Uint8Array() })).identity;
   const provider = await requireProvider(env, TEST_ORGANIZATION_ID, appId);
   const bootstrap: Bootstrap = { sessionId: crypto.randomUUID(), appId, organizationId: TEST_ORGANIZATION_ID, providerId: provider.id,
     providerSlug: appId, model: 'gpt-realtime', requestedModel: 'gpt-realtime', protocol: 'openai_realtime', identity, appVersion: null, origin: 'https://gateway.test' };
@@ -174,7 +174,7 @@ function collector(socket: WebSocket) {
   });
   it('limiter receipts preserve original windows and separate leases from inference counts', async () => {
     const limiter = env.USER_LIMITER.getByName(crypto.randomUUID());
-    const input = { now: Date.now(), rpm: 1, rpd: 1, monthlyBudgetMicrousd: null, spend: { appId: 'a', userKey: null }, admissionId: 'generation-1', freshSpend: true };
+    const input = { now: Date.now(), rpm: 1, rpd: 1, monthlyBudgetMicrousd: null, spend: { appId: 'a', scope: 'app' as const, key: null }, admissionId: 'generation-1', freshSpend: true };
     await Promise.all(Array.from({ length: 10 }, () => limiter.checkAndIncrement(input)));
     expect(await limiter.getStatus(input.now)).toEqual({ requestsToday: 1 });
     await runInDurableObject(limiter, async instance => { await expect((instance as UserLimiter).checkAndIncrement({ ...input, now: input.now + 60_000 })).rejects.toThrow(); });
@@ -313,6 +313,51 @@ describe('immutable realtime release boundaries', () => {
     await backend.persist(buildEventForReleaseTest(bootstrap));
   });
 });
+describe('realtime on an App Attest app that verifies every request', () => {
+  async function attested() {
+    clearIsolateCaches(); const appId = `realtime-attest-${crypto.randomUUID()}`;
+    await seedApp(appId, { endUser: 'app_install' });
+    await seedProvider({ type: 'openai', slug: appId, id: appId });
+    const loaded = await loadApp(env, appId);
+    loaded.config.realtime.enabled = true; loaded.config.routing.providers = { mode: 'all' };
+    await database(env.DB).update(appTable).set({ config: loaded.config }).where(eq(appTable.id, appId));
+    clearIsolateCaches();
+    const install = await registerTestInstall(appId, 'install-user');
+    const token = await tokenForInstall(install);
+    const url = `https://gateway.test/v1/apps/${appId}/realtime/${appId}/connection?model=gpt-realtime`;
+    const signed = async (counter = ++install.counter) => new Request(url, { headers: {
+      Authorization: `Bearer ${token}`, 'x-app-version': '1.0.0',
+      'x-appattest-proof': await signedProof({ appId, privateKey: install.privateKey, token, method: 'GET', url, counter }),
+    } });
+    return { appId, install, token, url, signed };
+  }
+
+  it('requires a proof on every handshake and refuses one replayed', async () => {
+    const { appId, install, token, url, signed } = await attested();
+    const unsigned = new Request(url, { headers: { Authorization: `Bearer ${token}`, 'x-app-version': '1.0.0' } });
+    await expect(prepareRealtime(env, unsigned, appId, appId, 'https://gateway.test', 'realtime_discover')).rejects.toMatchObject({ status: 401, code: 'assertion_required' });
+    const request = await signed();
+    const { bootstrap, headers } = await prepareRealtime(env, new Request(request.url, { headers: request.headers }), appId, appId, 'https://gateway.test', 'realtime_discover');
+    expect(bootstrap.identity).toMatchObject({ authMethod: 'attest', installId: install.keyId });
+    // The session never holds the proof: it signed one request, and is spent.
+    expect(headers.has('x-appattest-proof')).toBe(false);
+    await expect(prepareRealtime(env, request, appId, appId, 'https://gateway.test', 'realtime_discover')).rejects.toMatchObject({ status: 403, code: 'attest_failed' });
+    await prepareRealtime(env, await signed(), appId, appId, 'https://gateway.test');
+  });
+
+  it('revalidates the token without the spent proof and holds leases per install', async () => {
+    const { appId, install, signed } = await attested();
+    const { bootstrap, headers } = await prepareRealtime(env, await signed(), appId, appId, 'https://gateway.test');
+    const backend = localSessionBackend(env, () => {});
+    expect((await backend.revalidate(bootstrap, headers)).app.id).toBe(appId);
+    expect(await backend.capacity(bootstrap, 'user', 'acquire', 1)).toMatchObject({ allowed: true });
+    const installLimiter = env.USER_LIMITER.getByName(`${appId}:install:${install.keyId}`);
+    expect(await installLimiter.acquireSession('another-session', 1)).toMatchObject({ allowed: false });
+    await backend.capacity(bootstrap, 'user', 'release');
+    expect(await installLimiter.acquireSession('another-session', 1)).toMatchObject({ allowed: true });
+  });
+});
+
 function buildEventForReleaseTest(b: Bootstrap) {
   return buildUsageEvent({ organizationId: b.organizationId, identity: b.identity, attribution: testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }), appVersion: null,
     status: 'ok', latencyMs: 1, contentType: 'application/json', observed: null, eventId: crypto.randomUUID(), createdAt: new Date().toISOString() });

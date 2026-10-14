@@ -82,7 +82,7 @@ describe("admin API", () => {
 
     // Accounting is independent of configuration, so enabling a budget below
     // needs no historical SUM/backfill race.
-    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, month)).toBe(80_000);
+    expect(await monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, month)).toBe(80_000);
 
     const written = await exports.default.fetch(
       `https://example.test/v1/admin/apps/${appId}`,
@@ -120,14 +120,14 @@ describe("admin API", () => {
       rpm: null,
       rpd: null,
       monthlyBudgetMicrousd: 50_000_000,
-      spend: { appId, userKey: null },
+      spend: { appId, scope: "app", key: null },
     })).toEqual({ allowed: true });
     expect(await env.USER_LIMITER.getByName(`${appId}-tight`).checkAndIncrement({
       now: Date.now(),
       rpm: null,
       rpd: null,
       monthlyBudgetMicrousd: 80_000,
-      spend: { appId, userKey: null },
+      spend: { appId, scope: "app", key: null },
     })).toMatchObject({ allowed: false, reason: "budget" });
   });
 
@@ -157,8 +157,8 @@ describe("admin API", () => {
     // the same rows. Repricing has to correct it too, or that budget would run
     // on a total nothing can fix.
     const month = new Date().toISOString().slice(0, 7);
-    const userTotal = () => monthlySpendMicrousd(env.DB, { appId, userKey: userId }, month);
-    const appTotal = () => monthlySpendMicrousd(env.DB, { appId, userKey: null }, month);
+    const userTotal = () => monthlySpendMicrousd(env.DB, { appId, scope: "user", key: userId }, month);
+    const appTotal = () => monthlySpendMicrousd(env.DB, { appId, scope: "app", key: null }, month);
     const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
     const request = (apply: boolean) => exports.default.fetch(url, {
       method: "POST",

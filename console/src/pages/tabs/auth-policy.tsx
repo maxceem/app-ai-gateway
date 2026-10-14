@@ -34,7 +34,7 @@ import { useApiKeys } from "@/lib/queries";
 import { IOS_USER_CHOICES, SERVER_USER_CHOICES, type UserSource } from "@/lib/user-sources";
 import { cn } from "@/lib/utils";
 import { ServerKeys } from "@/pages/server-keys";
-import { issueUnder, type ConfigIssue } from "@shared/app-config";
+import { issueUnder, type AppAttestVerifyOn, type ConfigIssue } from "@shared/app-config";
 
 const LEVELS: { slug: AuthLevel; label: string }[] = [
   { slug: "identity", label: "Application identity" },
@@ -48,6 +48,20 @@ const STATUS_ICONS: Record<LevelStatus["tone"], { icon: ComponentType<{ classNam
   incomplete: { icon: CircleAlert, className: "text-destructive" },
   off: { icon: CircleDashed, className: "text-muted-foreground/60" },
 };
+
+const VERIFY_ON_CHOICES: Choice<AppAttestVerifyOn>[] = [
+  {
+    value: "every_request",
+    label: "Every request",
+    description:
+      "Each request carries a fresh App Attest assertion.",
+  },
+  {
+    value: "token_exchange",
+    label: "Token exchange",
+    description: "The assertion is checked once per hourly token. Requests carry only the token.",
+  },
+];
 
 const SUBSCRIPTION_CHOICES: Choice<Subscription>[] = [
   {
@@ -227,9 +241,12 @@ export function AppIdentity({
   issues?: readonly ConfigIssue[];
   compact?: boolean;
 }) {
+  const reasonId = useId();
   const attest = authentication.app_attest;
   const patch = (partial: Partial<typeof attest>) =>
     state.updateAuthentication({ ...authentication, app_attest: { ...attest, ...partial } });
+  // An absent field is the schema's default.
+  const verifyOn: AppAttestVerifyOn = attest.verify_on ?? "every_request";
   const problem = attest.team_id.trim() && attest.bundle_id.trim()
     ? issues?.find((issue) => issueUnder(issue, DRAFT_PATHS.appAttest))?.message
     : undefined;
@@ -289,12 +306,12 @@ export function AppIdentity({
         value={attest.environments}
         compact
         disabled={readOnly}
-        onChange={(environments) =>
+        onChange={(environments) => {
+          const { environments: _previous, ...rest } = attest;
           state.updateAuthentication({
             ...authentication,
             app_attest: {
-              team_id: attest.team_id,
-              bundle_id: attest.bundle_id,
+              ...rest,
               // Production-only is the default the Worker resolves an absent
               // field to, so it is written as an absence. Storing it would
               // stamp the field onto every application that never opted in,
@@ -303,9 +320,33 @@ export function AppIdentity({
                 ? {}
                 : { environments }),
             },
-          })
-        }
+          });
+        }}
       />
+      {/* The wizard leaves it at its default: a new app verifies every request. */}
+      {compact ? null : (
+        <Field label="Verify App Attest on">
+          {readOnly ? (
+            <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
+              <ChoiceList
+                label="Verify App Attest on"
+                choices={VERIFY_ON_CHOICES}
+                value={verifyOn}
+                disabled
+                describedBy={reasonId}
+                onChange={() => {}}
+              />
+            </DisabledReason>
+          ) : (
+            <ChoiceList
+              label="Verify App Attest on"
+              choices={VERIFY_ON_CHOICES}
+              value={verifyOn}
+              onChange={(next) => patch({ verify_on: next })}
+            />
+          )}
+        </Field>
+      )}
     </Level>
   );
 }

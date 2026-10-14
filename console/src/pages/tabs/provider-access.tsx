@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, ChevronDown, CircleSlash, Plus, Trash2 } from "lucide-react";
 import { OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
 import { emptyPolicy } from "@shared/app-defaults";
+import { defaultInferencePaths } from "@shared/app-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -90,6 +91,12 @@ interface PolicyRow {
   type?: Provider;
   /** Where the paths of this instance live, shown beside the path list. */
   hint: string;
+  /**
+   * The provider-native inference paths "All inference endpoints" allows on
+   * this instance beyond the default APIs. Empty where a gateway publishes its
+   * own URL space, which carries none of them.
+   */
+  defaultPaths: readonly string[];
   knownModels: string[];
   /**
    * A paused or deleted instance keeps its full configuration UI — the app is
@@ -329,9 +336,27 @@ function PolicyPanel({
               <Plus className="size-3.5" />
               Add endpoint
             </Button>
-            <p className="text-xs leading-relaxed text-muted-foreground">{row.hint}</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {row.hint} Listed endpoints replace the defaults, so list every path this app calls.
+            </p>
           </div>
-        ) : null}
+        ) : (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Responses, Chat Completions, Anthropic Messages, Gemini generateContent and transcription
+            {row.defaultPaths.length > 0 ? (
+              <>
+                , and{" "}
+                {row.defaultPaths.map((path, index) => (
+                  <span key={path}>
+                    {index > 0 ? ", " : ""}
+                    <code className="font-mono">{path}</code>
+                  </span>
+                ))}
+              </>
+            ) : null}
+            . Other provider operations, such as files, batches or video jobs, need to be listed.
+          </p>
+        )}
       </div>
 
       <div className="space-y-3">
@@ -482,6 +507,9 @@ function policyRows(
     title: instance.name,
     type: instance.type,
     hint: gatewayHint(instance, gateways) ?? PROVIDER_HINTS[instance.type],
+    defaultPaths: instance.route !== null && routedSurface(instance) === null
+      ? defaultInferencePaths(instance.type).map((entry) => entry.path)
+      : [],
     // Includes models only this instance prices: the allowlist is per instance,
     // so suggesting them is exactly as correct as the catalog entries.
     knownModels: instanceModels(instance, prices),
@@ -493,6 +521,7 @@ function policyRows(
       slug,
       title: slug,
       hint: "No instance answers for this slug, so no path on it can be served.",
+      defaultPaths: [],
       knownModels: [],
       badge: "deleted" as const,
     }));

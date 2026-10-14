@@ -39,6 +39,9 @@ stream. A fallback happens only if nothing has been streamed yet.
 ## Transcription endpoints
 
 Send an OpenAI audio-transcription multipart body. `model` may be omitted.
+Leave `response_format` at its default or choose another JSON format: a
+plain-text answer (`text`, `srt` or `vtt`) reports nothing to bill, so it is
+refused with `400 invalid_request`.
 
 ```sh
 curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcribe \
@@ -50,11 +53,16 @@ curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcrib
 ## With the Swift package
 
 ```swift
-var request = try await gateway.authorizedRequest(endpointSlug: "chat")
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-request.httpBody = Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8)
-let (data, response) = try await URLSession.shared.data(for: request)
+let (data, response) = try await gateway.withAuthorizedRequest(
+    endpointSlug: "chat",
+    body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
+    contentType: "application/json"
+) { try await URLSession.shared.data(for: $0) }
 ```
+
+Pass the body to `withAuthorizedRequest`: when the app verifies App Attest on
+every request, the request is signed over it, as described in
+[Per-request proof](/integrate/ios#per-request-proof).
 
 ## Errors
 

@@ -78,6 +78,7 @@ describe("checkApp", () => {
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",
       ],
+      warnings: [],
     });
   });
 
@@ -242,6 +243,10 @@ describe("getAppSnippet", () => {
     expect(swift.body.snippet).toContain('appID: "snippet-languages-ios"');
     expect(swift.body.snippet).toContain(`baseURL: URL(string: "${ORIGIN}")!`);
     expect(swift.body.snippet).toContain('providerPath: "v1/responses"');
+    // Sent through the helper, which resends a request built afresh on a 401.
+    expect(swift.body.snippet).toContain("try await gateway.withAuthorizedRequest(");
+    expect(swift.body.snippet).toContain(") { try await URLSession.shared.data(for: $0) }");
+    expect(swift.body.snippet).toContain("// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.4.1)");
     // The seeded iOS app signs its users in with an issuer.
     expect(swift.body.snippet).toContain("issuerTokenProvider");
     expect(swift.body.notes.at(-1)).toMatch(/^Replace yourIdentitySDK/u);

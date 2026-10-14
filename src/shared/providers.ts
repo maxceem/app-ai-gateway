@@ -18,9 +18,11 @@ import {
   type ApiStyle,
   type EndpointApiStyle,
   type OutputClampStyle,
+  type ProviderRoute,
   type RouteCapability,
 } from "./capabilities.ts";
-import { type CostReport, OPENROUTER_COST_REPORT } from "./cost-report.ts";
+import { type CostReport, OPENROUTER_COST_REPORT, XAI_COST_REPORT } from "./cost-report.ts";
+import { relaysProviderResponses } from "./gateways.ts";
 
 /**
  * How a provider authenticates a direct call. The header name and the scheme
@@ -32,6 +34,9 @@ export interface ProviderAuth {
   header: string;
   scheme?: string;
 }
+
+/** A default inference path: bare where nothing is capped, or with the clamp style its body takes. */
+export type InferencePath = string | { readonly path: string; readonly clamp: OutputClampStyle };
 
 export interface ProviderDescriptor {
   /** The display name the console and the CLI show for this type. */
@@ -75,6 +80,43 @@ export interface ProviderDescriptor {
    * here. The key set *is* the capability — see {@link providerCapability}.
    */
   endpointPaths?: Partial<Record<EndpointApiStyle, string>>;
+  /**
+   * The `response_format` values of this type's transcription API whose answer
+   * carries the measure a transcription is billed by: token usage, or the
+   * duration of the audio. Absent where every answer carries one.
+   *
+   * A plain-text answer (`text`, `srt`, `vtt`) carries neither, so a priced
+   * model would record as unresolved at $0 and escape every budget; a request
+   * for one is refused before it is forwarded. Where the provider's own default
+   * carries no measure but a richer JSON format extends it with one, the
+   * request is sent with that format instead, which a client reading `text`
+   * off the answer cannot tell apart.
+   */
+  transcriptionFormats?: {
+    /** The formats whose answer carries usage or a duration. */
+    readonly metered: readonly string[];
+    /** What the provider answers in when the request names no format. */
+    readonly default: string;
+    /** A format with no measure, mapped to the metered format that extends it. */
+    readonly upgrades?: Readonly<Record<string, string>>;
+  };
+  /**
+   * Provider-native inference operations an app may call when its policy names
+   * no paths, on top of {@link DEFAULT_PROXY_API_STYLES}: image generation,
+   * embeddings, speech and legacy completions where this type serves them.
+   * Exact paths, `{model}` the only placeholder, as an `allowed_paths` entry
+   * matches them. A bare path is never output-capped, because an image, an
+   * embedding or a recording has no output tokens to bound and a provider would
+   * refuse the field; a text-generation path names the clamp style its body is
+   * capped in, so an app's output cap holds there as on the default APIs.
+   *
+   * Only operations that run a model, are named by the request and answer in
+   * the same response. Anything else stays an explicit `allowed_paths` choice:
+   * control-plane calls (files, batches, fine-tuning), and asynchronous jobs
+   * such as video generation, whose result and cost only a later poll returns —
+   * a poll this gateway, which proxies POST alone, cannot serve or bill.
+   */
+  inferencePaths?: readonly InferencePath[];
   /**
    * The only client API styles this type serves. Absent means every style,
    * which is the pass-through default: the raw proxy forwards whatever was
@@ -135,6 +177,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.openai.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // Images, which report token usage, embeddings and speech.
+    inferencePaths: [
+      "v1/images/generations",
+      "v1/images/edits",
+      "v1/embeddings",
+      "v1/audio/speech",
+    ],
     probePath: "v1/models",
     examplePath: "v1/responses",
     // OpenAI's chat-completions surface deprecated `max_tokens` in favour of
@@ -144,6 +193,9 @@ export const PROVIDER_DESCRIPTORS = {
     // The two types whose Responses and transcription request shapes the
     // gateway composes itself for custom endpoints.
     endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
+    // Every JSON answer reports `usage`: tokens for the GPT transcription
+    // models, `{ type: "duration", seconds }` for whisper-1.
+    transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
     modelAuthor: "OpenAI",
   },
   anthropic: {
@@ -166,10 +218,23 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.x.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // Images and their edits report their cost like chat does; embeddings and
+    // legacy completions answer in tokens, the latter capped in `max_tokens`.
+    inferencePaths: [
+      "v1/images/generations",
+      "v1/images/edits",
+      "v1/embeddings",
+      { path: "v1/completions", clamp: "chat_completions" },
+    ],
     probePath: "v1/models",
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
     // `v1/audio/transcriptions`.
     endpointPaths: { responses: "v1/responses", audio_transcription: "v1/stt" },
+    // Every Chat Completions, Responses, image and video answer carries
+    // `usage.cost_in_usd_ticks`, what xAI actually billed for it. An image
+    // reports nothing else, so this is the only way to bill one; on the token
+    // APIs it beats the catalog's estimate, which knows no discounts.
+    costReport: XAI_COST_REPORT,
     modelAuthor: "xAI",
   },
   gemini: {
@@ -177,6 +242,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://generativelanguage.googleapis.com/",
     auth: { header: "x-goog-api-key" },
     nativeClampStyle: "gemini_native",
+    // Embeddings. `generateContent` already carries text, images, speech and
+    // transcription; `batchEmbedContents` is left out because each item may name
+    // a model the one in the URL does not.
+    inferencePaths: [
+      "v1beta/models/{model}:embedContent",
+      "v1/models/{model}:embedContent",
+    ],
     probePath: "v1beta/models",
     // Native Gemini generation requests carry the model in the URL rather than
     // in the JSON body, so there is no example path without a model.
@@ -188,6 +260,15 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
+    // The Agent API, its model router's three formats, and embeddings.
+    inferencePaths: [
+      { path: "v1/agent", clamp: "responses" },
+      { path: "router/v1/chat/completions", clamp: "chat_completions" },
+      { path: "router/v1/responses", clamp: "responses" },
+      { path: "router/v1/messages", clamp: "anthropic" },
+      "v1/embeddings",
+      "v1/contextualizedembeddings",
+    ],
     // No `probePath`: Perplexity has no unmetered authenticated endpoint.
     examplePath: "chat/completions",
     modelAuthor: "Perplexity",
@@ -205,6 +286,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.deepseek.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Responses, fill-in-the-middle completions and the Anthropic-format API,
+    // which like its chat path carry no `v1/` prefix of their own.
+    inferencePaths: [
+      { path: "responses", clamp: "responses" },
+      { path: "beta/completions", clamp: "chat_completions" },
+      { path: "anthropic/v1/messages", clamp: "anthropic" },
+    ],
     // DeepSeek's OpenAI base URL carries no `v1` segment.
     probePath: "models",
     examplePath: "chat/completions",
@@ -217,6 +305,15 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.groq.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Its default `json` answer is the transcript alone; `verbose_json` adds the
+    // duration it bills by, and the same `text` a client reads.
+    transcriptionFormats: {
+      metered: ["verbose_json"],
+      default: "json",
+      upgrades: { json: "verbose_json" },
+    },
+    // Speech; transcriptions are a default style already.
+    inferencePaths: ["openai/v1/audio/speech"],
     // Groq's OpenAI-compatible surface is namespaced under `openai/`.
     probePath: "openai/v1/models",
     examplePath: "openai/v1/chat/completions",
@@ -226,6 +323,12 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.mistral.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Embeddings, fill-in-the-middle completions and speech.
+    inferencePaths: [
+      "v1/embeddings",
+      { path: "v1/fim/completions", clamp: "chat_completions" },
+      "v1/audio/speech",
+    ],
     probePath: "v1/models",
     modelAuthor: "Mistral",
   },
@@ -236,6 +339,21 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.together.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Its default `json` answer is the transcript alone; `verbose_json` adds the
+    // duration it bills by, and the same `text` a client reads.
+    transcriptionFormats: {
+      metered: ["verbose_json"],
+      default: "json",
+      upgrades: { json: "verbose_json" },
+    },
+    // Legacy completions, images, speech and embeddings. Video is a job whose
+    // result is polled for, so it is not here.
+    inferencePaths: [
+      { path: "v1/completions", clamp: "chat_completions" },
+      "v1/images/generations",
+      "v1/audio/speech",
+      "v1/embeddings",
+    ],
     probePath: "v1/models",
   },
   fireworks: {
@@ -245,6 +363,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.fireworks.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Every format its inference plane speaks, and embeddings.
+    inferencePaths: [
+      { path: "inference/v1/completions", clamp: "chat_completions" },
+      { path: "inference/v1/messages", clamp: "anthropic" },
+      { path: "inference/v1/responses", clamp: "responses" },
+      "inference/v1/embeddings",
+    ],
     // No `probePath`: its list-models call is `v1/accounts/{account}/models`,
     // and the account id cannot be derived from the key. Nothing under
     // `inference/v1/` is documented as a GET.
@@ -255,6 +380,8 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.cerebras.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Legacy completions.
+    inferencePaths: [{ path: "v1/completions", clamp: "chat_completions" }],
     probePath: "v1/models",
   },
   moonshot: {
@@ -264,6 +391,8 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://api.moonshot.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // The Anthropic-format API.
+    inferencePaths: [{ path: "anthropic/v1/messages", clamp: "anthropic" }],
     probePath: "v1/models",
     modelAuthor: "Moonshot AI",
   },
@@ -301,6 +430,13 @@ export const PROVIDER_DESCRIPTORS = {
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
+    // Responses, Seedream images and multimodal embeddings, all under the base
+    // URL's own `api/v3/`. Seedance video is a polled job, so it is not here.
+    inferencePaths: [
+      { path: "responses", clamp: "responses" },
+      "images/generations",
+      "embeddings/multimodal",
+    ],
     // No `probePath`: ModelArk publishes no list-models call, and its own SDK
     // has no models resource. It also authenticates before it routes, so every
     // path answers the same 401 and a probe would prove nothing about the key.
@@ -416,21 +552,36 @@ export function providersForEndpointStyle(style: EndpointApiStyle): EndpointProv
 }
 
 /**
- * Whether this provider type's own responses carry a per-request cost, which is
- * exactly whether it declared how to read one. Billability derives from the
- * declaration rather than sitting beside it, so the two cannot disagree.
+ * How this provider type reports its own cost on one route and API, or `null`
+ * where a response there cannot carry the report: the type declares none, the
+ * route answers in a gateway's own words rather than the provider's, or the
+ * API is not one the report covers. Billability derives from the declaration
+ * rather than sitting beside it, so the two cannot disagree.
+ *
+ * `style` is `null` only where no request is in hand yet — a configuration
+ * write naming a model it may later be called with — and then any API the
+ * report covers counts. A request is judged against its own API, which is the
+ * gate that keeps an unpriced model off the ones the report does not cover.
  *
  * Takes a plain string because a stored row's type reaches it from the console
  * as well as from the Worker.
  */
-export function reportsCost(type: string): boolean {
-  return isProviderType(type) && providerDescriptor(type).costReport !== undefined;
+export function routeCostReport(
+  type: string,
+  route: ProviderRoute | null,
+  style: ApiStyle | null,
+): CostReport | null {
+  if (!isProviderType(type) || !relaysProviderResponses(route)) return null;
+  const integration = providerDescriptor(type).costReport;
+  if (!integration) return null;
+  return style === null || integration.styles.includes(style) ? integration : null;
 }
 
-/**
- * Provider types whose own responses carry a per-request cost, so their models
- * proxy with no local price at all and the recorded cost is the upstream's own
- * figure.
- */
-export const COST_REPORTING_PROVIDER_TYPES: readonly ProviderType[] =
-  PROVIDER_TYPES.filter(reportsCost);
+/** Whether {@link routeCostReport} answers: a cost the provider states replaces a local price. */
+export function reportsCost(
+  type: string,
+  route: ProviderRoute | null,
+  style: ApiStyle | null,
+): boolean {
+  return routeCostReport(type, route, style) !== null;
+}

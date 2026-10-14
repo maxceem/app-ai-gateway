@@ -3,7 +3,15 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
+import {
+  clearIsolateCaches,
+  registerTestInstall,
+  seedApp,
+  seedProvider,
+  seedServerApp,
+  signRequest,
+  tokenForInstall,
+} from "./helpers";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import { SPEND_REFRESH_MS } from "../src/do/UserLimiter";
 
@@ -447,9 +455,132 @@ describe("an application's own limits", () => {
     await settle();
 
     const month = new Date().toISOString().slice(0, 7);
-    const perUser = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", userKey: "u" }, month);
-    const perApp = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", userKey: null }, month);
+    const perUser = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", scope: "user", key: "u" }, month);
+    const perApp = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", scope: "app", key: null }, month);
     expect(perUser).toBeGreaterThan(0);
     expect(perApp).toBe(perUser);
+  });
+});
+
+/**
+ * On an App Attest application the callers are installs — one copy of the
+ * app on one device — so request limits count per install, and so does the
+ * budget unless the application measures it per signed-in user.
+ */
+describe("an App Attest application's limits", () => {
+  async function installs(appId: string, options: Parameters<typeof seedApp>[1]) {
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} }, ...options });
+    const phone = await registerTestInstall(appId, "limits-person");
+    const tablet = await registerTestInstall(appId, "limits-person");
+    return {
+      phone: { install: phone, token: await tokenForInstall(phone) },
+      tablet: { install: tablet, token: await tokenForInstall(tablet) },
+    };
+  }
+
+  async function signedProxy(appId: string, token: string): Promise<Response> {
+    const executionCtx = createExecutionContext();
+    contexts.push(executionCtx);
+    const response = await worker.fetch(
+      await signRequest(new Request(`${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-app-version": "2.0.0",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      })),
+      env,
+      executionCtx,
+    );
+    return new Response(await response.arrayBuffer(), response);
+  }
+
+  async function scopeOf(response: Response): Promise<{ code: string; scope?: string }> {
+    const body = await response.json<{ error: { code: string; data?: { scope: string } } }>();
+    return { code: body.error.code, scope: body.error.data?.scope };
+  }
+
+  async function spent(appId: string, scope: "user" | "install", key: string, microusd: number) {
+    await env.DB.prepare(
+      `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+       VALUES ('operator-test-organization', ?, ?, ?, ?, ?)`,
+    ).bind(appId, scope, key, new Date().toISOString().slice(0, 7), microusd).run();
+  }
+
+  it("counts the per-minute limit per install, so one person's two devices each get their own", async () => {
+    const { phone, tablet } = await installs("limits-install-rpm", { limits: { rpm: 1 } });
+    mockUpstream();
+
+    expect((await signedProxy("limits-install-rpm", phone.token)).status).toBe(200);
+    const refused = await signedProxy("limits-install-rpm", phone.token);
+    expect(refused.status).toBe(429);
+    await expect(scopeOf(refused)).resolves.toEqual({ code: "app_rate_limited", scope: "install" });
+    // The same person on another install has a minute of their own.
+    expect((await signedProxy("limits-install-rpm", tablet.token)).status).toBe(200);
+  });
+
+  it("measures the budget per install by default", async () => {
+    const { phone, tablet } = await installs("limits-install-budget", { budgetUsd: 1 });
+    await spent("limits-install-budget", "install", phone.install.keyId, 1_000_000);
+    mockUpstream();
+
+    const refused = await signedProxy("limits-install-budget", phone.token);
+    expect(refused.status).toBe(429);
+    await expect(scopeOf(refused)).resolves.toEqual({ code: "app_budget_exhausted", scope: "install" });
+    expect((await signedProxy("limits-install-budget", tablet.token)).status).toBe(200);
+  });
+
+  it("measures the budget per user when the application says so", async () => {
+    const { phone, tablet } = await installs("limits-user-budget", { budgetUsd: 1, budgetScope: "user" });
+    await spent("limits-user-budget", "user", "limits-person", 1_000_000);
+    mockUpstream();
+
+    for (const caller of [phone, tablet]) {
+      const refused = await signedProxy("limits-user-budget", caller.token);
+      expect(refused.status).toBe(429);
+      await expect(scopeOf(refused)).resolves.toEqual({ code: "app_budget_exhausted", scope: "user" });
+    }
+  });
+
+  it("records install and user spend from every event, whichever the budget reads", async () => {
+    const { phone } = await installs("limits-install-ledgers", {});
+    mockUpstream();
+
+    expect((await signedProxy("limits-install-ledgers", phone.token)).status).toBe(200);
+    await settle();
+
+    const month = new Date().toISOString().slice(0, 7);
+    const appId = "limits-install-ledgers";
+    const perInstall = await monthlySpendMicrousd(env.DB, { appId, scope: "install", key: phone.install.keyId }, month);
+    const perUser = await monthlySpendMicrousd(env.DB, { appId, scope: "user", key: "limits-person" }, month);
+    expect(perInstall).toBeGreaterThan(0);
+    expect(perUser).toBe(perInstall);
+    const event = await env.DB.prepare(
+      "SELECT user_id, install_id FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    ).bind(appId).first();
+    expect(event).toEqual({ user_id: "limits-person", install_id: phone.install.keyId });
+  });
+
+  it("reports the install's own standing on /me", async () => {
+    const { phone } = await installs("limits-install-me", { limits: { rpd: 5 }, budgetUsd: 2 });
+    mockUpstream();
+    expect((await signedProxy("limits-install-me", phone.token)).status).toBe(200);
+
+    const executionCtx = createExecutionContext();
+    contexts.push(executionCtx);
+    const response = await worker.fetch(
+      await signRequest(new Request(`${ORIGIN}/v1/apps/limits-install-me/me`, {
+        headers: { authorization: `Bearer ${phone.token}` },
+      })),
+      env,
+      executionCtx,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ user_id: string; install_id: string; limits: Record<string, unknown> }>();
+    expect(body.user_id).toBe("limits-person");
+    expect(body.install_id).toBe(phone.install.keyId);
+    expect(body.limits).toMatchObject({ requests_today: 1, requests_remaining: 4, monthly_budget_usd: 2 });
   });
 });

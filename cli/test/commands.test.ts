@@ -125,6 +125,28 @@ test("--attest-environments passes names through for the schema to judge", async
   );
 });
 
+test("--verify-on sets when App Attest is verified, and the schema judges the value", async () => {
+  // A new iOS app verifies on every request unless told otherwise.
+  const ios = await appDocument(iosFlags);
+  assert.equal(attest(ios).verify_on, "every_request");
+  assert.equal(
+    attest(await appDocument({ ...iosFlags, "verify-on": "token_exchange" })).verify_on,
+    "token_exchange",
+  );
+  assert.equal(
+    attest(await appDocument({ "verify-on": " token_exchange " }, ios)).verify_on,
+    "token_exchange",
+  );
+  await assert.rejects(
+    () => appDocument({ "verify-on": "sometimes" }, ios),
+    hasCode("invalid_input"),
+  );
+  await assert.rejects(
+    () => appDocument({ type: "server", name: "Server", "verify-on": "every_request", "no-input": true }),
+    hasCode("invalid_input"),
+  );
+});
+
 test("app remove supplies required confirmation query and full writes supply the revision", async () => {
   const calls: { name: string; options?: Record<string, unknown> }[] = [];
   const ctx = stubContext({
@@ -224,7 +246,7 @@ test("creating a server app hands back the request to send, keyed from the file 
   const dir = await mkdtemp(join(tmpdir(), "agw-add-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const keyPath = join(dir, "app.key");
-  const created = { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" };
+  const created = { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] };
   const ctx = stubContext({
     url: "https://gw.test",
     active: null,
@@ -629,7 +651,7 @@ test("explicit key output resumes after a disk failure without minting again", a
         };
       return {
         data: {
-          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
+          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] },
           resolved: null,
         }
       };
@@ -732,7 +754,7 @@ test("a refused key creation releases both its record and its reserved output", 
       }
       return {
         data: {
-          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
+          app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now", warnings: [] },
           resolved: null,
         }
       };

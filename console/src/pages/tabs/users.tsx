@@ -26,7 +26,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MonthPicker } from "@/components/pickers";
 import { UserStatusBadge } from "@/components/status-badge";
 import { BudgetCell } from "@/components/budget";
-import { currentMonth, formatCompact, formatNumber, formatRelative, totalTokens } from "@/lib/format";
+import { currentMonth, formatCompact, formatCost, formatNumber, formatRelative, totalTokens } from "@/lib/format";
 import { useUserAction, useUsers } from "@/lib/queries";
 import type { GatewayUser } from "@/lib/types";
 
@@ -35,6 +35,9 @@ const PAGE_SIZE = 25;
 export function UsersTab({
   appId,
   monthlyBudgetUsd,
+  budgetScope = "user",
+  appAttest = false,
+  installsOnly = false,
 }: {
   appId: string;
   /**
@@ -44,7 +47,23 @@ export function UsersTab({
    * differs. `null` is unlimited.
    */
   monthlyBudgetUsd: number | null;
+  /**
+   * Whose month `monthlyBudgetUsd` is measured over. A signed-in user's row is
+   * their spend across every install they hold, so an install budget is drawn
+   * only against a row that is itself one install (`is_install`) — never one
+   * install's budget against several installs' spend.
+   */
+  budgetScope?: "install" | "user";
+  /** Whether users hold App Attest keys, one per install, whose count is shown. */
+  appAttest?: boolean;
+  /** Under app_install every user is one install, and is named as one. */
+  installsOnly?: boolean;
 }) {
+  const noun = installsOnly ? "install" : "user";
+  // Whether a row's spend is what the budget measures, decided from the row
+  // itself: an install budget is a row's own only when the row is one
+  // install, and history from before an app moved to app_install is not.
+  const budgetIsRows = (user: GatewayUser) => budgetScope === "user" || user.is_install;
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -86,7 +105,7 @@ export function UsersTab({
           <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
-            placeholder="Search user id"
+            placeholder={installsOnly ? "Search install id" : "Search user id"}
             className="h-9 pl-8 font-mono text-xs"
             onChange={(event) => {
               setSearch(event.target.value);
@@ -105,7 +124,7 @@ export function UsersTab({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All users</SelectItem>
+            <SelectItem value="all">{installsOnly ? "All installs" : "All users"}</SelectItem>
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="blocked">Blocked</SelectItem>
           </SelectContent>
@@ -117,8 +136,8 @@ export function UsersTab({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead>User</TableHead>
-              <TableHead>Attestation</TableHead>
+              <TableHead>{installsOnly ? "Install" : "User"}</TableHead>
+              <TableHead>{appAttest && !installsOnly ? "Installs" : "Attestation"}</TableHead>
               <TableHead>Last seen</TableHead>
               <TableHead className="text-right">Requests</TableHead>
               <TableHead className="text-right">Tokens</TableHead>
@@ -138,7 +157,7 @@ export function UsersTab({
             ) : users.data?.users.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
-                  No users yet. A row appears once a client completes its first token exchange.
+                  No {noun}s yet. A row appears once a client completes its first token exchange.
                 </TableCell>
               </TableRow>
             ) : (
@@ -151,7 +170,11 @@ export function UsersTab({
                     </div>
                   </TableCell>
                   <TableCell>
-                    {user.attest_registered ? (
+                    {appAttest && !installsOnly && user.installs > 0 ? (
+                      <span className="tabular text-xs" title="App Attest keys this user holds: one per install">
+                        {formatNumber(user.installs)}
+                      </span>
+                    ) : user.attest_registered ? (
                       <Badge variant="secondary" className="text-[11px] font-normal">
                         registered
                       </Badge>
@@ -174,7 +197,21 @@ export function UsersTab({
                     {/* One user against the budget the app sets for each of
                         them, drawn exactly as the apps list draws an app
                         against its own. */}
-                    <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
+                    {budgetIsRows(user) ? (
+                      <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
+                    ) : (
+                      // The budget is each install's, and this is the sum of
+                      // the user's installs: no single bar says where any of
+                      // them stands, so the cost is shown on its own.
+                      <span
+                        className="whitespace-nowrap"
+                        title={monthlyBudgetUsd === null
+                          ? "No monthly budget"
+                          : `Spent across this user's installs; the ${formatCost(monthlyBudgetUsd)} budget applies to each install`}
+                      >
+                        {formatCost(user.usage.cost_usd)}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     <GuardedButton
@@ -206,7 +243,7 @@ export function UsersTab({
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          {formatNumber(total)} users · page {page + 1} of {pages}
+          {formatNumber(total)} {noun}s · page {page + 1} of {pages}
         </span>
         <div className="flex gap-2">
           <Button

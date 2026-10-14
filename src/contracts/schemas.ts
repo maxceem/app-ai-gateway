@@ -25,6 +25,12 @@ import { APP_STATUSES } from "../shared/app-status.ts";
 export const ISSUER_PROVIDERS = ["firebase", "supabase", "auth0", "clerk", "custom"] as const;
 export const ENTITLEMENT_CHECKS = ["revenuecat", "custom"] as const;
 export const APP_ATTEST_ENVIRONMENTS = ["production", "development"] as const;
+/**
+ * When an App Attest application's assertions are verified: on every gateway
+ * request, each carrying its own `X-AppAttest-Proof`, or only at the token
+ * exchange, after which requests carry the hourly gateway token alone.
+ */
+export const APP_ATTEST_VERIFY_ON = ["every_request", "token_exchange"] as const;
 export const DEFAULT_END_USER_HEADER = "x-end-user-id";
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -305,6 +311,19 @@ const AppleAppAttestAuthenticationSchema = z.object({
         error: "environments cannot repeat a value",
       })
       .prefault(["production"]),
+    /**
+     * Where the install's App Attest key proves itself. `every_request`, the
+     * default, binds every gateway request to the device: each one carries
+     * an assertion over that very request, so a copied token is worthless.
+     * `token_exchange` checks the assertion only when the hourly gateway
+     * token is minted, and requests then carry the token alone; limits and
+     * budgets still count per install, because the token names it.
+     */
+    verify_on: z.enum(APP_ATTEST_VERIFY_ON, {
+      error: "verify_on must be one of every_request, token_exchange",
+    }).default("every_request").meta({
+      description: "When the install's App Attest assertion is verified. every_request (the default): every gateway request carries X-AppAttest-Proof, a fresh assertion over that request; needs the AppAIGateway Swift package 1.4 or later. token_exchange: the assertion is verified once, when the hourly gateway token is exchanged, and requests carry only the token.",
+    }),
   }).strict(),
 }).strict();
 
@@ -357,6 +376,27 @@ const LimitScopeSchema = z.object({
     per_day: NullableRequestLimit,
   }).strict(),
   spending: z.object({ monthly_usd: NullableSpendLimit }).strict(),
+}).strict();
+
+/** Whose month a `limits.per_user` budget is measured over. */
+export const BUDGET_SCOPES = ["install", "user"] as const;
+export type BudgetScope = (typeof BUDGET_SCOPES)[number];
+
+/**
+ * The limits on each of an application's callers. The key stays `per_user`,
+ * but on an App Attest application its request limits count
+ * per install — one copy of the app on one device — and so, by default, does
+ * its budget; `spending.scope` moves the budget to the signed-in user, which
+ * only an issuer-backed App Attest application can do. A server application
+ * has no installs: everything here is per user.
+ */
+const PerUserLimitScopeSchema = LimitScopeSchema.extend({
+  spending: LimitScopeSchema.shape.spending.extend({
+    scope: z.enum(BUDGET_SCOPES).optional().meta({
+      description:
+        "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
+    }),
+  }).strict(),
 }).strict();
 
 /** No limit of any kind, which is what an unwritten scope means. */
@@ -425,7 +465,7 @@ export const AppConfigSchema = z.object({
    * parsed configuration: an unwritten block is the unlimited one.
    */
   limits: z.object({
-    per_user: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
+    per_user: PerUserLimitScopeSchema.prefault(UNLIMITED_SCOPE),
     per_app: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
   }).strict().prefault({}),
   realtime: z.object({
@@ -468,6 +508,42 @@ export const AppConfigSchema = z.object({
         "needs an authentication.end_user source other than none: this application identifies no end users, so use limits.per_app",
     });
   }
+  /*
+   * A budget is measured per install or per user, and each application type
+   * admits only the scopes it has. A server application has no installs. An
+   * App Attest application under `app_install` has no user but the install
+   * itself, so only an issuer gives `user` a meaning of its own.
+   */
+  const budgetScope = (perUser as PerUserLimitScopeConfig | undefined)?.spending.scope;
+  if (authentication !== undefined && budgetScope !== undefined) {
+    if (authentication.type === "api_key" && budgetScope === "install") {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message: "cannot be install: server applications have no install; the budget is per user",
+      });
+    }
+    if (
+      authentication.type === "apple_app_attest"
+      && budgetScope === "user"
+      && authentication.end_user.source !== "issuer"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message:
+          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use install",
+      });
+    }
+  }
+}).overwrite((config) => {
+  // The scope's default depends on the application type, so it is filled in
+  // here, once both are parsed, and every reader finds it written.
+  const spending = config.limits.per_user.spending;
+  if (spending.scope === undefined) {
+    spending.scope = config.authentication.type === "apple_app_attest" ? "install" : "user";
+  }
+  return config;
 }).meta({ id: "AppConfig" });
 
 /** What a client may send, and what a parse of it produces. They differ: see the defaults above. */
@@ -913,6 +989,7 @@ export type AppAttestEndUser = z.output<typeof AppAttestEndUserSchema>;
 /** Every way an application of either type can identify its end users, `none` included. */
 export type EndUserSource = (ApiKeyEndUser | AppAttestEndUser)["source"];
 export type AppAttestEnvironment = (typeof APP_ATTEST_ENVIRONMENTS)[number];
+export type AppAttestVerifyOn = (typeof APP_ATTEST_VERIFY_ON)[number];
 export type AuthenticationConfig = AppConfig["authentication"];
 /** The same block as a client may send it, which is what a half-filled form is. */
 export type AuthenticationConfigInput = AppConfigInput["authentication"];
@@ -924,6 +1001,7 @@ export type ApiKeyAuthentication = Extract<AuthenticationConfig, { type: "api_ke
 export type ProviderPolicy = z.output<typeof ProviderPolicySchema>;
 export type RoutingConfig = AppConfig["routing"];
 export type LimitScopeConfig = z.output<typeof LimitScopeSchema>;
+export type PerUserLimitScopeConfig = z.output<typeof PerUserLimitScopeSchema>;
 export type LimitsConfig = AppConfig["limits"];
 export type EndpointConfig = z.output<typeof EndpointSchema>;
 export type EndpointsConfig = AppConfig["endpoints"];

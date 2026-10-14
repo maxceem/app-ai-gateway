@@ -1,5 +1,6 @@
 /**
- * The month's spend per app and per end user, as the request gate reads it.
+ * The month's spend per app, per end user and per install, as the request
+ * gate reads it.
  *
  * D1 owns it. `app_usage_spend` is maintained by the triggers installed with
  * it, in the same write as the usage event that moves it — an insert adds the
@@ -9,11 +10,15 @@
  * it, so there is nothing to deliver, acknowledge or recover.
  */
 
-/** Which ledger: an app's own (`userKey` null) or one of its end users'. */
-export interface SpendKey {
-  appId: string;
-  userKey: string | null;
-}
+/**
+ * Which ledger: an app's own (`scope: "app"`, `key` null), one of its end
+ * users', or one install's — an App Attest key id. The scope names the ledger
+ * outright rather than being inferred from a null key, because a user and an
+ * install are both keyed by a string.
+ */
+export type SpendKey =
+  | { appId: string; scope: "app"; key: null }
+  | { appId: string; scope: "user" | "install"; key: string };
 
 /** The scope's spend in one UTC calendar month, in whole microdollars. */
 export async function monthlySpendMicrousd(
@@ -25,7 +30,7 @@ export async function monthlySpendMicrousd(
     `SELECT microusd FROM app_usage_spend
      WHERE scope = ? AND app_id = ? AND user_key = ? AND month = ?`,
   )
-    .bind(key.userKey === null ? "app" : "user", key.appId, key.userKey ?? "", month)
+    .bind(key.scope, key.appId, key.key ?? "", month)
     .first<{ microusd: number }>();
   return row?.microusd ?? 0;
 }
@@ -50,7 +55,9 @@ export async function pruneSettledUsageSpend(
            SELECT 1 FROM app_usage_event AS events
            WHERE events.app_id = spend.app_id
              AND substr(events.created_at, 1, 7) = spend.month
-             AND (spend.scope = 'app' OR events.user_id = spend.user_key)
+             AND (spend.scope = 'app'
+               OR (spend.scope = 'user' AND events.user_id = spend.user_key)
+               OR (spend.scope = 'install' AND events.install_id = spend.user_key))
          )
        ORDER BY spend.id LIMIT ?
      )`,

@@ -22,7 +22,8 @@ A table over the same range, grouped by one dimension:
 | **By provider** | Which provider type served the traffic |
 | **By gateway** | Traffic through Cloudflare or Vercel AI Gateway versus direct |
 | **By credential source** | Your own key versus a gateway's key |
-| **By user** | Who spent what |
+| **By user** | Who spent what. On an iOS app, offered when its budget is measured per user |
+| **By install** | Which install spent what: one copy of an iOS app on one device. Offered on iOS apps whose budget is measured per install, the default |
 | **By status** | Served requests and provider errors |
 | **By cost source** | Whether cost was computed locally, reported by the provider, or unresolved |
 | **By route** | Provider slug and path |
@@ -37,7 +38,8 @@ period; totals are never lost.
 
 ## Recent events
 
-Every provider attempt, newest first, with **When**, **User · key**, **Model**,
+Every provider attempt, newest first, with **When**, **User · key** (on an
+iOS app, **User · install**, naming the install beside the user), **Model**,
 **Route**, **Tokens**, **Cost**, **Latency** and **Status**. The route shows
 the endpoint slug where one was used, the gateway it went through, and for
 OpenRouter the provider that actually served it.
@@ -61,7 +63,7 @@ Each event records how its cost was arrived at.
 - **computed**: priced locally from the catalog or the provider's custom
   pricing. This is the normal case.
 - **reported**: the provider said what the request cost, and that figure is
-  used. OpenRouter does this.
+  used. xAI and OpenRouter do this.
 - **unresolved**: the provider answered successfully but reported no usage
   the gateway could read, so the request consumed no budget. Shown as
   **unresolved** rather than `$0.00`.
@@ -79,10 +81,12 @@ per-user rate limits bound how much can go unmetered. See
 - `GET /v1/admin/apps/{app}/usage/timeseries?from=&to=` for the daily chart.
 - `GET /v1/admin/apps/{app}/usage/breakdown?by=model&from=&to=` where `by` is
   one of `model`, `model_author`, `provider`, `provider_slug`,
-  `provider_gateway`, `credential_source`, `user`, `status`, `cost_source`,
-  `route`, `endpoint`, `app_version`.
-- `GET /v1/admin/apps/{app}/events?limit=&status=&user=&model=&before_id=`
-  for the event list, paged by `next_before_id`.
+  `provider_gateway`, `credential_source`, `user`, `install`, `status`,
+  `cost_source`, `route`, `endpoint`, `app_version`.
+- `GET /v1/admin/apps/{app}/events?limit=&status=&user=&install=&model=&before_id=`
+  for the event list, paged by `next_before_id`. Each event carries
+  `install_id`, the install's App Attest key id on an iOS app and `null` on a
+  server app.
 
 ## Realtime sessions
 
