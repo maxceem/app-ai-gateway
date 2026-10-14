@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 const configured = process.env.DOCS_SITE_URL ?? "https://docs.appaigateway.com";
 
 export const siteUrl = new URL(configured.endsWith("/") ? configured : `${configured}/`);
@@ -24,3 +26,45 @@ export const externalUrls = {
   console: host(process.env.DOCS_CONSOLE_URL, "https://console.appaigateway.com"),
   repo: host(process.env.DOCS_REPO_URL, "https://github.com/maxceem/app-ai-gateway"),
 };
+
+export const siteName = "App AI Gateway";
+
+/**
+ * The docs home's own title, kept within the 60 characters a search result
+ * shows, and distinct from the marketing site's home title.
+ */
+export const homeTitle = "App AI Gateway documentation — guides and API reference";
+
+/**
+ * Link previews in chats and social posts read Open Graph and X card tags, not
+ * the page's `<title>` and meta description, so every page repeats those here
+ * with its canonical URL. Next.js replaces a parent's `openGraph` and
+ * `twitter` objects rather than merging them, which is why each page gets the
+ * whole set. The picture is the overview diagram the docs home already shows,
+ * so a fork carries it too; its URL resolves against `siteUrl`.
+ */
+const shareImage = {
+  url: "/overview.png",
+  width: 1660,
+  height: 736,
+  alt: "Your iOS app calls App AI Gateway, which holds the provider keys, applies per-user limits, records usage and cost, and forwards the request to the provider.",
+};
+
+export function shareMetadata(page: { title: string; description?: string; url: string }): Pick<Metadata, "openGraph" | "twitter"> {
+  return {
+    openGraph: {
+      type: "website",
+      siteName,
+      title: page.title,
+      description: page.description,
+      url: page.url,
+      images: [shareImage],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: page.title,
+      description: page.description,
+      images: [shareImage],
+    },
+  };
+}

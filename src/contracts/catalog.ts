@@ -431,7 +431,7 @@ export const CATALOG = {
     method: "POST",
     path: "/v1/apps/{app}/auth/token",
     tags: ["Application authentication"],
-    summary: "Exchange issuer identity and client proof for a gateway token",
+    summary: "Exchange a client proof for a gateway token",
     description: "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
     security: "public",
     params: APP_PARAM,
@@ -820,7 +820,7 @@ export const CATALOG = {
     method: "PUT",
     path: "/v1/admin/providers/{id}",
     tags: ["Admin providers"],
-    summary: "Rotate a credential, rename it, move it to another origin, replace its custom pricing, or disable it",
+    summary: "Update, rotate or disable a provider credential",
     description:
       "Requires the revision returned by the provider read this edit is based on; a stale revision returns 409 conflict. Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling does not require reclaiming the slug. Sending a non-null baseUrl also requires secret in the same request: the stored key is write-only and is never decrypted to be sent to an origin it has not been sent to before, so a move carries the key it is to be used with. Sending baseUrl: null returns the instance to its provider type's own origin and needs nothing else.",
     security: "management",

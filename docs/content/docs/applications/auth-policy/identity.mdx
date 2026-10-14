@@ -34,9 +34,10 @@ by the [per-install limits](/applications/limits).
 ### iOS app environment
 
 Apple runs App Attest in two environments and stamps which one into every
-attestation.
+attestation. An app accepts one or both, and at least one must stay on.
 
-- **Production**: builds signed for TestFlight and the App Store. Always on.
+- **Production**: builds signed for TestFlight and the App Store. On by
+  default.
 - **Development**: builds run from Xcode, which attest in Apple's development
   environment. Off unless you turn it on.
 

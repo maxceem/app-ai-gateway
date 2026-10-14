@@ -47,6 +47,12 @@ can revoke is itself (`DELETE /v1/cli/credential`, which is what
 itself a second key, and revoking the one you handed out ends that access for
 good.
 
+The console's **Access** page calls
+[Create a management key](/api/admin-management-keys/createManagementKey),
+[List management keys](/api/admin-management-keys/listManagementKeys) and
+[Revoke a management key](/api/admin-management-keys/revokeManagementKey).
+They accept a console session only.
+
 Management keys manage; they never call providers. An app's own API key is
 what calls providers, and a management key is refused on those routes.
 
