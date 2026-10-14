@@ -90,7 +90,14 @@ Defaults: 30-minute session, 10 concurrent sessions per app and 2 per caller —
 an install on an iOS app, a user or else an API key on a server app —
 10-second setup, 120-second useful-activity idle timeout, 60-second input turn,
 120-second response, 1,000 generations, and 4,096 output tokens (or a lower app
-cap). Gateway tokens bound the session to their verified expiry.
+cap). Gateway tokens bound the session to their verified expiry. Each caller
+may discover 30 times and open 10 sessions per minute; a server app that sends
+no end-user header shares those across everything using its API key.
+
+A turn's input is what is sent before its response starts. Under managed VAD it
+starts when the provider detects speech and ends when that speech is committed,
+so a microphone left streaming silence between turns does not use it up. In
+manual mode it is everything appended or added since the last response.
 
 Client JSON frames are limited to 256 KiB; provider frames to 1 MiB. Queued input
 is limited to 256 events and 1 MiB, input per turn to 4 MiB, and output per
@@ -104,8 +111,10 @@ Use a fresh ID for each new event; replaying an event outside the recent window
 can forward it again. Reusing a retained ID with different content closes the
 session.
 
-A refused generation closes the session. Gateway-originated errors have their
-own type; provider events retain their native shape:
+A refused generation closes the session, and so does a provider `error`
+event, except the one OpenAI sends when a cancel arrives just after its response
+finished, which is passed on and changes nothing. Gateway-originated errors have
+their own type; provider events retain their native shape:
 
 ```json
 {

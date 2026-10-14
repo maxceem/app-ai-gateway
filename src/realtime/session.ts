@@ -171,7 +171,7 @@ export class SessionCoordinator {
         }
         const state = { ready: this.ready, configuring: this.configuring, active: this.active !== null, responseId: this.active?.responseId ?? null };
         const effects = source === 'client' ? this.adapter!.client(frame, state) : this.adapter!.server(frame, state);
-        for (const effect of effects) await this.effect(effect, source, bytes);
+        for (const effect of effects) await this.effect(effect, source, bytes, { frame, raw });
         await this.schedule();
       }));
     });
@@ -179,9 +179,19 @@ export class SessionCoordinator {
     socket.addEventListener('error', () => this.terminate(new GatewayError(502, 'provider_error', 'Realtime transport failed'), 1011));
   }
 
-  private async effect(effect: AdapterEffect, source: 'client' | 'server', bytes: number): Promise<void> {
+  /**
+   * `received` is the frame as parsed and as it arrived. A provider frame the
+   * adapter forwards unchanged goes to the client as its original text, so
+   * audio deltas are never serialized a second time. Client frames are always
+   * re-serialized: the provider must receive exactly what was validated, never
+   * text a different JSON parser could read another way, say by keeping the
+   * first of two duplicate keys where this one kept the last.
+   */
+  private async effect(effect: AdapterEffect, source: 'client' | 'server', bytes: number, received?: { frame: JsonObject; raw: string }): Promise<void> {
+    const outgoing = (frame: JsonObject): JsonObject | string => frame === received?.frame ? received.raw : frame;
     switch (effect.kind) {
       case 'ready': this.ready = true; this.configuring = false; return;
+      case 'inputReset': this.inputBytes = 0; this.inputStarted = null; return;
       case 'configure':
         this.configuring = true; this.ready = false; this.configurationAt = Date.now(); send(this.upstream, effect.frame); return;
       case 'forward':
@@ -195,7 +205,7 @@ export class SessionCoordinator {
           if (effect.useful) this.lastActivity = Date.now();
           send(this.upstream, effect.frame);
           if (effect.endInput) this.inputStarted = null;
-        } else send(this.client, effect.frame);
+        } else send(this.client, outgoing(effect.frame));
         return;
       case 'generate': await this.generate(effect.frame, effect.inputActivity === true); return;
       case 'pendingAuto':

@@ -4,7 +4,7 @@ import { SessionCoordinator } from '../realtime/session';
 import { SessionJournal } from '../realtime/journal';
 import type { Bootstrap } from '../realtime/types';
 import { object } from '../realtime/protocols/validation';
-import { GatewayError } from '../core/errors';
+import { GatewayError, errorResponse } from '../core/errors';
 
 /** Binding-only per-connection owner. No route accepts a caller-selected object/session ID. */
 export class RealtimeSession extends DurableObject<Env> {
@@ -14,10 +14,17 @@ export class RealtimeSession extends DurableObject<Env> {
     new SessionJournal(ctx.storage);
   }
   override async fetch(request: Request): Promise<Response> {
-    if (this.coordinator || new SessionJournal(this.ctx.storage).metadata()) throw new GatewayError(409, 'conflict', 'Realtime session cannot be reopened');
-    const bootstrap = parseBootstrap(request.headers.get('x-realtime-bootstrap'));
-    this.coordinator = new SessionCoordinator(localSessionBackend(this.env, promise => this.ctx.waitUntil(promise)), this.ctx, bootstrap, request.headers);
-    return this.coordinator.start();
+    // Answered here, not thrown: an error crossing the stub arrives as a plain
+    // Error, and a refusal would lose its status, code and Retry-After.
+    try {
+      if (this.coordinator || new SessionJournal(this.ctx.storage).metadata()) throw new GatewayError(409, 'conflict', 'Realtime session cannot be reopened');
+      const bootstrap = parseBootstrap(request.headers.get('x-realtime-bootstrap'));
+      this.coordinator = new SessionCoordinator(localSessionBackend(this.env, promise => this.ctx.waitUntil(promise)), this.ctx, bootstrap, request.headers);
+      return await this.coordinator.start();
+    } catch (error) {
+      if (error instanceof GatewayError) return errorResponse(error.status, error.code, error.message, error.headers, error.data);
+      throw error;
+    }
   }
   override async alarm(): Promise<void> {
     if (!this.coordinator) {

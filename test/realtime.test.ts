@@ -6,7 +6,7 @@ import { localSessionBackend } from '../src/realtime/local-backend';
 import type { OrgQuota } from '../src/do/OrgQuota';
 import type { UserLimiter } from '../src/do/UserLimiter';
 import { env } from 'cloudflare:workers';
-import { runInDurableObject } from 'cloudflare:test';
+import { createExecutionContext, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { database } from '../src/db';
@@ -28,6 +28,8 @@ import { parseAppConfig } from '../src/shared/app-config';
 import { CATALOG } from '../src/contracts/catalog';
 import { createOpenAPIDocument } from '../src/contracts/openapi';
 import { INFERENCE_ROUTES } from '../src/contracts/inference-routes';
+import companion from '../src/realtime/worker';
+import { realtimeCaller } from '../src/realtime/caller';
 import type { Bootstrap, JsonObject } from '../src/realtime/types';
 import { clearIsolateCaches, registerTestInstall, seedApp, seedProvider, seedServerApp, signedProof, tokenForInstall, TEST_ORGANIZATION_ID } from './helpers';
 
@@ -120,7 +122,7 @@ function collector(socket: WebSocket) {
     expect(adapter.client({ type: 'response.create', response: { max_output_tokens: 10 } }, manual)[0]).toMatchObject({ frame: { response: { max_output_tokens: 10 } } });
     expect(adapter.client({ type: 'response.create', response: { max_output_tokens: 33 } }, manual)[0]).toMatchObject({ frame: { response: { max_output_tokens: 32 } } });
     expect(adapter.client({ type: 'session.update', session: { instructions: 'brief', audio: { input: { turn_detection: { type: 'server_vad' } } } } }, manual)[0]).toMatchObject({ frame: { session: { max_output_tokens: 32 } } });
-    expect(adapter.server({ type: 'input_audio_buffer.committed', item_id: 'i' }, manual)[1]).toMatchObject({ frame: { response: { max_output_tokens: 32 } } });
+    expect(adapter.server({ type: 'input_audio_buffer.committed', item_id: 'i' }, manual).at(-1)).toMatchObject({ frame: { response: { max_output_tokens: 32 } } });
     expect(() => adapter.server(ack(), manual)).toThrow();
   });
   it('reserves internal bootstrap headers only for realtime-enabled configurations', async () => {
@@ -141,6 +143,19 @@ function collector(socket: WebSocket) {
     const late = { type: 'error', error: { type: 'invalid_request_error', code: 'response_cancel_not_active', message: 'Cancellation failed: no active response found' } };
     expect(adapter.server(late, manual)).toEqual([{ kind: 'forward', frame: late }]);
     expect(() => adapter.server({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value' } }, manual)).toThrow();
+  });
+  it('counts managed VAD input only from detected speech, and manual input until the response', () => {
+    const vad = new OpenAIAdapter('gpt-realtime', 4096);
+    vad.client({ type: 'session.update', session: { audio: { input: { turn_detection: { type: 'server_vad' } } } } }, { ...manual, ready: false, configuring: false });
+    const append = { type: 'input_audio_buffer.append', audio: 'AAAA' };
+    expect(vad.client(append, manual)).toMatchObject([{ kind: 'forward', input: false }]);
+    vad.server({ type: 'input_audio_buffer.speech_started' }, manual);
+    expect(vad.client(append, manual)).toMatchObject([{ kind: 'forward', input: true }]);
+    expect(vad.server({ type: 'input_audio_buffer.committed', item_id: 'item-1' }, manual).map(effect => effect.kind)).toEqual(['forward', 'inputReset', 'generate']);
+    expect(vad.client(append, manual)).toMatchObject([{ kind: 'forward', input: false }]);
+    const manualMode = new OpenAIAdapter('gpt-realtime', 4096);
+    expect(manualMode.client(append, manual)).toMatchObject([{ kind: 'forward', input: true }]);
+    expect(manualMode.server({ type: 'input_audio_buffer.cleared' }, manual).map(effect => effect.kind)).toEqual(['forward']);
   });
   it('rejects unadmitted output, mismatched terminals and unknown paid input', () => {
     const adapter = new OpenAIAdapter('gpt-realtime', 4096);
@@ -304,6 +319,40 @@ describe('immutable realtime release boundaries', () => {
     calls = 0;
     await expect(safeBackendCall(async () => { calls++; return { ok: false, error: { status: 429, code: 'app_rate_limited', message: 'Wait', headers: { 'Retry-After': '30' }, data: { scope: 'app' } } }; })).rejects.toMatchObject({ status: 429, code: 'app_rate_limited', headers: { 'Retry-After': '30' }, data: { scope: 'app' } });
     expect(calls).toBe(1);
+  });
+  it('session objects answer refusals with their status instead of throwing them across the stub', async () => {
+    const { bootstrap, headers } = await seeded();
+    const forged = await env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId()).fetch('https://realtime.internal/', { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } });
+    expect(forged.status).toBe(400);
+    const application = await loadApp(env, bootstrap.appId);
+    application.config.realtime.max_concurrent_sessions_per_identity = 1;
+    await database(env.DB).update(appTable).set({ config: application.config }).where(eq(appTable.id, bootstrap.appId)); clearIsolateCaches();
+    expect(await env.USER_LIMITER.getByName(realtimeCaller(bootstrap.identity)).acquireSession('another-session', 1)).toMatchObject({ allowed: true });
+    const full = await env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId()).fetch('https://realtime.internal/', {
+      headers: { Upgrade: 'websocket', Authorization: headers.get('authorization')!, 'x-realtime-bootstrap': JSON.stringify(bootstrap) } });
+    expect(full.status).toBe(429);
+    expect(await full.json()).toMatchObject({ error: { code: 'realtime_session_limit' } });
+  });
+  it('the companion handshake prepares over the service binding and keeps the refusal it gets', async () => {
+    const { bootstrap, headers } = await seeded(); const id = crypto.randomUUID();
+    const companionEnv = { BACKEND: env.TEST_REALTIME_BACKEND, REALTIME_SESSION: env.REALTIME_SESSION, REALTIME_RELEASE_ID: id, GATEWAY_ORIGIN: 'https://gateway.test' } as unknown as RealtimeEnv;
+    const url = `https://release.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}?model=gpt-realtime`;
+    const open = () => companion.fetch(new Request(url, { headers: { Upgrade: 'websocket', Authorization: headers.get('authorization')! } }), companionEnv);
+    expect((await companion.fetch(new Request(url, { headers }), companionEnv)).status).toBe(426);
+    expect((await (await open()).json())).toMatchObject({ error: { code: 'conflict' } });
+    await env.DB.prepare('INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(?,?,?,1,?)').bind(id, id, 'wss://release.test', Date.now()).run();
+    await env.DB.prepare('UPDATE gateway_release_state SET active_realtime_id=?,promotion_at=? WHERE singleton=1').bind(id, Date.now()).run();
+    const application = await loadApp(env, bootstrap.appId);
+    application.config.realtime.max_concurrent_sessions_per_identity = 1;
+    await database(env.DB).update(appTable).set({ config: application.config }).where(eq(appTable.id, bootstrap.appId)); clearIsolateCaches();
+    await env.USER_LIMITER.getByName(realtimeCaller(bootstrap.identity)).acquireSession('another-session', 1);
+    const full = await open();
+    expect(full.status).toBe(429);
+    expect(await full.json()).toMatchObject({ error: { code: 'realtime_session_limit' } });
+    // Discovery through the gateway's own route names this release's socket.
+    const discovered = await app.fetch(new Request(`https://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}/connection?model=gpt-realtime`, { headers }), env, createExecutionContext());
+    expect(discovered.status).toBe(200);
+    expect(await discovered.json()).toEqual({ releaseId: id, url: `wss://release.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}?model=gpt-realtime` });
   });
   it('rejects candidates and expired retirement for new opens while permitting existing maintenance', async () => {
     const { bootstrap, headers } = await seeded(); const id = crypto.randomUUID();

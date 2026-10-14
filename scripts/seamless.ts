@@ -2,7 +2,7 @@ import { REALTIME_BACKEND_CONTRACT } from '../src/realtime/contract.ts';
 import { REALTIME_MAX_SESSION_SECONDS, REALTIME_LIMITS } from '../src/realtime/limits.ts';
 import { latestDeployment } from './deploy-lib.mjs';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 
 /** Compatibility declarations are reviewed on changes; migrations stay expand-only. */
@@ -69,7 +69,7 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
   const query = async (sql: string) => rows(await driver.run(['d1', 'execute', 'DB', '--remote', '--json', '--config', input.configPath, '--command', sql], { capture: true }));
   // Build/read artifacts before acquiring the lease or changing remote state.
   if (!config.vars?.DEPLOYMENT_ID) throw new Error('Deployment identity is required');
-  if (input.action !== 'cleanup' && input.action !== 'rollback') { await readFile(input.mainBundle); await readFile(input.realtimeBundle); }
+  if (input.action !== 'cleanup' && input.action !== 'rollback') { await access(input.mainBundle); await access(input.realtimeBundle); }
   const owner = randomUUID();
   // Bootstrap only the advisory lease, before ordinary migrations or secret mutations.
   await query(`CREATE TABLE IF NOT EXISTS gateway_release_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), active_realtime_id TEXT, deployment_owner TEXT, deployment_expires_at INTEGER, promotion_at INTEGER, current_deployment_id TEXT); INSERT OR IGNORE INTO gateway_release_state(singleton) VALUES(1)`);

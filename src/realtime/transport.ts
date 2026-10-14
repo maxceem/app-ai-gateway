@@ -24,8 +24,9 @@ export class Mailbox {
     }
   }
 }
+/** Sends a frame; a string is already its wire form and is sent as it is. */
 export function send(socket: WebSocket | null, value: unknown): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
+  if (socket?.readyState === WebSocket.OPEN) socket.send(typeof value === 'string' ? value : JSON.stringify(value));
 }
 export function close(socket: WebSocket | null, code: number): void {
   try { socket?.close(code, 'Realtime session closed'); } catch { /* already closed */ }

@@ -10,11 +10,18 @@ import { GatewayError, errorResponse } from '../core/errors';
 export class RealtimeSession extends DurableObject<RealtimeEnv> {
   private coordinator: SessionCoordinator | null = null;
   override async fetch(request: Request): Promise<Response> {
-    if (this.coordinator || new SessionJournal(this.ctx.storage).metadata()) throw new GatewayError(409, 'conflict', 'Realtime session cannot be reopened');
-    // This URL exists only between this Worker's fetch handler and its own namespace.
-    const b = JSON.parse(request.headers.get('x-realtime-bootstrap')!) as Bootstrap;
-    this.coordinator = new SessionCoordinator(remoteSessionBackend(this.env.BACKEND), this.ctx, b, request.headers);
-    return this.coordinator.start();
+    // Answered here, not thrown: an error crossing the stub arrives as a plain
+    // Error, and a refusal would lose its status, code and Retry-After.
+    try {
+      if (this.coordinator || new SessionJournal(this.ctx.storage).metadata()) throw new GatewayError(409, 'conflict', 'Realtime session cannot be reopened');
+      // This URL exists only between this Worker's fetch handler and its own namespace.
+      const b = JSON.parse(request.headers.get('x-realtime-bootstrap')!) as Bootstrap;
+      this.coordinator = new SessionCoordinator(remoteSessionBackend(this.env.BACKEND), this.ctx, b, request.headers);
+      return await this.coordinator.start();
+    } catch (error) {
+      if (error instanceof GatewayError) return errorResponse(error.status, error.code, error.message, error.headers, error.data);
+      throw error;
+    }
   }
   override async alarm(): Promise<void> {
     if (!this.coordinator) {

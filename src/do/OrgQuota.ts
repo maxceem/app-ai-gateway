@@ -30,6 +30,12 @@ export type QuotaAdmission =
  * leasing admissions per isolate was refused.
  */
 export class OrgQuota extends DurableObject<Env> {
+  /** Realtime admission receipts, whose table is created once per object instance. */
+  private admissionReceipts: AdmissionReceipts | null = null;
+  private receipts(): AdmissionReceipts {
+    return this.admissionReceipts ??= new AdmissionReceipts(this.ctx.storage.sql);
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -54,13 +60,13 @@ export class OrgQuota extends DurableObject<Env> {
    * has closed never gets this far — the account gate refuses it first.
    */
   receipt(admissionId: string): QuotaAdmission | null {
-    return new AdmissionReceipts(this.ctx.storage.sql).read(admissionId);
+    return this.receipts().read(admissionId);
   }
 
   admit(input: QuotaAdmissionInput): QuotaAdmission {
     if (!input.admissionId) return this.claim(input);
     return this.ctx.storage.transactionSync(() => {
-      const receipts = new AdmissionReceipts(this.ctx.storage.sql);
+      const receipts = this.receipts();
       const fingerprint = JSON.stringify([input.periodId, input.periodEnd, input.limit]);
       const previous = receipts.read<QuotaAdmission>(input.admissionId!, fingerprint);
       if (previous) return previous;

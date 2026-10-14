@@ -87,6 +87,21 @@ is built, so a change to one of them also needs a deploy.
 
 ## Release promotion and established sessions
 
+Realtime sessions run in a separate Worker for each release, so a gateway update
+never cuts a conversation off. That has three consequences for your
+installation:
+
+- Release Workers are served on your account's `workers.dev` subdomain, which
+  must be enabled, even when the gateway itself is on a
+  [custom domain](/self-hosting/custom-domain). Realtime sockets connect there,
+  so WAF and rate limiting rules on your own zone do not apply to them; the
+  gateway's own limits do.
+- The credentials you deploy with must be able to create, read and delete
+  Workers in the account: each release adds one, and cleanup removes old ones.
+- Deploy with the button, `pnpm run deploy` or the CLI. A plain
+  `wrangler deploy` updates the gateway but no release Worker, and realtime
+  discovery answers `503` until one of those has run.
+
 The button, checkout deploy command, and CLI share the same release sequence:
 build and check the artifacts, acquire one deployment lease, apply compatible
 migrations, deploy the stable gateway at 100%, verify its exact build and

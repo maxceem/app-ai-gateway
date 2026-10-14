@@ -72,6 +72,12 @@ export interface LimiterStatus {
 }
 
 export class UserLimiter extends DurableObject<Env> {
+  /** Realtime admission receipts, whose table is created once per object instance. */
+  private admissionReceipts: AdmissionReceipts | null = null;
+  private receipts(): AdmissionReceipts {
+    return this.admissionReceipts ??= new AdmissionReceipts(this.ctx.storage.sql);
+  }
+
   /**
    * The last read of each ledger's month, by its full identity — app, scope,
    * key and month. One object can be asked for more than one: an install's is
@@ -182,7 +188,7 @@ export class UserLimiter extends DurableObject<Env> {
    */
   async checkAndIncrement(input: LimiterCheckInput): Promise<LimiterCheckResult> {
     const fingerprint = JSON.stringify(input);
-    const receipts = input.admissionId ? new AdmissionReceipts(this.ctx.storage.sql) : null;
+    const receipts = input.admissionId ? this.receipts() : null;
     const previous = input.admissionId ? receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint) : null;
     if (previous) return previous;
     // A caller-supplied clock decides which window a request lands in; a
@@ -210,7 +216,7 @@ export class UserLimiter extends DurableObject<Env> {
   }
 
   receipt(admissionId: string): LimiterCheckResult | null {
-    return new AdmissionReceipts(this.ctx.storage.sql).read(admissionId);
+    return this.receipts().read(admissionId);
   }
 
   private claimWindows(input: LimiterCheckInput, now: number, spent: number): LimiterCheckResult {

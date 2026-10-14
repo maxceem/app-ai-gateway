@@ -6,6 +6,12 @@ import { cap, count, id, invalid, keys, object } from './validation';
 export class OpenAIAdapter implements ProtocolAdapter {
   private auto = false;
   private interrupt = false;
+  /**
+   * Whether managed VAD has heard speech it has not committed yet. Only that
+   * audio is a turn's input: between turns the microphone keeps streaming
+   * silence the provider discards, and it must not run out the turn's bounds.
+   */
+  private speaking = false;
   private seenCommits = new Set<string>();
   private toolCalls = new Set<string>();
   private requestedVad: JsonObject | null = null;
@@ -39,7 +45,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       if (format.type !== 'audio/pcm' || format.rate !== 24000) invalid('Only 24 kHz PCM input is supported');
     }
     if (input.turn_detection !== undefined) {
-      if (input.turn_detection === null) { this.requestedVad = null; this.auto = false; this.interrupt = false; }
+      if (input.turn_detection === null) { this.requestedVad = null; this.auto = false; this.interrupt = false; this.speaking = false; }
       else {
         const vad = object(input.turn_detection);
         keys(vad, ['type', 'threshold', 'prefix_padding_ms', 'silence_duration_ms', 'create_response', 'interrupt_response']);
@@ -90,7 +96,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       case 'input_audio_buffer.append':
         keys(frame, ['type', 'event_id', 'audio']);
         if (typeof frame.audio !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.audio)) invalid('Expected base64 PCM audio');
-        return [{ kind: 'forward', frame, useful: true, input: true }];
+        return [{ kind: 'forward', frame, useful: true, input: !this.auto || this.speaking }];
       case 'input_audio_buffer.commit':
       case 'input_audio_buffer.clear':
         keys(frame, ['type', 'event_id']);
@@ -135,16 +141,22 @@ export class OpenAIAdapter implements ProtocolAdapter {
       if ((this.requestedVad === null) !== (vad === null)) invalid('Unexpected upstream turn detection');
       return [{ kind: 'ready' }, { kind: 'forward', frame }];
     }
-    if (frame.type === 'input_audio_buffer.speech_started' && this.auto && this.interrupt && state.active) {
-      return [{ kind: 'cancel' }, { kind: 'forward', frame }];
+    if (frame.type === 'input_audio_buffer.speech_started' && this.auto) {
+      this.speaking = true;
+      if (this.interrupt && state.active) return [{ kind: 'cancel' }, { kind: 'forward', frame }];
     }
+    if (frame.type === 'input_audio_buffer.speech_stopped') this.speaking = false;
+    // Only under managed VAD, where every commit is its own admitted turn: in
+    // manual mode audio committed before a clear still belongs to the turn.
+    if (frame.type === 'input_audio_buffer.cleared' && this.auto) { this.speaking = false; return [{ kind: 'forward', frame }, { kind: 'inputReset' }]; }
     if (frame.type === 'input_audio_buffer.committed' && this.auto) {
+      this.speaking = false;
       const item = id(frame.item_id);
       if (this.seenCommits.has(item)) return [];
       if (this.seenCommits.size >= 1000) invalid('Committed item limit exceeded');
       this.seenCommits.add(item);
       const trigger = { type: 'response.create', response: { max_output_tokens: this.outputCap } };
-      return [{ kind: 'forward', frame }, state.active ? { kind: 'pendingAuto', frame: trigger, correlation: item } : { kind: 'generate', frame: trigger, correlation: item }];
+      return [{ kind: 'forward', frame }, { kind: 'inputReset' }, state.active ? { kind: 'pendingAuto', frame: trigger, correlation: item } : { kind: 'generate', frame: trigger, correlation: item }];
     }
     if (frame.type === 'response.created') {
       const response = object(frame.response);

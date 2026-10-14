@@ -15,6 +15,8 @@ export type AdapterEffect =
   | { kind: 'forward'; frame: JsonObject; useful?: boolean; input?: boolean; endInput?: boolean }
   | { kind: 'configure'; frame: JsonObject }
   | { kind: 'ready' }
+  /** The provider emptied its input buffer: the turn's input bound starts again. */
+  | { kind: 'inputReset' }
   | { kind: 'generate'; frame: JsonObject; correlation?: string; inputActivity?: boolean }
   | { kind: 'cancel' }
   | { kind: 'created'; responseId: string }
