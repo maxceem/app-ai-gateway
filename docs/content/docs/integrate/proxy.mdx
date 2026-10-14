@@ -179,10 +179,5 @@ requests are then not counted. An app with no user identity answers
 
 ## Realtime sessions
 
-Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
-`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
-VAD. Each admitted generation attempt is one request, including cancellation or
-failure; audio chunks and connection setup add no requests. Reconnect creates a
-new conversation without replay. Gemini Live remains unavailable pending live
-conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
-and `URLSession.webSocketTask(with:)`.
+Direct OpenAI `gpt-realtime` and `gpt-realtime-mini` conversations run over a
+WebSocket instead of this proxy. See [Realtime WebSockets](/integrate/realtime).

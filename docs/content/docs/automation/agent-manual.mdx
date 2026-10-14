@@ -607,10 +607,6 @@ is minted. Records are kept for 90 days.
 
 ## Realtime sessions
 
-Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
-`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
-VAD. Each admitted generation attempt is one request, including cancellation or
-failure; audio chunks and connection setup add no requests. Reconnect creates a
-new conversation without replay. Gemini Live remains unavailable pending live
-conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
-and `URLSession.webSocketTask(with:)`.
+Opt-in [realtime WebSockets](/integrate/realtime) serve direct OpenAI
+`gpt-realtime` and `gpt-realtime-mini`. Each admitted response is one request;
+setup and audio add none. Read that guide before building a realtime client.

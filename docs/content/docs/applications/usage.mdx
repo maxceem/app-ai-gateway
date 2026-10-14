@@ -90,10 +90,6 @@ per-user rate limits bound how much can go unmetered. See
 
 ## Realtime sessions
 
-Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
-`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
-VAD. Each admitted generation attempt is one request, including cancellation or
-failure; audio chunks and connection setup add no requests. Reconnect creates a
-new conversation without replay. Gemini Live remains unavailable pending live
-conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
-and `URLSession.webSocketTask(with:)`.
+A [realtime WebSocket](/integrate/realtime) conversation records one event
+per generated response, each counted as one request, including one cancelled
+or cut off by a disconnect. Connection setup and audio add no requests.
