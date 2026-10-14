@@ -51,10 +51,32 @@ const app = new Hono<AppEnv>();
 
 app.use("*", requestScope);
 
+/** How long one isolate reuses its last database and Durable Object probe. */
+const HEALTH_PROBE_MS = 5_000;
+const healthProbes = new WeakMap<D1Database, { at: number; state: Promise<{ active_realtime_id: string | null } | null> }>();
+
+/**
+ * Whether the database and the Durable Object namespace answer, and which
+ * realtime release is active. The route is public, so one isolate probes at
+ * most once per {@link HEALTH_PROBE_MS} however often it is called; a deploy
+ * polls it every second and a half, and needs only a fresh `buildId`, which is
+ * read from the Worker's own binding on every call.
+ */
+function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | null> {
+  const cached = healthProbes.get(env.DB);
+  if (cached && Date.now() - cached.at < HEALTH_PROBE_MS) return cached.state;
+  const state = (async () => {
+    const row = await env.DB.prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1").first<{ active_realtime_id: string | null }>();
+    await env.ORG_QUOTA.getByName("__deployment_health__").usage("health");
+    return row;
+  })();
+  healthProbes.set(env.DB, { at: Date.now(), state });
+  return state;
+}
+
 app.get("/v1/healthz", async (c) => {
   c.header("Cache-Control", "no-store");
-  const state = await c.env.DB.prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1").first<{ active_realtime_id: string | null }>();
-  await c.env.ORG_QUOTA.getByName("__deployment_health__").usage("health");
+  const state = await healthProbe(c.env);
   return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env),
     buildId: c.env.GATEWAY_BUILD_ID ?? "development", ready: state !== null && vaultStatus(c.env) === "ok" && Boolean(c.env.USER_LIMITER && c.env.ENDPOINT_RATE_LIMITER),
     backendContract: REALTIME_BACKEND_CONTRACT, realtimeReleaseId: state?.active_realtime_id ?? null } satisfies HealthResponse);

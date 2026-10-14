@@ -164,3 +164,34 @@ test('older release engine refuses current schema/class generations before migra
     f.db.prepare(`UPDATE gateway_deployment SET ${column}=1 WHERE id=?`).run(current.buildId);
   }
 });
+test('a slow main deploy keeps its lease renewed, and a lapsed one stops before promotion', async t => {
+  const f = await fixture(t);
+  const stall = async (expiresInMs, waitMs) => {
+    f.db.prepare('UPDATE gateway_release_state SET deployment_expires_at=?').run(Date.now() + expiresInMs);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    // A competing release tries to take the lease once the original window has passed.
+    return f.db.prepare('UPDATE gateway_release_state SET deployment_owner=? WHERE deployment_expires_at<=? RETURNING deployment_owner').all('competitor', Date.now());
+  };
+  let competitor;
+  const renewed = await seamlessRelease({ ...f.input, deployMain: async id => { competitor = await stall(60, 200); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 10 });
+  assert.equal(competitor.length, 0);
+  assert.equal(active(f).active_realtime_id, renewed.realtimeId);
+  await writeFile(f.rt, 'slower code');
+  await assert.rejects(seamlessRelease({ ...f.input, deployMain: async id => { await stall(20, 80); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 60_000 }), /lease expired/);
+  assert.equal(active(f).active_realtime_id, renewed.realtimeId);
+});
+test('cleanup deletes a candidate that failed verification and was never promoted', async t => {
+  const f = await fixture(t); await seamlessRelease(f.input, f.driver);
+  await writeFile(f.rt, 'broken candidate');
+  await assert.rejects(seamlessRelease(f.input, { ...f.driver, sleep: async () => {}, health: async url => url === f.input.gatewayOrigin ? f.driver.health(url) : { ok: true, releaseId: 'wrong', backendContract: 1 } }), /candidate health/);
+  const failed = f.db.prepare('SELECT * FROM realtime_release WHERE retired_at IS NULL AND id != (SELECT active_realtime_id FROM gateway_release_state)').get();
+  assert.ok(failed && f.workers.has(failed.worker_name));
+  await seamlessRelease({ ...f.input, action: 'cleanup' }, f.driver);
+  assert.ok(f.db.prepare('SELECT * FROM realtime_release WHERE id=?').get(failed.id), 'a fresh candidate is kept through its grace period');
+  f.db.prepare('UPDATE realtime_release SET created_at=0 WHERE id=?').run(failed.id);
+  await writeFile(f.rt, 'fixed candidate');
+  const fixed = await seamlessRelease(f.input, f.driver);
+  assert.equal(f.db.prepare('SELECT * FROM realtime_release WHERE id=?').get(failed.id), undefined);
+  assert.ok(!f.workers.has(failed.worker_name));
+  assert.equal(active(f).active_realtime_id, fixed.realtimeId);
+});

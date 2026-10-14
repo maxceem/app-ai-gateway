@@ -162,7 +162,14 @@ export class OpenAIAdapter implements ProtocolAdapter {
       return [{ kind: 'finalize', responseId, usage: response.usage == null ? null : openAIUsage(response.usage), status: response.status as 'completed' | 'cancelled' | 'failed' | 'incomplete', frame }];
     }
     if (typeof frame.type === 'string' && frame.type.startsWith('response.') && (!state.active || (frame.response_id !== undefined && frame.response_id !== state.responseId))) invalid('Unadmitted provider output');
-    if (frame.type === 'error') invalid('Provider rejected a realtime event');
+    if (frame.type === 'error') {
+      // A cancel that crossed its response's terminal event on the wire is
+      // answered with this error and changes nothing. Only the gateway sends
+      // response.cancel upstream, so the conversation goes on.
+      const error = frame.error;
+      if (typeof error === 'object' && error !== null && (error as JsonObject).code === 'response_cancel_not_active') return [{ kind: 'forward', frame }];
+      invalid('Provider rejected a realtime event');
+    }
     return [{ kind: 'forward', frame }];
   }
 }

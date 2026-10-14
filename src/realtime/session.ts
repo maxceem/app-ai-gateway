@@ -268,7 +268,9 @@ export class SessionCoordinator {
           try { receipt = await this.backend.receipt(this.bootstrap, generation.id); } catch { /* alarm will reconcile */ }
           if (receipt?.allowed) generation.stage = 'admitted';
           else if (receipt) generation.stage = 'refused';
-        } else generation.stage = 'refused';
+        // Unmetered admission acknowledges with null only once every limit has
+        // counted it, so a reply lost after that is an admitted attempt.
+        } else generation.stage = generation.claim === null ? 'admitted' : 'refused';
       }
       this.journal.save(generation); this.fail(error);
     }
@@ -362,10 +364,12 @@ export class SessionCoordinator {
     let pending = false;
     for (const generation of this.journal.generations()) {
       if (generation.stage === 'settled' || generation.stage === 'refused') continue;
-      if (generation.stage === 'prepared' || (generation.stage === 'admitting' && !generation.claim)) {
+      // No acknowledged claim yet means no admission decision was recorded;
+      // a null one is an unmetered admission and settles below like any other.
+      if (generation.stage === 'prepared' || (generation.stage === 'admitting' && generation.claim === undefined)) {
         generation.stage = 'refused'; this.journal.save(generation); continue;
       }
-      if (generation.stage === 'admitting') {
+      if (generation.stage === 'admitting' && generation.claim !== null) {
         if (task.due > Date.now() && Date.now() - generation.at < L.outboxRetentionMs) { pending = true; continue; }
         try {
           const receipt = await this.backend.receipt(this.bootstrap, generation.id);

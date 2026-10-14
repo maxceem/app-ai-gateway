@@ -96,8 +96,9 @@ keep the selected gateway name, database, and deployment identity.
 
 An update that fails preparation or health verification keeps the previous
 realtime pointer. Retry the same command after fixing the reported failure.
-Overlapping updates are refused while a deployment holds the lease; an
-interrupted deployment's lease expires after ten minutes. The first checkout
+Overlapping updates are refused while a deployment holds the lease. A running
+deployment renews it every minute; an interrupted one's lease expires after ten
+minutes, and a deployment that finds its lease gone stops before promotion. The first checkout
 installation may provision the gateway and database before it can acquire this
 lease. It establishes its deployment identity before creating secrets, so an
 interrupted first installation can retry against that same identity.
@@ -110,7 +111,9 @@ Never change an established identity.
 Retired realtime Workers refuse new sessions after 60 seconds and retain
 established sessions and pending usage recovery. They are kept for the maximum
 30-minute session, that admission grace, seven days of recovery, and one hour
-of margin. Expired releases are cleaned up on subsequent deployments. An idle
+of margin. A realtime Worker that failed verification and was never promoted
+is removed after an hour. Expired releases are cleaned up on subsequent
+deployments. An idle
 installation retains them until you deploy again or run cleanup:
 
 ```sh
@@ -137,7 +140,9 @@ Use these commands instead of independently rolling back a Worker in the
 dashboard, which does not coordinate realtime routing.
 
 `/v1/healthz` reports the main build ID, current realtime release ID, backend
-contract, and readiness. Health checks use no AI provider and consume no app
+contract, and readiness. The database and Durable Object checks behind
+readiness are reused for up to five seconds, so the release ID it reports can
+trail a promotion by that long. Health checks use no AI provider and consume no app
 request allowance. HTTP API URLs stay stable; in-progress HTTP streams are
 still subject to Cloudflare's own deployment and network behavior.
 

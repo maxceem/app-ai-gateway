@@ -13,6 +13,7 @@ import { resolveDeployment } from '../policy/deployment';
 import { recordRejectionEvent } from '../diagnostics/rejection-events';
 import type { GatewayIdentity } from '../core/types';
 import { realtimeCaller } from './caller';
+import { storedAppVersion } from '../core/app-version';
 
 /** A handshake is a `GET`: there is no body for its App Attest proof to sign. */
 const NO_BODY = async () => new Uint8Array();
@@ -54,7 +55,7 @@ export async function prepareRealtime(env: Env, request: Request, appId: string,
   }
   const bootstrap: Bootstrap = { sessionId: crypto.randomUUID(), appId: app.id, organizationId: app.organizationId,
     providerId: provider.id, providerSlug, model: policy.model, requestedModel: model, protocol: policy.protocol,
-    identity, appVersion: request.headers.get('x-app-version') ?? null, origin };
+    identity, appVersion: storedAppVersion(request.headers.get('x-app-version')), origin };
   // Fresh headers: client internal metadata, cookies and provider control headers never enter the DO.
   const headers = new Headers({ Upgrade: 'websocket', 'x-realtime-bootstrap': JSON.stringify(bootstrap), Authorization: request.headers.get('authorization')! });
   const endUser = app.config.authentication.end_user;

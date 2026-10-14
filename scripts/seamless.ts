@@ -9,6 +9,14 @@ import { join, dirname, resolve } from 'node:path';
 export const RELEASE_COMPATIBILITY = { backend: REALTIME_BACKEND_CONTRACT, schema: 1, classes: 1 } as const;
 export const RELEASE_RETENTION_MS = (REALTIME_MAX_SESSION_SECONDS + 60 + 3600) * 1000 + REALTIME_LIMITS.outboxRetentionMs;
 const LEASE_MS = 10 * 60_000;
+/** How often a running release renews its lease, well inside {@link LEASE_MS}. */
+const LEASE_HEARTBEAT_MS = 60_000;
+/**
+ * How old a never-promoted candidate must be before cleanup deletes it. No
+ * session can reach one, since discovery only returns the active release; the
+ * margin is for a candidate whose own release is still verifying it.
+ */
+const CANDIDATE_GRACE_MS = 60 * 60_000;
 type Config = Record<string, unknown> & { name: string; vars?: Record<string, unknown>; account_id?: string };
 export interface RunResult { stdout?: string; stderr?: string; status?: number | null }
 export interface ReleaseDriver {
@@ -18,6 +26,8 @@ export interface ReleaseDriver {
   health(url: string): Promise<Record<string, unknown>>;
   log(message: string): void;
   sleep?: (ms: number) => Promise<void>;
+  /** Overrides {@link LEASE_HEARTBEAT_MS}; tests only. */
+  heartbeatMs?: number;
 }
 export interface ReleaseInput {
   config: Config;
@@ -69,6 +79,17 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     const renewal = await query(`UPDATE gateway_release_state SET deployment_expires_at=${Date.now() + LEASE_MS} WHERE singleton=1 AND deployment_owner=${quote(owner)} AND deployment_expires_at>${Date.now()} RETURNING deployment_owner`);
     if (renewal[0]?.deployment_owner !== owner) throw new Error('Deployment lease expired or changed; promotion stopped');
   };
+  // Renewed in the background while this release runs, so a slow Worker
+  // upload cannot outlive the lease and land after another release has taken
+  // it over. A lapsed lease is never revived: the next lease() check stops
+  // this release instead.
+  let renewing = false;
+  const heartbeat = setInterval(() => {
+    if (renewing) return;
+    renewing = true;
+    lease().catch(() => {}).finally(() => { renewing = false; });
+  }, driver.heartbeatMs ?? LEASE_HEARTBEAT_MS);
+  heartbeat.unref?.();
   let previousDeployment: string | undefined;
   try {
     const promote = async (id: string, promotedBuild: string) => {
@@ -90,7 +111,10 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     const installation = createHash('sha256').update(String(config.vars?.DEPLOYMENT_ID)).digest('hex').slice(0, 12);
     const prefix = `agw-rt-${installation}-`;
     const cleanup = async () => {
-      const retired = await query(`SELECT id, worker_name FROM realtime_release WHERE delete_after<=${Date.now()} AND retired_at IS NOT NULL AND id != COALESCE((SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1),'')`);
+      // Retired releases once their sessions' recovery horizon has passed, and
+      // candidates that were never promoted, which no session ever reached.
+      const retired = await query(`SELECT id, worker_name FROM realtime_release WHERE id != COALESCE((SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1),'')
+        AND ((retired_at IS NOT NULL AND delete_after<=${Date.now()}) OR (retired_at IS NULL AND created_at<=${Date.now() - CANDIDATE_GRACE_MS}))`);
       for (const row of retired) {
         if (typeof row.worker_name !== 'string' || !row.worker_name.startsWith(prefix) || !/^[a-f0-9]{64}$/u.test(String(row.id)) || row.worker_name !== prefix + String(row.id).slice(0, 24)) throw new Error('Refusing cleanup of an unknown realtime resource');
         await lease();
@@ -149,6 +173,7 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     try { await cleanup(); } catch { driver.log('Deployment promoted successfully; retired release cleanup is pending. Run deployment cleanup after fixing Cloudflare access.'); }
     return { buildId, realtimeId, ...(previousDeployment ? { previousDeployment } : {}) };
   } finally {
+    clearInterval(heartbeat);
     await query(`UPDATE gateway_release_state SET deployment_owner=NULL, deployment_expires_at=NULL WHERE singleton=1 AND deployment_owner=${quote(owner)}`);
   }
 }

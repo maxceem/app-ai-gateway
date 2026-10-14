@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { Cloudflare, resultOf } from '../cli/src/cloudflare.ts';
 import { CliError } from '../cli/src/common.ts';
 import { seamlessRelease, companionEnvironment } from './seamless.ts';
@@ -8,9 +8,18 @@ import { projectRoot, wranglerBin, readJsonc } from './wrangler-config.mjs';
 
 /** Checkout and one-click adapter. Primary keeps Cloudflare's CI identity; companion does not. */
 export async function deployCheckout({ config, configPath, deploymentId, prepare, bootstrap, action = 'deploy', rollbackId }) {
+  // Asynchronous, so the release's lease heartbeat keeps renewing while a
+  // deploy runs: a blocked event loop would let the lease lapse under it.
   const run = async (args, options = {}) => {
-    const result = spawnSync(wranglerBin, args, { cwd: projectRoot, encoding: 'utf8', env: options.companion ? companionEnvironment(process.env) : process.env,
-      stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(wranglerBin, args, { cwd: projectRoot, env: options.companion ? companionEnvironment(process.env) : process.env,
+        stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = ''; let stderr = '';
+      child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+      child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('close', status => resolve({ status, stdout, stderr }));
+    });
     if (result.status !== 0) throw new Error(`Wrangler ${args[0]} failed: ${result.stderr ?? ''}`);
     if (!options.capture) { process.stdout.write(result.stdout ?? ''); process.stderr.write(result.stderr ?? ''); }
     return result;

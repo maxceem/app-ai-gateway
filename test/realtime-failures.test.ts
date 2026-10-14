@@ -521,6 +521,17 @@ describe('realtime failure boundaries', () => {
       await new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers).recover(); expect(journal.outbox()).toHaveLength(0);
     });
   });
+  it('an acknowledged unmetered admission whose reply was lost settles one interrupted attempt', async () => {
+    const { bootstrap, headers } = await setup(); const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
+    await runInDurableObject(stub, async (_instance, state) => {
+      const journal = new SessionJournal(state.storage); journal.open(bootstrap);
+      const g = generation(bootstrap, 'admitting'); g.claim = null; g.at = Date.now() - 3 * 86_400_000; journal.save(g);
+      await new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers).recover();
+      expect(journal.generations()[0]).toMatchObject({ stage: 'settled', event: { row: { completionStatus: 'interrupted' } } });
+      // Delivery shares the generation's recovery horizon rather than starting a new one.
+      expect(journal.outbox()).toMatchObject([{ createdAt: g.at }]);
+    });
+  });
   it('unknown claim receipts remain pending for read-only reconciliation', async () => {
     const { bootstrap, headers } = await setup(); const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
     await runInDurableObject(stub, async (_instance, state) => {

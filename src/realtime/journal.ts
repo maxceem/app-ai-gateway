@@ -30,7 +30,10 @@ export class SessionJournal {
       generation.stage = 'settled';
       generation.event = event;
       this.save(generation);
-      const item: OutboxItem = { id: event.eventId, event, attempts: 0, due: Date.now(), createdAt: Date.now() };
+      // Dated from the generation, not from settlement: admission recovery
+      // and usage delivery share one seven-day horizon, which is what a retired
+      // release is kept for. A late settlement gets what is left of it.
+      const item: OutboxItem = { id: event.eventId, event, attempts: 0, due: Date.now(), createdAt: generation.at };
       this.storage.sql.exec('INSERT INTO usage_outbox VALUES (?, ?) ON CONFLICT(id) DO NOTHING', item.id, JSON.stringify(item));
     });
   }

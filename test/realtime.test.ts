@@ -136,6 +136,12 @@ function collector(socket: WebSocket) {
     expect(results.filter(result => result.allowed)).toHaveLength(3);
     expect(await quota.usage('race')).toBe(3);
   });
+  it('keeps the conversation when a cancel crosses its response on the wire, and closes on other provider errors', () => {
+    const adapter = new OpenAIAdapter('gpt-realtime', 4096);
+    const late = { type: 'error', error: { type: 'invalid_request_error', code: 'response_cancel_not_active', message: 'Cancellation failed: no active response found' } };
+    expect(adapter.server(late, manual)).toEqual([{ kind: 'forward', frame: late }]);
+    expect(() => adapter.server({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value' } }, manual)).toThrow();
+  });
   it('rejects unadmitted output, mismatched terminals and unknown paid input', () => {
     const adapter = new OpenAIAdapter('gpt-realtime', 4096);
     expect(() => adapter.server({ type: 'response.created', response: { id: 'r' } }, manual)).toThrow();
@@ -343,6 +349,19 @@ describe('realtime on an App Attest app that verifies every request', () => {
     expect(headers.has('x-appattest-proof')).toBe(false);
     await expect(prepareRealtime(env, request, appId, appId, 'https://gateway.test', 'realtime_discover')).rejects.toMatchObject({ status: 403, code: 'attest_failed' });
     await prepareRealtime(env, await signed(), appId, appId, 'https://gateway.test');
+  });
+
+  it('ends a session whose install key is removed, and bounds the stored app version', async () => {
+    const { appId, install, token, url } = await attested();
+    const request = new Request(url, { headers: { Authorization: `Bearer ${token}`, 'x-app-version': 'v'.repeat(500),
+      'x-appattest-proof': await signedProof({ appId, privateKey: install.privateKey, token, method: 'GET', url, counter: ++install.counter }) } });
+    const { bootstrap, headers } = await prepareRealtime(env, request, appId, appId, 'https://gateway.test');
+    expect(bootstrap.appVersion).toHaveLength(64);
+    const backend = localSessionBackend(env, () => {});
+    await backend.revalidate(bootstrap, headers);
+    await env.DB.prepare('DELETE FROM app_attest_key WHERE app_id = ? AND key_id = ?').bind(appId, install.keyId).run();
+    clearIsolateCaches();
+    await expect(backend.revalidate(bootstrap, headers)).rejects.toMatchObject({ status: 403, code: 'attest_failed' });
   });
 
   it('revalidates the token without the spent proof and holds leases per install', async () => {
