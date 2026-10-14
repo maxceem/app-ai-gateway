@@ -54,7 +54,7 @@ const VERIFY_ON_CHOICES: Choice<AppAttestVerifyOn>[] = [
     value: "every_request",
     label: "Every request",
     description:
-      "Each request carries a fresh App Attest assertion. Requires the AppAIGateway Swift package 1.4 or later.",
+      "Each request carries a fresh App Attest assertion.",
   },
   {
     value: "token_exchange",
