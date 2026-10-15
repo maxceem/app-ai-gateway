@@ -15,7 +15,8 @@
 //
 // A per-modality or dated cell may end in "Equivalent to $0.134 per 1K image",
 // which restates the price per image or per second and is dropped; so is the
-// storage price per hour the caching row carries. Anything else in a row this
+// storage price per hour the caching row carries, or the note that stands in
+// for it on a model with implicit caching only. Anything else in a row this
 // parser reads fails the page. An image-only price is kept only on the output
 // row, as `image_output`: generated image tokens bill at it, everything else at
 // the text price. Any other modality priced beside text on the output row fails
@@ -51,6 +52,8 @@ const STORAGE = new RegExp(
   String.raw` ${STORAGE_UNIT}(?: through ${DATE}\. ${STORAGE_UNIT} starting ${DATE}\.)?$`,
   "u",
 );
+// A model without explicit caching stores nothing, so it has no storage price.
+const IMPLICIT_ONLY = " Implicit caching only (explicit caching is not supported).";
 const PLAIN = new RegExp(String.raw`^${MONEY}$`, "u");
 const MODALITY = String.raw`[a-z]+(?:(?: ?\/ ?|, | and )[a-z]+)*`;
 const MODALITY_SEGMENT = new RegExp(String.raw`${MONEY} \((${MODALITY})\)`, "gu");
@@ -136,6 +139,7 @@ export function readPaidCell(text, where, today) {
 
 /** The storage price rides along in the caching cell; it is not billed per token. */
 function withoutStorage(text, where) {
+  if (text.endsWith(IMPLICIT_ONLY)) return text.slice(0, -IMPLICIT_ONLY.length);
   const match = STORAGE.exec(text);
   if (!match) throw new ParseError(`${where}: the caching cell has no storage price "${text}"`);
   return text.slice(0, match.index);

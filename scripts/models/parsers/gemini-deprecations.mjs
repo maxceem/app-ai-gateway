@@ -1,13 +1,15 @@
 // https://ai.google.dev/gemini-api/docs/deprecations.md.txt
 //
 // One table per model family, with a shutdown date or "No shutdown date
-// announced" for every model. Google calls these dates the earliest a model
-// may be shut down, so a date here can move later, never earlier.
+// announced" for every model, or "N/A" for one whose endpoint is not shutting
+// down but routes to its replacement. Google calls these dates the earliest a
+// model may be shut down, so a date here can move later, never earlier.
 
 import { ParseError, findTables, parseDate, put } from "../price.mjs";
 
 const HEADER = ["**Model**", "**Release date**", "**Shutdown date**", "**Recommended replacement**"];
 const MODEL = /^`([^`]+)`$/u;
+const NO_DATE = new Set(["No shutdown date announced", "N/A"]);
 
 export function parseGeminiDeprecations(text, { wanted }) {
   const tables = findTables(text.split("\n"), "deprecations").filter((table) =>
@@ -26,7 +28,7 @@ export function parseGeminiDeprecations(text, { wanted }) {
         throw new ParseError(`unexpected model cell "${row[0]}"`);
       }
       const id = model[1];
-      if (!wanted.has(id) || row[2] === "No shutdown date announced") continue;
+      if (!wanted.has(id) || NO_DATE.has(row[2])) continue;
       put(retirements, id, { date: parseDate(row[2], id) });
     }
   }

@@ -5,6 +5,7 @@
 | **Model** | **Release date** | **Shutdown date** | **Recommended replacement** |
 |---|---|---|---|
 | `gemini-3.6-flash` | July 21, 2026 | No shutdown date announced |   |
+| `gemini-3.5-flash` | May 19, 2026 | N/A | `gemini-3.6-flash` (not available to select in Google AI Studio; the endpoint is not shutting down and automatically routes API requests to `gemini-3.6-flash`) |
 | `gemini-3.1-flash-lite` | May 7, 2026 | May 7, 2027 | `gemini-3.5-flash-lite` |
 | Preview models ||||
 | `gemini-3.1-pro-preview` | February 19, 2026 | No shutdown date announced |   |
