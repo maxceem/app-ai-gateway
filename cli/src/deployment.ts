@@ -43,9 +43,14 @@ export interface DeploymentUpdatePlan {
   databaseId: string | undefined;
   fromVersion: string;
   toVersion: string;
+  /** How realtime sessions are served after the update. */
+  realtimeReleases: RealtimeReleases;
   dryRun?: true;
   updated?: true;
 }
+
+/** `seamless` gives realtime sessions a Worker of their own per release; `simple` has the gateway serve them. */
+export type RealtimeReleases = "simple" | "seamless";
 
 /**
  * What a setup run reports. Every field is optional because the three answers
@@ -116,24 +121,32 @@ export async function deploymentUpdate(
 ): Promise<DeploymentUpdatePlan> {
   const artifact = await authorized(flags, cf, loadRelease);
   const journal = await matchExisting(ctx, cf, flags, selectedInstallation(ctx));
-  if (!artifact.manifest.upgradeFrom.includes(journal.version))
+  // Redeploying the installed version migrates nothing, so it is always
+  // allowed: that is how the realtime mode changes without a new release.
+  if (journal.version !== artifact.manifest.version && !artifact.manifest.upgradeFrom.includes(journal.version))
     fail(
       "unsupported_upgrade",
       "This release cannot upgrade the selected database schema.",
       "Use a supported migration release; no data was changed.",
     );
+  const requested = flags["realtime-releases"];
+  if (requested !== undefined && requested !== "simple" && requested !== "seamless")
+    fail("invalid_input", "--realtime-releases must be simple or seamless.");
+  const realtimeReleases: RealtimeReleases = requested ?? (journal.vars?.REALTIME_RELEASES === "seamless" ? "seamless" : "simple");
   const plan: DeploymentUpdatePlan = {
     worker: journal.name,
     accountId: journal.accountId,
     databaseId: journal.databaseId,
     fromVersion: journal.version,
     toVersion: artifact.manifest.version,
+    realtimeReleases,
   };
   if (flags["dry-run"]) return { dryRun: true, ...plan };
   await confirm(
     `Update ${journal.name} to ${artifact.manifest.version}? Database migrations cannot be rolled back automatically.`,
     flags,
   );
+  journal.vars = { ...journal.vars, REALTIME_RELEASES: realtimeReleases };
   const file = await configFile(ctx, journal, artifact);
   try { await deployRelease(cf, journal, artifact, file, async () => {
     await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], { cwd: file.directory });
@@ -143,7 +156,7 @@ export async function deploymentUpdate(
   });
   } finally { await rm(file.directory, { recursive: true, force: true }); }
   await verifyDeployment(ctx, ctx.url, journal.id);
-  await advance(ctx, journal, journal.phase, { version: artifact.manifest.version });
+  await advance(ctx, journal, journal.phase, { version: artifact.manifest.version, vars: journal.vars });
   return { updated: true, ...plan };
 }
 

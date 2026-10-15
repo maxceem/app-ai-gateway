@@ -6,9 +6,10 @@ import { object } from '../realtime/protocols/validation';
 import { GatewayError, errorResponse } from '../core/errors';
 
 /**
- * The session engine, loaded on first use. Production sockets live in the
- * release Worker, so this class serves only local development, and the
- * gateway's cold start must not pay for the engine.
+ * The session engine, loaded on first use: the gateway's cold start must not
+ * pay for it on every HTTP request. This class holds sessions when the gateway
+ * serves them itself; with seamless releases, the release Worker's own class
+ * does, and this one serves only local development.
  */
 const engine = () => Promise.all([import('../realtime/session'), import('../realtime/journal')])
   .then(([{ SessionCoordinator }, { SessionJournal }]) => ({ SessionCoordinator, SessionJournal }));

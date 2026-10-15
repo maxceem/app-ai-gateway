@@ -85,11 +85,32 @@ changes there before deploying.
 Console build variables such as `VITE_POSTHOG_KEY` are read when the console
 is built, so a change to one of them also needs a deploy.
 
-## Release promotion and established sessions
+## Realtime sessions during an update
 
-Realtime sessions run in a separate Worker for each release, so a gateway update
-never cuts a conversation off. That has three consequences for your
-installation:
+By default the gateway serves [realtime sessions](/integrate/realtime) itself.
+Cloudflare closes a Worker's open WebSockets when it updates the Worker, so an
+update ends the conversations open at that moment. Apps discover the URL again
+and start a new conversation; HTTP requests are not affected. For most
+installations that is a short interruption during your own deploys, and it
+keeps updating as plain as before: a `wrangler deploy` is enough.
+
+### Seamless realtime releases
+
+To keep open conversations through updates, turn on seamless realtime
+releases. Each release then runs realtime sessions in a Worker of its own,
+which an update leaves running: established sessions stay on it until they
+end, and new ones go to the newest release. Set the plain variable
+`REALTIME_RELEASES` to `seamless` and deploy:
+
+- From a checkout or a button fork, in the `vars` block of `wrangler.jsonc` or
+  of your [deployment profile](/self-hosting/deploy-with-wrangler):
+  `"REALTIME_RELEASES": "seamless"`, then `pnpm run deploy`, or a push for a
+  button fork.
+- With the CLI: `agw deployment update --realtime-releases seamless`. The CLI
+  remembers the choice for later updates, and the installed version can be
+  redeployed to change it.
+
+Seamless releases need three more things from your installation:
 
 - Release Workers are served on your account's `workers.dev` subdomain, which
   must be enabled, even when the gateway itself is on a
@@ -102,21 +123,32 @@ installation:
   `wrangler deploy` updates the gateway but no release Worker, and realtime
   discovery answers `503` until one of those has run.
 
+To turn them off, remove the variable or set it to `simple`
+(`agw deployment update --realtime-releases simple`) and deploy. Conversations
+open on the last release Worker finish there, and that Worker is removed with
+the other retired ones. Turning them on is itself an update the gateway serves
+sessions through, so it ends the conversations open at that moment, once.
+
+## How a deployment is released
+
 The button, checkout deploy command, and CLI share the same release sequence:
 build and check the artifacts, acquire one deployment lease, apply compatible
-migrations, deploy the stable gateway at 100%, verify its exact build and
-required storage bindings, create or reuse an immutable realtime Worker,
-verify it, and atomically promote the URL new connections discover. Updates
-keep the selected gateway name, database, and deployment identity.
+migrations, deploy the gateway at 100%, verify its exact build and required
+storage bindings, and record the deployment. With seamless releases it also
+creates or reuses an immutable realtime Worker, verifies it, and atomically
+promotes the URL new connections discover. Updates keep the selected gateway
+name, database, and deployment identity.
 
 An update that fails preparation or health verification keeps the previous
-realtime pointer. Retry the same command after fixing the reported failure.
+realtime routing. Retry the same command after fixing the reported failure.
 Overlapping updates are refused while a deployment holds the lease. A running
-deployment renews it every minute; an interrupted one's lease expires after ten
-minutes, and a deployment that finds its lease gone stops before promotion. The first checkout
-installation may provision the gateway and database before it can acquire this
-lease. It establishes its deployment identity before creating secrets, so an
-interrupted first installation can retry against that same identity.
+deployment renews it every minute, and an interrupted one's lease expires
+after ten minutes. A deployment that finds its lease gone stops, and if its
+gateway upload landed after a newer deployment finished, it restores that
+deployment's gateway. The first checkout installation may provision the
+gateway and database before it can acquire this lease. It establishes its
+deployment identity before creating secrets, so an interrupted first
+installation can retry against that same identity.
 
 An existing older gateway without `DEPLOYMENT_ID` cannot report a verifiable
 release version. First establish a stable plain-text `DEPLOYMENT_ID` on that
@@ -128,8 +160,8 @@ established sessions and pending usage recovery. They are kept for the maximum
 30-minute session, that admission grace, seven days of recovery, and one hour
 of margin. A realtime Worker that failed verification and was never promoted
 is removed after an hour. Expired releases are cleaned up on subsequent
-deployments. An idle
-installation retains them until you deploy again or run cleanup:
+deployments. An idle installation retains them until you deploy again or run
+cleanup:
 
 ```sh
 agw deployment cleanup
@@ -146,18 +178,19 @@ agw deployment rollback --release-id PREVIOUS-BUILD-ID
 pnpm run deploy rollback PREVIOUS-BUILD-ID --profile prod
 ```
 
-Rollback restores the recorded main version and realtime routing together,
-reactivates the old realtime release, and restarts retirement eligibility for
-the release it replaces. It never rolls back database data. Missing releases
-or incompatible backend, schema, or Durable Object lifecycle declarations stop
+Rollback restores the recorded main version and realtime routing together. A
+deployment made with seamless releases gets its realtime Worker back and the
+release it replaces restarts retirement; one made without them has the gateway
+serve sessions again. It never rolls back database data. Missing releases or
+incompatible backend, schema, or Durable Object lifecycle declarations stop
 rollback. Keep the deployment configuration and vault key backed up securely.
 Use these commands instead of independently rolling back a Worker in the
 dashboard, which does not coordinate realtime routing.
 
 `/v1/healthz` reports the main build ID, current realtime release ID, backend
 contract, and readiness. The database and Durable Object checks behind
-readiness are reused for up to five seconds, so the release ID it reports can
-trail a promotion by that long. Health checks use no AI provider and consume no app
+readiness are reused for up to five seconds, or one after a failure, so the
+release ID it reports can trail a promotion by that long. Health checks use no AI provider and consume no app
 request allowance. HTTP API URLs stay stable; in-progress HTTP streams are
 still subject to Cloudflare's own deployment and network behavior.
 

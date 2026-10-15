@@ -9,12 +9,15 @@ import type { InstallationJournal } from './state.ts';
 export async function deployRelease(cf: CloudflareClient, journal: InstallationJournal, artifact: ReleaseArtifact,
   file: { path: string; directory: string; config: Record<string, unknown> }, prepare: () => Promise<void>,
   deployMain: (buildId: string) => Promise<void>, action: ReleaseInput['action'] = 'deploy', rollbackId?: string) {
+  const vars = file.config.vars as Record<string, unknown> | undefined;
+  const seamless = vars?.REALTIME_RELEASES === 'seamless';
   const subdomain = (await resultOf<{ subdomain?: string }>(cf, `/accounts/${journal.accountId}/workers/subdomain`)).subdomain;
-  if (!subdomain) throw new Error('Enable your workers.dev subdomain before deploying');
+  if (seamless && !subdomain) throw new Error('Seamless realtime releases are served on workers.dev: enable your workers.dev subdomain, or deploy with --realtime-releases simple');
   const realtimeConfig = JSON.parse(await readFile(join(artifact.directory, 'wrangler.realtime.json'), 'utf8')) as ReleaseInput['realtimeConfig'];
+  const fallback = subdomain ? `https://${journal.name}.${subdomain}.workers.dev` : undefined;
   return seamlessRelease({ config: { ...file.config, name: journal.name }, configPath: file.path,
     realtimeConfig, realtimeBundle: join(file.directory, 'release', 'realtime', 'worker.js'), mainBundle: join(file.directory, 'release', 'worker', 'index.js'),
-    version: artifact.manifest.version, gatewayOrigin: String((file.config.vars as Record<string, unknown> | undefined)?.PUBLIC_API_URL || (file.config.vars as Record<string, unknown> | undefined)?.CLI_CONSOLE_ORIGIN || journal.url || `https://${journal.name}.${subdomain}.workers.dev`), subdomain, prepare, deployMain, action, rollbackId,
+    version: artifact.manifest.version, gatewayOrigin: String(vars?.PUBLIC_API_URL || vars?.CLI_CONSOLE_ORIGIN || journal.url || fallback || '') || undefined, subdomain, seamless, prepare, deployMain, action, rollbackId,
   }, {
     run: async (args, options) => ({ stdout: await cf.run(args, { cwd: file.directory, companion: options?.companion }) }),
     settings: async name => {

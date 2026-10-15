@@ -34,12 +34,13 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   const sourcePath = join(directory, 'source.json');
   await writeFile(sourcePath, JSON.stringify(preflight));
   await run(['deploy', '--dry-run', '--config', sourcePath, '--outdir', join(directory, 'main')], { capture: true });
-  await run(['deploy', '--dry-run', '--config', resolve(projectRoot, 'wrangler.realtime.jsonc'), '--outdir', join(directory, 'realtime')], { capture: true, companion: true });
+  const seamless = config.vars?.REALTIME_RELEASES === 'seamless';
+  if (seamless) await run(['deploy', '--dry-run', '--config', resolve(projectRoot, 'wrangler.realtime.jsonc'), '--outdir', join(directory, 'realtime')], { capture: true, companion: true });
   const cf = new Cloudflare(async (args) => (await run(args, { capture: true })).stdout ?? '');
   await cf.authenticate({ 'no-input': true });
   const accountId = config.account_id ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? await cf.account({ 'no-input': true });
   const subdomain = (await resultOf(cf, `/accounts/${accountId}/workers/subdomain`)).subdomain;
-  if (!subdomain) throw new Error('Enable your Cloudflare workers.dev subdomain before deploying');
+  if (seamless && !subdomain) throw new Error('Seamless realtime releases are served on workers.dev: enable your Cloudflare workers.dev subdomain, or remove REALTIME_RELEASES, before deploying');
   const name = process.env.WRANGLER_CI_OVERRIDE_NAME || config.name;
   const primary = { ...config, name, account_id: accountId, vars: { ...config.vars, DEPLOYMENT_ID: deploymentId } };
   // Absolute local paths because the deployment config lives in the ignored artifact directory.
@@ -49,7 +50,7 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   primary.d1_databases = config.d1_databases.map(db => ({ ...db, migrations_dir: resolve(projectRoot, db.migrations_dir ?? 'migrations') }));
   const path = join(directory, 'primary.json');
   await writeFile(path, JSON.stringify(primary), { mode: 0o600 });
-  const origin = config.vars?.PUBLIC_API_URL || config.vars?.CLI_CONSOLE_ORIGIN || `https://${name}.${subdomain}.workers.dev`;
+  const origin = config.vars?.PUBLIC_API_URL || config.vars?.CLI_CONSOLE_ORIGIN || (subdomain ? `https://${name}.${subdomain}.workers.dev` : undefined);
   const settings = async worker => {
     try { return await resultOf(cf, `/accounts/${accountId}/workers/scripts/${worker}/settings`); }
     catch (error) {
@@ -73,7 +74,7 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   return await seamlessRelease({ config: primary, configPath: path, realtimeConfig: readJsonc(join(projectRoot, 'wrangler.realtime.jsonc')),
     realtimeBundle: join(directory, 'realtime', 'worker.js'), mainBundle: join(directory, 'main', 'index.js'),
     version: JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8')).version,
-    gatewayOrigin: origin, subdomain, prepare: () => prepare(path, { initial: !existing }), action, rollbackId,
+    gatewayOrigin: origin, subdomain, seamless, prepare: () => prepare(path, { initial: !existing }), action, rollbackId,
     deployMain: async (buildId, signal) => { primary.vars.GATEWAY_BUILD_ID = buildId; await writeFile(path, JSON.stringify(primary), { mode: 0o600 }); await run(['deploy', '--config', path], { signal }); },
   }, { run, settings, log: console.log, health: async base => {
     const response = await fetch(new URL('/v1/healthz', base), { signal: AbortSignal.timeout(10_000), redirect: 'error' });

@@ -1,5 +1,12 @@
 # Realtime release boundary
 
+Sessions run one of two ways, chosen by the `REALTIME_RELEASES` variable. By
+default the gateway serves them itself: its own `RealtimeSession` Durable
+Object holds the sockets, with the local backend, and a deploy ends the
+sessions open at that moment. With `seamless`, each release gets a realtime
+Worker of its own, described below, which deploys leave running. The session
+engine is the same in both; only the Worker that hosts it differs.
+
 The stable gateway keeps authentication, encrypted provider credentials, D1,
 application limits and the account allowance. `RealtimeBackend` is a binding-only
 Worker entrypoint exposing the small `SessionBackend` contract. HTTP inference
@@ -19,10 +26,13 @@ recover through receipts without dispatching again. RPC callback capabilities
 are request-scoped and never persisted. Safe read/idempotent operations retry
 only explicitly transient errors; policy failures and admission do not retry.
 
-`scripts/seamless.ts` is shared by checkout/button and CLI adapters. It takes a
-bounded D1 deployment lease, applies compatible migrations, deploys main at
-100%, verifies its unique build ID and readiness, creates or verifies the
-immutable realtime artifact, and atomically promotes discovery's pointer.
+`scripts/seamless.ts` is shared by checkout/button and CLI adapters, in both
+modes. It takes a bounded D1 deployment lease, applies compatible migrations,
+deploys main at 100%, verifies its unique build ID and readiness, and records
+the deployment. With seamless releases it creates or verifies the immutable
+realtime artifact and atomically promotes discovery's pointer; without them it
+promotes no release Worker, which retires one an earlier seamless release
+left, so switching modes either way is an ordinary deploy.
 Retirement uses the shared maximum session duration, admission grace, recovery
 horizon and margin. Cleanup failures after promotion leave a successful deploy
 with cleanup pending; explicit cleanup failures remain errors.

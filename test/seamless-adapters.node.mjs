@@ -17,7 +17,7 @@ test('checkout adapter preserves selected primary/D1 and retries after first sec
   cpSync(join(root, 'cli/package.json'), join(directory, 'cli/package.json'));
   cpSync(join(root, 'wrangler.realtime.jsonc'), join(directory, 'wrangler.realtime.jsonc'));
   symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
-  writeFileSync(join(directory, 'wrangler.jsonc'), JSON.stringify({ name: 'selected-primary', main: 'src/index.ts', account_id: 'selected-account', d1_databases: [{ binding: 'DB', database_id: 'selected-db', migrations_dir: 'migrations' }], vars: { SECRET_VAULT_MODE: 'local' } }));
+  writeFileSync(join(directory, 'wrangler.jsonc'), JSON.stringify({ name: 'selected-primary', main: 'src/index.ts', account_id: 'selected-account', d1_databases: [{ binding: 'DB', database_id: 'selected-db', migrations_dir: 'migrations' }], vars: { SECRET_VAULT_MODE: 'local', REALTIME_RELEASES: 'seamless' } }));
   writeFileSync(join(directory, '.dev.vars'), 'SECRET_VAULT_LOCAL_KEK_V1=fixture-not-a-real-key\nDEPLOYMENT_ID=selected-installation\n');
   const statePath = join(directory, 'state.json');
   writeFileSync(statePath, JSON.stringify({ workers: {}, secrets: [], failSecret: true, calls: [] }));

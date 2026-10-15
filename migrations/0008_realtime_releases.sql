@@ -21,7 +21,8 @@ CREATE TABLE gateway_deployment (
   id TEXT PRIMARY KEY,
   main_version_id TEXT NOT NULL,
   release_version TEXT NOT NULL,
-  realtime_id TEXT NOT NULL REFERENCES realtime_release(id),
+  -- NULL when the gateway served realtime sessions itself.
+  realtime_id TEXT REFERENCES realtime_release(id),
   backend_contract INTEGER NOT NULL,
   schema_generation INTEGER NOT NULL,
   class_generation INTEGER NOT NULL,

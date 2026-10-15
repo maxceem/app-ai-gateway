@@ -674,6 +674,7 @@ function deployment(result: RenderedResult, style: Style): string[] {
         ["Database", result.databaseId],
         ["From version", result.fromVersion],
         ["To version", result.toVersion],
+        ["Realtime releases", result.realtimeReleases],
         ["Updated", result.updated ? "yes" : undefined],
       ],
       style,

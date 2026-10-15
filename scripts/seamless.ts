@@ -40,8 +40,12 @@ export interface ReleaseInput {
   realtimeBundle: string;
   mainBundle: string;
   version: string;
-  gatewayOrigin: string;
-  subdomain: string;
+  /** Where the gateway answers; unset only when no URL reaches it, and then its health goes unchecked. */
+  gatewayOrigin: string | undefined;
+  /** The account's workers.dev subdomain, which seamless releases are served on. */
+  subdomain: string | undefined;
+  /** Realtime sessions get a Worker of their own per release; otherwise the gateway serves them. */
+  seamless: boolean;
   /** Caller handles first-install provisioning and secret setup under this lease. */
   prepare?: () => Promise<void>;
   /** Deploys the main Worker; stops when `signal` aborts, once the lease is lost. */
@@ -69,12 +73,12 @@ function rows(result: RunResult): Record<string, unknown>[] {
   if (batches.some(batch => batch.success === false)) throw new Error('D1 release query failed');
   return batches.flatMap(batch => batch.results ?? []);
 }
-export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver): Promise<{ buildId: string; realtimeId: string; previousDeployment?: string }> {
+export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver): Promise<{ buildId: string; realtimeId: string | null; previousDeployment?: string }> {
   const { config } = input;
   const query = async (sql: string) => rows(await driver.run(['d1', 'execute', 'DB', '--remote', '--json', '--config', input.configPath, '--command', sql], { capture: true }));
   // Build/read artifacts before acquiring the lease or changing remote state.
   if (!config.vars?.DEPLOYMENT_ID) throw new Error('Deployment identity is required');
-  if (input.action !== 'cleanup' && input.action !== 'rollback') { await access(input.mainBundle); await access(input.realtimeBundle); }
+  if (input.action !== 'cleanup' && input.action !== 'rollback') { await access(input.mainBundle); if (input.seamless) await access(input.realtimeBundle); }
   const owner = randomUUID();
   // Bootstrap only the advisory lease, before ordinary migrations or secret mutations.
   await query(`CREATE TABLE IF NOT EXISTS gateway_release_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), active_realtime_id TEXT, deployment_owner TEXT, deployment_expires_at INTEGER, promotion_at INTEGER, current_deployment_id TEXT); INSERT OR IGNORE INTO gateway_release_state(singleton) VALUES(1)`);
@@ -96,6 +100,10 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     lease().catch(error => { if (error instanceof LeaseLost) leaseLost.abort(error); }).finally(() => { renewing = false; });
   }, driver.heartbeatMs ?? LEASE_HEARTBEAT_MS);
   heartbeat.unref?.();
+  const verifyMain = async (build: string, failure: string) => {
+    if (input.gatewayOrigin) await verifyHealth(driver, input.gatewayOrigin, { buildId: build, ready: true }, failure);
+    else driver.log('No URL reaches the gateway, so its health check is skipped.');
+  };
   /** The main Worker version serving all traffic, and the build it reports. */
   const liveMain = async () => {
     const deployed = latestDeployment((await driver.run(['deployments', 'list', '--json', '--config', input.configPath], { capture: true })).stdout ?? '[]');
@@ -120,13 +128,13 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     if (live?.buildId !== lostBuild) throw new Error(`${lost}; it is not serving. Re-run the deployment.`);
     if (!recorded) throw new Error(`${lost}; it is serving, and no earlier release is recorded to restore. Re-run the deployment.`);
     await driver.run(['rollback', String(recorded.main_version_id), '--config', input.configPath, '--message', 'Restore the recorded release after a lost deployment lease', '--yes']);
-    await verifyHealth(driver, input.gatewayOrigin, { buildId: String(recorded.id), ready: true }, 'Restored main build was not observed');
+    await verifyMain(String(recorded.id), 'Restored main build was not observed');
     throw new Error(`${lost}; it replaced the recorded release, so the gateway was restored to build ${recorded.id}. Re-run the deployment.`);
   };
   let previousDeployment: string | undefined;
   try {
-    const promote = async (id: string, promotedBuild: string) => {
-      const changed = await query(`UPDATE gateway_release_state SET active_realtime_id=${quote(id)}, current_deployment_id=${quote(promotedBuild)}, promotion_at=${Date.now()} WHERE singleton=1 AND deployment_owner=${quote(owner)} AND deployment_expires_at>${Date.now()} RETURNING active_realtime_id`);
+    const promote = async (id: string | null, promotedBuild: string) => {
+      const changed = await query(`UPDATE gateway_release_state SET active_realtime_id=${id === null ? 'NULL' : quote(id)}, current_deployment_id=${quote(promotedBuild)}, promotion_at=${Date.now()} WHERE singleton=1 AND deployment_owner=${quote(owner)} AND deployment_expires_at>${Date.now()} RETURNING active_realtime_id`);
       if (changed[0]?.active_realtime_id !== id) throw new Error('Deployment lease expired before promotion; active release unchanged');
     };
     const tables = await query("SELECT name FROM sqlite_master WHERE type='table' AND name='realtime_release'");
@@ -159,32 +167,28 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     };
     if (input.action === 'cleanup') { await cleanup(); return { buildId: '', realtimeId: '', ...(previousDeployment ? { previousDeployment } : {}) }; }
     if (input.action === 'rollback') {
-      const target = (await query(`SELECT d.*, r.url FROM gateway_deployment d JOIN realtime_release r ON r.id=d.realtime_id WHERE d.id=${quote(input.rollbackId ?? '')}`))[0];
+      const target = (await query(`SELECT d.* FROM gateway_deployment d WHERE d.id=${quote(input.rollbackId ?? '')}`))[0];
       if (!currentDeployment || !target || target.backend_contract !== RELEASE_COMPATIBILITY.backend || target.schema_generation !== RELEASE_COMPATIBILITY.schema || target.class_generation !== RELEASE_COMPATIBILITY.classes || currentDeployment && (target.backend_contract !== currentDeployment.backend_contract || target.schema_generation !== currentDeployment.schema_generation || target.class_generation !== currentDeployment.class_generation)) throw new Error('Rollback target is missing or incompatible with the current backend/schema/class lifecycle; no database rollback is performed');
-      const settings = await driver.settings(prefix + String(target.realtime_id).slice(0, 24));
-      if (settings?.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== target.realtime_id) throw new Error('Retained realtime Worker is unavailable; rollback stopped');
+      // A deployment the gateway served sessions for has no release Worker to check.
+      const targetRealtime = typeof target.realtime_id === 'string' ? target.realtime_id : null;
+      if (targetRealtime !== null) {
+        const settings = await driver.settings(prefix + targetRealtime.slice(0, 24));
+        if (settings?.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== targetRealtime) throw new Error('Retained realtime Worker is unavailable; rollback stopped');
+      }
       await lease();
       await driver.run(['rollback', String(target.main_version_id), '--config', input.configPath, '--message', 'Explicit compatible release rollback', '--yes']);
-      await verifyHealth(driver, input.gatewayOrigin, { buildId: String(target.id), ready: true }, 'Expected restored main build and ready database/bindings were not observed');
+      await verifyMain(String(target.id), 'Expected restored main build and ready database/bindings were not observed');
       await lease();
-      await promote(String(target.realtime_id), String(target.id));
+      await promote(targetRealtime, String(target.id));
       driver.log(`Rollback complete: ${target.id}. Database unchanged.`);
-      return { buildId: String(target.id), realtimeId: String(target.realtime_id), ...(previousDeployment ? { previousDeployment } : {}) };
+      return { buildId: String(target.id), realtimeId: targetRealtime, ...(previousDeployment ? { previousDeployment } : {}) };
     }
-    const realtimeId = releaseFingerprint(await readFile(input.realtimeBundle), input.realtimeConfig, input.gatewayOrigin, config.name);
-    const buildId = randomUUID();
-    const name = prefix + realtimeId.slice(0, 24);
-    const realtimeUrl = `https://${name}.${input.subdomain}.workers.dev`;
-    await lease();
-    try {
-      await input.deployMain(buildId, leaseLost.signal);
-      await lease();
-    } catch (error) {
-      if (leaseLost.signal.aborted || error instanceof LeaseLost) await restoreAfterLostLease(buildId);
-      throw error;
-    }
-    await verifyHealth(driver, input.gatewayOrigin, { buildId, ready: true }, 'Expected new main build and ready database/bindings were not observed');
-    try {
+    /** Creates or reuses this release's own realtime Worker, verified but not yet promoted. */
+    const releaseRealtime = async (): Promise<string> => {
+      if (!input.subdomain || !input.gatewayOrigin) throw new Error('Seamless realtime releases need your account\'s workers.dev subdomain enabled');
+      const realtimeId = releaseFingerprint(await readFile(input.realtimeBundle), input.realtimeConfig, input.gatewayOrigin, config.name);
+      const name = prefix + realtimeId.slice(0, 24);
+      const realtimeUrl = `https://${name}.${input.subdomain}.workers.dev`;
       const existing = await driver.settings(name);
       if (existing && existing.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== realtimeId) throw new Error('Realtime Worker name collision; retained Worker will not be changed');
       // Recorded before the companion exists, so a deploy that stops partway
@@ -204,20 +208,39 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
       }
       await lease();
       await verifyHealth(driver, realtimeUrl, { releaseId: realtimeId }, 'Realtime candidate health identity mismatch; active release unchanged');
+      return realtimeId;
+    };
+    const buildId = randomUUID();
+    await lease();
+    try {
+      await input.deployMain(buildId, leaseLost.signal);
+      await lease();
+    } catch (error) {
+      if (leaseLost.signal.aborted || error instanceof LeaseLost) await restoreAfterLostLease(buildId);
+      throw error;
+    }
+    await verifyMain(buildId, 'Expected new main build and ready database/bindings were not observed');
+    let realtimeId: string | null = null;
+    try {
+      // Without seamless releases the gateway serves sessions itself, and
+      // promoting no release Worker retires one an earlier seamless release
+      // left: the sessions open on it finish there.
+      if (input.seamless) realtimeId = await releaseRealtime();
       const live = await liveMain();
       if (!live) throw new Error('Expected a single 100% main deployment; active realtime release unchanged');
       if (live.buildId !== buildId) throw new Error('Current Cloudflare version does not match verified main build; promotion stopped');
       await lease();
-      await query(`INSERT OR REPLACE INTO gateway_deployment(id,main_version_id,release_version,realtime_id,backend_contract,schema_generation,class_generation,created_at) VALUES(${quote(buildId)},${quote(live.versionId)},${quote(input.version)},${quote(realtimeId)},${RELEASE_COMPATIBILITY.backend},${RELEASE_COMPATIBILITY.schema},${RELEASE_COMPATIBILITY.classes},${Date.now()})`);
+      await query(`INSERT OR REPLACE INTO gateway_deployment(id,main_version_id,release_version,realtime_id,backend_contract,schema_generation,class_generation,created_at) VALUES(${quote(buildId)},${quote(live.versionId)},${quote(input.version)},${realtimeId === null ? 'NULL' : quote(realtimeId)},${RELEASE_COMPATIBILITY.backend},${RELEASE_COMPATIBILITY.schema},${RELEASE_COMPATIBILITY.classes},${Date.now()})`);
       await promote(realtimeId, buildId);
     } catch (error) {
-      // Both Workers speak the same backend contract, so this is a working
-      // state: the new gateway, and sessions on the release it already had.
-      // A lost lease is another release's to finish, and says so itself.
-      if (!(error instanceof LeaseLost)) driver.log(`Main build ${buildId} is serving; realtime sessions stay on the active release. Re-run the deployment to finish the realtime release.`);
+      // The new gateway serves either way: with seamless releases, sessions
+      // stay on the release Worker it already had, which speaks the same
+      // backend contract. A lost lease is another release's to finish, and
+      // says so itself.
+      if (!(error instanceof LeaseLost)) driver.log(`Main build ${buildId} is serving${input.seamless ? '; realtime sessions stay on the active release' : ''}. Re-run the deployment to record the release.`);
       throw error;
     }
-    driver.log(`Promoted 100%: main ${buildId}; realtime ${realtimeId}. Rollback target: ${previousDeployment ?? 'none (first install)'}`);
+    driver.log(`Promoted 100%: main ${buildId}; realtime ${realtimeId ?? 'served by the gateway'}. Rollback target: ${previousDeployment ?? 'none (first install)'}`);
     try { await cleanup(); } catch { driver.log('Deployment promoted successfully; retired release cleanup is pending. Run deployment cleanup after fixing Cloudflare access.'); }
     return { buildId, realtimeId, ...(previousDeployment ? { previousDeployment } : {}) };
   } finally {

@@ -541,6 +541,45 @@ test("journal-backed deployment updates refuse a replaced Cloudflare Worker", as
   );
 });
 
+test("an update can redeploy the installed version to change how realtime is served", async () => {
+  const cf = cfMock();
+  cf.request = async () =>
+    ({
+      success: true,
+      result: {
+        bindings: [
+          { name: "DEPLOYMENT_ID", type: "plain_text", text: "deployment-1" },
+          { name: "DB", type: "d1", id: "db-old" },
+        ],
+      },
+    }) as never;
+  const active = {
+    url: "https://selected.example",
+    authenticated: true,
+    deployment: { id: "deployment-1", mode: "self_hosted" },
+  };
+  const ctx = stubContext({
+    active,
+    url: active.url,
+    state: {
+      installations: {
+        "deployment-1": { id: "deployment-1", accountId: "account-cf", name: "worker", databaseId: "db-old", version: "0.1.0" },
+      },
+    },
+    publicCall: async () => ({
+      data: { deployment: { id: "deployment-1" }, serverVersion: "0.1.0" }
+    }),
+  });
+  // The same version upgrades nothing, so it needs no upgradeFrom entry.
+  const same = artifactStub({ version: "0.1.0", upgradeFrom: [] });
+  const plan = await deploymentCommand(ctx, "deployment update", { "dry-run": true, "realtime-releases": "seamless" }, cf, same);
+  assert.deepEqual(plan, { dryRun: true, worker: "worker", accountId: "account-cf", databaseId: "db-old", fromVersion: "0.1.0", toVersion: "0.1.0", realtimeReleases: "seamless" });
+  await assert.rejects(
+    () => deploymentCommand(ctx, "deployment update", { "dry-run": true, "realtime-releases": "fast" }, cf, same),
+    hasCode("invalid_input"),
+  );
+});
+
 test("domain changes cannot implicitly upgrade or downgrade the gateway code", async () => {
   const cf = cfMock();
   cf.request = async () =>
@@ -890,6 +929,8 @@ test("pending setup domain resumes without bootstrap and preserves current inven
           { name: "DEPLOYMENT_ID", type: "plain_text", text: "deployment-1" },
           { name: "DB", type: "d1", id: "db" },
           { name: "CUSTOM_SETTING", type: "plain_text", text: "current-value" },
+          // An installation that chose seamless realtime releases keeps them.
+          { name: "REALTIME_RELEASES", type: "plain_text", text: "seamless" },
           { name: "ALLOWED_REGISTRATION_EMAILS", type: "plain_text", text: "owner@example.com" },
           {
             name: "ORG_QUOTA",
@@ -934,7 +975,7 @@ test("pending setup domain resumes without bootstrap and preserves current inven
     if (args[0] === 'd1' && args[1] === 'execute') {
       const sql = args[args.indexOf('--command') + 1]!;
       const results = sql.includes('RETURNING deployment_owner') ? [{ deployment_owner: /deployment_owner='([^']+)'/.exec(sql)?.[1] }]
-        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] }] : [];
+        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] ?? null }] : [];
       return JSON.stringify([{ results, success: true }]);
     }
     if (args[0] === 'deployments') return JSON.stringify([{ created_on: new Date().toISOString(), versions: [{ version_id: 'fixture-version', percentage: 100 }] }]);
@@ -1248,7 +1289,7 @@ async function freshInstall(
     if (args[0] === 'd1' && args[1] === 'execute') {
       const sql = args[args.indexOf('--command') + 1]!;
       const results = sql.includes('RETURNING deployment_owner') ? [{ deployment_owner: /deployment_owner='([^']+)'/.exec(sql)?.[1] }]
-        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] }] : [];
+        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] ?? null }] : [];
       return JSON.stringify([{ results, success: true }]);
     }
     if (args[0] === 'deployments') return JSON.stringify([{ created_on: new Date().toISOString(), versions: [{ version_id: 'fixture-version', percentage: 100 }] }]);

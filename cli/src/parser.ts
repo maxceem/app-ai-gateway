@@ -26,7 +26,7 @@ export const commands = {
   "deployment status": { args: 0, flags: "" },
   "deployment update": {
     args: 0,
-    flags: "version release-archive dry-run! yes!",
+    flags: "version release-archive realtime-releases dry-run! yes!",
   },
   "deployment rollback": { args: 0, flags: "release-id release-archive dry-run! yes!" },
   "deployment cleanup": { args: 0, flags: "release-archive dry-run! yes!" },
@@ -120,6 +120,7 @@ export interface Flags {
   version?: string;
   "release-archive"?: string;
   "release-id"?: string;
+  "realtime-releases"?: string;
   hostname?: string;
   domain?: string;
   "cloudflare-account-id"?: string;

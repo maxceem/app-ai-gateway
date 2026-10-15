@@ -16,7 +16,7 @@ async function fixture(t, empty = false) {
   const workers = new Map(); const versions = new Map(); const calls = []; let build = ''; let version = '';
   const input = { config: { name: 'primary', vars: { DEPLOYMENT_ID: 'installation' } }, configPath: join(directory, 'primary.json'),
     realtimeConfig: { name: 'local', main: 'worker.ts', compatibility_date: '2026-07-24', durable_objects: { bindings: [{ name: 'REALTIME_SESSION', class_name: 'RealtimeSession' }] } },
-    realtimeBundle: rt, mainBundle: main, version: '0.7.0', gatewayOrigin: 'https://primary.account.workers.dev', subdomain: 'account',
+    realtimeBundle: rt, mainBundle: main, version: '0.7.0', gatewayOrigin: 'https://primary.account.workers.dev', subdomain: 'account', seamless: true,
     deployMain: async id => { calls.push('main'); build = id; version = 'version-' + id; versions.set(version, id); workers.set('primary', {}); },
   };
   const driver = { log: () => {}, settings: async name => workers.get(name) ?? null,
@@ -259,4 +259,37 @@ test('a lease that cannot be released does not turn a promoted release into a fa
   } };
   const released = await seamlessRelease(f.input, flaky);
   assert.equal(active(f).active_realtime_id, released.realtimeId);
+});
+
+test('a gateway that serves realtime itself deploys no release Worker and needs no workers.dev', async t => {
+  const f = await fixture(t);
+  const simple = { ...f.input, seamless: false, subdomain: undefined };
+  await writeFile(f.rt, ''); await rm(f.rt);
+  const released = await seamlessRelease(simple, f.driver);
+  assert.equal(released.realtimeId, null);
+  assert.equal(f.calls.filter(call => typeof call === 'object' && call.args[0] === 'deploy').length, 0);
+  assert.equal(active(f).active_realtime_id, null);
+  assert.equal(active(f).current_deployment_id, released.buildId);
+  assert.equal(f.db.prepare('SELECT realtime_id FROM gateway_deployment WHERE id=?').get(released.buildId).realtime_id, null);
+});
+
+test('switching modes retires the release Worker for its sessions to finish, and back promotes one', async t => {
+  const f = await fixture(t);
+  const seamless = await seamlessRelease(f.input, f.driver);
+  // To simple: the release Worker keeps the sessions it has and is cleaned up after them.
+  const simple = await seamlessRelease({ ...f.input, seamless: false }, f.driver);
+  assert.equal(active(f).active_realtime_id, null);
+  const retired = f.db.prepare('SELECT * FROM realtime_release WHERE id=?').get(seamless.realtimeId);
+  assert.notEqual(retired.retired_at, null);
+  assert.ok(f.workers.has(retired.worker_name), 'its sessions and usage recovery still run there');
+  f.db.prepare('UPDATE realtime_release SET delete_after=0 WHERE id=?').run(seamless.realtimeId);
+  await seamlessRelease({ ...f.input, seamless: false }, f.driver);
+  assert.ok(!f.workers.has(retired.worker_name));
+  // A rollback across modes restores that deployment's routing.
+  await writeFile(f.rt, 'seamless again');
+  const again = await seamlessRelease(f.input, f.driver);
+  assert.equal(active(f).active_realtime_id, again.realtimeId);
+  await seamlessRelease({ ...f.input, action: 'rollback', rollbackId: simple.buildId }, f.driver);
+  assert.equal(active(f).active_realtime_id, null);
+  assert.notEqual(f.db.prepare('SELECT retired_at FROM realtime_release WHERE id=?').get(again.realtimeId).retired_at, null);
 });

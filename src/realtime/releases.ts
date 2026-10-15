@@ -2,6 +2,16 @@ import { GatewayError } from '../core/errors';
 import { REALTIME_BACKEND_CONTRACT } from './backend';
 
 export const REALTIME_ADMISSION_GRACE_MS = 60_000;
+
+/**
+ * Whether realtime sessions run in a Worker of their own for each release,
+ * which a gateway deploy leaves running, so open conversations survive it.
+ * Off by default: the gateway serves sessions itself, and a deploy ends the
+ * ones open at that moment.
+ */
+export function seamlessReleases(env: { REALTIME_RELEASES?: string }): boolean {
+  return env.REALTIME_RELEASES === 'seamless';
+}
 export interface RealtimeRelease { id: string; url: string; backend_contract: number; retired_at: number | null }
 export async function activeRealtimeRelease(db: D1Database): Promise<RealtimeRelease> {
   const row = await db.prepare(`SELECT r.id, r.url, r.backend_contract, r.retired_at FROM realtime_release r

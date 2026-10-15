@@ -235,9 +235,15 @@ function collector(socket: WebSocket) {
   });
   it('ordinary GET returns 426 before auth, URL credentials and forged metadata cannot open a session', async () => {
     const url = 'https://gateway.test/v1/apps/no-app/realtime/openai?model=gpt-realtime';
+    const seamlessEnv = { ...env, REALTIME_RELEASES: 'seamless' };
     expect((await app.fetch(new Request(url), env)).status).toBe(426);
-    expect((await app.fetch(new Request(url + '&key=secret', { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(409);
-    expect((await app.fetch(new Request(url, { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env)).status).toBe(409);
+    expect((await app.fetch(new Request(url + '&key=secret', { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), seamlessEnv)).status).toBe(409);
+    expect((await app.fetch(new Request(url, { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), seamlessEnv)).status).toBe(409);
+    // A gateway that serves sessions itself authenticates the handshake first.
+    // A gateway that serves sessions itself refuses them as discovery does.
+    expect((await app.fetch(new Request(url + '&key=secret', { headers: { Upgrade: 'websocket' } }), env, createExecutionContext())).status).toBe(400);
+    const forged = await app.fetch(new Request(url, { headers: { Upgrade: 'websocket', 'x-realtime-bootstrap': '{}' } }), env, createExecutionContext());
+    expect(forged.status).toBe(401);
   });
   it('workerd native sockets serve twenty attempts and persist twenty stable rows', async () => {
     const { bootstrap, headers } = await seeded();
@@ -368,9 +374,18 @@ describe('immutable realtime release boundaries', () => {
     expect(full.status).toBe(429);
     expect(await full.json()).toMatchObject({ error: { code: 'realtime_session_limit' } });
     // Discovery through the gateway's own route names this release's socket.
-    const discovered = await app.fetch(new Request(`https://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}/connection?model=gpt-realtime`, { headers }), env, createExecutionContext());
+    const discovered = await app.fetch(new Request(`https://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}/connection?model=gpt-realtime`, { headers }), { ...env, REALTIME_RELEASES: 'seamless' }, createExecutionContext());
     expect(discovered.status).toBe(200);
     expect(await discovered.json()).toEqual({ releaseId: id, url: `wss://release.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}?model=gpt-realtime` });
+  });
+  it('a gateway that serves sessions itself names its own URL, whatever release is recorded', async () => {
+    const { bootstrap, headers } = await seeded(); const id = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(?,?,?,1,?)').bind(id, id, 'wss://release.test', Date.now()).run();
+    await env.DB.prepare('UPDATE gateway_release_state SET active_realtime_id=?,promotion_at=? WHERE singleton=1').bind(id, Date.now()).run();
+    const discovery = `https://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}/connection?model=gpt-realtime`;
+    const discovered = await app.fetch(new Request(discovery, { headers }), { ...env, GATEWAY_BUILD_ID: 'build-1' }, createExecutionContext());
+    expect(discovered.status).toBe(200);
+    expect(await discovered.json()).toEqual({ releaseId: 'build-1', url: `wss://gateway.test/v1/apps/${bootstrap.appId}/realtime/${bootstrap.providerSlug}?model=gpt-realtime` });
   });
   it('rejects candidates and expired retirement for new opens while permitting existing maintenance', async () => {
     const { bootstrap, headers } = await seeded(); const id = crypto.randomUUID();
