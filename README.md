@@ -26,19 +26,6 @@ Anthropic, Gemini or whichever provider you use.
 **[Documentation](https://docs.appaigateway.com/)** ·
 **[API reference](https://docs.appaigateway.com/api/)**
 
-## Learn more
-
-Guides to the problems the gateway solves, whether or not you use it:
-
-- [How to protect your OpenAI API key in an iOS app](https://appaigateway.com/learn/protect-openai-api-key-ios/):
-  why a key can't ship inside an app, and the server checks that replace it.
-- [How to use App Attest to protect your AI backend](https://appaigateway.com/learn/app-attest-ai-backend/):
-  attest once, sign every request, and what your server must check.
-- [Firebase App Check vs App Attest](https://appaigateway.com/learn/firebase-app-check-vs-app-attest/):
-  how the two differ for an AI backend, and when to use each.
-- [Comparison of AI gateways for mobile apps](https://appaigateway.com/learn/ai-gateways-for-mobile-apps/):
-  17 options, this one included, held to the same rules.
-
 ## One-click deployment to Cloudflare
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/maxceem/app-ai-gateway)
@@ -70,6 +57,19 @@ pnpm run dev
 The gateway and console run together at `http://localhost:5173`: Vite serves the
 console with hot reloading and runs the Worker beside it on the same origin, so
 an edit to either is live without a rebuild.
+
+## Learn more
+
+Guides to the problems the gateway solves, whether or not you use it:
+
+- [How to protect your OpenAI API key in an iOS app](https://appaigateway.com/learn/protect-openai-api-key-ios/):
+  why a key can't ship inside an app, and the server checks that replace it.
+- [How to use App Attest to protect your AI backend](https://appaigateway.com/learn/app-attest-ai-backend/):
+  attest once, sign every request, and what your server must check.
+- [Firebase App Check vs App Attest](https://appaigateway.com/learn/firebase-app-check-vs-app-attest/):
+  how the two differ for an AI backend, and when to use each.
+- [Comparison of AI gateways for mobile apps](https://appaigateway.com/learn/ai-gateways-for-mobile-apps/):
+  17 options, this one included, held to the same rules.
 
 ## License
 
