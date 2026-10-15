@@ -115,10 +115,12 @@ Use a fresh ID for each new event; replaying an event outside the recent window
 can forward it again. Reusing a retained ID with different content closes the
 session.
 
-A refused generation closes the session, and so does a provider `error`
-event, except the one OpenAI sends when a cancel arrives just after its response
-finished, which is passed on and changes nothing. Gateway-originated errors have
-their own type; provider events retain their native shape:
+A refused generation closes the session, as does any client event the
+gateway does not accept: an unknown field or event type, or a `session.update`
+while a response is active. So does a provider `error` event, except the one
+OpenAI sends when a cancel arrives just after its response finished, which is
+passed on and changes nothing. Gateway-originated errors have their own type;
+provider events retain their native shape:
 
 ```json
 {

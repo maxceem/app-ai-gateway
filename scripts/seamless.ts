@@ -146,13 +146,14 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     await lease();
     await input.deployMain(buildId);
     await verifyHealth(driver, input.gatewayOrigin, { buildId, ready: true }, 'Expected new main build and ready database/bindings were not observed');
+    const existing = await driver.settings(name);
+    if (existing && existing.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== realtimeId) throw new Error('Realtime Worker name collision; retained Worker will not be changed');
     // Recorded before the companion exists, so a deploy that stops partway
     // still leaves a row: cleanup is row-driven, and an unrecorded Worker would
     // never be deleted. Until promoted it is a candidate, cleaned after its grace.
-    await query(`INSERT OR IGNORE INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(${quote(realtimeId)},${quote(name)},${quote(realtimeUrl.replace('https:', 'wss:'))},${RELEASE_COMPATIBILITY.backend},${Date.now()})`);
-    const existing = await driver.settings(name);
+    // A reused release keeps its row, with the URL this account serves it on now.
+    await query(`INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(${quote(realtimeId)},${quote(name)},${quote(realtimeUrl.replace('https:', 'wss:'))},${RELEASE_COMPATIBILITY.backend},${Date.now()}) ON CONFLICT(id) DO UPDATE SET url=excluded.url`);
     if (existing) {
-      if (existing.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== realtimeId) throw new Error('Realtime Worker name collision; retained Worker will not be changed');
       driver.log(`Reusing immutable realtime release ${realtimeId}`);
     } else {
       const realtimeConfig: Config = { ...input.realtimeConfig, name, ...(config.account_id ? { account_id: config.account_id } : {}), main: resolve(input.realtimeBundle), no_bundle: true,

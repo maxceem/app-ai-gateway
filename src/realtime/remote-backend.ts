@@ -28,8 +28,8 @@ class DurableClaimAcknowledgement extends RpcTarget {
   constructor(private beforeClaim: (claim: QuotaAdmissionInput | null) => void | Promise<void>, private live: () => boolean) { super(); }
   async acknowledge(claim: QuotaAdmissionInput | null) {
     if (!this.live()) throw new Error('Realtime session ended');
+    // Once journaled the claim goes ahead, and recovery reconciles it.
     await this.beforeClaim(claim);
-    if (!this.live()) throw new Error('Realtime session ended');
   }
 }
 export function remoteSessionBackend(rpc: Service<typeof RealtimeBackend>): SessionBackend {

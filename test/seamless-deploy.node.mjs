@@ -173,7 +173,7 @@ test('a slow main deploy keeps its lease renewed, and a lapsed one stops before 
     return f.db.prepare('UPDATE gateway_release_state SET deployment_owner=? WHERE deployment_expires_at<=? RETURNING deployment_owner').all('competitor', Date.now());
   };
   let competitor;
-  const renewed = await seamlessRelease({ ...f.input, deployMain: async id => { competitor = await stall(60, 200); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 10 });
+  const renewed = await seamlessRelease({ ...f.input, deployMain: async id => { competitor = await stall(500, 800); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 10 });
   assert.equal(competitor.length, 0);
   assert.equal(active(f).active_realtime_id, renewed.realtimeId);
   await writeFile(f.rt, 'slower code');
@@ -210,4 +210,11 @@ test('a companion deploy that stops partway leaves a row cleanup can find', asyn
   await seamlessRelease({ ...f.input, action: 'cleanup' }, f.driver);
   assert.ok(!f.workers.has(orphan.worker_name));
   assert.equal(f.db.prepare('SELECT * FROM realtime_release WHERE id=?').get(orphan.id), undefined);
+});
+
+test('a reused release takes the URL the account serves it on now', async t => {
+  const f = await fixture(t); const first = await seamlessRelease(f.input, f.driver);
+  const again = await seamlessRelease({ ...f.input, subdomain: 'renamed' }, f.driver);
+  assert.equal(again.realtimeId, first.realtimeId);
+  assert.match(f.db.prepare('SELECT url FROM realtime_release WHERE id=?').get(first.realtimeId).url, /\.renamed\.workers\.dev$/u);
 });

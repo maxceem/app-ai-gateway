@@ -297,7 +297,6 @@ export async function admitGeneration(
   if (quota.kind === "unmetered") {
     ensureLive();
     await input.beforeClaim?.(null);
-    ensureLive();
     return finish();
   }
 
@@ -309,8 +308,9 @@ export async function admitGeneration(
     admissionId: input.admissionId,
   };
   ensureLive();
+  // A journaled claim is always attempted: the session reconciles it through
+  // its receipt, so refusing it here would leave nothing to reconcile.
   await input.beforeClaim?.(claim);
-  ensureLive();
   const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit(claim);
   const durationMs = finish();
   if (!admission.allowed) {

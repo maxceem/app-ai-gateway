@@ -299,7 +299,9 @@ export class SessionCoordinator {
     if (this.timer) clearTimeout(this.timer);
     // Termination is immediate even while the serial mailbox awaits a quota/DB RPC.
     // Install cleanup before best-effort writes to an already failing transport.
-    this.drainUntil = Date.now() + (this.active ? L.drainMs : 0);
+    // Only a response the provider was asked for can still be finishing.
+    const dispatched = this.active !== null && (this.active.stage === 'dispatching' || this.active.stage === 'active');
+    this.drainUntil = Date.now() + (dispatched ? L.drainMs : 0);
     setTimeout(() => {
       close(this.upstream, code); this.closed = true;
       this.ctx.waitUntil(this.shutdown());
@@ -310,7 +312,7 @@ export class SessionCoordinator {
         ...(new Headers(error.headers).get('Retry-After') ? { retry_after_seconds: Number(new Headers(error.headers).get('Retry-After')) } : {}) }, session_id: this.bootstrap.sessionId, generation_id: this.active?.id ?? null });
     } catch { /* Reporting must never prevent cleanup. */ }
     close(this.client, code);
-    try { if (this.active && this.adapter) { const cancel = this.adapter.cancel(); if (cancel) send(this.upstream, cancel); } }
+    try { if (dispatched && this.adapter) { const cancel = this.adapter.cancel(); if (cancel) send(this.upstream, cancel); } }
     catch { /* Cancellation must never prevent closing the provider transport. */ }
   }
 
