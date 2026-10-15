@@ -305,6 +305,7 @@
     "grok-transcribe": { "per_hour": 0.1 }
   },
   "gemini": {
+    "gemini-4-argon": { "input": 2.0, "cached_input": 0.1, "output": 10.0 },
     "gemini-embedding-2": {
       "input": 0.2,
       "output": 0.0,
@@ -425,9 +426,9 @@
       "author": "Minimax"
     },
     "moonshotai/Kimi-K3": {
-      "input": 2.7,
+      "input": 3.0,
       "cached_input": 0.3,
-      "output": 13.5,
+      "output": 15.0,
       "author": "Moonshot AI"
     },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {

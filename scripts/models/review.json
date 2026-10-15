@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "provider": "gemini",
+    "model": "gemini-4-argon",
+    "action": "add",
+    "reason": "Added by manual review.",
+    "origin": "manual",
+    "reviewer": "maxceem"
+  }
+]
