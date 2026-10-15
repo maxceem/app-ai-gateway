@@ -15,7 +15,7 @@
 #   2. the gateway Worker, deployed to Cloudflare with the `cloud` profile
 #   3. the CLI, published to npm — after 1, because an installed CLI refuses to
 #      run until it can download exactly that archive
-#   4. the documentation site
+#   4. the documentation site, then the pages it changed submitted to IndexNow
 #
 # Repository secrets required:
 #   CLOUDFLARE_API_TOKEN         Workers Scripts: Edit, D1: Edit, and Workers Routes: Edit on the zone
@@ -154,6 +154,11 @@ jobs:
           cd cli
           npm publish --access public
 
+      # IndexNow: fingerprint the live docs before deploying, then submit the
+      # pages the deploy added, changed or removed. Neither step fails the job.
+      - name: Fingerprint the live documentation for IndexNow
+        run: node docs/scripts/indexnow.mjs snapshot https://docs.appaigateway.com
+
       - name: Deploy the documentation
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -161,3 +166,6 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           DOCS_GA_MEASUREMENT_ID: ${{ vars.DOCS_GA_MEASUREMENT_ID }}
         run: pnpm run docs:deploy --profile cloud
+
+      - name: Submit the changed documentation pages to IndexNow
+        run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out
