@@ -1,3 +1,19 @@
+## Gemini 4 Argon
+
+*[`gemini-4-argon`](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)*
+
+Our flagship reasoning model, built for complex software engineering, deep mathematical and scientific problem solving, autonomous multi-step agents, and long-decode generation up to 1M tokens.
+
+### Standard
+
+|   | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $2.00 through November 30, 2026. $4.00 starting December 1, 2026. |
+| Output price (including thinking tokens) | Not available | $10.00 through November 30, 2026. $20.00 starting December 1, 2026. |
+| Context caching price | Not available | $0.10 through November 30, 2026. $0.20 starting December 1, 2026. Implicit caching only (explicit caching is not supported). |
+| Grounding with Google Search^\*^ | Not available | 5,000 free search requests per month (shared across all Gemini 3 and newer models), then $14 per 1,000 requests. |
+| Used to improve our products | Not available | [No](https://ai.google.dev/gemini-api/terms) |
+
 ## Gemini 3.6 Flash
 
 *[`gemini-3.6-flash`](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash)*
