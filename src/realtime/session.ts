@@ -84,7 +84,7 @@ export class SessionCoordinator {
       this.requireStarting();
       const provider = this.provider!;
       const policy = realtimePolicy(app, provider, this.bootstrap.requestedModel);
-      this.adapter = protocolAdapter(policy.protocol, policy.model, policy.outputCap);
+      this.adapter = protocolAdapter(policy.protocol, policy.model, policy.outputCap, this.bootstrap.requestedModel);
       if (testUpstream) this.upstream = testUpstream;
       else {
         const request = upstreamRequest(policy.protocol, policy.model, provider.secret);

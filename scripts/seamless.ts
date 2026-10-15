@@ -146,6 +146,10 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     await lease();
     await input.deployMain(buildId);
     await verifyHealth(driver, input.gatewayOrigin, { buildId, ready: true }, 'Expected new main build and ready database/bindings were not observed');
+    // Recorded before the companion exists, so a deploy that stops partway
+    // still leaves a row: cleanup is row-driven, and an unrecorded Worker would
+    // never be deleted. Until promoted it is a candidate, cleaned after its grace.
+    await query(`INSERT OR IGNORE INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(${quote(realtimeId)},${quote(name)},${quote(realtimeUrl.replace('https:', 'wss:'))},${RELEASE_COMPATIBILITY.backend},${Date.now()})`);
     const existing = await driver.settings(name);
     if (existing) {
       if (existing.bindings?.find(binding => binding.name === 'REALTIME_RELEASE_ID')?.text !== realtimeId) throw new Error('Realtime Worker name collision; retained Worker will not be changed');
@@ -158,7 +162,6 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
       await lease();
       await driver.run(['deploy', '--config', path], { companion: true });
     }
-    await query(`INSERT OR IGNORE INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(${quote(realtimeId)},${quote(name)},${quote(realtimeUrl.replace('https:', 'wss:'))},${RELEASE_COMPATIBILITY.backend},${Date.now()})`);
     await lease();
     await verifyHealth(driver, realtimeUrl, { releaseId: realtimeId }, 'Realtime candidate health identity mismatch; active release unchanged');
     const deployed = latestDeployment((await driver.run(['deployments', 'list', '--json', '--config', input.configPath], { capture: true })).stdout ?? '[]');

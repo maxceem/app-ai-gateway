@@ -195,3 +195,19 @@ test('cleanup deletes a candidate that failed verification and was never promote
   assert.ok(!f.workers.has(failed.worker_name));
   assert.equal(active(f).active_realtime_id, fixed.realtimeId);
 });
+
+test('a companion deploy that stops partway leaves a row cleanup can find', async t => {
+  const f = await fixture(t); await seamlessRelease(f.input, f.driver);
+  await writeFile(f.rt, 'interrupted candidate');
+  const interrupted = { ...f.driver, run: async (args, options) => {
+    if (args[0] === 'deploy') { const config = JSON.parse(await readFile(args[args.indexOf('--config') + 1], 'utf8')); f.workers.set(config.name, { bindings: [{ name: 'REALTIME_RELEASE_ID', text: config.vars.REALTIME_RELEASE_ID }] }); throw new Error('Interrupted after upload'); }
+    return f.driver.run(args, options);
+  } };
+  await assert.rejects(seamlessRelease(f.input, interrupted), /Interrupted after upload/);
+  const orphan = f.db.prepare('SELECT * FROM realtime_release WHERE id != (SELECT active_realtime_id FROM gateway_release_state)').get();
+  assert.ok(orphan && f.workers.has(orphan.worker_name), 'the uploaded companion is recorded');
+  f.db.prepare('UPDATE realtime_release SET created_at=0 WHERE id=?').run(orphan.id);
+  await seamlessRelease({ ...f.input, action: 'cleanup' }, f.driver);
+  assert.ok(!f.workers.has(orphan.worker_name));
+  assert.equal(f.db.prepare('SELECT * FROM realtime_release WHERE id=?').get(orphan.id), undefined);
+});

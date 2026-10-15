@@ -75,6 +75,9 @@ function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | 
     return row;
   })();
   healthProbes.set("probe", state);
+  // A failure is answered once, not for the rest of the window: the next
+  // request probes again, so one blip does not read as a five-second outage.
+  state.catch(() => { if (healthProbes.get("probe") === state) healthProbes.delete("probe"); });
   return state;
 }
 

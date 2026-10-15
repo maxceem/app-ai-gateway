@@ -417,6 +417,22 @@ describe('realtime failure boundaries', () => {
       await coordinator.alarm(); expect(await next('gateway.error')).toMatchObject({ error: { code: 'app_budget_exhausted' } });
     });
   });
+  it('an idle session closes as a protocol timeout, and an expired one as a finished session', async () => {
+    await withSockets(async ({ coordinator, socket, next }) => {
+      const closed = new Promise<number>(resolve => socket.addEventListener('close', event => resolve(event.code)));
+      Reflect.set(coordinator, 'lastActivity', Date.now() - 3_600_000);
+      await coordinator.alarm();
+      expect(await next('gateway.error')).toMatchObject({ error: { code: 'realtime_protocol_error' } });
+      expect(await closed).toBe(1008);
+    });
+    await withSockets(async ({ coordinator, socket, next }) => {
+      const closed = new Promise<number>(resolve => socket.addEventListener('close', event => resolve(event.code)));
+      Reflect.set(coordinator, 'expiresAt', Date.now() - 1);
+      await coordinator.alarm();
+      expect(await next('gateway.error')).toMatchObject({ error: { code: 'auth_required' } });
+      expect(await closed).toBe(1000);
+    });
+  });
   it('a second utterance committed while a turn is pending joins it instead of closing the session', async () => {
     await withSockets(async ({ coordinator, socket }) => {
       const effect = Reflect.get(coordinator, 'effect') as (...args: unknown[]) => Promise<void>;

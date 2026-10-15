@@ -15,6 +15,6 @@ export function upstreamRequest(protocol: RealtimeProtocol, model: string, secre
   });
 }
 
-export function protocolAdapter(protocol: RealtimeProtocol, model: string, outputCap: number): ProtocolAdapter {
-  return protocol === 'openai_realtime' ? new OpenAIAdapter(model, outputCap) : new GeminiAdapter(model, outputCap);
+export function protocolAdapter(protocol: RealtimeProtocol, model: string, outputCap: number, requestedModel = model): ProtocolAdapter {
+  return protocol === 'openai_realtime' ? new OpenAIAdapter(model, outputCap, requestedModel) : new GeminiAdapter(model, outputCap);
 }

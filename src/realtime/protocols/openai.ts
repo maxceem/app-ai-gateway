@@ -16,7 +16,8 @@ export class OpenAIAdapter implements ProtocolAdapter {
   private toolCalls = new Set<string>();
   private requestedVad: JsonObject | null = null;
   private outputCap: number;
-  constructor(private model: string, private ceiling: number) { this.outputCap = ceiling; }
+  /** `requested` is the name the client asked for, before any model rewrite. */
+  constructor(private model: string, private ceiling: number, private requested = model) { this.outputCap = ceiling; }
 
   initial(): JsonObject {
     return { type: 'session.update', session: {
@@ -32,7 +33,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
     const session = object(frame.session);
     keys(session, ['type', 'model', 'instructions', 'audio', 'output_modalities', 'tools', 'tool_choice', 'max_output_tokens', 'truncation']);
     if (session.type !== undefined && session.type !== 'realtime') invalid('Only realtime conversation sessions are supported');
-    if (session.model !== undefined && session.model !== this.model) invalid('Session model is immutable');
+    if (session.model !== undefined && session.model !== this.model && session.model !== this.requested) invalid('Session model is immutable');
     if (session.output_modalities !== undefined && (!Array.isArray(session.output_modalities) || session.output_modalities.length !== 1 || !['text', 'audio'].includes(String(session.output_modalities[0])))) invalid('Unsupported output modalities');
     const audio = session.audio === undefined ? {} : object(session.audio);
     keys(audio, ['input', 'output']);
@@ -70,7 +71,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       }
     }
     if (session.max_output_tokens !== undefined) this.outputCap = cap(session.max_output_tokens, this.ceiling);
-    return { ...frame, session: { ...session, type: 'realtime', max_output_tokens: this.outputCap,
+    return { ...frame, session: { ...session, ...(session.model === undefined ? {} : { model: this.model }), type: 'realtime', max_output_tokens: this.outputCap,
       audio: { ...audio, input: { ...input, transcription: null, turn_detection: this.requestedVad } } } };
   }
 

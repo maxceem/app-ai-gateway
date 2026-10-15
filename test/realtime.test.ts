@@ -105,6 +105,12 @@ function collector(socket: WebSocket) {
   ])('rejects admission bypass configuration %j', frame => {
     expect(() => new OpenAIAdapter('gpt-realtime', 4096).client(frame, manual)).toThrow();
   });
+  it('accepts the requested model name under a rewrite and forwards the routed one', () => {
+    const adapter = new OpenAIAdapter('gpt-realtime', 4096, 'voice-alias');
+    const [effect] = adapter.client({ type: 'session.update', session: { model: 'voice-alias' } }, manual);
+    expect(effect).toMatchObject({ kind: 'configure', frame: { session: { model: 'gpt-realtime' } } });
+    expect(() => new OpenAIAdapter('gpt-realtime', 4096, 'voice-alias').client({ type: 'session.update', session: { model: 'other' } }, manual)).toThrow();
+  });
   it('mediates VAD through committed items, deduplicates and refuses mixed manual triggers', () => {
     const adapter = new OpenAIAdapter('gpt-realtime', 1024);
     const config = adapter.client({ type: 'session.update', session: { audio: { input: { turn_detection: { type: 'server_vad', create_response: true, interrupt_response: true } } } } }, manual);
