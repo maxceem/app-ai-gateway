@@ -18,6 +18,8 @@ export interface WranglerOptions {
   interactive?: boolean;
   /** Secret values that must never appear in a reported failure. */
   redact?: string[];
+  /** Stops wrangler; the run still settles only once the process has exited. */
+  signal?: AbortSignal;
 }
 
 export type WranglerRunner = (args: string[], options?: WranglerOptions) => Promise<string>;
@@ -85,7 +87,7 @@ export function wranglerEnvironment({
 
 export async function runWrangler(
   args: string[],
-  { cwd, input, interactive = false, redact, companion = false }: WranglerOptions = {},
+  { cwd, input, interactive = false, redact, companion = false, signal }: WranglerOptions = {},
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [join(dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js"), ...args], {
@@ -104,6 +106,9 @@ export async function runWrangler(
       if (interactive) process.stderr.write(data);
     });
     if (input) child.stdin?.end(input);
+    const stop = () => child.kill("SIGTERM");
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
     child.once("error", () =>
       reject(
         new CliError(
@@ -115,7 +120,9 @@ export async function runWrangler(
       ),
     );
     child.once("close", (code) => {
-      if (code !== 0) reject(wranglerFailure(args, code, errors || output, redact));
+      signal?.removeEventListener("abort", stop);
+      if (signal?.aborted) reject(signal.reason);
+      else if (code !== 0) reject(wranglerFailure(args, code, errors || output, redact));
       else resolve(output);
     });
   });

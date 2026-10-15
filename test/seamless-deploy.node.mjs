@@ -293,3 +293,18 @@ test('switching modes retires the release Worker for its sessions to finish, and
   assert.equal(active(f).active_realtime_id, null);
   assert.notEqual(f.db.prepare('SELECT retired_at FROM realtime_release WHERE id=?').get(again.realtimeId).retired_at, null);
 });
+
+test('a stopped upload that lands late is still found and undone', async t => {
+  const f = await fixture(t); const first = await seamlessRelease(f.input, f.driver);
+  const upload = async (id, signal) => {
+    // Another release takes the lease and finishes, recording nothing new.
+    f.db.prepare("UPDATE gateway_release_state SET deployment_owner='competitor'").run();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    f.db.prepare('UPDATE gateway_release_state SET deployment_owner=NULL, deployment_expires_at=NULL').run();
+    // Cloudflare had the upload already: it goes live after the stop.
+    setTimeout(() => { f.input.deployMain(id); }, 60);
+    throw signal.reason;
+  };
+  await assert.rejects(seamlessRelease({ ...f.input, deployMain: upload }, { ...f.driver, heartbeatMs: 10, sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 20))) }), /restored to build/);
+  assert.equal((await f.driver.health(f.input.gatewayOrigin)).buildId, first.buildId);
+});

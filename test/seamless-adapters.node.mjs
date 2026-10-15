@@ -85,6 +85,7 @@ await import('./scripts/deploy.mjs');
   assert.equal(primary.config.account_id, 'selected-account');
   assert.equal(primary.config.d1_databases[0].database_id, 'selected-db');
   assert.equal(primary.config.vars.DEPLOYMENT_ID, 'selected-installation');
+  assert.equal(primary.config.vars.REALTIME_RELEASES, 'seamless');
   const companion = completed.calls.find(call => call.args[0] === 'deploy' && call.config.name.startsWith('agw-rt-'));
   assert.equal(companion.ciName, undefined);
   assert.equal(companion.config.services[0].service, 'selected-primary');

@@ -110,6 +110,10 @@ end, and new ones go to the newest release. Set the plain variable
   remembers the choice for later updates, and the installed version can be
   redeployed to change it.
 
+Keep the setting in the deployment configuration rather than only in the
+dashboard: every deploy writes the value it released with, so one set only in
+**Settings → Variables** is replaced by the configuration's.
+
 Seamless releases need three more things from your installation:
 
 - Release Workers are served on your account's `workers.dev` subdomain, which
@@ -120,8 +124,9 @@ Seamless releases need three more things from your installation:
 - The credentials you deploy with must be able to create, read and delete
   Workers in the account: each release adds one, and cleanup removes old ones.
 - Deploy with the button, `pnpm run deploy` or the CLI. A plain
-  `wrangler deploy` updates the gateway but no release Worker, and realtime
-  discovery answers `503` until one of those has run.
+  `wrangler deploy` updates the gateway but no release Worker: new sessions
+  keep going to the previous release Worker, and on a gateway that never had
+  one, discovery answers `503` until one of those has run.
 
 To turn them off, remove the variable or set it to `simple`
 (`agw deployment update --realtime-releases simple`) and deploy. Conversations
@@ -143,9 +148,11 @@ An update that fails preparation or health verification keeps the previous
 realtime routing. Retry the same command after fixing the reported failure.
 Overlapping updates are refused while a deployment holds the lease. A running
 deployment renews it every minute, and an interrupted one's lease expires
-after ten minutes. A deployment that finds its lease gone stops, and if its
-gateway upload landed after a newer deployment finished, it restores that
-deployment's gateway. The first checkout installation may provision the
+after ten minutes. A deployment that finds its lease gone stops its upload and
+watches for it for 30 seconds; if the upload landed anyway, after a newer
+deployment finished, it restores that deployment's gateway. When another
+deployment still holds the lease, or none was recorded before, it says what to
+check instead. The first checkout installation may provision the
 gateway and database before it can acquire this lease. It establishes its
 deployment identity before creating secrets, so an interrupted first
 installation can retry against that same identity.

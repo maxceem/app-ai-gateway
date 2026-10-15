@@ -245,9 +245,9 @@ export async function attachDomain(
     vars: { ...journal.vars, CLI_CONSOLE_ORIGIN: "https://" + domain },
   });
   const file = await configFile(ctx, journal, artifact);
-  try { await deployRelease(cf, journal, artifact, file, async () => {}, async buildId => {
+  try { await deployRelease(cf, journal, artifact, file, async () => {}, async (buildId, signal) => {
     await setBuild(file, buildId);
-    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory });
+    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory, signal });
   }); } finally { await rm(file.directory, { recursive: true, force: true }); }
   await verifyDeployment(ctx, "https://" + domain, journal.id);
   if (ctx.active?.deployment?.id === journal.id) {

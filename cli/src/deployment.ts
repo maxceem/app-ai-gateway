@@ -150,9 +150,9 @@ export async function deploymentUpdate(
   const file = await configFile(ctx, journal, artifact);
   try { await deployRelease(cf, journal, artifact, file, async () => {
     await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], { cwd: file.directory });
-  }, async buildId => {
+  }, async (buildId, signal) => {
     await setBuild(file, buildId);
-    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory });
+    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory, signal });
   });
   } finally { await rm(file.directory, { recursive: true, force: true }); }
   await verifyDeployment(ctx, ctx.url, journal.id);
@@ -275,9 +275,9 @@ async function install(
   try {
     await deployRelease(cf, journal, artifact, file, async () => {
       await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], { cwd: file.directory });
-    }, async buildId => {
+    }, async (buildId, signal) => {
       await setBuild(file, buildId);
-      await cf.run(["deploy", "--config", file.path, "--secrets-file", secretPath], { cwd: file.directory, redact: Object.values(secrets) });
+      await cf.run(["deploy", "--config", file.path, "--secrets-file", secretPath], { cwd: file.directory, redact: Object.values(secrets), signal });
     });
   } finally {
     await unlink(secretPath).catch(() => {});

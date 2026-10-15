@@ -12,6 +12,8 @@ export const RELEASE_RETENTION_MS = (REALTIME_MAX_SESSION_SECONDS + 60 + 3600) *
 const LEASE_MS = 10 * 60_000;
 /** How often a running release renews its lease, well inside {@link LEASE_MS}. */
 const LEASE_HEARTBEAT_MS = 60_000;
+/** How many times, 1.5 s apart, a lost upload is looked for before it is taken not to have landed. */
+const LOST_UPLOAD_CHECKS = 20;
 /**
  * How old a never-promoted candidate must be before cleanup deletes it. No
  * session can reach one, since discovery only returns the active release; the
@@ -124,8 +126,15 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     const lost = `The deployment lease was lost while main build ${lostBuild} was deploying`;
     if (!(await acquire())) throw new Error(`${lost}, and another deployment holds it now. Once that one finishes, check that the gateway reports its build in /v1/healthz, and re-run this deployment if it does not.`);
     const recorded = (await query('SELECT d.id, d.main_version_id FROM gateway_deployment d JOIN gateway_release_state s ON s.current_deployment_id=d.id WHERE s.singleton=1'))[0];
-    const live = await liveMain();
-    if (live?.buildId !== lostBuild) throw new Error(`${lost}; it is not serving. Re-run the deployment.`);
+    // A stopped upload Cloudflare had already accepted can still go live, so
+    // one look is not enough: it is watched for as long as a deploy is.
+    let serving = false;
+    for (let attempt = 0; attempt < LOST_UPLOAD_CHECKS && !serving; attempt++) {
+      if (attempt > 0) await (driver.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1500);
+      await lease();
+      serving = (await liveMain())?.buildId === lostBuild;
+    }
+    if (!serving) throw new Error(`${lost}; it was not serving after ${LOST_UPLOAD_CHECKS * 1.5} seconds. If /v1/healthz ever reports build ${lostBuild}, re-run the deployment.`);
     if (!recorded) throw new Error(`${lost}; it is serving, and no earlier release is recorded to restore. Re-run the deployment.`);
     await driver.run(['rollback', String(recorded.main_version_id), '--config', input.configPath, '--message', 'Restore the recorded release after a lost deployment lease', '--yes']);
     await verifyMain(String(recorded.id), 'Restored main build was not observed');

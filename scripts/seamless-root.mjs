@@ -13,13 +13,19 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   const run = async (args, options = {}) => {
     const result = await new Promise((resolve, reject) => {
       const child = spawn(wranglerBin, args, { cwd: projectRoot, env: options.companion ? companionEnvironment(process.env) : process.env,
-        stdio: ['ignore', 'pipe', 'pipe'], ...(options.signal ? { signal: options.signal } : {}) });
+        stdio: ['ignore', 'pipe', 'pipe'] });
+      // Stopped, then settled only once Wrangler has exited: an upload it had
+      // already sent may still land, which the release engine watches for.
+      const stop = () => child.kill('SIGTERM');
+      if (options.signal?.aborted) stop();
+      else options.signal?.addEventListener('abort', stop, { once: true });
       let stdout = ''; let stderr = '';
       child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
       child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
       child.on('error', reject);
-      child.on('close', status => resolve({ status, stdout, stderr }));
+      child.on('close', status => { options.signal?.removeEventListener('abort', stop); resolve({ status, stdout, stderr }); });
     });
+    if (options.signal?.aborted) throw options.signal.reason;
     if (result.status !== 0) throw new Error(`Wrangler ${args[0]} failed: ${result.stderr ?? ''}`);
     if (!options.capture) { process.stdout.write(result.stdout ?? ''); process.stderr.write(result.stderr ?? ''); }
     return result;
@@ -42,7 +48,9 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   const subdomain = (await resultOf(cf, `/accounts/${accountId}/workers/subdomain`)).subdomain;
   if (seamless && !subdomain) throw new Error('Seamless realtime releases are served on workers.dev: enable your Cloudflare workers.dev subdomain, or remove REALTIME_RELEASES, before deploying');
   const name = process.env.WRANGLER_CI_OVERRIDE_NAME || config.name;
-  const primary = { ...config, name, account_id: accountId, vars: { ...config.vars, DEPLOYMENT_ID: deploymentId } };
+  // The mode is deployed as resolved here, so a value kept from the dashboard
+  // cannot route sessions differently from how this release records them.
+  const primary = { ...config, name, account_id: accountId, vars: { ...config.vars, REALTIME_RELEASES: seamless ? 'seamless' : 'simple', DEPLOYMENT_ID: deploymentId } };
   // Absolute local paths because the deployment config lives in the ignored artifact directory.
   primary.main = join(directory, 'main', 'index.js');
   primary.no_bundle = true;

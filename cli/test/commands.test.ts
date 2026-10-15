@@ -1025,6 +1025,7 @@ test("pending setup domain resumes without bootstrap and preserves current inven
   const primary = generated.findLast(configuration => configuration.name === 'worker')!;
   assert.equal(primary.vars.ALLOWED_REGISTRATION_EMAILS, 'owner@example.com');
   assert.equal(primary.vars.DEPLOYMENT_ID, journal.id);
+  assert.equal(primary.vars.REALTIME_RELEASES, "seamless");
   assert.equal(primary.account_id, journal.accountId);
   assert.equal(primary.d1_databases[0]!.database_id, 'db');
   const realtime = generated.find(configuration => configuration.name.startsWith('agw-rt-'))!;
@@ -1461,4 +1462,9 @@ test("a bootstrap that refuses is not retried into a rate limit", async (t) => {
   });
   await assert.rejects(() => run, hasCode("conflict"));
   assert.equal(bodies.length, 1);
+});
+
+test("a stopped wrangler run settles with the reason it was stopped for, once wrangler has exited", async () => {
+  const reason = new Error("deployment lease lost");
+  await assert.rejects(() => runWrangler(["--version"], { signal: AbortSignal.abort(reason) }), (error) => error === reason);
 });
