@@ -274,6 +274,26 @@ test("gemini: fails on an unknown cell, a changed header or a dated gap", () => 
   assertFails(parseGemini, replaceOnce(text, "$0.15 $1.00 / 1,000,000", "$0.15 $1.00 / 1M"), ["gemini-3.5-flash"], /storage/);
 });
 
+test("gemini: a model with implicit caching only has no storage price", () => {
+  const text = fixture("gemini.md");
+  assert.deepEqual(parse(parseGemini, text, ["gemini-4-argon"]).get("gemini-4-argon"), {
+    input: 2,
+    output: 10,
+    cached_input: 0.1,
+    upcoming: [
+      { date: "2026-12-01", field: "input", value: 4 },
+      { date: "2026-12-01", field: "output", value: 20 },
+      { date: "2026-12-01", field: "cached_input", value: 0.2 },
+    ],
+  });
+  assertFails(
+    parseGemini,
+    replaceOnce(text, "Implicit caching only (explicit caching is not supported).", "Implicit caching only."),
+    ["gemini-4-argon"],
+    /storage/,
+  );
+});
+
 test("xai: pairs long-context rows and reads speech to text per hour", () => {
   const text = fixture("xai.md");
   const prices = parse(parseXai, text, ["grok-4.5", "Speech to Text"]);
@@ -436,10 +456,12 @@ test("anthropic deprecations: a promise is not a date, a retirement is", () => {
   assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Retired       |", "| Sunset        |"), wanted, /unknown state/);
 });
 
-test("gemini deprecations: a shutdown date or none announced", () => {
+test("gemini deprecations: a shutdown date, none announced or N/A", () => {
   const text = fixture("gemini-deprecations.md");
-  const dates = parse(parseGeminiDeprecations, text, ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-image", "gemini-3-pro-preview"]);
+  const dates = parse(parseGeminiDeprecations, text, ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-image", "gemini-3-pro-preview"]);
   assert.equal(dates.has("gemini-3.6-flash"), false);
+  // "N/A": the endpoint is not shutting down, it routes to its replacement.
+  assert.equal(dates.has("gemini-3.5-flash"), false);
   assert.deepEqual(dates.get("gemini-3.1-flash-lite"), { date: "2027-05-07" });
   assert.deepEqual(dates.get("gemini-2.5-flash-image"), { date: "2026-10-02" });
   assert.deepEqual(dates.get("gemini-3-pro-preview"), { date: "2026-03-09" });
