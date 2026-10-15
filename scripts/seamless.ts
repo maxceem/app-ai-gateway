@@ -129,15 +129,23 @@ export async function seamlessRelease(input: ReleaseInput, driver: ReleaseDriver
     // A stopped upload Cloudflare had already accepted can still go live, so
     // one look is not enough: it is watched for as long as a deploy is.
     let serving = false;
-    for (let attempt = 0; attempt < LOST_UPLOAD_CHECKS && !serving; attempt++) {
-      if (attempt > 0) await (driver.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1500);
-      await lease();
-      serving = (await liveMain())?.buildId === lostBuild;
+    try {
+      for (let attempt = 0; attempt < LOST_UPLOAD_CHECKS && !serving; attempt++) {
+        if (attempt > 0) await (driver.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1500);
+        await lease();
+        serving = (await liveMain())?.buildId === lostBuild;
+      }
+      if (serving && recorded) {
+        await driver.run(['rollback', String(recorded.main_version_id), '--config', input.configPath, '--message', 'Restore the recorded release after a lost deployment lease', '--yes']);
+        await verifyMain(String(recorded.id), 'Restored main build was not observed');
+      }
+    } catch (error) {
+      // Whatever stopped the repair, the operator still needs to know which
+      // build may be serving and what to do about it.
+      throw new Error(`${lost}, and repairing that failed: ${error instanceof Error ? error.message : String(error)}. Check which build /v1/healthz reports; if it is ${lostBuild}${recorded ? `, roll back to ${recorded.id} or` : ','} re-run the deployment.`, { cause: error });
     }
     if (!serving) throw new Error(`${lost}; it was not serving after ${LOST_UPLOAD_CHECKS * 1.5} seconds. If /v1/healthz ever reports build ${lostBuild}, re-run the deployment.`);
     if (!recorded) throw new Error(`${lost}; it is serving, and no earlier release is recorded to restore. Re-run the deployment.`);
-    await driver.run(['rollback', String(recorded.main_version_id), '--config', input.configPath, '--message', 'Restore the recorded release after a lost deployment lease', '--yes']);
-    await verifyMain(String(recorded.id), 'Restored main build was not observed');
     throw new Error(`${lost}; it replaced the recorded release, so the gateway was restored to build ${recorded.id}. Re-run the deployment.`);
   };
   let previousDeployment: string | undefined;

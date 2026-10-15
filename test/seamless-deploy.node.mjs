@@ -308,3 +308,18 @@ test('a stopped upload that lands late is still found and undone', async t => {
   await assert.rejects(seamlessRelease({ ...f.input, deployMain: upload }, { ...f.driver, heartbeatMs: 10, sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 20))) }), /restored to build/);
   assert.equal((await f.driver.health(f.input.gatewayOrigin)).buildId, first.buildId);
 });
+
+test('a repair that cannot keep its lease still names the build that may be serving', async t => {
+  const f = await fixture(t); await seamlessRelease(f.input, f.driver);
+  let lost;
+  const upload = async (id, signal) => {
+    f.db.prepare("UPDATE gateway_release_state SET deployment_owner='competitor'").run();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    f.db.prepare('UPDATE gateway_release_state SET deployment_owner=NULL, deployment_expires_at=NULL').run();
+    lost = id;
+    throw signal.reason;
+  };
+  // The lease is taken again while the repair watches for the stopped upload.
+  const sleep = async () => { f.db.prepare("UPDATE gateway_release_state SET deployment_owner='third'").run(); };
+  await assert.rejects(seamlessRelease({ ...f.input, deployMain: upload }, { ...f.driver, heartbeatMs: 10, sleep }), error => error.message.includes('repairing that failed') && error.message.includes(lost));
+});
