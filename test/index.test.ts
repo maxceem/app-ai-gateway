@@ -20,7 +20,7 @@ describe("App AI Gateway", () => {
     });
   });
 
-  it("probes again after a failed health check instead of repeating the failure", async () => {
+  it("probes again a second after a failed health check, not five", async () => {
     clearIsolateCaches();
     let failing = true;
     const flaky = { ...env, DB: new Proxy(env.DB, { get(target, property) {
@@ -30,6 +30,9 @@ describe("App AI Gateway", () => {
     const probe = () => gateway.fetch(new Request("https://example.test/v1/healthz"), flaky, createExecutionContext());
     expect((await probe()).status).toBe(500);
     failing = false;
+    // Within the second the failure is answered again, without a probe.
+    expect((await probe()).status).toBe(500);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect((await probe()).status).toBe(200);
   });
 });

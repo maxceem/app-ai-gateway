@@ -39,7 +39,7 @@ async function fixture(t, empty = false) {
       }
       if (args[0] === 'versions') return { stdout: JSON.stringify({ resources: { bindings: [{ name: 'GATEWAY_BUILD_ID', type: 'plain_text', text: versions.get(args[2]) }] } }) };
       if (args[0] === 'deployments') return { stdout: JSON.stringify([{ created_on: new Date().toISOString(), versions: [{ version_id: version, percentage: 100 }] }]) };
-      if (args[0] === 'rollback') { build = versions.get(args[1]); return {}; }
+      if (args[0] === 'rollback') { build = versions.get(args[1]); version = args[1]; return {}; }
       if (args[0] === 'delete') { workers.delete(args[args.indexOf('--name') + 1]); return {}; }
       throw new Error('Unexpected command ' + args);
     },
@@ -177,8 +177,10 @@ test('a slow main deploy keeps its lease renewed, and a lapsed one stops before 
   assert.equal(competitor.length, 0);
   assert.equal(active(f).active_realtime_id, renewed.realtimeId);
   await writeFile(f.rt, 'slower code');
-  await assert.rejects(seamlessRelease({ ...f.input, deployMain: async id => { await stall(20, 80); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 60_000 }), /lease expired/);
+  await assert.rejects(seamlessRelease({ ...f.input, deployMain: async id => { await stall(20, 80); await f.input.deployMain(id); } }, { ...f.driver, heartbeatMs: 60_000 }), /lease was lost/);
   assert.equal(active(f).active_realtime_id, renewed.realtimeId);
+  // The upload landed without the lease, so the recorded release serves again.
+  assert.equal((await f.driver.health(f.input.gatewayOrigin)).buildId, renewed.buildId);
 });
 test('cleanup deletes a candidate that failed verification and was never promoted', async t => {
   const f = await fixture(t); await seamlessRelease(f.input, f.driver);
@@ -217,4 +219,44 @@ test('a reused release takes the URL the account serves it on now', async t => {
   const again = await seamlessRelease({ ...f.input, subdomain: 'renamed' }, f.driver);
   assert.equal(again.realtimeId, first.realtimeId);
   assert.match(f.db.prepare('SELECT url FROM realtime_release WHERE id=?').get(first.realtimeId).url, /\.renamed\.workers\.dev$/u);
+});
+
+test('a deploy that lost its lease mid-upload restores the release that finished meanwhile', async t => {
+  const f = await fixture(t); await seamlessRelease(f.input, f.driver);
+  let newer;
+  const stalled = seamlessRelease({ ...f.input, deployMain: async id => {
+    // Stalled past its lease: another release takes over and promotes.
+    f.db.prepare('UPDATE gateway_release_state SET deployment_expires_at=?').run(Date.now() - 1);
+    newer = await seamlessRelease(f.input, f.driver);
+    // Only then does the stalled upload land, over the newer gateway.
+    await f.input.deployMain(id);
+  } }, f.driver);
+  await assert.rejects(stalled, /restored to build/);
+  assert.equal(active(f).current_deployment_id, newer.buildId);
+  assert.equal((await f.driver.health(f.input.gatewayOrigin)).buildId, newer.buildId);
+  assert.equal(active(f).deployment_owner, null);
+});
+
+test('the heartbeat stops the main upload once another release holds the lease', async t => {
+  const f = await fixture(t); await seamlessRelease(f.input, f.driver);
+  let aborted = false;
+  const upload = async (id, signal) => {
+    f.db.prepare("UPDATE gateway_release_state SET deployment_owner='competitor'").run();
+    await new Promise(resolve => { signal.addEventListener('abort', resolve, { once: true }); setTimeout(resolve, 2000); });
+    aborted = signal.aborted;
+    if (aborted) throw signal.reason;
+    await f.input.deployMain(id);
+  };
+  await assert.rejects(seamlessRelease({ ...f.input, deployMain: upload }, { ...f.driver, heartbeatMs: 10 }), /another deployment holds it/);
+  assert.ok(aborted, 'the upload was stopped');
+});
+
+test('a lease that cannot be released does not turn a promoted release into a failure', async t => {
+  const f = await fixture(t);
+  const flaky = { ...f.driver, run: async (args, options) => {
+    if (args[0] === 'd1' && args[args.indexOf('--command') + 1].includes('deployment_owner=NULL')) throw new Error('Simulated D1 outage');
+    return f.driver.run(args, options);
+  } };
+  const released = await seamlessRelease(f.input, flaky);
+  assert.equal(active(f).active_realtime_id, released.realtimeId);
 });

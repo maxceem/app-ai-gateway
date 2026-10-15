@@ -1,19 +1,23 @@
 import { DurableObject } from 'cloudflare:workers';
 import { localSessionBackend } from '../realtime/local-backend';
-import { SessionCoordinator } from '../realtime/session';
-import { SessionJournal } from '../realtime/journal';
+import type { SessionCoordinator } from '../realtime/session';
 import type { Bootstrap } from '../realtime/types';
 import { object } from '../realtime/protocols/validation';
 import { GatewayError, errorResponse } from '../core/errors';
 
+/**
+ * The session engine, loaded on first use. Production sockets live in the
+ * release Worker, so this class serves only local development, and the
+ * gateway's cold start must not pay for the engine.
+ */
+const engine = () => Promise.all([import('../realtime/session'), import('../realtime/journal')])
+  .then(([{ SessionCoordinator }, { SessionJournal }]) => ({ SessionCoordinator, SessionJournal }));
+
 /** Binding-only per-connection owner. No route accepts a caller-selected object/session ID. */
 export class RealtimeSession extends DurableObject<Env> {
   private coordinator: SessionCoordinator | null = null;
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    new SessionJournal(ctx.storage);
-  }
   override async fetch(request: Request): Promise<Response> {
+    const { SessionCoordinator, SessionJournal } = await engine();
     // Answered here, not thrown: an error crossing the stub arrives as a plain
     // Error, and a refusal would lose its status, code and Retry-After.
     try {
@@ -28,6 +32,7 @@ export class RealtimeSession extends DurableObject<Env> {
   }
   override async alarm(): Promise<void> {
     if (!this.coordinator) {
+      const { SessionCoordinator, SessionJournal } = await engine();
       const bootstrap = new SessionJournal(this.ctx.storage).metadata();
       if (!bootstrap) { await this.ctx.storage.deleteAll(); return; }
       this.coordinator = new SessionCoordinator(localSessionBackend(this.env, promise => this.ctx.waitUntil(promise)), this.ctx, bootstrap, new Headers());

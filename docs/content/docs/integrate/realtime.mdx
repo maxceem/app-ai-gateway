@@ -105,8 +105,10 @@ appended or added since the last response.
 
 Client JSON frames are limited to 256 KiB; provider frames to 1 MiB. Queued input
 is limited to 256 events and 1 MiB, input per turn to 4 MiB, and output per
-generation to 16 MiB. These bound application buffering; they do not implement
-network write backpressure. Binary frames are unsupported.
+generation to 16 MiB. A client may send 256 KiB a second, four times live
+24 kHz audio, with bursts of up to 1 MiB; faster input closes the session.
+These bound application buffering; they do not implement network write
+backpressure. Binary frames are unsupported.
 
 Client `response.create` event IDs are deduplicated for the entire connection.
 Other client event IDs, including audio chunks, are deduplicated within the most

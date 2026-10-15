@@ -30,6 +30,9 @@ export class SessionCoordinator {
   private ordinal = 0;
   private inputBytes = 0;
   private inputStarted: number | null = null;
+  /** Client bytes still allowed now: refilled at a steady rate, up to a burst. */
+  private clientAllowance: number = L.clientBurstBytes;
+  private clientAllowanceAt = Date.now();
   private lastActivity = Date.now();
   private openedAt = Date.now();
   private expiresAt = 0;
@@ -131,12 +134,27 @@ export class SessionCoordinator {
     this.authPolicy = authentication; this.app = app; this.provider = provider;
   }
 
+  /**
+   * Turn bounds count only what a turn's input is; silence streamed under VAD
+   * is not. This bounds everything a client sends, so no frame type can push
+   * the provider connection faster than a live microphone would.
+   */
+  private allowClient(bytes: number): boolean {
+    const now = Date.now();
+    this.clientAllowance = Math.min(L.clientBurstBytes, this.clientAllowance + (now - this.clientAllowanceAt) * L.clientBytesPerSecond / 1000);
+    this.clientAllowanceAt = now;
+    if (bytes > this.clientAllowance) return false;
+    this.clientAllowance -= bytes;
+    return true;
+  }
+
   private attach(socket: WebSocket, source: 'client' | 'server'): void {
     socket.addEventListener('message', event => {
       if (source === 'client' && this.terminating) return;
       if (typeof event.data !== 'string') { this.terminate(new GatewayError(400, 'realtime_protocol_error', 'Binary realtime frames are unsupported'), 1008); return; }
       const bytes = frameBytes(event.data);
       if (bytes > (source === 'client' ? L.clientFrameBytes : L.providerFrameBytes)) { this.terminate(new GatewayError(413, 'payload_too_large', 'Realtime frame limit exceeded'), 1009); return; }
+      if (source === 'client' && !this.allowClient(bytes)) { this.terminate(new GatewayError(400, 'realtime_protocol_error', 'Realtime input is arriving faster than real time'), 1008); return; }
       if (source === 'server' && this.active) {
         this.active.outputBytes += bytes;
         if (this.active.outputBytes > L.generationOutputBytes) { this.terminate(new GatewayError(413, 'payload_too_large', 'Realtime output limit exceeded'), 1009); return; }

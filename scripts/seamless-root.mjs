@@ -13,7 +13,7 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
   const run = async (args, options = {}) => {
     const result = await new Promise((resolve, reject) => {
       const child = spawn(wranglerBin, args, { cwd: projectRoot, env: options.companion ? companionEnvironment(process.env) : process.env,
-        stdio: ['ignore', 'pipe', 'pipe'] });
+        stdio: ['ignore', 'pipe', 'pipe'], ...(options.signal ? { signal: options.signal } : {}) });
       let stdout = ''; let stderr = '';
       child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
       child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
@@ -74,7 +74,7 @@ export async function deployCheckout({ config, configPath, deploymentId, prepare
     realtimeBundle: join(directory, 'realtime', 'worker.js'), mainBundle: join(directory, 'main', 'index.js'),
     version: JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8')).version,
     gatewayOrigin: origin, subdomain, prepare: () => prepare(path, { initial: !existing }), action, rollbackId,
-    deployMain: async buildId => { primary.vars.GATEWAY_BUILD_ID = buildId; await writeFile(path, JSON.stringify(primary), { mode: 0o600 }); await run(['deploy', '--config', path]); },
+    deployMain: async (buildId, signal) => { primary.vars.GATEWAY_BUILD_ID = buildId; await writeFile(path, JSON.stringify(primary), { mode: 0o600 }); await run(['deploy', '--config', path], { signal }); },
   }, { run, settings, log: console.log, health: async base => {
     const response = await fetch(new URL('/v1/healthz', base), { signal: AbortSignal.timeout(10_000), redirect: 'error' });
     if (!response.ok) throw new Error(`Health check returned ${response.status}`);

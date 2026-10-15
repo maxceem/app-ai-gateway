@@ -6,7 +6,11 @@ import { REALTIME_BACKEND_CONTRACT } from './backend';
 import type { Bootstrap } from './types';
 import { GatewayError, errorResponse } from '../core/errors';
 
-/** The immutable release owns sockets and metadata-only recovery, never account secrets. */
+/**
+ * The immutable release owns sockets and metadata-only recovery. It holds a
+ * provider secret only in memory, to open the upstream socket, and never stores
+ * one: secrets stay in the gateway's vault.
+ */
 export class RealtimeSession extends DurableObject<RealtimeEnv> {
   private coordinator: SessionCoordinator | null = null;
   override async fetch(request: Request): Promise<Response> {

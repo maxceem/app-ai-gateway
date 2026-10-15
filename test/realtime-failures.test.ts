@@ -433,6 +433,15 @@ describe('realtime failure boundaries', () => {
       expect(await closed).toBe(1000);
     });
   });
+  it('input faster than real time closes the session, whether or not it is speech', async () => {
+    await withSockets(async ({ socket, next }) => {
+      const closed = new Promise<number>(resolve => socket.addEventListener('close', event => resolve(event.code)));
+      const chunk = JSON.stringify({ type: 'input_audio_buffer.append', audio: 'A'.repeat(200_000) });
+      for (let sent = 0; sent < 6; sent++) socket.send(chunk);
+      expect(await next('gateway.error')).toMatchObject({ error: { code: 'realtime_protocol_error', message: 'Realtime input is arriving faster than real time' } });
+      expect(await closed).toBe(1008);
+    });
+  });
   it('a second utterance committed while a turn is pending joins it instead of closing the session', async () => {
     await withSockets(async ({ coordinator, socket }) => {
       const effect = Reflect.get(coordinator, 'effect') as (...args: unknown[]) => Promise<void>;
