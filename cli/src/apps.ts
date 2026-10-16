@@ -298,7 +298,7 @@ export async function appCommand(
         ...(key ? { applicationKey: key } : {}),
         guidance:
           doc.config.authentication.type === "apple_app_attest"
-            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.4.1, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
+            ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.5.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
             : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
     }
