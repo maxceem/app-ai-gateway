@@ -15,13 +15,17 @@
 #   2. the gateway Worker, deployed to Cloudflare with the `cloud` profile
 #   3. the CLI, published to npm — after 1, because an installed CLI refuses to
 #      run until it can download exactly that archive
-#   4. the documentation site, then the pages it changed submitted to IndexNow
+#   4. the documentation site, then the pages it changed submitted to IndexNow,
+#      and Context7 asked to re-read it
 #
 # Repository secrets required:
 #   CLOUDFLARE_API_TOKEN         Workers Scripts: Edit, D1: Edit, and Workers Routes: Edit on the zone
 #   CLOUDFLARE_ACCOUNT_ID        the account both Workers live in
 #   WRANGLER_CLOUD_OVERLAY       contents of wrangler.cloud.overlay.jsonc
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
+# Repository secrets, optional:
+#   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
+#                                refresh the documentation
 # Repository variables, optional:
 #   VITE_POSTHOG_KEY             PostHog project key built into the console
 #   VITE_POSTHOG_HOST            PostHog ingestion host; with either unset, the
@@ -169,3 +173,20 @@ jobs:
 
       - name: Submit the changed documentation pages to IndexNow
         run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out
+
+      # Context7 serves the docs to coding agents from llms.txt and otherwise
+      # re-reads them only every few weeks. Never fails the job.
+      - name: Refresh the documentation on Context7
+        continue-on-error: true
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "CONTEXT7_API_KEY is not set; skipping the Context7 refresh."
+            exit 0
+          fi
+          curl -sS --fail-with-body -X POST https://context7.com/api/v1/refresh \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CONTEXT7_API_KEY" \
+            -d '{"libraryName": "/llmstxt/appaigateway_llms_txt"}'
