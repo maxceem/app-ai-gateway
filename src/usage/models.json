@@ -390,6 +390,18 @@
     "mistral-small-latest": { "input": 0.15, "cached_input": 0.015, "output": 0.6 }
   },
   "together": {
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
+      "input": 0.15,
+      "cached_input": 0.02,
+      "output": 0.5,
+      "author": "NVIDIA"
+    },
+    "meta-models/Muse-Spark-Open-816B-A42B": {
+      "input": 1.25,
+      "cached_input": 0.15,
+      "output": 4.25,
+      "author": "Meta"
+    },
     "thinkingmachines/Inkling": {
       "input": 1.0,
       "cached_input": 0.17,
