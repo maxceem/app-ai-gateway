@@ -1674,3 +1674,96 @@ final class FakeTransport: @unchecked Sendable {
 
     func snapshot() -> [URLRequest] { lock.withLock { requests } }
 }
+
+extension AppAIGatewayClientTests {
+    @Test func realtimeRequestUsesExistingHeadersAndSafeQueryItems() async throws {
+        MockURLProtocol.handler = { request in
+            #expect(request.url?.path == "/v1/apps/test-app/realtime/openai/connection")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+            #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "model", value: "a/b + &")])
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"url":"wss://release.workers.dev/v1/apps/test-app/realtime/openai?model=a%2Fb%20%2B%20%26","releaseId":"release"}"#.utf8))
+        }
+        let client = AppAIGatewayClient(appID: "test-app", baseURL: URL(string: "https://gateway.test")!, authMode: .apiKey(key: "test-key", issuerTokenProvider: nil), endUserId: "user-7", session: session())
+        let request = try await client.authorizedRealtimeRequest(provider: ProviderSlug.openai, model: "a/b + &")
+        #expect(request.url?.scheme == "wss")
+        #expect(request.url?.path == "/v1/apps/test-app/realtime/openai")
+        #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "model", value: "a/b + &")])
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(request.value(forHTTPHeaderField: "X-End-User-Id") == "user-7")
+        #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
+    }
+    @Test func localRealtimeUsesWS() async throws {
+        MockURLProtocol.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"url":"ws://preview.localhost:8080/v1/apps/test/realtime/openai?model=gpt-realtime"}"#.utf8))
+        }
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://preview.localhost:8080")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil), session: session())
+        #expect(try await client.realtimeURL(provider: "openai", model: "gpt-realtime").scheme == "ws")
+    }
+    @Test func unsafeDiscoveredRealtimeURLsAreRefused() async {
+        for discovered in ["http://release.example/socket", "https://release.example/socket", "ws://release.example/socket", "wss://user:password@release.example/socket", "wss://release.example/socket#fragment"] {
+            MockURLProtocol.handler = { request in
+                let body = try! JSONSerialization.data(withJSONObject: ["url": discovered])
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, body)
+            }
+            let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "https://gateway.example")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil), session: session())
+            await #expect(throws: URLError.self) { try await client.realtimeURL(provider: "openai", model: "gpt-realtime") }
+        }
+    }
+    @Test func insecurePublicRealtimeIsRefused() async {
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://gateway.example")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil))
+        await #expect(throws: URLError.self) { try await client.realtimeURL(provider: "openai", model: "gpt-realtime") }
+    }
+    /// Discovery and the handshake are two requests, each signed over its own
+    /// URL, and discovery is rebuilt once on a `401` like any other request.
+    @Test func realtimeDiscoveryAndHandshakeAreEachSigned() async throws {
+        let tokens = LockedCounter()
+        let discoveries = LockedCounter()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/connection") {
+                #expect(request.value(forHTTPHeaderField: "X-AppAttest-Proof") != nil)
+                if discoveries.increment() == 1 {
+                    return response(request, status: 401, body: #"{"error":{"code":"assertion_required","message":"Sign it"}}"#)
+                }
+                return response(request, status: 200, body: #"{"url":"wss://release.test/v1/apps/test-app/realtime/openai?model=gpt-realtime","releaseId":"r"}"#)
+            }
+            let issued = tokens.increment()
+            return response(request, status: 200, body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        let handshake = try await client.authorizedRealtimeRequest(provider: .openai, model: "gpt-realtime")
+        #expect(discoveries.snapshot() == 2)
+        #expect(tokens.snapshot() == 2)
+        #expect(handshake.url?.absoluteString == "wss://release.test/v1/apps/test-app/realtime/openai?model=gpt-realtime")
+        #expect(handshake.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        let proof = try #require(handshake.value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        let parts = proof.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        let signed = try #require(signatures.snapshot().last)
+        #expect(signed.hash == AppAIGatewayClient.requestClientData(
+            appID: "test-app",
+            method: "GET",
+            pathAndQuery: "/v1/apps/test-app/realtime/openai?model=gpt-realtime",
+            body: nil,
+            token: "token-2",
+            timestamp: try #require(Int(parts[1])),
+            nonce: parts[2]
+        ).sha256)
+    }
+    @Test func decodesGatewayErrorWithoutProviderWrapping() throws {
+        let event = try JSONDecoder().decode(RealtimeGatewayError.self, from: Data(#"{"type":"gateway.error","error":{"code":"app_rate_limited","message":"Wait","retry_after_seconds":30},"session_id":"session","generation_id":null}"#.utf8))
+        #expect(event.type == "gateway.error")
+        #expect(event.error.retryAfterSeconds == 30)
+        #expect(event.generationID == nil)
+    }
+}

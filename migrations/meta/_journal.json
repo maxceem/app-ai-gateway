@@ -50,6 +50,20 @@
       "when": 1791858112634,
       "tag": "0006_per_request_attest",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791956320436,
+      "tag": "0007_realtime_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791961296307,
+      "tag": "0008_realtime_releases",
+      "breakpoints": true
     }
   ]
 }

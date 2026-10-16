@@ -16,7 +16,7 @@ async function spent(appId: string, userKey: string | null, month: string, micro
  * An application's own limits: the month's spend read from D1 and fixed windows.
  */
 describe("UserLimiter", () => {
-  it("keeps only request windows and the install's counter in its own storage", async () => {
+  it("keeps only request windows, the install's counter and session leases in its own storage", async () => {
     const limiter = env.USER_LIMITER.getByName("user-limiter:tables");
     await limiter.getStatus(Date.now());
     await runInDurableObject(limiter, async (_instance, state) => {
@@ -26,7 +26,7 @@ describe("UserLimiter", () => {
         )
         .toArray()
         .map((row) => row.name);
-      expect(tables).toEqual(["assertion_counter", "request_windows"]);
+      expect(tables).toEqual(["assertion_counter", "request_windows", "session_leases"]);
       expect(await state.storage.getAlarm()).toBeNull();
     });
   });

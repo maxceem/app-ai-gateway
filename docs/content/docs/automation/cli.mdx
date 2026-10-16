@@ -210,5 +210,8 @@ after a lost response never creates a duplicate. Account usage includes retained
 records from deleted apps.
 
 `agw deployment update --dry-run` and `agw deployment domain --hostname
-ai.example.com --dry-run` inspect changes without deploying. Updating a mobile
+ai.example.com --dry-run` inspect changes without deploying. `agw deployment
+update --realtime-releases seamless` turns on
+[seamless realtime releases](/self-hosting/updating#seamless-realtime-releases),
+and `simple` turns them off. Updating a mobile
 app's embedded gateway URL remains a separate application release.

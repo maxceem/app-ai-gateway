@@ -541,6 +541,45 @@ test("journal-backed deployment updates refuse a replaced Cloudflare Worker", as
   );
 });
 
+test("an update can redeploy the installed version to change how realtime is served", async () => {
+  const cf = cfMock();
+  cf.request = async () =>
+    ({
+      success: true,
+      result: {
+        bindings: [
+          { name: "DEPLOYMENT_ID", type: "plain_text", text: "deployment-1" },
+          { name: "DB", type: "d1", id: "db-old" },
+        ],
+      },
+    }) as never;
+  const active = {
+    url: "https://selected.example",
+    authenticated: true,
+    deployment: { id: "deployment-1", mode: "self_hosted" },
+  };
+  const ctx = stubContext({
+    active,
+    url: active.url,
+    state: {
+      installations: {
+        "deployment-1": { id: "deployment-1", accountId: "account-cf", name: "worker", databaseId: "db-old", version: "0.1.0" },
+      },
+    },
+    publicCall: async () => ({
+      data: { deployment: { id: "deployment-1" }, serverVersion: "0.1.0" }
+    }),
+  });
+  // The same version upgrades nothing, so it needs no upgradeFrom entry.
+  const same = artifactStub({ version: "0.1.0", upgradeFrom: [] });
+  const plan = await deploymentCommand(ctx, "deployment update", { "dry-run": true, "realtime-releases": "seamless" }, cf, same);
+  assert.deepEqual(plan, { dryRun: true, worker: "worker", accountId: "account-cf", databaseId: "db-old", fromVersion: "0.1.0", toVersion: "0.1.0", realtimeReleases: "seamless" });
+  await assert.rejects(
+    () => deploymentCommand(ctx, "deployment update", { "dry-run": true, "realtime-releases": "fast" }, cf, same),
+    hasCode("invalid_input"),
+  );
+});
+
 test("domain changes cannot implicitly upgrade or downgrade the gateway code", async () => {
   const cf = cfMock();
   cf.request = async () =>
@@ -890,6 +929,8 @@ test("pending setup domain resumes without bootstrap and preserves current inven
           { name: "DEPLOYMENT_ID", type: "plain_text", text: "deployment-1" },
           { name: "DB", type: "d1", id: "db" },
           { name: "CUSTOM_SETTING", type: "plain_text", text: "current-value" },
+          // An installation that chose seamless realtime releases keeps them.
+          { name: "REALTIME_RELEASES", type: "plain_text", text: "seamless" },
           { name: "ALLOWED_REGISTRATION_EMAILS", type: "plain_text", text: "owner@example.com" },
           {
             name: "ORG_QUOTA",
@@ -906,12 +947,40 @@ test("pending setup domain resumes without bootstrap and preserves current inven
         ],
       },
     }) as never;
-  let deploys = 0;
-  cf.run = async (args: string[]) => {
-    assert.equal(args[0], "deploy");
-    deploys++;
-    if (deploys === 1) throw new Error("connection lost");
-    return "";
+  await mkdir(join(releaseDir, 'worker'));
+  await mkdir(join(releaseDir, 'realtime'));
+  await writeFile(join(releaseDir, 'worker/index.js'), 'fixture main');
+  await writeFile(join(releaseDir, 'realtime/worker.js'), 'fixture realtime');
+  await writeFile(join(releaseDir, 'wrangler.realtime.json'), JSON.stringify({ name: 'fixture' }));
+  const originalRequest = cf.request;
+  cf.request = async function<T>(path: string, options?: CloudflareRequestOptions) {
+    if (path.endsWith('/subdomain')) return { success: true, result: { subdomain: 'example' } } as never;
+    if (path.includes('/workers/scripts/agw-rt-')) throw new CliError('cloudflare_error', 'Worker missing [code: 10090]', '');
+    return originalRequest<T>(path, options);
+  };
+  let deploys = 0; let build = ''; let realtimeId = '';
+  const generated: { name: string; vars: Record<string, string>; account_id: string; d1_databases: { database_id: string }[]; services: { service: string }[] }[] = [];
+  const savedFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = savedFetch; });
+  globalThis.fetch = async url => Response.json(String(url).includes('agw-rt-')
+    ? { ok: true, releaseId: realtimeId, backendContract: 1 }
+    : { ok: true, buildId: build, ready: true, backendContract: 1 });
+  cf.run = async (args: string[], options) => {
+    if (args[0] === 'deploy') {
+      const configuration = JSON.parse(await readFile(args[args.indexOf('--config') + 1]!, 'utf8'));
+      generated.push(configuration);
+      if (options?.companion) realtimeId = configuration.vars.REALTIME_RELEASE_ID;
+      else { build = configuration.vars.GATEWAY_BUILD_ID; if (++deploys === 1) throw new Error('connection lost'); }
+    }
+    if (args[0] === 'd1' && args[1] === 'execute') {
+      const sql = args[args.indexOf('--command') + 1]!;
+      const results = sql.includes('RETURNING deployment_owner') ? [{ deployment_owner: /deployment_owner='([^']+)'/.exec(sql)?.[1] }]
+        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] ?? null }] : [];
+      return JSON.stringify([{ results, success: true }]);
+    }
+    if (args[0] === 'deployments') return JSON.stringify([{ created_on: new Date().toISOString(), versions: [{ version_id: 'fixture-version', percentage: 100 }] }]);
+    if (args[0] === 'versions') return JSON.stringify({ resources: { bindings: [{ name: 'GATEWAY_BUILD_ID', type: 'plain_text', text: build }] } });
+    return '';
   };
   const journal: InstallationJournal = {
     id: "deployment-1",
@@ -953,10 +1022,15 @@ test("pending setup domain resumes without bootstrap and preserves current inven
   assert.equal(saved.pendingDomain, undefined);
   assert.equal(saved.vars?.["CUSTOM_SETTING"], "current-value");
   assert.equal(saved.vars?.["ALLOWED_REGISTRATION_EMAILS"], "owner@example.com");
-  const generated = JSON.parse(
-    await readFile(join(dir, "deployments", journal.id, "wrangler.json"), "utf8"),
-  ) as { vars: Record<string, string> };
-  assert.equal(generated.vars["ALLOWED_REGISTRATION_EMAILS"], "owner@example.com");
+  const primary = generated.findLast(configuration => configuration.name === 'worker')!;
+  assert.equal(primary.vars.ALLOWED_REGISTRATION_EMAILS, 'owner@example.com');
+  assert.equal(primary.vars.DEPLOYMENT_ID, journal.id);
+  assert.equal(primary.vars.REALTIME_RELEASES, "seamless");
+  assert.equal(primary.account_id, journal.accountId);
+  assert.equal(primary.d1_databases[0]!.database_id, 'db');
+  const realtime = generated.find(configuration => configuration.name.startsWith('agw-rt-'))!;
+  assert.equal(realtime.vars.GATEWAY_ORIGIN, 'https://new.example.com');
+  assert.equal(realtime.services[0]!.service, 'worker');
   assert.ok(saved.domains?.includes("existing.example.com"));
 });
 
@@ -1187,16 +1261,41 @@ async function freshInstall(
   bootstrapAnswers: (attempt: number) => unknown,
 ) {
   const cf = cfMock();
-  // The Worker secrets each deploy uploaded, read before the CLI deletes their file.
+  await mkdir(join(releaseDirectory, 'worker'), { recursive: true });
+  await mkdir(join(releaseDirectory, 'realtime'), { recursive: true });
+  await writeFile(join(releaseDirectory, 'worker/index.js'), 'fixture main');
+  await writeFile(join(releaseDirectory, 'realtime/worker.js'), 'fixture realtime');
+  await writeFile(join(releaseDirectory, 'wrangler.realtime.json'), JSON.stringify({ name: 'fixture', compatibility_date: '2026-07-24' }));
   const uploaded: Record<string, string>[] = [];
-  const run = cf.run;
-  cf.run = async function (args: string[], options?: unknown) {
-    const at = args.indexOf("--secrets-file");
-    if (at >= 0) {
-      const file = args[at + 1]!;
-      uploaded.push(JSON.parse(await readFile(file, "utf8")) as Record<string, string>);
+  const originalRequest = cf.request.bind(cf);
+  cf.request = async function<T>(path: string, options?: CloudflareRequestOptions) {
+    if (path.includes('/workers/scripts/agw-rt-')) throw new CliError('cloudflare_error', 'Worker missing [code: 10090]', '');
+    return originalRequest<T>(path, options);
+  };
+  let build = ''; let realtimeId = '';
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async url => Response.json(String(url).includes('/v1/healthz') && String(url).includes('agw-rt-')
+    ? { ok: true, releaseId: realtimeId, backendContract: 1 }
+    : { ok: true, buildId: build, ready: true, backendContract: 1 });
+  const previousRun = cf.run;
+  cf.run = async function(args: string[], options) {
+    await previousRun.call(this, args, options);
+    if (args[0] === 'deploy') {
+      const configuration = JSON.parse(await readFile(args[args.indexOf('--config') + 1]!, 'utf8')) as { vars: Record<string, string> };
+      if (options?.companion) realtimeId = configuration.vars.REALTIME_RELEASE_ID!;
+      else build = configuration.vars.GATEWAY_BUILD_ID!;
+      const at = args.indexOf('--secrets-file');
+      if (at >= 0) uploaded.push(JSON.parse(await readFile(args[at + 1]!, 'utf8')) as Record<string, string>);
     }
-    return run.call(this, args, options as never);
+    if (args[0] === 'd1' && args[1] === 'execute') {
+      const sql = args[args.indexOf('--command') + 1]!;
+      const results = sql.includes('RETURNING deployment_owner') ? [{ deployment_owner: /deployment_owner='([^']+)'/.exec(sql)?.[1] }]
+        : sql.includes('RETURNING active_realtime_id') ? [{ active_realtime_id: /active_realtime_id='([^']+)'/.exec(sql)?.[1] ?? null }] : [];
+      return JSON.stringify([{ results, success: true }]);
+    }
+    if (args[0] === 'deployments') return JSON.stringify([{ created_on: new Date().toISOString(), versions: [{ version_id: 'fixture-version', percentage: 100 }] }]);
+    if (args[0] === 'versions') return JSON.stringify({ resources: { bindings: [{ name: 'GATEWAY_BUILD_ID', type: 'plain_text', text: build }] } });
+    return '';
   };
   const bodies: unknown[] = [];
   const ctx = stubContext({
@@ -1227,7 +1326,7 @@ async function freshInstall(
     cf,
     artifact,
   );
-  return { run: installing, bodies, ctx, uploaded };
+  return { run: installing.finally(() => { globalThis.fetch = savedFetch; }), bodies, ctx, uploaded };
 }
 
 test("the warming retry backs off, gives up, and knows which failures to repeat", async () => {
@@ -1363,4 +1462,9 @@ test("a bootstrap that refuses is not retried into a rate limit", async (t) => {
   });
   await assert.rejects(() => run, hasCode("conflict"));
   assert.equal(bodies.length, 1);
+});
+
+test("a stopped wrangler run settles with the reason it was stopped for, once wrangler has exited", async () => {
+  const reason = new Error("deployment lease lost");
+  await assert.rejects(() => runWrangler(["--version"], { signal: AbortSignal.abort(reason) }), (error) => error === reason);
 });

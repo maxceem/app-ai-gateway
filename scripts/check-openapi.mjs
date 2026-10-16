@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const outputPath = fileURLToPath(new URL("../openapi/openapi.json", import.meta.url));
 const before = readFileSync(outputPath, "utf8");
+const routesPath = fileURLToPath(new URL("../src/contracts/inference-routes.ts", import.meta.url));
+const routesBefore = readFileSync(routesPath, "utf8");
 const result = spawnSync(process.execPath, ["--experimental-strip-types", "scripts/generate-openapi.ts"], {
   cwd: projectRoot,
   encoding: "utf8",
@@ -15,7 +17,7 @@ if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
 const after = readFileSync(outputPath, "utf8");
-if (before !== after) {
+if (before !== after || routesBefore !== readFileSync(routesPath, "utf8")) {
   console.error("openapi/openapi.json is stale. Run `pnpm openapi:generate` and commit the result.");
   process.exit(1);
 }

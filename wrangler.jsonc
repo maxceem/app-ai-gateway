@@ -50,6 +50,7 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "REALTIME_SESSION", "class_name": "RealtimeSession" },
       { "name": "USER_LIMITER", "class_name": "UserLimiter" },
       { "name": "ORG_QUOTA", "class_name": "OrgQuota" },
       { "name": "ENDPOINT_RATE_LIMITER", "class_name": "EndpointRateLimiter" }
@@ -60,7 +61,8 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
     { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] },
-    { "tag": "v3", "new_sqlite_classes": ["EndpointRateLimiter"] }
+    { "tag": "v3", "new_sqlite_classes": ["EndpointRateLimiter"] },
+    { "tag": "v4", "new_sqlite_classes": ["RealtimeSession"] }
   ]
   // This file is the complete self-hosted configuration and what the Deploy to
   // Cloudflare button uses. Deployment-specific additions (a custom domain, a

@@ -1,7 +1,9 @@
+import { AdmissionReceipts } from "./admission-receipts";
 import { DurableObject } from "cloudflare:workers";
 
 export interface QuotaAdmissionInput {
   /** The allowance period's schedule and start, which is all the counter is keyed by. */
+  admissionId?: string;
   periodId: string;
   /** When the period resets, which is all a refusal's `Retry-After` needs. */
   periodEnd: string;
@@ -28,6 +30,12 @@ export type QuotaAdmission =
  * leasing admissions per isolate was refused.
  */
 export class OrgQuota extends DurableObject<Env> {
+  /** Realtime admission receipts, whose table is created once per object instance. */
+  private admissionReceipts: AdmissionReceipts | null = null;
+  private receipts(): AdmissionReceipts {
+    return this.admissionReceipts ??= new AdmissionReceipts(this.ctx.storage.sql);
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -51,7 +59,24 @@ export class OrgQuota extends DurableObject<Env> {
    * as though that month were exhausted. An unclaimed account whose one window
    * has closed never gets this far — the account gate refuses it first.
    */
+  receipt(admissionId: string): QuotaAdmission | null {
+    return this.receipts().read(admissionId);
+  }
+
   admit(input: QuotaAdmissionInput): QuotaAdmission {
+    if (!input.admissionId) return this.claim(input);
+    return this.ctx.storage.transactionSync(() => {
+      const receipts = this.receipts();
+      const fingerprint = JSON.stringify([input.periodId, input.periodEnd, input.limit]);
+      const previous = receipts.read<QuotaAdmission>(input.admissionId!, fingerprint);
+      if (previous) return previous;
+      const result = this.claim(input);
+      receipts.save(input.admissionId!, fingerprint, result);
+      return result;
+    });
+  }
+
+  private claim(input: QuotaAdmissionInput): QuotaAdmission {
     const now = Date.now();
     const end = Date.parse(input.periodEnd);
     const limit = Number.isFinite(input.limit) ? Math.max(0, Math.trunc(input.limit)) : 0;

@@ -268,6 +268,73 @@ public actor AppAIGatewayClient {
         )
     }
 
+    /// The WebSocket URL for one new realtime conversation.
+    ///
+    /// The client sends this discovery request itself: a `GET` built and
+    /// signed like every other gateway request, and built and sent once more
+    /// on a `401`, as ``withAuthorizedRequest(provider:providerPath:method:body:contentType:send:)``
+    /// does. The URL names the gateway release that serves the conversation,
+    /// so discover again for each one rather than keeping it. A refusal is
+    /// thrown as a ``GatewayError``.
+    public func realtimeURL(provider: String, model: String) async throws -> URL {
+        let base = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        let host = base?.host ?? ""
+        let local = host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+        guard base?.user == nil, base?.password == nil, base?.fragment == nil,
+              base?.scheme == "https" || (base?.scheme == "http" && local), !model.isEmpty else { throw URLError(.unsupportedURL) }
+        var connection = URLComponents(url: baseURL.appending(path: "v1/apps/\(appID)/realtime/\(provider)/connection"), resolvingAgainstBaseURL: false)!
+        connection.queryItems = [URLQueryItem(name: "model", value: model)]
+        let url = connection.url!
+        let session = self.session
+        let (data, response) = try await retryingOnce(send: { try await session.data(for: $0) }) {
+            var request = try await self.authorizedRequest(url: url, method: "GET", body: nil, contentType: nil)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            return request
+        }
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if let refusal = GatewayError(response: http, body: data) { throw refusal }
+        struct Connection: Decodable { let url: String }
+        let discovery = try JSONDecoder().decode(Connection.self, from: data)
+        guard let discovered = URLComponents(string: discovery.url), let socketURL = discovered.url,
+              discovered.user == nil, discovered.password == nil, discovered.fragment == nil,
+              discovered.host?.isEmpty == false else { throw URLError(.badURL) }
+        let discoveredHost = discovered.host ?? ""
+        let discoveredLocal = discoveredHost == "localhost" || discoveredHost.hasSuffix(".localhost") || discoveredHost == "127.0.0.1" || discoveredHost == "::1" || discoveredHost == "[::1]"
+        guard discovered.scheme == "wss" || (discovered.scheme == "ws" && local && discoveredLocal) else { throw URLError(.unsupportedURL) }
+        return socketURL
+    }
+
+    /// The WebSocket URL for one new realtime conversation. See the
+    /// `provider: String` form.
+    public func realtimeURL(provider: ProviderSlug, model: String) async throws -> URL {
+        try await realtimeURL(provider: provider.rawValue, model: model)
+    }
+
+    /// A WebSocket handshake for one new realtime conversation, ready to pass
+    /// to `URLSession.webSocketTask(with:)`.
+    ///
+    /// Discovers the conversation's URL with ``realtimeURL(provider:model:)``,
+    /// then builds the handshake as every gateway request is built: where the
+    /// app verifies App Attest on every request, it carries a proof signed over
+    /// this one handshake, and the gateway refuses it a second time. Build a
+    /// new one for every connection, a reconnect included. Each response the
+    /// conversation generates counts as one request; the handshake and the
+    /// audio sent over the socket do not.
+    public func authorizedRealtimeRequest(provider: String, model: String) async throws -> URLRequest {
+        try await authorizedRequest(
+            url: realtimeURL(provider: provider, model: model),
+            method: "GET",
+            body: nil,
+            contentType: nil
+        )
+    }
+
+    /// A WebSocket handshake for one new realtime conversation. See the
+    /// `provider: String` form.
+    public func authorizedRealtimeRequest(provider: ProviderSlug, model: String) async throws -> URLRequest {
+        try await authorizedRealtimeRequest(provider: provider.rawValue, model: model)
+    }
+
     /// A server-configured endpoint. The provider, model, and any baked
     /// parameters live in the gateway's endpoint row, so the caller sends only
     /// the request body its slug expects.

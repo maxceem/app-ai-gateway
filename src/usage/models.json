@@ -1,5 +1,7 @@
 {
   "openai": {
+    "gpt-realtime-mini": { "input": 0.6, "output": 2.4, "cached_input": 0.06, "audio_input": 10, "audio_output": 20, "cached_audio_input": 0.3 },
+    "gpt-realtime": { "input": 4, "output": 16, "cached_input": 0.4, "audio_input": 32, "audio_output": 64, "cached_audio_input": 0.4 },
     "text-embedding-3-large": { "input": 0.13, "output": 0.0 },
     "text-embedding-3-small": { "input": 0.02, "output": 0.0 },
     "gpt-4o": { "input": 2.5, "cached_input": 1.25, "output": 10.0 },

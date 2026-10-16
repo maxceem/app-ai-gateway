@@ -15,7 +15,7 @@
 import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "./gateway-token";
-import { PROOF_HEADER, verifyRequestProof } from "./request-proof";
+import { PROOF_HEADER, requireRegisteredKey, verifyRequestProof } from "./request-proof";
 import { organizationProviders, type OrganizationProviders } from "../providers/provider-store";
 import { providerDescriptor, type ProviderType } from "../shared/providers";
 import {
@@ -271,6 +271,12 @@ export interface AuthenticatedRequest {
  * `body` reads the request body, once: the caller shares the same bytes with
  * whatever prepares the request afterwards, so the proof is checked over
  * exactly what is forwarded from, before anything rewrites it.
+ *
+ * `proofVerified` is set only by a realtime session re-checking, while it
+ * runs, the credential its WebSocket handshake carried. The handshake's proof
+ * signed that one request and its counter is spent, so the session re-verifies
+ * the token, the application and the install's registered key, not a proof it
+ * no longer has.
  */
 export async function authenticateRequest(input: {
   env: Env;
@@ -279,6 +285,7 @@ export async function authenticateRequest(input: {
   body: () => Promise<Uint8Array>;
   providerSlug?: string | undefined;
   providers?: Promise<OrganizationProviders> | undefined;
+  proofVerified?: boolean;
 }): Promise<AuthenticatedRequest> {
   const { env, app, request } = input;
   const headers = request.headers;
@@ -297,6 +304,12 @@ export async function authenticateRequest(input: {
   // alone, and a proof header beside it is ignored: not verified, and its
   // counter never reaches the install's limiter.
   if (identity.authMethod !== "attest" || !auth.verifiesEveryRequest) {
+    return { identity, credential, assertionCounter: null };
+  }
+  if (input.proofVerified === true) {
+    // Nothing left to sign, but the key the proof was checked against must
+    // still be one the application accepts, as it is on every signed request.
+    await requireRegisteredKey(env, app, identity.installId);
     return { identity, credential, assertionCounter: null };
   }
   const header = headers.get(PROOF_HEADER);

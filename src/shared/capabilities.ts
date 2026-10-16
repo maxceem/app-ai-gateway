@@ -274,3 +274,11 @@ export function narrowedCapability(
       : base.endpointStyles,
   };
 }
+
+/** Separate from HTTP ApiStyle: sockets carry provider-native event streams. */
+export const REALTIME_PROTOCOLS = ["openai_realtime", "gemini_live"] as const;
+export type RealtimeProtocol = (typeof REALTIME_PROTOCOLS)[number];
+export function realtimeProtocols(route: ProviderRoute | null, provider: ProviderType, customOrigin = false): RealtimeProtocol[] {
+  // Gemini remains unavailable until a current profile passes live conformance.
+  return route === "direct" && provider === "openai" && !customOrigin ? ["openai_realtime"] : [];
+}

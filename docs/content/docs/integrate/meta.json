@@ -1,4 +1,11 @@
 {
   "title": "Integrate your app",
-  "pages": ["ios", "server", "proxy", "endpoints", "errors"]
+  "pages": [
+    "ios",
+    "server",
+    "proxy",
+    "endpoints",
+    "realtime",
+    "errors"
+  ]
 }

@@ -171,6 +171,8 @@ function render(
     case "deployment setup":
     case "deployment update":
     case "deployment domain":
+    case "deployment cleanup":
+    case "deployment rollback":
       return deployment(result, style);
   }
 }
@@ -650,6 +652,7 @@ function written(
 
 /** The three deployment plans, each printed as the fields it actually carries. */
 function deployment(result: RenderedResult, style: Style): string[] {
+  if ("action" in result && "worker" in result) return kv([[result.dryRun ? "Would perform" : "Action", result.action], ["Worker", result.worker], ["Release", result.releaseId], ["Completed", result.completed ? "yes" : undefined]], style);
   if ("hostname" in result)
     return kv(
       [
@@ -671,6 +674,7 @@ function deployment(result: RenderedResult, style: Style): string[] {
         ["Database", result.databaseId],
         ["From version", result.fromVersion],
         ["To version", result.toVersion],
+        ["Realtime releases", result.realtimeReleases],
         ["Updated", result.updated ? "yes" : undefined],
       ],
       style,

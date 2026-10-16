@@ -282,6 +282,18 @@ budget across all of its targets, so the wait for response headers cannot exceed
 that never answers consumes the whole budget and leaves no time for a fallback.
 Lowering the value shortens that wait; it does not reserve time for fallbacks.
 
+## Realtime
+
+### `REALTIME_RELEASES`
+
+Plain variable, unset by default. Unset or `simple`, the gateway serves
+[realtime sessions](/integrate/realtime) itself, and an update ends the
+conversations open at that moment. `seamless` runs them in a Worker of their
+own for each release, so open conversations survive updates, at the cost of
+a `workers.dev` subdomain and Worker permissions the deploy needs. See
+[Seamless realtime releases](/self-hosting/updating#seamless-realtime-releases)
+for how to turn it on and off.
+
 ## Nightly maintenance
 
 ### `MAINTENANCE_QUERY_BUDGET`

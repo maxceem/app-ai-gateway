@@ -1,3 +1,5 @@
+import { AdmissionReceipts } from "./admission-receipts";
+import { REALTIME_LIMITS } from "../realtime/limits";
 import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
@@ -46,6 +48,8 @@ export const COUNTER_WINDOW = 64;
 const MASK_64 = (1n << 64n) - 1n;
 
 export interface LimiterCheckInput {
+  admissionId?: string;
+  freshSpend?: boolean;
   now: number;
   /**
    * The counter of the App Attest assertion the request was signed with, on
@@ -69,6 +73,12 @@ export interface LimiterStatus {
 }
 
 export class UserLimiter extends DurableObject<Env> {
+  /** Realtime admission receipts, whose table is created once per object instance. */
+  private admissionReceipts: AdmissionReceipts | null = null;
+  private receipts(): AdmissionReceipts {
+    return this.admissionReceipts ??= new AdmissionReceipts(this.ctx.storage.sql);
+  }
+
   /**
    * The last read of each ledger's month, by its full identity — app, scope,
    * key and month. One object can be asked for more than one: an install's is
@@ -105,6 +115,10 @@ export class UserLimiter extends DurableObject<Env> {
           counter_high INTEGER NOT NULL,
           counter_seen TEXT NOT NULL
         );
+        -- The realtime sessions this scope holds open, each a lease its
+        -- session renews while it lives, so a session that dies without
+        -- releasing stops counting once its lease runs out.
+        CREATE TABLE IF NOT EXISTS session_leases (session_id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       `);
     });
   }
@@ -174,6 +188,10 @@ export class UserLimiter extends DurableObject<Env> {
    * silently spend a minute token. A counter, once seen, stays spent.
    */
   async checkAndIncrement(input: LimiterCheckInput): Promise<LimiterCheckResult> {
+    const fingerprint = JSON.stringify(input);
+    const receipts = input.admissionId ? this.receipts() : null;
+    const previous = input.admissionId ? receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint) : null;
+    if (previous) return previous;
     // A caller-supplied clock decides which window a request lands in; a
     // nonsensical one falls back to real time rather than to window "NaN".
     const now = Number.isFinite(input.now) ? input.now : Date.now();
@@ -185,8 +203,24 @@ export class UserLimiter extends DurableObject<Env> {
     }
     // Only fills the cache, so nothing decided after it can be invalidated by
     // a concurrent caller meanwhile.
-    const spent = input.monthlyBudgetMicrousd === null ? 0 : await this.monthlySpend(input.spend, now);
+    const spent = input.monthlyBudgetMicrousd === null
+      ? 0
+      : await this.monthlySpend(input.spend, now, input.freshSpend);
 
+    return this.ctx.storage.transactionSync(() => {
+      const previous = input.admissionId ? receipts!.read<LimiterCheckResult>(input.admissionId, fingerprint) : null;
+      if (previous) return previous;
+      const result = this.claimWindows(input, now, spent);
+      if (input.admissionId) receipts!.save(input.admissionId, fingerprint, result);
+      return result;
+    });
+  }
+
+  receipt(admissionId: string): LimiterCheckResult | null {
+    return this.receipts().read(admissionId);
+  }
+
+  private claimWindows(input: LimiterCheckInput, now: number, spent: number): LimiterCheckResult {
     const windows = this.windowCounts(now);
     const minuteCount = windows.minute;
     const dayCount = windows.day;
@@ -272,8 +306,11 @@ export class UserLimiter extends DurableObject<Env> {
    * cold start or a refresh boundary costs D1 one query rather than one each;
    * a failed read is forgotten, so the next request tries again.
    */
-  private async monthlySpend(key: SpendKey, now: number): Promise<number> {
+  private async monthlySpend(key: SpendKey, now: number, fresh = false): Promise<number> {
     const month = this.month(now);
+    // A realtime generation's admission reads D1 itself: its budget must see
+    // the turn its session settled just before, not a figure cached across it.
+    if (fresh) return monthlySpendMicrousd(this.env.DB, key, month);
     const identity = JSON.stringify([key.appId, key.scope, key.key, month]);
     const cached = this.spend.get(identity);
     if (cached && now - cached.readAt < SPEND_REFRESH_MS) return cached.microusd;
@@ -314,6 +351,32 @@ export class UserLimiter extends DurableObject<Env> {
       dayKey,
       day,
     );
+  }
+
+  acquireSession(sessionId: string, cap: number): { allowed: boolean; expiresAt: number } {
+    if (!Number.isSafeInteger(cap) || cap <= 0) throw new RangeError("Invalid session cap");
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      this.ctx.storage.sql.exec("DELETE FROM session_leases WHERE expires_at <= ?", now);
+      const existing = this.ctx.storage.sql.exec<{ expires_at: number }>("SELECT expires_at FROM session_leases WHERE session_id = ?", sessionId).toArray()[0];
+      if (existing) return { allowed: true, expiresAt: existing.expires_at };
+      const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM session_leases").one().count;
+      if (count >= cap) return { allowed: false, expiresAt: 0 };
+      const expiresAt = now + REALTIME_LIMITS.leaseMs;
+      this.ctx.storage.sql.exec("INSERT INTO session_leases VALUES (?, ?)", sessionId, expiresAt);
+      return { allowed: true, expiresAt };
+    });
+  }
+
+  renewSession(sessionId: string): { allowed: boolean; expiresAt: number } {
+    const now = Date.now();
+    const expiresAt = now + REALTIME_LIMITS.leaseMs;
+    const rows = this.ctx.storage.sql.exec("UPDATE session_leases SET expires_at = ? WHERE session_id = ? AND expires_at > ? RETURNING session_id", expiresAt, sessionId, now).toArray();
+    return { allowed: rows.length === 1, expiresAt: rows.length ? expiresAt : 0 };
+  }
+
+  releaseSession(sessionId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM session_leases WHERE session_id = ?", sessionId);
   }
 
   getStatus(now: number): LimiterStatus {

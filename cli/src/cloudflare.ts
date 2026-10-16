@@ -1,6 +1,8 @@
+import { companionEnvironment } from '../../scripts/seamless.ts';
 import { spawn } from "node:child_process";
 import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { CliError, fail } from "./common.ts";
@@ -10,11 +12,14 @@ import type { Flags } from "./parser.ts";
 const require = createRequire(import.meta.url);
 
 export interface WranglerOptions {
+  companion?: boolean;
   cwd?: string;
   input?: string;
   interactive?: boolean;
   /** Secret values that must never appear in a reported failure. */
   redact?: string[];
+  /** Stops wrangler; the run still settles only once the process has exited. */
+  signal?: AbortSignal;
 }
 
 export type WranglerRunner = (args: string[], options?: WranglerOptions) => Promise<string>;
@@ -70,10 +75,10 @@ export function wranglerFailure(
  * from what wrangler said about it.
  */
 export function wranglerEnvironment({
-  interactive = false,
-}: Pick<WranglerOptions, "interactive"> = {}): NodeJS.ProcessEnv {
+  interactive = false, companion = false,
+}: Pick<WranglerOptions, "interactive" | "companion"> = {}): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...(companion ? companionEnvironment(process.env) : process.env),
     WRANGLER_SEND_METRICS: "false",
     WRANGLER_LOG: "log",
     CI: interactive ? "" : "true",
@@ -82,12 +87,12 @@ export function wranglerEnvironment({
 
 export async function runWrangler(
   args: string[],
-  { cwd, input, interactive = false, redact }: WranglerOptions = {},
+  { cwd, input, interactive = false, redact, companion = false, signal }: WranglerOptions = {},
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, [require.resolve("wrangler/bin/wrangler.js"), ...args], {
+    const child = spawn(process.execPath, [join(dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js"), ...args], {
       ...(cwd === undefined ? {} : { cwd }),
-      env: wranglerEnvironment({ interactive }),
+      env: wranglerEnvironment({ interactive, companion }),
       stdio: [input ? "pipe" : interactive ? "inherit" : "ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -101,6 +106,9 @@ export async function runWrangler(
       if (interactive) process.stderr.write(data);
     });
     if (input) child.stdin?.end(input);
+    const stop = () => child.kill("SIGTERM");
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
     child.once("error", () =>
       reject(
         new CliError(
@@ -112,7 +120,9 @@ export async function runWrangler(
       ),
     );
     child.once("close", (code) => {
-      if (code !== 0) reject(wranglerFailure(args, code, errors || output, redact));
+      signal?.removeEventListener("abort", stop);
+      if (signal?.aborted) reject(signal.reason);
+      else if (code !== 0) reject(wranglerFailure(args, code, errors || output, redact));
       else resolve(output);
     });
   });

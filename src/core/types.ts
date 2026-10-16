@@ -38,6 +38,8 @@ interface GatewayIdentityFields {
    */
   credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
+  /** Verified gateway-token expiration, epoch milliseconds. */
+  expiresAt?: number;
 }
 
 /**
@@ -73,6 +75,8 @@ export type ModalityCounts = Partial<Record<Modality | "unknown", number>>;
 export interface ModalityTokens {
   input?: ModalityCounts;
   output?: ModalityCounts;
+  /** Cached input, disjoint from the uncached input breakdown. */
+  cachedInput?: ModalityCounts;
 }
 
 export interface UsageCounts {

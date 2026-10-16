@@ -26,6 +26,11 @@ and turn the `workers.dev` address off:
 pnpm run deploy --profile prod
 ```
 
+With [seamless realtime releases](/self-hosting/updating#seamless-realtime-releases)
+turned on, realtime sessions are the exception: they connect to a per-release
+Worker on your account's `workers.dev` subdomain, so keep that subdomain
+enabled.
+
 The domain must be a zone in the same Cloudflare account. With
 `custom_domain: true`, Cloudflare creates the DNS record and the certificate
 for you.

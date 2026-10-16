@@ -3,3 +3,7 @@ import "../proxy.test";
 import "../endpoints.test";
 import "../request-proof.test";
 import "../gateway-errors.test";
+
+import "../realtime.test";
+
+import "../realtime-failures.test";

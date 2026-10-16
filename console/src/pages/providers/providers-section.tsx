@@ -168,7 +168,7 @@ export function ProvidersSection() {
                     </Badge>
                   </TableCell>
                   {/* The slug is a URL segment, so it is shown exactly as typed. */}
-                  <TableCell className="font-mono text-xs">{row.slug}</TableCell>
+                  <TableCell className="font-mono text-xs">{row.slug}{row.realtimeProtocols?.includes("openai_realtime") && <div className="mt-1 font-sans text-xs text-muted-foreground">OpenAI Realtime</div>}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     <Auth row={row} gateways={gateways} />
                   </TableCell>

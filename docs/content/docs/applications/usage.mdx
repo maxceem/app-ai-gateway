@@ -87,3 +87,9 @@ per-user rate limits bound how much can go unmetered. See
   for the event list, paged by `next_before_id`. Each event carries
   `install_id`, the install's App Attest key id on an iOS app and `null` on a
   server app.
+
+## Realtime sessions
+
+A [realtime WebSocket](/integrate/realtime) conversation records one event
+per generated response, each counted as one request, including one cancelled
+or cut off by a disconnect. Connection setup and audio add no requests.
