@@ -174,8 +174,6 @@ Google. A deployment that owns a stable hostname leaves it unset. See
 
 ## Email verification
 
-### `EMAIL` and `EMAIL_FROM`
-
 Unset by default, and then nothing is verified: every sign-in is trusted with
 the address it gave, and `ALLOWED_REGISTRATION_EMAILS` is the only check on
 who registers. Anyone who knows a listed address could register it before its
@@ -183,26 +181,9 @@ owner does. They would get an account of their own, with no access to anyone
 else's, and the owner could not register that address until the sign-in was
 removed.
 
-To verify addresses, send email from the Worker with
-[Cloudflare Email Service](https://developers.cloudflare.com/email-service/):
-
-1. Onboard a domain you own to Email Sending, in the dashboard or with
-   `pnpm exec wrangler email sending enable example.com`. A `workers.dev`
-   address cannot send email.
-2. Add a `send_email` binding named `EMAIL` to the Worker's configuration, in
-   your profile overlay:
-
-   ```jsonc
-   {
-     "send_email": [{ "name": "EMAIL" }],
-     "vars": { "EMAIL_FROM": "gateway@example.com" }
-   }
-   ```
-
-3. Set `EMAIL_FROM`, a plain variable, to the address on that domain the
-   emails come from, and deploy.
-
-With the binding in place:
+To verify addresses, give the gateway a way to send email: an SMTP server from
+any mail provider, or Cloudflare Email Service. Configuring either one turns
+verification on:
 
 - A sign-up with a password is sent a link that verifies its address. It
   lasts 24 hours, and the console offers to send a new one. A Google sign-in
@@ -212,12 +193,63 @@ With the binding in place:
   works, so apps, providers and keys can all be set up first.
 - Claiming the account `agw deployment setup` creates waits for a verified
   address too: the approval page asks for it after you create your sign-in.
-- Accounts that existed before you added the binding are unaffected, and keep
-  serving requests whoever owns them.
+- Accounts that existed before you turned verification on are unaffected, and
+  keep serving requests whoever owns them.
 
-`/v1/healthz` reports `"email": "ok"` once the binding and `EMAIL_FROM` are
-both set, `"misconfigured"` with the binding alone, when no link can be sent,
-and `"off"` without the binding.
+Both ways need a domain you own, with the records your mail provider asks for
+(SPF and DKIM), or verification emails land in spam. A `workers.dev` address
+cannot send email.
+
+### SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
+
+Works on the Workers Free plan, with any provider that offers SMTP sending.
+Set three plain variables and one secret, plus `EMAIL_FROM`. Setting any one of
+them counts as choosing SMTP, so one left out is reported rather than ignored:
+
+| Name | Kind | Value |
+| --- | --- | --- |
+| `SMTP_HOST` | Variable | Your provider's SMTP server, for example `smtp.example.com`. |
+| `SMTP_PORT` | Variable | `465` (the default) for TLS from the start, or the port your provider gives for STARTTLS, usually `587`. Port 25 is not available to Workers. |
+| `SMTP_USERNAME` | Variable | The account the gateway signs in as, usually the sending address. |
+| `SMTP_PASSWORD` | Secret | Its password, or an app password where your provider has them. |
+| `EMAIL_FROM` | Variable | The address emails come from. |
+
+```sh
+pnpm exec wrangler secret put SMTP_PASSWORD
+```
+
+The gateway only signs in over an encrypted connection: on a port other than
+465 it refuses to send the password if the server does not offer STARTTLS.
+
+### Cloudflare Email Service: `EMAIL`
+
+Needs the Workers Paid plan to send to anyone but yourself.
+
+1. Onboard your domain to
+   [Email Sending](https://developers.cloudflare.com/email-service/), in the
+   dashboard or with `pnpm exec wrangler email sending enable example.com`.
+2. Add a `send_email` binding named `EMAIL` and set `EMAIL_FROM` to an address
+   on that domain, in your profile overlay:
+
+   ```jsonc
+   {
+     "send_email": [{ "name": "EMAIL" }],
+     "vars": { "EMAIL_FROM": "gateway@example.com" }
+   }
+   ```
+
+### `EMAIL_SENDER`
+
+Plain variable, unset by default. With only one way to send configured, the
+gateway uses it. With both, set `EMAIL_SENDER` to `smtp` or `cloudflare` to
+choose; switching is changing this one value.
+
+`/v1/healthz` reports `"email": "ok"` once the chosen way is ready to send,
+`"off"` with none configured, and `"misconfigured"` when one is configured but
+cannot send yet: a setting missing, `EMAIL_FROM` not an address, or both ways
+configured without `EMAIL_SENDER`. Verification stays on while it is
+misconfigured, and the Worker's logs name the setting to fix when a link
+cannot be sent.
 
 ## Hosts
 
@@ -394,8 +426,11 @@ so changing either means deploying again.
 | `CLI_CONSOLE_ORIGIN` | Variable | Current origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
 | `OAUTH_RELAY_URL` | Variable | Unset |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` | Variable | Unset (no verification); port `465` |
+| `SMTP_PASSWORD` | Secret | Unset; required with `SMTP_HOST` |
 | `EMAIL` | `send_email` binding | Unset (no verification) |
-| `EMAIL_FROM` | Variable | Unset; required with `EMAIL` |
+| `EMAIL_SENDER` | Variable | Unset; required when both are configured |
+| `EMAIL_FROM` | Variable | Unset; required to send |
 | `PUBLIC_API_URL` | Variable | Unset |
 | `MCP_ALLOWED_ORIGINS` | Variable | Unset |
 | `OAUTH_CIMD` | Variable | Unset (on) |

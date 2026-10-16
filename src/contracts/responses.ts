@@ -70,10 +70,10 @@ export const HealthResponseSchema = z.object({
   service: z.literal("app-ai-gateway"),
   vault: z.enum(["ok", "misconfigured"]),
   /**
-   * Whether this deployment verifies email addresses: `off` with no `EMAIL`
-   * binding, `ok` with one and a sender address, `misconfigured` with a binding
-   * but no usable `EMAIL_FROM`, where verification is required and no link can
-   * be sent.
+   * Whether this deployment verifies email addresses: `off` with no way to
+   * send email configured, `ok` with Cloudflare Email Service or SMTP ready to
+   * send, `misconfigured` with one that cannot send yet (a setting missing or
+   * contradictory), where verification is required and no link can be sent.
    */
   email: z.enum(["off", "ok", "misconfigured"]),
 });

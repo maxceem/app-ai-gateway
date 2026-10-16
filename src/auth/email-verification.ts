@@ -8,6 +8,7 @@ import { mgmtOrganizationUser, mgmtUser } from "../db/schema";
 import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
 import { derive } from "../routes/cli/security";
+import { emailSender, emailSetup } from "../email/sender";
 
 /**
  * Email verification, where the deployment sends email.
@@ -48,17 +49,13 @@ interface LinkClaims {
 }
 
 /**
- * Whether this deployment can send a verification email: `off` without an
- * `EMAIL` binding, `misconfigured` with one but no address to send from.
+ * Whether this deployment can send a verification email, as `/v1/healthz`
+ * reports it: `off` with no transport configured, `misconfigured` with one that
+ * cannot send yet, `ok` otherwise. Which transport, and what is wrong with it,
+ * stay out of a public answer; a failed send logs the setting to fix.
  */
 export function emailDeliveryStatus(env: Env): "off" | "ok" | "misconfigured" {
-  if (!env.EMAIL) return "off";
-  return senderAddress(env) === null ? "misconfigured" : "ok";
-}
-
-function senderAddress(env: Env): string | null {
-  const from = env.EMAIL_FROM?.trim();
-  return from && /^[^\s@]+@[^\s@]+$/u.test(from) ? from : null;
+  return emailSetup(env).state;
 }
 
 /**
@@ -149,8 +146,9 @@ function escapeHtml(text: string): string {
  * on the console once it is opened.
  *
  * Refuses where the deployment sends no email, and answers `email_unavailable`
- * where it should but cannot: no sender address, or Email Service refused the
- * message. Only the failure's kind is logged, never the address.
+ * where it should but cannot: its configuration is incomplete, or the
+ * transport refused the message. Only the setting to fix or the failure's kind
+ * is logged, never the address — an SMTP refusal quotes it.
  */
 export async function sendVerificationEmail(
   env: Env,
@@ -159,19 +157,20 @@ export async function sendVerificationEmail(
   returnTo: string | null,
   nowMs = Date.now(),
 ): Promise<void> {
-  const sender = env.EMAIL;
-  if (!sender || deployment.emailVerification === "off") {
+  const setup = emailSetup(env);
+  if (setup.state === "off" || deployment.emailVerification === "off") {
     throw new GatewayError(409, "conflict", "This deployment does not verify email addresses");
   }
-  const from = senderAddress(env);
-  if (from === null) {
-    log("error", "verification_email_unconfigured", { reason: "EMAIL_FROM is missing or not an address" });
+  if (setup.state === "misconfigured") {
+    log("error", "verification_email_unconfigured", { reason: setup.problem });
     throw new GatewayError(
       503,
       "email_unavailable",
-      "This deployment cannot send email yet: its sender address is not configured",
+      "This deployment cannot send email yet: its email settings are incomplete",
     );
   }
+  const sender = emailSender(env)!;
+  const { from } = setup;
   const token = await signLink(env, {
     u: person.id,
     e: person.email,
@@ -203,6 +202,7 @@ export async function sendVerificationEmail(
     });
   } catch (error) {
     log("error", "verification_email_failed", {
+      transport: sender.transport,
       reason: error instanceof Error ? error.name : typeof error,
       ...(typeof (error as { code?: unknown } | null)?.code === "string"
         ? { code: (error as { code: string }).code }

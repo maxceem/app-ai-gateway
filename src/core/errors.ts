@@ -168,7 +168,8 @@ export type ErrorCode =
   | "unsupported_snippet"
   /**
    * The deployment verifies email addresses but could not send a verification
-   * email: its `EMAIL_FROM` is missing, or Email Service refused the message.
+   * email: its email settings are incomplete, or the transport (Cloudflare
+   * Email Service or SMTP) refused the message.
    * Worth trying again later; the person managing the deployment fixes it.
    */
   | "email_unavailable"

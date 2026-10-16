@@ -46,14 +46,25 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
-  // A Cloudflare Email Service `send_email` binding. Bound means the deployment
-  // sends email, and then an account serves application traffic only once its
-  // owner has verified their address. Deliberately absent from wrangler.jsonc:
-  // sending needs a domain onboarded to Email Service, which a one-click
-  // workers.dev install does not have, so a deployment opts in by adding it.
+  // How the deployment sends email, if it does; see src/email/sender.ts. Any of
+  // these set means it does, and then an account serves application traffic
+  // only once its owner has verified their address. All deliberately absent
+  // from wrangler.jsonc, so the one-click deploy form does not ask about them.
+  //
+  // A Cloudflare Email Service `send_email` binding (Workers Paid), or a
+  // service binding with the same `send`.
   EMAIL?: SendEmail;
-  // The address verification emails are sent from, on a domain onboarded to
-  // Email Service. Required wherever EMAIL is bound. Not a secret.
+  // An SMTP server instead, from any mail provider: host, port (465 with TLS by
+  // default; any other port must offer STARTTLS) and sign-in. Not secrets,
+  // except SMTP_PASSWORD.
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_USERNAME?: string;
+  SMTP_PASSWORD?: string;
+  // `cloudflare` or `smtp`: which one to use where both are configured.
+  EMAIL_SENDER?: string;
+  // The address emails are sent from. Required with either transport. Not a
+  // secret.
   EMAIL_FROM?: string;
   // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
@@ -91,6 +102,11 @@ declare namespace Cloudflare {
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     EMAIL?: SendEmail;
+    SMTP_HOST?: string;
+    SMTP_PORT?: string;
+    SMTP_USERNAME?: string;
+    SMTP_PASSWORD?: string;
+    EMAIL_SENDER?: string;
     EMAIL_FROM?: string;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
