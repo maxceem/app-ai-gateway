@@ -26,7 +26,8 @@ export function parseCommands(body) {
 
 /** Keep only the rates the gateway understands. Future rates are report-only. */
 export function catalogRates(parsed) {
-  if (!parsed || parsed.unpriced) throw new Error("The official source has no supported public price for this model.");
+  if (!parsed) throw new Error("the official page does not list this model");
+  if (parsed.unpriced) throw new Error(`no public price, ${parsed.unpriced}`);
   const fields = [...PRICE_FIELDS, ...AUDIO_FIELDS, "long_context_threshold"];
   const price = Object.fromEntries(fields.filter((field) => parsed[field] !== undefined).map((field) => [field, parsed[field]]));
   const audio = AUDIO_FIELDS.filter((field) => price[field] !== undefined);

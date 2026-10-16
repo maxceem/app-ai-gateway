@@ -46,6 +46,14 @@ test("candidates: new IDs are priced individually, unsupported formats do not hi
   assert.deepEqual(catalogRates({ input: 1, output: 2, upcoming: [{ date: "2027-01-01", field: "input", value: 3 }] }), { input: 1, output: 2 });
 });
 
+test("candidates: a skip reason says why there is no price", () => {
+  const candidates = collectCandidates({ newModels: [{ provider: "groq", ids: ["llama-3.1-8b-instant", "missing-model"] }], official: { groq: { text: fixture("groq.md") } }, lists: noLists, today });
+  assert.deepEqual(candidates.map(({ problem }) => problem), [
+    "Unsupported public pricing: no public price, the page says to contact sales",
+    "Unsupported public pricing: the official page does not list this model",
+  ]);
+});
+
 test("commands: explicit actions, nested IDs, bounded batches, no executable syntax", () => {
   assert.deepEqual(parseCommands("/models add together/Qwen/Qwen3.8-Flash\n/models skip openai/gpt-4o Old model"), [
     { action: "add", provider: "together", model: "Qwen/Qwen3.8-Flash" }, { action: "skip", provider: "openai", model: "gpt-4o", reason: "Old model" },
