@@ -62,6 +62,8 @@ import {
   MonthSchema,
   OAuthConsentAllowRequestSchema,
   OAuthConsentProofSchema,
+  SendVerificationEmailRequestSchema,
+  ConfirmEmailVerificationRequestSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
   ProviderCreateRequestSchema,
@@ -103,6 +105,8 @@ import {
   MonthlyUsageResponseSchema,
   OAuthConsentDetailsResponseSchema,
   OAuthConsentRedirectResponseSchema,
+  SendVerificationEmailResponseSchema,
+  ConfirmEmailVerificationResponseSchema,
   OrganizationListResponseSchema,
   PricesResponseSchema,
   ProviderDeleteResponseSchema,
@@ -1473,6 +1477,45 @@ export const CATALOG = {
     response: OAuthConsentRedirectResponseSchema,
     responseDescription: "The client's redirect URI with `error=access_denied`.",
     errors: CONSENT_ERRORS,
+  },
+
+  /*
+   * Email verification, on a deployment that sends email. Both are the
+   * console's own and run on its origin alone. Neither needs an account: the
+   * person approving a claim has none yet, and has to verify before the claim
+   * can complete.
+   */
+  sendVerificationEmail: {
+    method: "POST",
+    path: "/v1/console/email-verification/send",
+    tags: ["Console email verification"],
+    summary: "Email verification: send a link",
+    description: "Sends a verification link to the address of the person signed in to this browser, for their console session only. Where the deployment verifies email addresses, an account's apps serve requests only once its owner has verified theirs, and a claim completes only for a person who has; nothing else waits for it. A link lasts 24 hours, and a sign-up with a password sends the first one itself. Counted per person.",
+    security: "public",
+    request: SendVerificationEmailRequestSchema,
+    response: SendVerificationEmailResponseSchema,
+    responseDescription: "Whether a link went out, and to which address.",
+    errors: {
+      401: "No person is signed in to this browser (`session_required`).",
+      409: "This deployment does not verify email addresses, or the sign-in has no address of its own (`conflict`).",
+      429: "Too many links were sent for this sign-in. Carries Retry-After.",
+      503: "The deployment could not send the email (`email_unavailable`).",
+    },
+  },
+
+  confirmEmailVerification: {
+    method: "POST",
+    path: "/v1/console/email-verification/confirm",
+    tags: ["Console email verification"],
+    summary: "Email verification: confirm a link",
+    description: "Verifies the address a verification link was sent to. The link alone is the proof, so no sign-in is needed; it is bound to the sign-in and the address it was sent for, and stops working once it expires or the address changes. Confirming a link again answers the same.",
+    security: "public",
+    request: ConfirmEmailVerificationRequestSchema,
+    response: ConfirmEmailVerificationResponseSchema,
+    responseDescription: "The address verified, and where to continue.",
+    errors: {
+      400: "The link is malformed, has expired, or no longer matches the sign-in's address (`invalid_request`).",
+    },
   },
 
   cliBrowserGoogle: {

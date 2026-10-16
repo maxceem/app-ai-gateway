@@ -77,12 +77,13 @@ async function authenticated(
   // A rejection nobody awaits yet — the request may still be refused for its
   // account or its credential first — must not surface as an unhandled one.
   providers.catch(() => {});
-  // Only a hosted deployment writes an account deadline, so only one can refuse
-  // here. It decides before the app, the credential or any limit the
-  // organization set on its own users is consulted: an account that may not be
-  // served has no claim on them.
+  // Only a hosted deployment writes an account deadline, and only one that
+  // sends email waits for a verified one, so only those can refuse here. It
+  // decides before the app, the credential or any limit the organization set
+  // on its own users is consulted: an account that may not be served has no
+  // claim on them.
   const deployment = c.get("deployment");
-  if (deployment.rules.accountDeadlines) {
+  if (deployment.rules.accountDeadlines || deployment.emailVerification === "required") {
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);

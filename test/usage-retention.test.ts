@@ -772,7 +772,7 @@ function countingDatabase(collected: number) {
 }
 
 /** Statements one account cleanup pass issues, pinned by the test below. */
-const ACCOUNT_CLEANUP_STATEMENTS = 19;
+const ACCOUNT_CLEANUP_STATEMENTS = 20;
 
 it("charges the nightly allowance for exactly what a sweep issues", async () => {
   const { db, counts } = countingDatabase(0);

@@ -20,11 +20,12 @@ export const billingEntitlementGate: MiddlewareHandler<{
 }> = async (c, next) => {
   /*
    * Without a billing service there is no plan to check, and such a deployment
-   * writes no account deadlines either, so this whole gate — and the D1 read
-   * behind it — costs it nothing.
+   * writes no account deadlines either; unless it also sends email, and so
+   * waits for its owners' verified addresses, this whole gate — and the D1
+   * read behind it — costs it nothing.
    */
   const deployment = c.get("deployment");
-  if (deployment.billing === null) {
+  if (deployment.billing === null && deployment.emailVerification === "off") {
     await next();
     return;
   }
@@ -33,10 +34,12 @@ export const billingEntitlementGate: MiddlewareHandler<{
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
   await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
-  requireActiveBilling(await getBillingAccess(
-    deployment,
-    app.organizationId,
-    c.get("billingRequestCache"),
-  ));
+  if (deployment.billing !== null) {
+    requireActiveBilling(await getBillingAccess(
+      deployment,
+      app.organizationId,
+      c.get("billingRequestCache"),
+    ));
+  }
   await next();
 };

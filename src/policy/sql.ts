@@ -24,6 +24,20 @@ export function humanOwnerCondition(organization: SQL): SQL {
   )`;
 }
 
+/**
+ * Whether the organization `organization` names may serve application traffic
+ * where email has to be verified: it is activated, or a human owner of it has
+ * a verified address. Takes a column reference, never a value.
+ */
+export function accountActivatedCondition(organization: SQL): SQL {
+  return sql`(EXISTS (SELECT 1 FROM account_activation a WHERE a.organization_id=${organization})
+    OR EXISTS (
+      SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+      WHERE m.organization_id=${organization} AND m.role='owner' AND u.kind='human'
+        AND u.email_verified=1
+    ))`;
+}
+
 /** The caller's clock, never earlier than SQLite's own. */
 function effectiveNow(nowMs: number): SQL {
   return sql`MAX(julianday(${new Date(nowMs).toISOString()}),julianday('now'))`;

@@ -24,6 +24,7 @@ import type {
   OperationKind,
 } from "@maxceem/cf-auth";
 import type { CliApprovalRefusal, CliOperationKind } from "../contracts/cli";
+import type { EmailVerification } from "../policy/deployment";
 
 /**
  * How long an operation's record is kept, counted from when it was opened, and
@@ -214,6 +215,7 @@ function stagedApproval(identity: CfAuth, id: string): OperationApproveResult {
 export function claimRefusal(
   state: AuthState | null,
   organizationId: string,
+  emailVerification: EmailVerification,
 ): CliApprovalRefusal | null {
   if (
     !state
@@ -224,6 +226,12 @@ export function claimRefusal(
     return "registration_required";
   if (state.memberships.some((member) => member.organization.id !== organizationId))
     return "sign_out_required";
+  // Where addresses are verified, a claim is what turns an account's free
+  // window into a lasting one, so it waits for the person's verified address.
+  // Asked last: it is the only one of the three the person fixes by opening a
+  // link rather than by signing in as someone else.
+  if (emailVerification === "required" && !state.user.emailVerified)
+    return "verification_required";
   return null;
 }
 
@@ -234,7 +242,10 @@ export function claimRefusal(
  * cf-auth's own `claimOrganization`, run on the same instance that approves it,
  * and a resource step's approval is the write staged on it.
  */
-export function gatewayOperationKinds(identity: () => CfAuth): OperationKind[] {
+export function gatewayOperationKinds(
+  identity: () => CfAuth,
+  emailVerification: EmailVerification,
+): OperationKind[] {
   const bootstrap: OperationKind = {
     name: "bootstrap",
     // It is how a CLI with no credential gets its first account.
@@ -260,7 +271,8 @@ export function gatewayOperationKinds(identity: () => CfAuth): OperationKind[] {
     // one. Who may is `claimRefusal`, not a role.
     approverMinRole: null,
     recordTtlMs: OPERATION_RECORD_TTL_MS,
-    refusal: ({ operation, viewer }) => claimRefusal(viewer, operation.organizationId ?? ""),
+    refusal: ({ operation, viewer }) =>
+      claimRefusal(viewer, operation.organizationId ?? "", emailVerification),
     // Every row this moves — the owner membership, the account's deadline, the
     // service identity's key — belongs to cf-auth, so cf-auth builds the
     // statements, guarded by its own re-read of the approving session and of

@@ -164,6 +164,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
       { name: "Admin organizations", description: "Caller identity and organization switching." },
+      { name: "Console email verification", description: "The console's email verification: sending the signed-in person a link, and confirming one." },
       { name: "Console OAuth consent", description: "The console's consent page for MCP clients connecting with OAuth: details, allow, continue without an account, and deny." },
       { name: "Admin billing", description: "Optional billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },

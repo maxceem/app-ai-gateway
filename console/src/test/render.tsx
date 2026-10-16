@@ -38,7 +38,7 @@ export function stubApi(routes: Record<string, StubRoute>) {
 export const CAPABILITIES_URL = "/v1/console/capabilities";
 
 export function capabilities(overrides: Partial<Capabilities> = {}): StubRoute {
-  return { body: { billing: false, registrationOpen: true, googleAuth: false, ...overrides } };
+  return { body: { billing: false, registrationOpen: true, googleAuth: false, emailVerification: false, ...overrides } };
 }
 
 export function testQueryClient() {
@@ -137,6 +137,7 @@ export function testSession(overrides: Partial<Session> = {}): Session {
     memberships: [membership("org-1", "Acme", role)],
     credentialType: "session",
     assurance: "interactive",
+    verificationPending: false,
     actor: {
       type: "user",
       id: "user-1",
@@ -152,6 +153,7 @@ export const CAPABILITIES: Capabilities = {
   billing: false,
   registrationOpen: true,
   googleAuth: false,
+  emailVerification: false,
 };
 
 /** Renders a tree inside an authenticated console session. */

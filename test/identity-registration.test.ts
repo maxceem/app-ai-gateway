@@ -282,6 +282,29 @@ describe("Google registration policy", () => {
     expect(existing.status, await existing.clone().text()).toBe(200);
   });
 
+  it("never lets a password into a sign-in Google created", async () => {
+    // Better Auth's defaults hold this, not code of ours, so it is pinned here:
+    // a library change that attached a password to an existing Google user
+    // would hand that account to anyone who knows its address, verification
+    // or not.
+    const email = "google-first@example.test";
+    const testEnv = runtime({ google: true, emails: email });
+    const google = await googleSignIn(testEnv, email, "google-first");
+    expect(google.status, await google.clone().text()).toBe(200);
+
+    const registered = await signUp(testEnv, email);
+    expect(registered.status, await registered.clone().text()).toBe(422);
+    const signedIn = await authRequest(testEnv, "sign-in/email", { email, password: "correct-horse-42" });
+    expect(signedIn.status, await signedIn.clone().text()).toBe(401);
+    expect(signedIn.headers.getSetCookie().some((cookie) => cookie.includes("session_token="))).toBe(false);
+
+    const accounts = await env.DB.prepare(
+      `SELECT a.provider_id AS providerId FROM mgmt_user_account a JOIN mgmt_user u ON u.id=a.user_id
+       WHERE u.email=?`,
+    ).bind(email).all<{ providerId: string }>();
+    expect(accounts.results).toEqual([{ providerId: "google" }]);
+  });
+
   it("keeps successful HTTPS redirect callbacks open for a listed and an existing Google user", async () => {
     const testEnv = runtime({ google: true, emails: "redirect-owner@example.test" });
     const exchange = mockGoogleTokenExchange("redirect-owner@example.test", "redirect-owner");

@@ -46,6 +46,28 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
+  // How the deployment sends email, if it does; see src/email/sender.ts. Any of
+  // these set means it does, and then an account serves application traffic
+  // only once its owner has verified their address. All deliberately absent
+  // from wrangler.jsonc, so the one-click deploy form does not ask about them.
+  //
+  // A Cloudflare Email Service `send_email` binding (Workers Paid), or a
+  // service binding with the same `send`.
+  EMAIL?: SendEmail;
+  // An SMTP server instead, from any mail provider: host, port (465 with TLS by
+  // default; any other port must offer STARTTLS) and sign-in. Not secrets,
+  // except SMTP_PASSWORD.
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_USERNAME?: string;
+  SMTP_PASSWORD?: string;
+  // `cloudflare` or `smtp`: which one to use where both are configured.
+  EMAIL_SENDER?: string;
+  // The address emails are sent from. Required with either transport. Not a
+  // secret. Bounces come back to it.
+  EMAIL_FROM?: string;
+  // Where replies go instead, for example a support inbox. Optional.
+  EMAIL_REPLY_TO?: string;
   // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
   // var to the literal it finds there, which is wrong for any deployment that
@@ -81,6 +103,14 @@ declare namespace Cloudflare {
     OAUTH_CIMD?: string;
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
+    EMAIL?: SendEmail;
+    SMTP_HOST?: string;
+    SMTP_PORT?: string;
+    SMTP_USERNAME?: string;
+    SMTP_PASSWORD?: string;
+    EMAIL_SENDER?: string;
+    EMAIL_FROM?: string;
+    EMAIL_REPLY_TO?: string;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
     ALLOWED_REGISTRATION_EMAILS: string;

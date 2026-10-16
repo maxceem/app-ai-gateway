@@ -103,6 +103,25 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "try to sign in to one account",
     sharedBy: "everyone signing in to that email address",
   },
+  // A password sign-up answers whether its email is taken, so an unbounded one
+  // is a way to test addresses in bulk, and on a hosted deployment it is also
+  // how throwaway accounts are made. Ten an hour is far above a household or an
+  // office signing up and far below either use.
+  sign_up_address: {
+    limit: 10,
+    windowMs: 3_600_000,
+    action: "create a sign-in",
+    sharedBy: "everyone sharing your network address",
+  },
+  // Each one sends an email to a real inbox. Five an hour covers a person who
+  // missed the first and a few retries, and keeps the deployment's sender from
+  // being turned on somebody's inbox.
+  verification_email: {
+    limit: 5,
+    windowMs: 3_600_000,
+    action: "send a verification email",
+    sharedBy: "your sign-in",
+  },
   // The three application authentication endpoints are unauthenticated by
   // design, so each is counted per application and network address. They are
   // deliberately three counters rather than one: a client that registers a key

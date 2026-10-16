@@ -9,6 +9,7 @@ describe("App AI Gateway", () => {
       ok: true,
       service: "app-ai-gateway",
       vault: "ok",
+      email: "off",
     });
   });
 });

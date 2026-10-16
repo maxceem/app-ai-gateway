@@ -69,6 +69,10 @@
       "description": "Caller identity and organization switching."
     },
     {
+      "name": "Console email verification",
+      "description": "The console's email verification: sending the signed-in person a link, and confirming one."
+    },
+    {
       "name": "Console OAuth consent",
       "description": "The console's consent page for MCP clients connecting with OAuth: details, allow, continue without an account, and deny."
     },
@@ -3013,12 +3017,21 @@
                         "ok",
                         "misconfigured"
                       ]
+                    },
+                    "email": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "ok",
+                        "misconfigured"
+                      ]
                     }
                   },
                   "required": [
                     "ok",
                     "service",
-                    "vault"
+                    "vault",
+                    "email"
                   ]
                 }
               }
@@ -3062,12 +3075,16 @@
                     "apiBaseUrl": {
                       "type": "string",
                       "format": "uri"
+                    },
+                    "emailVerification": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "billing",
                     "registrationOpen",
-                    "googleAuth"
+                    "googleAuth",
+                    "emailVerification"
                   ]
                 }
               }
@@ -6169,7 +6186,20 @@
                     },
                     "ready": {
                       "type": "boolean",
-                      "description": "Whether the application is active and at least one provider it names is active."
+                      "description": "Whether the application is active, at least one provider it names is active, and the account may serve requests (`accountRefusal` is null)."
+                    },
+                    "accountRefusal": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "email_unverified",
+                        "unclaimed_access_expired",
+                        "account_expired",
+                        null
+                      ],
+                      "description": "Why the account would refuse this application's requests, as the error code its clients would get, or null when it would serve them. `email_unverified`: the account's owner has not verified their email address yet, on a deployment that verifies them; it clears once they open the link in the verification email."
                     },
                     "limitations": {
                       "type": "array",
@@ -6192,6 +6222,7 @@
                     "status",
                     "providers",
                     "ready",
+                    "accountRefusal",
                     "limitations",
                     "warnings"
                   ]
@@ -8187,6 +8218,9 @@
                             "credentialId",
                             "actionSource"
                           ]
+                        },
+                        "verificationPending": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -8196,7 +8230,8 @@
                         "memberships",
                         "credentialType",
                         "assurance",
-                        "actor"
+                        "actor",
+                        "verificationPending"
                       ]
                     }
                   },
@@ -8633,6 +8668,9 @@
                             "credentialId",
                             "actionSource"
                           ]
+                        },
+                        "verificationPending": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -8642,7 +8680,8 @@
                         "memberships",
                         "credentialType",
                         "assurance",
-                        "actor"
+                        "actor",
+                        "verificationPending"
                       ]
                     }
                   },
@@ -14089,6 +14128,7 @@
                         "registration_required",
                         "sign_out_required",
                         "no_eligible_organization",
+                        "verification_required",
                         null
                       ]
                     },
@@ -15535,6 +15575,236 @@
           },
           "410": {
             "description": "The authorization lapsed: it is open for ten minutes. Start the connection again from the client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/console/email-verification/send": {
+      "post": {
+        "tags": [
+          "Console email verification"
+        ],
+        "operationId": "sendVerificationEmail",
+        "summary": "Email verification: send a link",
+        "description": "Sends a verification link to the address of the person signed in to this browser, for their console session only. Where the deployment verifies email addresses, an account's apps serve requests only once its owner has verified theirs, and a claim completes only for a person who has; nothing else waits for it. A link lasts 24 hours, and a sign-up with a password sends the first one itself. Counted per person.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "returnTo": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "pattern": "^\\/(?![/\\\\])[^\\\\\\s]*$",
+                    "description": "A path on the console to return to once the address is verified, such as an approval page."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether a link went out, and to which address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "sent",
+                        "already_verified"
+                      ],
+                      "description": "`sent` when a link went out now; `already_verified` when the address needs none."
+                    },
+                    "email": {
+                      "type": "string",
+                      "description": "The address the link was sent to, or that is already verified."
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "email"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No person is signed in to this browser (`session_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This deployment does not verify email addresses, or the sign-in has no address of its own (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many links were sent for this sign-in. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The deployment could not send the email (`email_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/console/email-verification/confirm": {
+      "post": {
+        "tags": [
+          "Console email verification"
+        ],
+        "operationId": "confirmEmailVerification",
+        "summary": "Email verification: confirm a link",
+        "description": "Verifies the address a verification link was sent to. The link alone is the proof, so no sign-in is needed; it is bound to the sign-in and the address it was sent for, and stops working once it expires or the address changes. Confirming a link again answers the same.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "The `token` query parameter of the link in the verification email."
+                  }
+                },
+                "required": [
+                  "token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The address verified, and where to continue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "description": "The address now verified."
+                    },
+                    "returnTo": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The console path the link was asked for from, to continue there; null for none."
+                    }
+                  },
+                  "required": [
+                    "email",
+                    "returnTo"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The link is malformed, has expired, or no longer matches the sign-in's address (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
             "content": {
               "application/json": {
                 "schema": {

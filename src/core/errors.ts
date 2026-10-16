@@ -52,6 +52,14 @@ export type ErrorCode =
    */
   | "unclaimed_access_expired"
   | "account_expired"
+  /**
+   * The deployment verifies email addresses, and this account's owner has not
+   * verified theirs: its applications serve no requests until they do. Never
+   * stops traffic that already flowed — an account that served traffic before
+   * the deployment verified anything is activated. Also answers a claim
+   * approved by a person whose address is not verified yet.
+   */
+  | "email_unverified"
   | "billing_payment_required"
   | "billing_unavailable"
   | "billing_not_found"
@@ -158,6 +166,13 @@ export type ErrorCode =
    * authenticate with: curl for an App Attest app, Swift for a server app.
    */
   | "unsupported_snippet"
+  /**
+   * The deployment verifies email addresses but could not send a verification
+   * email: its email settings are incomplete, or the transport (Cloudflare
+   * Email Service or SMTP) refused the message.
+   * Worth trying again later; the person managing the deployment fixes it.
+   */
+  | "email_unavailable"
   | "internal_error";
 
 /**

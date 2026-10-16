@@ -78,7 +78,7 @@ function storedInstant(at: number, shape: "iso" | "sqlite"): string {
 
 async function seedAccount(
   label: string,
-  account: Omit<AccountLifecycle, "id" | "name">,
+  account: Omit<AccountLifecycle, "id" | "name" | "activated">,
 ): Promise<AccountLifecycle> {
   const suffix = crypto.randomUUID();
   const id = `policy-account-${label}-${suffix}`;
@@ -107,7 +107,9 @@ async function seedAccount(
       ).bind(`policy-member-${suffix}`, id, humanId, account.createdAt),
     ]);
   }
-  return { id, name: "Policy account", ...account };
+  // The owner seeded above has a verified address, so a claimed account is an
+  // activated one.
+  return { id, name: "Policy account", ...account, activated: account.claimed };
 }
 
 type Expected = "open" | "trial" | "recovery";
@@ -242,7 +244,7 @@ describe("account deadline policy", () => {
       for (const mode of ["cloud", "self_hosted"] as const) {
         for (const action of actions) {
           const expected = expectedDenial(definition.expected, mode, action);
-          expect(accountAccessDenial(policy(mode).rules, account, action, now), JSON.stringify({
+          expect(accountAccessDenial(policy(mode), account, action, now), JSON.stringify({
             case: definition.label,
             mode,
             action,

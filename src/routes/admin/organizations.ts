@@ -1,5 +1,7 @@
 import type { AuthState } from "@maxceem/cf-auth";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { accountLifecycle } from "../../core/account-lifecycle";
+import { accountAccessDenial } from "../../policy/accounts";
 import { identityAuthFor } from "../../auth/identity";
 import type { IdentitySession } from "../../contracts/responses";
 import { adminRouter } from "../catalog-router";
@@ -22,7 +24,11 @@ const routes = adminRouter(organizationRoutes);
  * better-auth's user record, which leaves a client unable to tell an owner from
  * a read-only member or to name the organization it is acting in.
  */
-function sessionPayload(state: AuthState, actor: AdminVariables["actor"]): IdentitySession["session"] {
+async function sessionPayload(
+  c: Context<OrganizationEnv>,
+  state: AuthState,
+  actor: AdminVariables["actor"],
+): Promise<IdentitySession["session"]> {
   return {
     user: state.user,
     organization: state.organization,
@@ -31,11 +37,24 @@ function sessionPayload(state: AuthState, actor: AdminVariables["actor"]): Ident
     credentialType: actor.credentialType,
     assurance: state.assurance,
     actor: state.actor,
+    verificationPending: await verificationPending(c, actor.organizationId),
   };
 }
 
-routes.handle("getAdminSession", (c) =>
-  ({ session: sessionPayload(c.get("authState"), c.get("actor")) }));
+/**
+ * Whether the account's apps are refused for its owner's unverified email, as
+ * a request to one of them would be: the console says so only when it is
+ * true, rather than for every unverified sign-in.
+ */
+async function verificationPending(c: Context<OrganizationEnv>, organizationId: string): Promise<boolean> {
+  const deployment = c.get("deployment");
+  if (deployment.emailVerification === "off") return false;
+  const account = await accountLifecycle(c.env, organizationId);
+  return accountAccessDenial(deployment, account, "proxy", Date.now()) === "email_unverified";
+}
+
+routes.handle("getAdminSession", async (c) =>
+  ({ session: await sessionPayload(c, c.get("authState"), c.get("actor")) }));
 
 routes.handle("listOrganizations", async (c) => {
   const organizations = await (await identityAuthFor(c)).service.listOrganizations(c.get("authState"));
@@ -61,7 +80,7 @@ routes.handle("selectOrganization", async (c, { actor, body: { organizationId } 
   );
   await identityAuth.currentOrganizationCookie.write(c, organizationId);
   return {
-    session: sessionPayload(state, {
+    session: await sessionPayload(c, state, {
       ...actor,
       organizationId: state.organization?.id ?? actor.organizationId,
       role: state.role ?? actor.role,
