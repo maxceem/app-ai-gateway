@@ -1,25 +1,9 @@
 [
   {
-    "provider": "groq",
-    "model": "meta-models/muse-spark-open",
-    "action": "skip",
-    "reason": "Unsupported public pricing: no public price, the page says to contact sales",
-    "origin": "rules",
-    "reviewer": ""
-  },
-  {
     "provider": "together",
-    "model": "meta-models/Muse-Spark-Open-816B-A42B",
+    "model": "reflection/Beam-1.0-501B-A23B",
     "action": "add",
-    "reason": "Add as a distinct Meta model; no supplied information indicates it meets a skip rule.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "together",
-    "model": "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
-    "action": "add",
-    "reason": "Add as a distinct NVIDIA model; no supplied information indicates it meets a skip rule.",
+    "reason": "Add this currently servable model; sparse metadata alone is not a reason to skip it.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }
