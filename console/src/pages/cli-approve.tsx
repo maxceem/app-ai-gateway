@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { toast } from "sonner";
 import type {
   CliBrowserDenyResponse,
   CliBrowserDetailsResponse,
@@ -19,7 +20,7 @@ import { headingFor, shortId, userCodeFromState } from "@/lib/cli-approve";
 import { formatDateTime } from "@/lib/format";
 import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
-import { useSignIn, useSignOut } from "@/lib/queries";
+import { useSendVerificationEmail, useSignIn, useSignOut } from "@/lib/queries";
 import { clearStoredProof, readStoredProof, writeStoredProof } from "@/lib/stored-proof";
 
 /**
@@ -267,6 +268,12 @@ export function CliApprovePage() {
             />
           ) : data.blockedBy === "sign_out_required" ? (
             <SignOutFirst viewer={data.viewer} onDone={() => void details.refetch()} />
+          ) : data.blockedBy === "verification_required" ? (
+            <VerifyEmailFirst
+              viewer={data.viewer}
+              checking={details.isFetching}
+              onCheck={() => void details.refetch()}
+            />
           ) : (
             <ApprovalForm
               details={data}
@@ -589,6 +596,56 @@ function SignOutFirst({
       >
         {signOut.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
         Sign out
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * A claim makes an account lasting, so where the deployment verifies email
+ * addresses it waits for the approver's. Signing up already sent the link; the
+ * link opens in a tab of its own, and this one stays where it is, holding its
+ * proof, until the person comes back and continues.
+ */
+function VerifyEmailFirst({
+  viewer,
+  checking,
+  onCheck,
+}: {
+  viewer: CliBrowserDetailsResponse["viewer"];
+  checking: boolean;
+  onCheck: () => void;
+}) {
+  const send = useSendVerificationEmail();
+  const resend = async () => {
+    try {
+      const result = await send.mutateAsync(undefined);
+      if (result.status === "already_verified") onCheck();
+      else toast.success(`Sent a new link to ${result.email}.`);
+    } catch (error) {
+      toast.error(authErrorMessage(error, "Could not send the verification email"));
+    }
+  };
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Verify your email address to claim this account. Open the verification link sent to{" "}
+        {viewer?.email ?? "your email address"}, then come back to this tab and continue. If it has
+        not arrived, send a new one.
+      </p>
+      <Button type="button" className="w-full" disabled={checking} onClick={onCheck}>
+        {checking ? <Loader2 className="size-4 animate-spin" /> : null}
+        I have verified my email, continue
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full"
+        disabled={send.isPending}
+        onClick={() => void resend()}
+      >
+        {send.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+        Send a new link
       </Button>
     </div>
   );

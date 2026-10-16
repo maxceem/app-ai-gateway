@@ -7,6 +7,7 @@ import {
   relaySocialSignIn,
 } from "../auth/identity";
 import { registrationAllowed } from "../policy/deployment";
+import { consoleReturnPath, sendFirstVerificationEmail } from "../auth/email-verification";
 import type { RequestVariables } from "../middleware/request-scope";
 
 export const identityAuthRoutes = new Hono<{
@@ -23,6 +24,9 @@ const SOCIAL_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/social`;
 /** The Better Auth route that accepts a password. */
 const PASSWORD_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/email`;
 
+/** The Better Auth route that creates a sign-in with a password. */
+const PASSWORD_SIGN_UP_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-up/email`;
+
 /**
  * The account an attempt names, read without consuming the request.
  *
@@ -33,15 +37,18 @@ const PASSWORD_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/email`;
  * shape names no account, and only the address counter applies.
  */
 async function submittedEmail(request: Request): Promise<string | null> {
-  const clone = request.clone();
-  const named = request.headers.get("content-type")?.includes(
-    "application/x-www-form-urlencoded",
-  )
-    ? (await clone.formData().catch(() => undefined))?.get("email")
-    : ((await clone.json().catch(() => undefined)) as { email?: unknown } | undefined)?.email;
+  const named = await submittedField(request, "email");
   if (typeof named !== "string") return null;
   // Normalized, so one account is one counter however the attempt spells it.
   return named.trim().toLowerCase() || null;
+}
+
+/** One field of a JSON or form-encoded body, read from a clone. */
+async function submittedField(request: Request, field: string): Promise<unknown> {
+  const clone = request.clone();
+  return request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")
+    ? (await clone.formData().catch(() => undefined))?.get(field)
+    : ((await clone.json().catch(() => undefined)) as Record<string, unknown> | undefined)?.[field];
 }
 
 /**
@@ -49,10 +56,10 @@ async function submittedEmail(request: Request): Promise<string | null> {
  *
  * This is the gateway's own limit and runs on every deployment, because the
  * zone rules that would otherwise do it need a zone: a one-click `workers.dev`
- * install has none, and Better Auth's own limiter is off. Only this route is
- * counted. A self-host refuses sign-up outright to any email it does not
- * list, and the rest of Better Auth's surface either needs a session or hands
- * out nothing an attacker can grind for.
+ * install has none, and Better Auth's own limiter is off. Beside this route
+ * only password sign-up is counted, per address, because it answers whether
+ * an email is taken; the rest of Better Auth's surface either needs a session
+ * or hands out nothing an attacker can grind for.
  *
  * The address is counted first and counted always, including for a body that
  * names no account: the attempt reached the endpoint and cost this Worker the
@@ -140,13 +147,16 @@ identityAuthRoutes.all("/*", async (c) => {
     await enforcePasswordSignInLimit(c.env, c.req.raw);
   }
 
-  if (
-    c.req.method === "POST" &&
-    c.req.path === "/v1/auth/sign-up/email" &&
-    !registrationAllowed(c.get("deployment"), await submittedEmail(c.req.raw))
-  ) {
+  const signUp = c.req.method === "POST" && c.req.path === PASSWORD_SIGN_UP_PATH;
+  // Counted before anything else is read, refused or not: every attempt cost
+  // this Worker the same, and one that names a taken email still learned so.
+  if (signUp) await enforceEndpointRateLimit(c.env, "sign_up_address", clientAddress(c.req.raw));
+  if (signUp && !registrationAllowed(c.get("deployment"), await submittedEmail(c.req.raw))) {
     return c.json(registrationDisabled(), 403);
   }
+  const signUpCallback = signUp && c.get("deployment").emailVerification === "required"
+    ? await submittedField(c.req.raw, "callbackURL")
+    : undefined;
 
   const callback = c.req.path === `${IDENTITY_AUTH_BASE_PATH}/callback/google`;
   const claim = callback && (await claimOAuthAuthorized(c.env, c.req.raw));
@@ -183,6 +193,9 @@ identityAuthRoutes.all("/*", async (c) => {
       return registrationDisabledRedirect(response);
     }
     return c.json(registrationDisabled(), 403);
+  }
+  if (signUp && response.ok && c.get("deployment").emailVerification === "required") {
+    await sendFirstVerificationEmail(c.env, c.get("deployment"), response, consoleReturnPath(signUpCallback));
   }
   return response;
 });

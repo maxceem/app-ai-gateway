@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { SidebarContent } from "@/components/app-sidebar";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { VerifyEmailBanner } from "@/components/verify-email-banner";
 import { useConsoleSession } from "@/lib/console-session";
 import { billingNotice, quotaNotice, unclaimedAccessNotice } from "@/lib/billing";
 
@@ -98,6 +99,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <MobileHeader />
         <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <VerifyEmailBanner />
             <BillingBanner />
             {children}
           </div>

@@ -20,6 +20,8 @@ const AUTH_MESSAGES: Record<string, string> = {
   registration_disabled: "This email address is not allowed to register on this gateway.",
   session_required: "Create a sign-in on this page before approving this request.",
   account_exists: "This sign-in already has an account. Sign out, then create a new sign-in to claim this one.",
+  email_unverified: "Verify your email address first: open the link in the verification email, then try again.",
+  email_unavailable: "The verification email could not be sent. Try again in a few minutes.",
 };
 
 export const SIGN_UP_DISABLED_CODE = "registration_disabled";

@@ -46,6 +46,15 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
+  // A Cloudflare Email Service `send_email` binding. Bound means the deployment
+  // sends email, and then an account serves application traffic only once its
+  // owner has verified their address. Deliberately absent from wrangler.jsonc:
+  // sending needs a domain onboarded to Email Service, which a one-click
+  // workers.dev install does not have, so a deployment opts in by adding it.
+  EMAIL?: SendEmail;
+  // The address verification emails are sent from, on a domain onboarded to
+  // Email Service. Required wherever EMAIL is bound. Not a secret.
+  EMAIL_FROM?: string;
   // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
   // var to the literal it finds there, which is wrong for any deployment that
@@ -81,6 +90,8 @@ declare namespace Cloudflare {
     OAUTH_CIMD?: string;
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
+    EMAIL?: SendEmail;
+    EMAIL_FROM?: string;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
     ALLOWED_REGISTRATION_EMAILS: string;

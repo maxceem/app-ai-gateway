@@ -1,6 +1,8 @@
 import type { AppCheckResponse } from "../contracts/responses";
 import { storedAppFromRow } from "../core/app-records";
 import { GatewayError } from "../core/errors";
+import { accountLifecycle } from "../core/account-lifecycle";
+import { accountAccessDenial } from "../policy/accounts";
 import type { app } from "../db/schema";
 import {
   ConfigError,
@@ -34,7 +36,8 @@ export const APP_CHECK_LIMITATIONS = [
  * configuration that would now be refused answers with that refusal. The
  * providers are every instance its routing names, a paused one included, so a
  * disabled provider is reported as disabled rather than left out; `ready` is an
- * active application with at least one of them active.
+ * active application with at least one of them active, in an account that
+ * would serve its requests.
  *
  * The stored configuration's grammar is judged here first, by the one parser:
  * everywhere else a row that no longer parses is the deployment's own fault
@@ -61,12 +64,23 @@ export async function checkApp(
   const routing = stored.config.routing;
   const { providers } = await listProviders(scope, actor);
   const named = providers.filter((provider) => providerPolicyFor(routing, provider.slug) !== undefined);
+  // Asked as a client's request would be, so an account that would refuse one
+  // — its owner's email unverified, say — is never reported ready.
+  const accountRefusal = accountAccessDenial(
+    scope.deployment,
+    await accountLifecycle(scope.env, actor.organizationId),
+    "proxy",
+    Date.now(),
+  );
   return {
     appId: stored.id,
     validation,
     status: stored.status,
     providers: named.map(({ id, slug, status }) => ({ id, slug, status })),
-    ready: stored.status === "active" && reachableProviders(routing, named).length > 0,
+    ready: stored.status === "active"
+      && reachableProviders(routing, named).length > 0
+      && accountRefusal === null,
+    accountRefusal,
     limitations: [...APP_CHECK_LIMITATIONS],
     warnings: appWarnings(stored),
   };

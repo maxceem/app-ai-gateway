@@ -1495,3 +1495,64 @@ describe("a claim approved and declined at once", () => {
     ).toBe("retired");
   });
 });
+
+it("completes a claim only once its approver's email is verified, for the same session", async () => {
+  // A deployment that sends email: the claim waits for a verified approver.
+  const sent: Array<{ text: string }> = [];
+  const base = runtime();
+  const testEnv = new Proxy(base, {
+    get: (target, key, receiver) =>
+      key === "EMAIL"
+        ? { send: async (message: { text: string }) => (sent.push(message), { messageId: "m" }) }
+        : key === "EMAIL_FROM"
+          ? "gateway@example.test"
+          : Reflect.get(target, key, receiver),
+  });
+  const { data } = await start(testEnv);
+  const op = (await (
+    await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, token: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    )
+  ).json()) as { id: string; url: string };
+  const proof = new URL(op.url).hash.slice(1);
+  const human = await seedUnaffiliatedHuman();
+  await env.DB.prepare("UPDATE mgmt_user SET email_verified=0 WHERE id=?").bind(human.userId).run();
+  const headers = { origin: "https://example.test", cookie: human.cookie };
+  const approve = () =>
+    request(testEnv, `/browser/${op.id}/submit`, { submissionToken: proof, approve: true }, headers);
+  const standing = () =>
+    env.DB.prepare(
+      `SELECT o.expires_at AS expiresAt, (SELECT COUNT(*) FROM mgmt_organization_user m JOIN mgmt_user u
+         ON u.id=m.user_id WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human') AS owners
+       FROM mgmt_organization o WHERE o.id=?`,
+    ).bind(data.account.id).first<{ expiresAt: string | null; owners: number }>();
+
+  const details = await request(testEnv, `/browser/${op.id}/details`, { submissionToken: proof }, headers);
+  await expect(details.json()).resolves.toMatchObject({ blockedBy: "verification_required" });
+  const refused = await approve();
+  expect(refused.status, await refused.clone().text()).toBe(403);
+  await expect(refused.json()).resolves.toMatchObject({ error: { code: "email_unverified" } });
+  // Nothing moved: still nobody's, and still on its deadline.
+  expect(await standing()).toEqual({ expiresAt: data.account.expiresAt, owners: 0 });
+
+  const asked = await worker.request("https://example.test/v1/console/email-verification/send", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json", "x-console-request": "1" },
+    body: "{}",
+  }, testEnv);
+  expect(asked.status, await asked.clone().text()).toBe(200);
+  const link = new URL(/https:\/\/\S+/u.exec(sent[0]!.text)![0]);
+  const confirmed = await worker.request("https://example.test/v1/console/email-verification/confirm", {
+    method: "POST",
+    headers: { origin: "https://example.test", "content-type": "application/json", "x-console-request": "1" },
+    body: JSON.stringify({ token: link.searchParams.get("token") }),
+  }, testEnv);
+  expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+
+  const approved = await approve();
+  expect(approved.status, await approved.clone().text()).toBe(200);
+  expect(await standing()).toEqual({ expiresAt: null, owners: 1 });
+});

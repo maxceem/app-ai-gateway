@@ -1,4 +1,4 @@
-import type { CfAuth, CfAuthError, OperationSweepStatements } from "@maxceem/cf-auth";
+import type { CfAuth, CfAuthError, CfAuthEvent, OperationSweepStatements } from "@maxceem/cf-auth";
 import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
@@ -7,6 +7,7 @@ import {
   shouldProvisionDefaultOrganization,
   type Deployment,
 } from "../policy/deployment";
+import { activateAccount } from "./email-verification";
 import { oauthClients } from "./oauth-clients";
 import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
 
@@ -42,6 +43,18 @@ let loaded: Promise<typeof import("@maxceem/cf-auth")> | undefined;
 function forget(error: unknown): never {
   loaded = undefined;
   throw error;
+}
+
+/**
+ * A claim approved by a person whose address the deployment has not verified:
+ * one answer, whether the approval page's own check or the engine's reaches it.
+ */
+export function claimVerificationRequired(): GatewayError {
+  return new GatewayError(
+    403,
+    "email_unverified",
+    "Verify your email address before claiming this account: open the link in the verification email, then approve again",
+  );
 }
 
 export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
@@ -219,7 +232,7 @@ export async function createIdentityAuth(
     operations: {
       enabled: realm !== null,
       ...(realm === null ? {} : { realm }),
-      kinds: gatewayOperationKinds(() => instance),
+      kinds: gatewayOperationKinds(() => instance, deployment.emailVerification),
       // Any member may log a CLI in to their account, with a key that carries
       // their own role; the library's default asks for an admin.
       // A login's record is kept a day from when it was asked for: its key is
@@ -231,6 +244,21 @@ export async function createIdentityAuth(
     },
     ...oauthOptions(deployment, realm),
     cookies: { prefix: "agw_identity" },
+    // A deployment that sends no email activates every account a person comes
+    // to own, as it comes to own it, so that adding a sender later stops none
+    // of them; see `account_activation`. cf-auth runs this after the commit
+    // and reports a failure to its own error hook rather than undoing
+    // anything, which is the right way round: an account this misses only
+    // has to verify its owner's address once a sender exists.
+    ...(deployment.emailVerification === "off"
+      ? {
+          onEvent: async (event: CfAuthEvent) => {
+            if (event.type === "organization.created" || event.type === "organization.claimed") {
+              await activateAccount(env.DB, event.organizationId);
+            }
+          },
+        }
+      : {}),
     ...(googleEnabled
       ? {
           google: {
@@ -461,6 +489,7 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
       "account_exists",
       "This sign-in already has an account; sign out and create a new sign-in to claim this one",
     );
+  if (error.code === "verification_required") return claimVerificationRequired();
   const code = mappedCodes[error.code] ?? "invalid_request";
   return new GatewayError(error.status, code, error.message);
 }

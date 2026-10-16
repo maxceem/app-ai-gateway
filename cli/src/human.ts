@@ -516,6 +516,13 @@ function operation(result: RenderedResult, style: Style): string[] {
   );
 }
 
+/** Why an account would refuse an app's requests, as `app check` says it. */
+const ACCOUNT_REFUSALS = {
+  email_unverified: "refuses requests until its owner verifies their email (email_unverified)",
+  unclaimed_access_expired: "refuses requests until a person claims it (unclaimed_access_expired)",
+  account_expired: "refuses requests: its recovery deadline has passed (account_expired)",
+} as const;
+
 function app(
   command: CommandName,
   result: RenderedResult,
@@ -533,6 +540,10 @@ function app(
           ["Status", result.status],
           ["Providers", result.providers.length],
           ["Active providers", result.providers.filter((p) => p.status === "active").length],
+          // Absent from a gateway older than the field, which reports none.
+          ...(result.accountRefusal
+            ? [["Account", ACCOUNT_REFUSALS[result.accountRefusal]] as [string, string]]
+            : []),
         ],
         style,
       ),

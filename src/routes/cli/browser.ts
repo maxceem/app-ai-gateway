@@ -20,6 +20,7 @@ import {
   assertAccountAccess,
 } from "../../core/account-lifecycle";
 import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
+import { sendFirstVerificationEmail } from "../../auth/email-verification";
 import {
   kindOf,
   TARGET_SNAPSHOTS,
@@ -186,11 +187,19 @@ export async function browserRegister(c: CliContext): Promise<Response> {
   if ((step.entry.type !== "claim" && step.entry.type !== "login") || step.details.state !== "pending")
     throw new GatewayError(403, "forbidden", "Registration is only available for a pending account claim or login");
   const options = step.entry.type === "claim" ? { claimRegistration: true } : { provisionRegistration: true };
-  return (await identityAuthFor(c, options)).auth.api.signUpEmail({
+  // Counted with the console's own sign-up: both answer whether an email is
+  // taken, and both make a sign-in.
+  await enforceEndpointRateLimit(c.env, "sign_up_address", clientAddress(c.req.raw));
+  const response = await (await identityAuthFor(c, options)).auth.api.signUpEmail({
     body: { email: input.email, password: input.password, name: input.name },
     headers: c.req.raw.headers,
     asResponse: true,
   });
+  // The link continues nowhere in particular: the approval page's proof
+  // travels in its own URL and is not one to put in an email. The page waits
+  // for the person to come back to it instead.
+  await sendFirstVerificationEmail(c.env, c.get("deployment"), response, null);
+  return response;
 }
 
 export async function browserSubmit(

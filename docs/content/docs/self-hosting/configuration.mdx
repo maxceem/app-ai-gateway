@@ -172,6 +172,53 @@ local instances whose hostname changes, so it cannot be registered with
 Google. A deployment that owns a stable hostname leaves it unset. See
 [Local development](/self-hosting/local-development).
 
+## Email verification
+
+### `EMAIL` and `EMAIL_FROM`
+
+Unset by default, and then nothing is verified: every sign-in is trusted with
+the address it gave, and `ALLOWED_REGISTRATION_EMAILS` is the only check on
+who registers. Anyone who knows a listed address could register it before its
+owner does. They would get an account of their own, with no access to anyone
+else's, and the owner could not register that address until the sign-in was
+removed.
+
+To verify addresses, send email from the Worker with
+[Cloudflare Email Service](https://developers.cloudflare.com/email-service/):
+
+1. Onboard a domain you own to Email Sending, in the dashboard or with
+   `pnpm exec wrangler email sending enable example.com`. A `workers.dev`
+   address cannot send email.
+2. Add a `send_email` binding named `EMAIL` to the Worker's configuration, in
+   your profile overlay:
+
+   ```jsonc
+   {
+     "send_email": [{ "name": "EMAIL" }],
+     "vars": { "EMAIL_FROM": "gateway@example.com" }
+   }
+   ```
+
+3. Set `EMAIL_FROM`, a plain variable, to the address on that domain the
+   emails come from, and deploy.
+
+With the binding in place:
+
+- A sign-up with a password is sent a link that verifies its address. It
+  lasts 24 hours, and the console offers to send a new one. A Google sign-in
+  is verified by Google and needs none.
+- Until the owner of an account has verified their address, its apps answer
+  every request with [`email_unverified`](/integrate/errors). Everything else
+  works, so apps, providers and keys can all be set up first.
+- Claiming the account `agw deployment setup` creates waits for a verified
+  address too: the approval page asks for it after you create your sign-in.
+- Accounts that existed before you added the binding are unaffected, and keep
+  serving requests whoever owns them.
+
+`/v1/healthz` reports `"email": "ok"` once the binding and `EMAIL_FROM` are
+both set, `"misconfigured"` with the binding alone, when no link can be sent,
+and `"off"` without the binding.
+
 ## Hosts
 
 ### `PUBLIC_API_URL`
@@ -347,6 +394,8 @@ so changing either means deploying again.
 | `CLI_CONSOLE_ORIGIN` | Variable | Current origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
 | `OAUTH_RELAY_URL` | Variable | Unset |
+| `EMAIL` | `send_email` binding | Unset (no verification) |
+| `EMAIL_FROM` | Variable | Unset; required with `EMAIL` |
 | `PUBLIC_API_URL` | Variable | Unset |
 | `MCP_ALLOWED_ORIGINS` | Variable | Unset |
 | `OAUTH_CIMD` | Variable | Unset (on) |

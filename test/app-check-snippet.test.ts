@@ -74,6 +74,7 @@ describe("checkApp", () => {
       status: "active",
       providers: [{ id: `${organizationId}-claude`, slug: "claude", status: "disabled" }],
       ready: false,
+      accountRefusal: null,
       limitations: [
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",

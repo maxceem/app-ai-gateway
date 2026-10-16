@@ -202,6 +202,33 @@ describe("CliApprovePage claim", () => {
     expect(screen.queryByText(/missing its proof/i)).toBeNull();
   });
 
+  it("waits for a verified email before a claim, and continues once the person comes back", async () => {
+    const routes: Record<string, { status?: number; body: unknown }> = {
+      [DETAILS_URL]: details({
+        blockedBy: "verification_required",
+        viewer: { name: "Ada Lovelace", email: "ada@example.test" },
+      }),
+      "/v1/console/email-verification/send": { body: { status: "sent", email: "ada@example.test" } },
+    };
+    const fetchMock = stubApi(routes);
+
+    renderApprove();
+
+    expect(await screen.findByText(/link sent to ada@example.test/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /approve request/i })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /send a new link/i }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/email-verification/send"))).toBe(true),
+    );
+
+    // Verified in another tab: continuing reads the request again, with no
+    // navigation, so this tab's proof is still the one it approves with.
+    routes[DETAILS_URL] = details({ blockedBy: null, viewer: { name: "Ada Lovelace", email: "ada@example.test" } });
+    await userEvent.click(screen.getByRole("button", { name: /i have verified my email, continue/i }));
+    expect(await screen.findByRole("button", { name: /approve/i })).toBeTruthy();
+    expect(screen.queryByText(/missing its proof/i)).toBeNull();
+  });
+
   it("registers through the handoff endpoint rather than public sign-up", async () => {
     const fetchMock = stubApi({
       [DETAILS_URL]: details(),

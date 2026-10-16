@@ -1003,3 +1003,25 @@ export type ProviderGatewayRotateRequest = z.infer<typeof ProviderGatewayRotateR
 export type UsageRepriceRequest = z.infer<typeof UsageRepriceRequestSchema>;
 export type ManagementKeyCreateRequest = z.infer<typeof ManagementKeyCreateRequestSchema>;
 export type ApiKeyCreateRequest = z.infer<typeof ApiKeyCreateRequestSchema>;
+
+/**
+ * A console path to come back to once an email is verified: one that begins
+ * with a single `/`, so the link can never send the browser off the console.
+ */
+export const ConsoleReturnPathSchema = z
+  .string()
+  .max(512)
+  .regex(/^\/(?![/\\])[^\\\s]*$/, "Must be a path on the console, beginning with a single /")
+  .meta({ description: "A path on the console to return to once the address is verified, such as an approval page." });
+
+/** Asks for a verification link for the person signed in to this browser. */
+export const SendVerificationEmailRequestSchema = z.object({
+  returnTo: ConsoleReturnPathSchema.optional(),
+}).strict();
+
+/** The link a verification email carried, handed back by the page it opened. */
+export const ConfirmEmailVerificationRequestSchema = z.object({
+  token: z.string().min(1).max(2048).meta({
+    description: "The `token` query parameter of the link in the verification email.",
+  }),
+}).strict();
