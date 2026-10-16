@@ -122,8 +122,8 @@ importers:
         specifier: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
         version: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
       '@maxceem/worker-mailer':
-        specifier: https://github.com/maxceem/worker-mailer/releases/download/v1.4.2/maxceem-worker-mailer-1.4.2.tgz
-        version: https://github.com/maxceem/worker-mailer/releases/download/v1.4.2/maxceem-worker-mailer-1.4.2.tgz
+        specifier: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz
+        version: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0
@@ -1914,9 +1914,9 @@ packages:
     version: 0.1.0
     engines: {node: '>=20'}
 
-  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.2/maxceem-worker-mailer-1.4.2.tgz':
-    resolution: {integrity: sha512-Jw0AnWdyxl5LKC/Cu8nwIHIyqXCdtUxq7cWSgvlk+LKBwdmF5QV72KJRFgHp35QcERZ/E1DdZj0TIlVALQ4Bkg==, tarball: https://github.com/maxceem/worker-mailer/releases/download/v1.4.2/maxceem-worker-mailer-1.4.2.tgz}
-    version: 1.4.2
+  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz':
+    resolution: {integrity: sha512-HE/DCAsTrITZKSMGC3Y6HSYt/qcI3MMxDct34deeMz95aW27ON50RLbZEZXFlJfwkKcZDTxaeqLCDvXTWCJj8Q==, tarball: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz}
+    version: 1.4.3
 
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
@@ -6243,7 +6243,7 @@ snapshots:
 
   '@maxceem/cf-kms@https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz': {}
 
-  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.2/maxceem-worker-mailer-1.4.2.tgz': {}
+  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz': {}
 
   '@mdx-js/mdx@3.1.1(supports-color@10.2.2)':
     dependencies:

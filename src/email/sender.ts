@@ -19,7 +19,13 @@ export type EmailTransport = "cloudflare" | "smtp";
 
 /** One email, in the shape both transports accept. */
 export interface OutgoingEmail {
+  /**
+   * Also the envelope sender, so bounces and other delivery reports come back
+   * to this mailbox, whatever `replyTo` says.
+   */
   from: { email: string; name: string };
+  /** Where a person's reply goes, when that is not `from`. */
+  replyTo?: string;
   to: string;
   subject: string;
   text: string;
@@ -43,7 +49,14 @@ export interface EmailSender {
 export type EmailSetup =
   | { state: "off" }
   | { state: "misconfigured"; problem: string }
-  | { state: "ok"; transport: EmailTransport; from: string; smtp: SmtpSettings | null };
+  | {
+      state: "ok";
+      transport: EmailTransport;
+      from: string;
+      /** `EMAIL_REPLY_TO`, or null to let replies go to `from`. */
+      replyTo: string | null;
+      smtp: SmtpSettings | null;
+    };
 
 /** The SMTP settings once checked; the password stays where it is until a send. */
 export interface SmtpSettings {
@@ -105,7 +118,11 @@ export function emailSetup(env: Env): EmailSetup {
   if (!from || !SENDER_ADDRESS.test(from)) {
     return { state: "misconfigured", problem: "EMAIL_FROM is missing or not an email address" };
   }
-  return { state: "ok", transport, from, smtp };
+  const replyTo = env.EMAIL_REPLY_TO?.trim() || null;
+  if (replyTo !== null && !SENDER_ADDRESS.test(replyTo)) {
+    return { state: "misconfigured", problem: "EMAIL_REPLY_TO is not an email address" };
+  }
+  return { state: "ok", transport, from, replyTo, smtp };
 }
 
 function smtpSettings(env: Env, host: string): SmtpSettings | { problem: string } {
@@ -131,8 +148,8 @@ export function emailSender(env: Env): EmailSender | null {
     const binding = env.EMAIL!;
     return {
       transport: "cloudflare",
-      send: async (email) => {
-        await binding.send(email);
+      send: async ({ replyTo, ...email }) => {
+        await binding.send(replyTo ? { ...email, replyTo } : email);
       },
     };
   }
@@ -171,6 +188,7 @@ async function sendSmtp(settings: SmtpSettings, password: string, email: Outgoin
   try {
     await mailer.send({
       from: { name: email.from.name, email: email.from.email },
+      ...(email.replyTo ? { reply: email.replyTo } : {}),
       to: email.to,
       subject: email.subject,
       text: email.text,

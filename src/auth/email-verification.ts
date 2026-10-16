@@ -170,7 +170,7 @@ export async function sendVerificationEmail(
     );
   }
   const sender = emailSender(env)!;
-  const { from } = setup;
+  const { from, replyTo } = setup;
   const token = await signLink(env, {
     u: person.id,
     e: person.email,
@@ -183,6 +183,7 @@ export async function sendVerificationEmail(
   try {
     await sender.send({
       from: { email: from, name: SENDER_NAME },
+      ...(replyTo === null ? {} : { replyTo }),
       to: person.email,
       subject: "Verify your email address",
       text: [

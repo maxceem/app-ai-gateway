@@ -212,7 +212,8 @@ them counts as choosing SMTP, so one left out is reported rather than ignored:
 | `SMTP_PORT` | Variable | `465` (the default) for TLS from the start, or the port your provider gives for STARTTLS, usually `587`. Port 25 is not available to Workers. |
 | `SMTP_USERNAME` | Variable | The account the gateway signs in as, usually the sending address. |
 | `SMTP_PASSWORD` | Secret | Its password, or an app password where your provider has them. |
-| `EMAIL_FROM` | Variable | The address emails come from. |
+| `EMAIL_FROM` | Variable | The address emails come from. Bounces come back to it, so use a mailbox you check. |
+| `EMAIL_REPLY_TO` | Variable | Optional. Where replies go instead, such as a support inbox. |
 
 ```sh
 pnpm exec wrangler secret put SMTP_PASSWORD
@@ -237,6 +238,13 @@ Needs the Workers Paid plan to send to anyone but yourself.
      "vars": { "EMAIL_FROM": "gateway@example.com" }
    }
    ```
+
+### `EMAIL_REPLY_TO`
+
+Plain variable, unset by default, for either way of sending. Set it to send
+replies somewhere other than `EMAIL_FROM`: a dedicated sending mailbox for
+`EMAIL_FROM`, whose password the gateway holds, and your support inbox here.
+Bounces still go to `EMAIL_FROM`.
 
 ### `EMAIL_SENDER`
 
@@ -431,6 +439,7 @@ so changing either means deploying again.
 | `EMAIL` | `send_email` binding | Unset (no verification) |
 | `EMAIL_SENDER` | Variable | Unset; required when both are configured |
 | `EMAIL_FROM` | Variable | Unset; required to send |
+| `EMAIL_REPLY_TO` | Variable | Unset (replies go to `EMAIL_FROM`) |
 | `PUBLIC_API_URL` | Variable | Unset |
 | `MCP_ALLOWED_ORIGINS` | Variable | Unset |
 | `OAUTH_CIMD` | Variable | Unset (on) |

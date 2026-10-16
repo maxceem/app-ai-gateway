@@ -64,8 +64,10 @@ interface Env {
   // `cloudflare` or `smtp`: which one to use where both are configured.
   EMAIL_SENDER?: string;
   // The address emails are sent from. Required with either transport. Not a
-  // secret.
+  // secret. Bounces come back to it.
   EMAIL_FROM?: string;
+  // Where replies go instead, for example a support inbox. Optional.
+  EMAIL_REPLY_TO?: string;
   // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
   // var to the literal it finds there, which is wrong for any deployment that
@@ -108,6 +110,7 @@ declare namespace Cloudflare {
     SMTP_PASSWORD?: string;
     EMAIL_SENDER?: string;
     EMAIL_FROM?: string;
+    EMAIL_REPLY_TO?: string;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
     ALLOWED_REGISTRATION_EMAILS: string;

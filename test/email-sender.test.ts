@@ -23,10 +23,10 @@ const binding = { send: vi.fn(async () => ({ messageId: "m" })) };
 
 /** Only what a test sets: everything else about email is unset. */
 function configured(values: Partial<Record<
-  "EMAIL" | "SMTP_HOST" | "SMTP_PORT" | "SMTP_USERNAME" | "SMTP_PASSWORD" | "EMAIL_SENDER" | "EMAIL_FROM",
+  "EMAIL" | "SMTP_HOST" | "SMTP_PORT" | "SMTP_USERNAME" | "SMTP_PASSWORD" | "EMAIL_SENDER" | "EMAIL_FROM" | "EMAIL_REPLY_TO",
   unknown
 >>): Env {
-  const keys = ["EMAIL", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_SENDER", "EMAIL_FROM"];
+  const keys = ["EMAIL", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_SENDER", "EMAIL_FROM", "EMAIL_REPLY_TO"];
   return new Proxy(env, {
     get(target, property, receiver) {
       if (property === "DEPLOYMENT_ID") return "sender-test-deployment";
@@ -106,6 +106,7 @@ describe("emailSetup", () => {
       [{ ...SMTP, EMAIL_FROM: "<gateway@example.test>" }, /EMAIL_FROM/],
       [{ ...SMTP, EMAIL_FROM: "Gateway <gateway@example.test>" }, /EMAIL_FROM/],
       [{ ...SMTP, EMAIL_FROM: "gateway@example.test;x" }, /EMAIL_FROM/],
+      [{ ...SMTP, EMAIL_REPLY_TO: "Support <support@example.test>" }, /EMAIL_REPLY_TO/],
       [{ EMAIL_SENDER: "smtp" }, /SMTP_HOST is not set/],
     ];
     for (const [values, problem] of cases) {
@@ -120,6 +121,23 @@ describe("emailSetup", () => {
     expect(resolveDeployment(configured({ ...SMTP, SMTP_PASSWORD: "" })).emailVerification).toBe("required");
     expect(resolveDeployment(configured({ ...SMTP, SMTP_HOST: "" })).emailVerification).toBe("required");
     expect(resolveDeployment(configured({})).emailVerification).toBe("off");
+  });
+});
+
+describe("replies", () => {
+  it("go to EMAIL_REPLY_TO through either transport, and to the sender without it", async () => {
+    expect(emailSetup(configured(SMTP))).toMatchObject({ state: "ok", replyTo: null });
+    const replying = { ...SMTP, EMAIL_REPLY_TO: " support@example.test " };
+    expect(emailSetup(configured(replying))).toMatchObject({ state: "ok", replyTo: "support@example.test" });
+
+    await emailSender(configured(replying))!.send({ ...EMAIL, replyTo: "support@example.test" });
+    expect(mailer.send).toHaveBeenCalledWith(expect.objectContaining({ reply: "support@example.test" }));
+
+    const cloudflare = { EMAIL: binding, EMAIL_FROM: "gateway@example.test" };
+    await emailSender(configured(cloudflare))!.send({ ...EMAIL, replyTo: "support@example.test" });
+    expect(binding.send).toHaveBeenCalledWith(expect.objectContaining({ replyTo: "support@example.test" }));
+    await emailSender(configured(cloudflare))!.send(EMAIL);
+    expect(binding.send).toHaveBeenLastCalledWith(expect.not.objectContaining({ replyTo: expect.anything() }));
   });
 });
 

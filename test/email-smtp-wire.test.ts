@@ -115,6 +115,35 @@ describe("SMTP on the wire", () => {
     expect(server.socket.close).toHaveBeenCalledOnce();
   });
 
+  it("sends bounces to the sending mailbox and replies to EMAIL_REPLY_TO", async () => {
+    const server = scriptedServer([
+      "220 smtp.example.test ready\r\n",
+      // Advertises DSN: a server that supports delivery reports must still be
+      // left to send them, never told NOTIFY=NEVER.
+      "250-smtp.example.test\r\n250-DSN\r\n250 AUTH PLAIN LOGIN\r\n",
+      "235 Authentication successful\r\n",
+      "250 OK\r\n", // MAIL FROM
+      "250 OK\r\n", // RCPT TO
+      "354 Go ahead\r\n", // DATA
+      "250 Queued\r\n", // body
+      "221 Bye\r\n", // QUIT
+    ]);
+    const base = smtpEnv();
+    const testEnv = new Proxy(base, {
+      get: (target, property, receiver) =>
+        property === "EMAIL_REPLY_TO" ? "support@example.test" : Reflect.get(target, property, receiver),
+    }) as Env;
+    await sendVerificationEmail(testEnv, resolveDeployment(testEnv, ORIGIN), { id: "user-1", email: RECIPIENT }, null);
+
+    const wire = server.written();
+    // The envelope sender, where bounces go, is the sending mailbox.
+    expect(wire).toContain("MAIL FROM: <gateway@example.test>\r\n");
+    expect(wire).toContain(`RCPT TO: <${RECIPIENT}>\r\n`);
+    expect(wire).not.toContain("NOTIFY");
+    expect(wire).toContain("Reply-To: support@example.test");
+    expect(wire).toContain("From: \"App AI Gateway\" <gateway@example.test>");
+  });
+
   it("logs a refused recipient without the address, and still closes the connection", async () => {
     const server = scriptedServer([
       ...GREETING_AND_SIGN_IN,
