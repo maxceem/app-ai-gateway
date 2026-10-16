@@ -350,5 +350,9 @@
   {
     "key": "together/prunaai/p-image-ideogram: not added",
     "reason": "Unsupported public pricing: image models, prunaai/p-image-ideogram: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "groq/meta-models/muse-spark-open: not added",
+    "reason": "Unsupported public pricing: no public price, the page says to contact sales"
   }
 ]
