@@ -390,6 +390,12 @@
     "mistral-small-latest": { "input": 0.15, "cached_input": 0.015, "output": 0.6 }
   },
   "together": {
+    "reflection/Beam-1.0-501B-A23B": {
+      "input": 0.4,
+      "cached_input": 0.04,
+      "output": 1.2,
+      "author": "Reflection"
+    },
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
       "input": 0.15,
       "cached_input": 0.02,
