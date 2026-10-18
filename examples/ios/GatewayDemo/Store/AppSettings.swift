@@ -38,7 +38,7 @@ final class AppSettings {
     // MARK: Providers
 
     func provider(_ type: String) -> ProviderSetting {
-        values.providers[type] ?? ProviderSetting(enabled: ["openai", "anthropic", "gemini", "xai"].contains(type), slug: type)
+        values.providers[type] ?? ProviderSetting(enabled: type == "openai", slug: type)
     }
 
     func setProvider(_ type: String, _ setting: ProviderSetting) {

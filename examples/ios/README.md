@@ -4,7 +4,10 @@ A small SwiftUI app that sends chat, image generation and transcription
 requests to many providers through App AI Gateway, using the
 [Swift package](../../app-ai-gateway-swift). Its history stays on the device.
 
-Open `GatewayDemo.xcodeproj` in Xcode 26 and run it. It starts with
+To run it on your iPhone through a gateway app of your own, follow
+[Run the demo app on your iPhone](https://docs.appaigateway.com/demo-ios-app/).
+
+Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. It starts with
 **Simulated responses** on, so every screen works without a gateway. To use
 yours, open **Settings** from the sidebar, turn simulated responses off, and
 fill in your gateway URL and app ID:
