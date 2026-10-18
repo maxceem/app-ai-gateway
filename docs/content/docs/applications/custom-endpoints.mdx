@@ -17,32 +17,62 @@ provider access: this configuration is the policy.
 
 ## Adding one
 
-On the app's **Custom endpoints** page, click **Add endpoint**. It needs an OpenAI
-or xAI provider, because those are the request shapes the gateway composes.
+On the app's **Custom endpoints** page, click **Add endpoint**. Every provider
+type can serve one, in the request formats listed below.
 
 - **Slug**: 1 to 64 characters from `a-z`, `0-9` and `-`. This is the last
   segment of the URL, so pick a name for what the endpoint does, such as
   `chat` or `transcribe`, not for the model behind it.
-- **API style**:
-  - **responses**: clients send an OpenAI Responses body. The gateway
-    overwrites the model and deep-merges the parameters below.
-  - **audio_transcription**: clients send an OpenAI audio-transcription multipart
-    body and may omit the model field entirely.
-- **Provider**: one of your OpenAI or xAI providers, by slug.
+- **What it does**: text generation, image generation, speech (text to
+  speech), transcription (speech to text) or embeddings. The model pickers
+  only offer models of this kind, and the gateway refuses a model of another
+  kind on save.
+- **Request format**: the body your clients send. Only formats that carry the
+  chosen kind, and that one of your providers serves, are offered.
+- **Provider**: one of your providers, by slug, that serves the format.
 - **Model**: swap it at any time; clients keep calling the same slug. Only
-  models with a price are accepted.
-- **Parameters** (responses only): JSON deep-merged over the client body,
-  with the server winning on conflicts. Leave `{}` for none.
-- **Max output tokens** (responses only): same rule as in provider access.
+  models with a price are accepted, except where the provider reports its own
+  cost for the format (xAI, OpenRouter): there **Other model ID…** takes any
+  model it serves.
+- **Parameters** (JSON formats): JSON deep-merged over the client body, with
+  the server winning on conflicts. Leave `{}` for none. Use it for what every
+  client should send, such as an image size or a voice.
+- **Max output tokens** (text only): same rule as in provider access.
   A client value above it is refused, a missing value is injected.
 - **Fallback chain**: provider and model pairs tried in order when the
   provider call fails, is rate limited upstream, or returns a server error,
   and nothing has been streamed to the client yet. Each provider attempt is
-  recorded, including a failed attempt before a successful fallback.
+  recorded, including a failed attempt before a successful fallback. A
+  fallback must speak the same format, so it can be another provider of the
+  same type or any other provider that serves the format.
 
-A transcription endpoint cannot use a provider routed through Vercel AI
-Gateway, because Vercel serves no transcription API. OpenAI endpoints call
-`v1/audio/transcriptions` and xAI endpoints call `v1/stt`.
+## Kinds and request formats
+
+| What it does | Request format (`api_style`) | Providers |
+| --- | --- | --- |
+| Text generation | OpenAI Responses (`responses`) | OpenAI, xAI |
+| | OpenAI Chat Completions (`chat_completions`) | DeepSeek, Groq, Mistral, Together AI, Fireworks AI, Cerebras, Moonshot AI, Hugging Face, Baseten, ByteDance, Perplexity, OpenRouter |
+| | Anthropic Messages (`anthropic_messages`) | Anthropic |
+| | Gemini generateContent (`gemini_native`) | Gemini |
+| Image generation | OpenAI image generation (`image_generation`) | OpenAI, xAI, ByteDance (Seedream) |
+| | Gemini generateContent (`gemini_native`) | Gemini image models (Nano Banana) |
+| Speech (text to speech) | Gemini generateContent (`gemini_native`) | Gemini TTS models |
+| Transcription (speech to text) | OpenAI audio transcription (`audio_transcription`) | OpenAI, xAI, Groq |
+| Embeddings | OpenAI embeddings (`embeddings`) | OpenAI |
+| | Gemini embedContent (`gemini_embedding`) | Gemini |
+
+Each provider type serves a kind through one format, so a model of the right
+kind on that provider always works in it. OpenAI and xAI text endpoints use
+Responses, which every one of their text models supports.
+
+Models that only work over a realtime connection, such as
+`gpt-live-transcribe`, cannot serve a custom endpoint.
+
+A provider routed through Vercel AI Gateway serves only Responses, Chat
+Completions and Anthropic Messages endpoints, because those are the only APIs
+Vercel publishes. OpenAI endpoints call `v1/audio/transcriptions`, xAI
+endpoints call `v1/stt` and Groq endpoints call
+`openai/v1/audio/transcriptions`.
 
 ## What the client sees
 
@@ -82,6 +112,19 @@ and the event list shows which target served each request.
     "max_output_tokens": 4096,
     "fallback": [{ "provider": "xai", "model": "grok-4.5" }]
   },
+  "draw": {
+    "api_style": "image_generation",
+    "provider": "openai",
+    "model": "gpt-image-2",
+    "params": { "size": "1024x1024" }
+  },
+  "voice": {
+    "kind": "speech",
+    "api_style": "gemini_native",
+    "provider": "gemini",
+    "model": "gemini-3.8-flash-tts",
+    "params": { "generationConfig": { "responseModalities": ["AUDIO"] } }
+  },
   "transcribe": {
     "api_style": "audio_transcription",
     "provider": "openai",
@@ -90,6 +133,13 @@ and the event list shows which target served each request.
 }
 ```
 
-Every model in the block, fallbacks included, must have a price in the
-catalog or in that provider's custom pricing, or the configuration is
-rejected on save.
+`kind` is what the endpoint does: `text`, `image`, `speech`, `transcription`
+or `embedding`. Most formats carry one kind, and the gateway fills it in.
+`gemini_native` carries text, image and speech, so give it a `kind` unless the
+endpoint generates text. A saved configuration always shows `kind`.
+
+Every model in the block, fallbacks included, must be of the endpoint's kind
+and have a price in the catalog or in that provider's custom pricing, or the
+configuration is rejected on save. A model you price yourself counts as a text
+model. A model with no price is accepted only on a provider that reports its
+own cost, and that provider decides whether it serves it.

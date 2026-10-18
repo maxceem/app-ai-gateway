@@ -79,16 +79,16 @@ export function renderReport(decision) {
 
   if (decision.newModels.length > 0) {
     const rows = decision.modelChoices?.length ? decision.modelChoices.map((choice) =>
-      `| ${code(`${choice.provider}/${choice.model}`)} | **${choice.action === "add" ? "✅ Add" : choice.action === "skip" ? "⏭️ Skip" : "⚠️ Pending"}** | ${escape(choice.reason)} | ${escape(choice.origin === "ai" ? choice.reviewer : choice.origin === "manual" ? `@${choice.reviewer}` : "Catalog validation")} |`,
+      `| ${code(`${choice.provider}/${choice.model}`)} | **${choice.action === "add" ? "✅ Add" : choice.action === "skip" ? "⏭️ Skip" : "⚠️ Pending"}** | ${choice.kind ? escape(choice.kind) : "—"} | ${escape(choice.reason)} | ${escape(choice.origin === "ai" ? choice.reviewer : choice.origin === "manual" ? `@${choice.reviewer}` : "Catalog validation")} |`,
     ) : decision.newModels.flatMap(({ provider, ids }) =>
       ids.map((id) => `| ${code(provider)} | ${code(id)} |`),
     );
     ready.push(
       "## ✅ Newly discovered models\n\n" +
-      "Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source. **⚠️ Pending** models remain undecided.\n\n" +
-      (decision.modelChoices?.length ? `| Model | Proposal | Reason | Reviewer |\n| --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
+      "Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source, and takes each model's kind from LiteLLM or Models.dev where they name one. **⚠️ Pending** models remain undecided.\n\n" +
+      (decision.modelChoices?.length ? `| Model | Proposal | Kind | Reason | Reviewer |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
       "\n\nTo override a proposal, comment on this PR with one or more commands, one per line. The bot updates this same PR and preserves your choices on later runs:\n\n" +
-      "```text\n/models add openai/gpt-6-luna\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```",
+      "```text\n/models add openai/gpt-6-luna\n/models add openai/gpt-image-3 image\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```\n\nAn addition may name its kind (text, image, speech, transcription, embedding or realtime), which replaces the proposed one.",
     );
   }
 

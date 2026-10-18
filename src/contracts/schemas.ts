@@ -3,7 +3,10 @@ import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import {
   ENDPOINT_API_STYLES,
   OUTPUT_CLAMP_STYLES,
+  type EndpointApiStyle,
 } from "../shared/capabilities.ts";
+import { ENDPOINT_KINDS, type EndpointKind } from "../shared/model-kinds.ts";
+import { PROTOCOLS } from "../shared/protocols.ts";
 import {
   GATEWAY_DESCRIPTORS,
   GATEWAY_TYPES,
@@ -362,12 +365,50 @@ const EndpointTargetSchema = z.object({
   model: z.string().min(1),
 });
 
+/** The kinds of model an endpoint style carries, best first: the first is its default. */
+export function endpointStyleKinds(style: EndpointApiStyle): EndpointKind[] {
+  return ENDPOINT_KINDS.filter((kind) => PROTOCOLS[style].kinds.includes(kind));
+}
+
+/**
+ * What an endpoint serves. Written on every parsed configuration; a draft that
+ * names none serves its style's default, which is what a parse would write.
+ */
+export function endpointKind(endpoint: { kind?: EndpointKind; api_style: EndpointApiStyle }): EndpointKind {
+  return endpoint.kind ?? endpointStyleKinds(endpoint.api_style)[0] ?? "text";
+}
+
+/**
+ * A custom endpoint names what it does (`kind`) and the API its clients speak
+ * (`api_style`), which are different questions only where one API carries
+ * several kinds: Gemini's `generateContent` serves text, image and speech
+ * models alike. Everywhere else the style settles the kind, so a configuration
+ * written before kinds existed parses unchanged and has it filled in.
+ */
 const EndpointSchema = EndpointTargetSchema.extend({
+  kind: z.enum(ENDPOINT_KINDS).optional().meta({
+    description:
+      "What the endpoint does, which decides the models it may serve: text, image, speech (text to speech), transcription (speech to text) or embedding. Must be a kind its api_style carries; defaults to the first of them (text for gemini_native). Filled in on every parsed configuration.",
+  }),
   api_style: z.enum(ENDPOINT_API_STYLES),
   params: z.record(z.string(), z.unknown()).optional(),
   max_output_tokens: z.number().int().positive().optional(),
   fallback: z.array(EndpointTargetSchema).optional(),
-}).strict();
+}).strict().superRefine((endpoint, context) => {
+  const kinds = endpointStyleKinds(endpoint.api_style);
+  if (endpoint.kind !== undefined && !kinds.includes(endpoint.kind)) {
+    context.addIssue({
+      code: "custom",
+      path: ["kind"],
+      message: `cannot be ${endpoint.kind}: a ${endpoint.api_style} endpoint serves ${
+        new Intl.ListFormat("en", { type: "disjunction" }).format(kinds)
+      }`,
+    });
+  }
+}).overwrite((endpoint) => {
+  endpoint.kind = endpointKind(endpoint);
+  return endpoint;
+});
 
 const LimitScopeSchema = z.object({
   requests: z.object({

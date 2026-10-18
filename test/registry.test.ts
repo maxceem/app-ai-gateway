@@ -117,7 +117,13 @@ describe("API style classification", () => {
     ["v1beta/models/gemini-3.6-flash:streamGenerateContent", "gemini_native"],
     ["v1/audio/transcriptions", "audio_transcription"],
     ["v1/stt", "audio_transcription"],
-    ["v1/embeddings", "other"],
+    ["v1/images/generations", "image_generation"],
+    ["images/generations", "image_generation"],
+    ["v1/embeddings", "embeddings"],
+    ["inference/v1/embeddings", "embeddings"],
+    ["v1beta/models/gemini-embedding-2:embedContent", "gemini_embedding"],
+    ["embeddings/multimodal", "other"],
+    ["v1/images/edits", "other"],
     ["v1/models", "other"],
   ] as const)("reads %s as %s regardless of who serves it", (path, style) => {
     expect(apiStyleFromPath(path)).toBe(style);
@@ -130,6 +136,10 @@ describe("API style classification", () => {
    */
   function legacyClampStyle(providerType: ProviderType, providerPath: string): OutputClampStyle {
     if (providerPath.endsWith("audio/transcriptions") || providerPath === "v1/stt") return "none";
+    // The one deliberate change: embeddings became an API of their own, with
+    // no output to cap, where the old sniff capped a field every embeddings
+    // API refuses.
+    if (providerPath === "v1/embeddings") return "none";
     if (providerPath.includes("chat/completions")) return "chat_completions";
     if (providerPath.endsWith("responses")) return "responses";
     if (providerPath.includes("generateContent")) return "gemini_native";
@@ -188,7 +198,7 @@ describe("API style classification", () => {
     (type) => {
       // These providers' own request shape *is* chat completions, so a path
       // with no cross-provider style still caps the field they read.
-      expect(outputClampStyle(apiStyleFromPath("v1/embeddings"), type)).toBe("chat_completions");
+      expect(outputClampStyle(apiStyleFromPath("v1/completions"), type)).toBe("chat_completions");
       expect(outputClampStyle(apiStyleFromPath("openai/v1/chat/completions"), type))
         .toBe("chat_completions");
     },
@@ -244,9 +254,10 @@ describe("capability matrix", () => {
    * fail-closed half of "a request is only proxied if it can be billed".
    */
   it("offers OpenRouter the one API style it can be billed on", () => {
+    // Its custom endpoints are the same one API, billed on the same report.
     expect(routeCapability("direct", "openrouter")).toEqual({
       apiStyles: ["chat_completions"],
-      endpointStyles: [],
+      endpointStyles: ["chat_completions"],
     });
     expect(supportsApiStyle("direct", "openrouter", "chat_completions")).toBe(true);
     for (const style of API_STYLES.filter((value) => value !== "chat_completions")) {
@@ -258,14 +269,22 @@ describe("capability matrix", () => {
     expect(routeCapability("cf_aig", "openrouter")).toBeNull();
   });
 
-  it("keeps custom-endpoint eligibility where it was", () => {
-    expect(ENDPOINT_PROVIDER_TYPES).toEqual(["openai", "xai"]);
+  it("lets every provider type back a custom endpoint in the APIs its descriptor composes", () => {
+    expect(ENDPOINT_PROVIDER_TYPES).toEqual(PROVIDER_TYPES);
     expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
-    expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
+    expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai", "groq"]);
+    expect(providersForEndpointStyle("gemini_native")).toEqual(["gemini"]);
+    expect(providersForEndpointStyle("embeddings")).toEqual(["openai"]);
     for (const route of ["direct", "cf_aig"] as ProviderRoute[]) {
       expect(supportsEndpointStyle(route, "openai", "responses")).toBe(true);
       expect(supportsEndpointStyle(route, "anthropic", "responses")).toBe(false);
+      expect(supportsEndpointStyle(route, "anthropic", "anthropic_messages")).toBe(true);
     }
+    // Vercel carries the three APIs it serves, for the types that compose them.
+    expect(supportsEndpointStyle("vercel", "anthropic", "anthropic_messages")).toBe(true);
+    expect(supportsEndpointStyle("vercel", "deepseek", "chat_completions")).toBe(true);
+    expect(supportsEndpointStyle("vercel", "openai", "image_generation")).toBe(false);
+    expect(supportsEndpointStyle("vercel", "gemini", "gemini_native")).toBe(false);
   });
 
   // No gateway adapter declines a provider type today, so the default and the
@@ -392,9 +411,16 @@ describe("the capability matrix the console shares", () => {
       expect([style, apiStyleFromPath(path.replace("{model}", "some-model"))])
         .toEqual([style, style]);
     }
-    // Every style but `other`, which names no contract and so has no path.
-    expect(Object.keys(SHARED.API_STYLE_PATHS).sort())
-      .toEqual(API_STYLES.filter((style) => style !== "other").sort());
+    // Every style a gateway publishes has its path there, which is where a
+    // custom endpoint on that gateway posts. `other` names no contract to have one.
+    for (const type of GATEWAY_TYPES) {
+      for (const route of Object.values(GATEWAY_DESCRIPTORS[type].routes)) {
+        for (const style of route?.apiStyles ?? []) {
+          expect([type, style, Object.hasOwn(SHARED.API_STYLE_PATHS, style)]).toEqual([type, style, true]);
+        }
+      }
+    }
+    expect(Object.hasOwn(SHARED.API_STYLE_PATHS, "other")).toBe(false);
   });
 
   it("shares the style and provider lists rather than restating them", () => {

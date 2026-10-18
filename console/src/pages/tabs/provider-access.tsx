@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Check, ChevronDown, CircleSlash, Plus, Trash2 } from "lucide-react";
 import { OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
+import type { KindCatalog } from "@shared/model-kinds";
 import { emptyPolicy } from "@shared/app-defaults";
 import { defaultInferencePaths } from "@shared/app-config";
 import { Badge } from "@/components/ui/badge";
@@ -500,7 +501,7 @@ function policyRows(
   instances: ProviderCredential[],
   gateways: ProviderGateway[],
   selected: string[],
-  prices: Record<Provider, Record<string, unknown>> | undefined,
+  prices: KindCatalog | undefined,
 ): PolicyRow[] {
   const known = instances.map((instance) => ({
     slug: instance.slug,

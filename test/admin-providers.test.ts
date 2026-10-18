@@ -1171,12 +1171,12 @@ describe("gateway routing configuration", () => {
 
     const listed = await call("GET", "/v1/admin/providers");
     expect(listed.body.providers[0].gatewayRoute).toBeNull();
-    // Cloudflare forwards to the provider's own API: nothing narrowed, both
-    // endpoint styles, and OpenAI's own model IDs on the wire.
+    // Cloudflare forwards to the provider's own API: nothing narrowed, every
+    // endpoint style, and OpenAI's own model IDs on the wire.
     expect(listed.body.providers[0]).toMatchObject({
       route: "cf_aig",
       capability: {
-        endpointStyles: ["responses", "audio_transcription"],
+        endpointStyles: ["responses", "audio_transcription", "image_generation", "embeddings"],
         modelPrefix: null,
         paths: "provider",
       },

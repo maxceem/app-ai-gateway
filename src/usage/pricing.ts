@@ -14,8 +14,11 @@ import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../c
 import type { ProviderPricing } from "../db/schema";
 import { type ProviderType, reportsCost } from "../shared/providers";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
+import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 
 interface Price {
+  /** What the model does, which decides the custom endpoints it may serve. */
+  kind: ModelKind;
   input?: number;
   output?: number;
   /**
@@ -108,8 +111,27 @@ function modelPrice(
   overrides?: ProviderPricing | null,
 ): Price | undefined {
   const override = lookup(overrides, model);
-  if (override) return { input: override.input, output: override.output };
+  if (override) {
+    return {
+      kind: catalogKind(provider, model, overrides) ?? "text",
+      input: override.input,
+      output: override.output,
+    };
+  }
   return catalogPrice(provider, model);
+}
+
+/**
+ * A model's kind on one provider type, or `null` where neither the catalog nor
+ * the row's own prices know it — see `modelKind` in `src/shared/model-kinds.ts`,
+ * which the console runs over the same catalog.
+ */
+export function catalogKind(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): ModelKind | null {
+  return modelKind(models as KindCatalog, provider, model, overrides);
 }
 
 export function hasModelPrice(

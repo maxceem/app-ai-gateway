@@ -7,5 +7,7 @@ import models from "../usage/models.json";
  * names exactly the models the price list would.
  */
 export function modelPrices(): PricesResponse {
-  return { prices: models };
+  // JSON imports widen `kind` to a string; the shipped catalog's kinds are held
+  // to `MODEL_KINDS` by test/usage.test.ts.
+  return { prices: models as PricesResponse["prices"] };
 }

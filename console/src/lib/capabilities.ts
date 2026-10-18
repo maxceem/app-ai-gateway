@@ -14,6 +14,9 @@ export const API_STYLE_LABELS = {
   anthropic_messages: "Anthropic Messages",
   gemini_native: "Gemini generateContent",
   audio_transcription: "Transcription",
+  image_generation: "Image generation",
+  embeddings: "Embeddings",
+  gemini_embedding: "Gemini embedContent",
 } as const satisfies Partial<Record<CoreApiStyle, string>>;
 
 export type ApiStyle = keyof typeof API_STYLE_LABELS;
@@ -60,11 +63,11 @@ export function routedSurface(
   if (instance.capability.paths !== "gateway") return null;
   const prefix = instance.capability.modelPrefix;
   return {
-    available: instance.capability.apiStyles.filter(displayable).map((style) => ({
-      style,
-      label: API_STYLE_LABELS[style],
-      path: API_STYLE_PATHS[style],
-    })),
+    // A style the gateway layout gives no path to is not one it publishes.
+    available: instance.capability.apiStyles.filter(displayable).flatMap((style) =>
+      Object.hasOwn(API_STYLE_PATHS, style)
+        ? [{ style, label: API_STYLE_LABELS[style], path: API_STYLE_PATHS[style as keyof typeof API_STYLE_PATHS] }]
+        : []),
     modelIds: prefix
       ? `${providerLabel(instance.type)} model IDs with no "${prefix}" prefix — the gateway adds it upstream`
       : `${providerLabel(instance.type)} model IDs, unchanged`,

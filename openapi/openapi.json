@@ -911,11 +911,28 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image",
+                    "speech",
+                    "transcription",
+                    "embedding"
+                  ],
+                  "description": "What the endpoint does, which decides the models it may serve: text, image, speech (text to speech), transcription (speech to text) or embedding. Must be a kind its api_style carries; defaults to the first of them (text for gemini_native). Filled in on every parsed configuration."
+                },
                 "api_style": {
                   "type": "string",
                   "enum": [
                     "responses",
-                    "audio_transcription"
+                    "chat_completions",
+                    "anthropic_messages",
+                    "gemini_native",
+                    "audio_transcription",
+                    "image_generation",
+                    "embeddings",
+                    "gemini_embedding"
                   ]
                 },
                 "params": {
@@ -1482,6 +1499,9 @@
                     "anthropic_messages",
                     "gemini_native",
                     "audio_transcription",
+                    "image_generation",
+                    "embeddings",
+                    "gemini_embedding",
                     "other"
                   ]
                 },
@@ -1493,7 +1513,13 @@
                   "type": "string",
                   "enum": [
                     "responses",
-                    "audio_transcription"
+                    "chat_completions",
+                    "anthropic_messages",
+                    "gemini_native",
+                    "audio_transcription",
+                    "image_generation",
+                    "embeddings",
+                    "gemini_embedding"
                   ]
                 },
                 "description": "The custom-endpoint styles this instance can back on its route."
@@ -4255,7 +4281,7 @@
         ],
         "operationId": "callNamedEndpoint",
         "summary": "Call a server-configured custom endpoint",
-        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. The body is the one the endpoint's api_style takes, without a model: JSON for every style but audio_transcription, which takes an OpenAI audio transcription multipart body. A gemini_native endpoint streams when the request URL carries alt=sse, as Gemini's own API does; every other style streams as its body asks. The successful response keeps the serving provider's native format and streaming behaviour.",
         "security": [
           {
             "GatewayBearer": []
@@ -4280,6 +4306,19 @@
             "required": true,
             "name": "slug",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sse"
+              ],
+              "description": "gemini_native endpoints only: `sse` streams the response as server-sent events, as Gemini's own API does. Never forwarded upstream."
+            },
+            "required": false,
+            "description": "gemini_native endpoints only: `sse` streams the response as server-sent events, as Gemini's own API does. Never forwarded upstream.",
+            "name": "alt",
+            "in": "query"
           },
           {
             "schema": {
@@ -4320,7 +4359,7 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": {},
-                "description": "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params."
+                "description": "The JSON body the endpoint's api_style takes: an OpenAI Responses, Chat Completions, image generation or embeddings body, an Anthropic Messages body, or a Gemini generateContent or embedContent body. The gateway sets the configured model (in the body, or in the URL for the Gemini styles) and deep-merges the configured params."
               }
             },
             "multipart/form-data": {
@@ -11081,6 +11120,18 @@
                         "additionalProperties": {
                           "type": "object",
                           "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "image",
+                                "speech",
+                                "transcription",
+                                "embedding",
+                                "realtime"
+                              ],
+                              "description": "What the model does: text, image (generation), speech (text to speech), transcription (speech to text), embedding, or realtime (served only over a realtime session). A custom endpoint serves models of its own kind only."
+                            },
                             "input": {
                               "type": "number"
                             },
@@ -11138,7 +11189,10 @@
                               "type": "string",
                               "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."
                             }
-                          }
+                          },
+                          "required": [
+                            "kind"
+                          ]
                         }
                       }
                     }

@@ -58,10 +58,18 @@ export function instanceCapability(
     apiStyles: [...(capability?.apiStyles ?? [])],
     endpointStyles: [...(capability?.endpointStyles ?? [])],
     modelPrefix: routeConfig?.modelPrefix ?? gatewayRoute?.modelPrefix ?? null,
-    // A gateway that lists the styles it serves publishes one path per style
-    // for every provider; one that lists none forwards the provider's own.
-    paths: gatewayRoute?.apiStyles === undefined ? "provider" : "gateway",
+    paths: route !== null && publishesStylePaths(route, provider) ? "gateway" : "provider",
   };
+}
+
+/**
+ * Whether clients call this route at the one path per API style a gateway
+ * publishes for every provider (`API_STYLE_PATHS`) rather than at the
+ * provider's own paths. A gateway that lists the styles it serves publishes its
+ * own layout; one that lists none forwards the provider's.
+ */
+export function publishesStylePaths(route: ProviderRoute, provider: ProviderType): boolean {
+  return ROUTE_ADAPTERS[route].providerRoute(provider)?.apiStyles !== undefined;
 }
 
 /** `null` when the route cannot serve the provider type at all. */

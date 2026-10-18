@@ -50,6 +50,9 @@ export const API_STYLES = [
   "anthropic_messages",
   "gemini_native",
   "audio_transcription",
+  "image_generation",
+  "embeddings",
+  "gemini_embedding",
   /** A provider-native operation with no cross-provider contract of its own. */
   "other",
 ] as const;
@@ -97,8 +100,19 @@ export const API_STYLE_PATHS = {
 /**
  * The API styles a custom endpoint can compose: the gateway writes those request
  * bodies itself, so each is a style this deployment has verified end to end.
+ * Which kinds of model each one carries is its protocol's `kinds`, in
+ * `./protocols.ts`; which provider types compose it is their `endpointPaths`.
  */
-export const ENDPOINT_API_STYLES = ["responses", "audio_transcription"] as const satisfies readonly ApiStyle[];
+export const ENDPOINT_API_STYLES = [
+  "responses",
+  "chat_completions",
+  "anthropic_messages",
+  "gemini_native",
+  "audio_transcription",
+  "image_generation",
+  "embeddings",
+  "gemini_embedding",
+] as const satisfies readonly ApiStyle[];
 
 export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
 
@@ -200,11 +214,16 @@ export const VERCEL_API_STYLES: readonly ApiStyle[] = [
 ];
 
 /**
- * Custom endpoints this gateway can compose. `responses` only: an
- * `audio_transcription` endpoint would post to `v1/audio/transcriptions`, which
- * Vercel does not serve.
+ * Custom endpoints this gateway can compose: the three APIs Vercel serves, each
+ * posted to its path in Vercel's own URL space. No transcription, image or
+ * embedding endpoint: `v1/audio/transcriptions` answers `404 not_found_error`
+ * on this origin, and the others are not documented there.
  */
-export const VERCEL_ENDPOINT_STYLES: readonly EndpointApiStyle[] = ["responses"];
+export const VERCEL_ENDPOINT_STYLES: readonly EndpointApiStyle[] = [
+  "responses",
+  "chat_completions",
+  "anthropic_messages",
+];
 
 /**
  * Every Vercel route is the same capability set behind a different namespace, so

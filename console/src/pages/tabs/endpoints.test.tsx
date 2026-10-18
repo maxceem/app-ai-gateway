@@ -10,7 +10,7 @@ import { served } from "@/test/providers";
 
 const APP_ID = "my-app";
 
-/** Anthropic composes neither endpoint style, so its instance is never a target. */
+/** Anthropic composes Anthropic Messages alone, so its instance is never a Responses target. */
 const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-1",
@@ -63,8 +63,23 @@ const PROVIDERS: ProviderCredential[] = [
 ];
 
 const PRICES = {
-  openai: { "gpt-5.6-luna": { input: 1, output: 2 } },
-  xai: { "grok-5": { input: 3, output: 4 } },
+  openai: {
+    "gpt-5.6-luna": { kind: "text", input: 1, output: 2 },
+    "gpt-image-2": { kind: "image", input: 5, output: 30 },
+  },
+  xai: { "grok-5": { kind: "text", input: 3, output: 4 } },
+};
+
+/** A provider whose only route serves no endpoint style: Gemini through Vercel. */
+const GEMINI_VIA_VERCEL: ProviderCredential = {
+  ...PROVIDERS[0]!,
+  id: "provider-5",
+  type: "gemini",
+  slug: "gemini-vercel",
+  name: "Gemini via Vercel",
+  secretHint: null,
+  providerGatewayId: "gw-vercel",
+  ...served("gemini", "vercel"),
 };
 
 function appRow(endpoints: EndpointsConfig) {
@@ -144,16 +159,18 @@ const expand = async (slug: string) =>
 
 describe("endpointSummary", () => {
   it("says the style, the target, and only the extras that are set", () => {
-    expect(endpointSummary(CHAT.chat!)).toBe("responses · openai-dev → gpt-5.6-luna");
+    expect(endpointSummary(CHAT.chat!)).toBe("text · responses · openai-dev → gpt-5.6-luna");
     expect(
       endpointSummary({
         ...CHAT.chat!,
         max_output_tokens: 4096,
         fallback: [{ provider: "grok", model: "grok-5" }],
       }),
-    ).toBe("responses · openai-dev → gpt-5.6-luna · 1 fallback · up to 4,096 output tokens");
+    ).toBe("text · responses · openai-dev → gpt-5.6-luna · 1 fallback · up to 4,096 output tokens");
     expect(endpointSummary({ api_style: "responses", provider: "openai-dev", model: "" }))
-      .toBe("responses · openai-dev → no model");
+      .toBe("text · responses · openai-dev → no model");
+    expect(endpointSummary({ kind: "speech", api_style: "gemini_native", provider: "gemini", model: "tts" }))
+      .toBe("speech · gemini_native · gemini → tts");
   });
 });
 
@@ -165,8 +182,8 @@ describe("EndpointsTab", () => {
     });
 
     expect(await screen.findByText(`POST /v1/apps/${APP_ID}/endpoints/chat`)).toBeTruthy();
-    expect(screen.getByText("responses · openai-dev → gpt-5.6-luna")).toBeTruthy();
-    expect(screen.getByText("audio_transcription · openai-dev → gpt-5.6-luna")).toBeTruthy();
+    expect(screen.getByText("text · responses · openai-dev → gpt-5.6-luna")).toBeTruthy();
+    expect(screen.getByText("transcription · audio_transcription · openai-dev → gpt-5.6-luna")).toBeTruthy();
     // Closed rows hold no fields.
     expect(screen.queryByLabelText("Endpoint slug")).toBeNull();
 
@@ -317,12 +334,12 @@ describe("EndpointsTab", () => {
   });
 
   it("cannot add an endpoint when no instance can serve one", async () => {
-    // Anthropic composes neither style, so there is no target to create.
-    renderTab({}, [PROVIDERS[2]!]);
+    // Vercel serves no Gemini API, so there is no target to create.
+    renderTab({}, [GEMINI_VIA_VERCEL], [VERCEL_GATEWAY]);
 
     const add = await screen.findByRole("button", { name: /add endpoint/i });
     expect(add).toHaveProperty("disabled", true);
-    expect(screen.getByText(/add a provider of type openai or xai first/i)).toBeTruthy();
+    expect(screen.getByText(/add a provider first/i)).toBeTruthy();
     expect(add.getAttribute("aria-describedby")).toBe("add-endpoint-disabled-reason");
 
     await userEvent.click(add);
@@ -340,8 +357,39 @@ describe("EndpointsTab", () => {
     expect(screen.getByRole("combobox", { name: "Provider" }).textContent)
       .toContain("grok");
     await userEvent.click(screen.getByRole("combobox", { name: "Model" }));
+    // xAI reports its own cost, so a model the catalog does not list is accepted too.
     expect((await screen.findAllByRole("option")).map((entry) => entry.textContent))
-      .toEqual(["grok-5"]);
+      .toEqual(["grok-5", "Other model ID…"]);
+  });
+
+  it("lists only models of the endpoint's kind, and moves to a format that serves a new one", async () => {
+    renderTab(CHAT);
+
+    await expand("chat");
+    await userEvent.click(await screen.findByRole("combobox", { name: "Model" }));
+    expect((await screen.findAllByRole("option")).map((entry) => entry.textContent)).toEqual(["gpt-5.6-luna"]);
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByRole("combobox", { name: "What it does" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Image generation" }));
+
+    expect(screen.getByRole("combobox", { name: "Request format" }).textContent).toContain("OpenAI image generation");
+    expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toContain("openai-dev");
+    // Image models have no output tokens to cap.
+    expect(screen.queryByText("Max output tokens")).toBeNull();
+    await userEvent.click(screen.getByRole("combobox", { name: "Model" }));
+    expect((await screen.findAllByRole("option")).map((entry) => entry.textContent)).toEqual(["gpt-image-2"]);
+  });
+
+  it("takes a typed model ID on an instance that reports its own cost", async () => {
+    renderTab({ chat: { api_style: "responses", provider: "grok", model: "" } });
+
+    await expand("chat");
+    await userEvent.click(await screen.findByRole("combobox", { name: "Model" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Other model ID…" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Model" }), "grok-6-preview");
+
+    expect(screen.getByText("text · responses · grok → grok-6-preview")).toBeTruthy();
   });
 
   it("keeps a slug the organization no longer has selectable rather than silently repointing it", async () => {
