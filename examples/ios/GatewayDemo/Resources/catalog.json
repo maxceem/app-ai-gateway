@@ -167,6 +167,7 @@
       "type": "together",
       "label": "Together AI",
       "chat": [
+        "reflection/Beam-1.0-501B-A23B",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
         "meta-models/Muse-Spark-Open-816B-A42B",
         "thinkingmachines/Inkling",

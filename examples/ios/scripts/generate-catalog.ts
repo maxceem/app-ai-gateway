@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROVIDER_TYPES, providerDescriptor } from "../../../src/shared/providers.ts";
 
-type Price = Record<string, unknown> & { retirement_date?: string };
+type Price = Record<string, unknown> & { kind?: string; retirement_date?: string };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "../../..");
@@ -23,21 +23,22 @@ const prices = JSON.parse(readFileSync(join(root, "src/usage/models.json"), "utf
 >;
 const today = new Date().toISOString().slice(0, 10);
 
-function kind(id: string, price: Price): "chat" | "transcription" | "image" | undefined {
-  // Realtime and live models speak a WebSocket protocol, embeddings and speech
-  // are not something the demo shows.
-  if (/realtime|live|embedding|tts/.test(id)) return undefined;
-  if ("per_minute" in price || "per_hour" in price || /transcribe|whisper/.test(id)) return "transcription";
-  if ("per_image" in price || "image_output" in price || /image|banana|seedream/.test(id)) return "image";
-  if ("input" in price && "output" in price) return "chat";
-  return undefined;
+/** What the demo does with a model, from the kind the catalog gives it. */
+function kind(price: Price): "chat" | "transcription" | "image" | undefined {
+  // Speech, embeddings and realtime models are not something the demo shows.
+  switch (price.kind) {
+    case "text": return "chat";
+    case "image": return "image";
+    case "transcription": return "transcription";
+    default: return undefined;
+  }
 }
 
 const providers = PROVIDER_TYPES.map((type) => {
   const entry = { type, label: providerDescriptor(type).label, chat: [] as string[], transcription: [] as string[], image: [] as string[] };
   for (const [id, price] of Object.entries(prices[type] ?? {})) {
     if (price.retirement_date && price.retirement_date <= today) continue;
-    const k = kind(id, price);
+    const k = kind(price);
     if (k) entry[k].push(id);
   }
   return entry;
