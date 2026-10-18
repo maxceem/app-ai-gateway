@@ -113,21 +113,27 @@ the cap.
 
 ## Embeddings
 
-Embedding endpoints are among the default inference endpoints. If you list an
-app's endpoints yourself, give an embedding path `"clamp": "none"`: an
-embedding has no output to cap, and injecting a limit into its body would make
-the provider refuse it.
+Embedding endpoints are among the default inference endpoints. An embedding
+has no output to cap, so the gateway injects no limit into a request to
+`v1/embeddings` (or Fireworks' `inference/v1/embeddings`) or to Gemini's
+`embedContent`, even when you list the path yourself. Any other embedding path
+you list needs `"clamp": "none"`, or the injected limit makes the provider
+refuse it.
 
 ```json
 "openai": {
-  "allowed_paths": ["v1/responses", { "path": "v1/embeddings", "clamp": "none" }],
+  "allowed_paths": ["v1/responses", "v1/embeddings"],
   "allowed_models": []
 },
 "gemini": {
   "allowed_paths": [
     "v1beta/models/{model}:generateContent",
-    { "path": "v1beta/models/{model}:embedContent", "clamp": "none" }
+    "v1beta/models/{model}:embedContent"
   ],
+  "allowed_models": []
+},
+"perplexity": {
+  "allowed_paths": ["chat/completions", { "path": "v1/contextualizedembeddings", "clamp": "none" }],
   "allowed_models": []
 }
 ```

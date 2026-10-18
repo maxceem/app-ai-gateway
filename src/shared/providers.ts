@@ -78,6 +78,12 @@ export interface ProviderDescriptor {
    * endpoint styles this type supports: the gateway writes those request
    * bodies itself, and nothing has been verified against a type with no entry
    * here. The key set *is* the capability — see {@link providerCapability}.
+   *
+   * At most one style per model kind (a protocol's `kinds`), which a test
+   * holds: a model's kind then names the one API it is called through here, so
+   * a model only one of the type's APIs serves — OpenAI's Responses-only
+   * `*-pro` models — is never offered on another. A `{model}` segment marks an
+   * API that names its model in the URL rather than the body.
    */
   endpointPaths?: Partial<Record<EndpointApiStyle, string>>;
   /**
@@ -190,9 +196,15 @@ export const PROVIDER_DESCRIPTORS = {
     // `max_completion_tokens`; every other OpenAI-compatible service still
     // reads the older field.
     chatCompletionsCapField: "max_completion_tokens",
-    // The two types whose Responses and transcription request shapes the
-    // gateway composes itself for custom endpoints.
-    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
+    // Text through Responses alone: the `*-pro` and `*-codex` models serve no
+    // other text API, so offering Chat Completions as well would offer them on
+    // a path that refuses them.
+    endpointPaths: {
+      responses: "v1/responses",
+      audio_transcription: "v1/audio/transcriptions",
+      image_generation: "v1/images/generations",
+      embeddings: "v1/embeddings",
+    },
     // Every JSON answer reports `usage`: tokens for the GPT transcription
     // models, `{ type: "duration", seconds }` for whisper-1.
     transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
@@ -205,6 +217,7 @@ export const PROVIDER_DESCRIPTORS = {
     nativeClampStyle: "anthropic",
     probePath: "v1/models",
     examplePath: "v1/messages",
+    endpointPaths: { anthropic_messages: "v1/messages" },
     modelAuthor: "Anthropic",
     // Anthropic refuses any request without a version header, probe included —
     // and a probe has no client to send one for it. Deliberately not a
@@ -228,8 +241,13 @@ export const PROVIDER_DESCRIPTORS = {
     ],
     probePath: "v1/models",
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
-    // `v1/audio/transcriptions`.
-    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/stt" },
+    // `v1/audio/transcriptions`. Text through Responses alone, as on OpenAI:
+    // the multi-agent models serve no other text API.
+    endpointPaths: {
+      responses: "v1/responses",
+      audio_transcription: "v1/stt",
+      image_generation: "v1/images/generations",
+    },
     // Every Chat Completions, Responses, image and video answer carries
     // `usage.cost_in_usd_ticks`, what xAI actually billed for it. An image
     // reports nothing else, so this is the only way to bill one; on the token
@@ -253,6 +271,11 @@ export const PROVIDER_DESCRIPTORS = {
     // Native Gemini generation requests carry the model in the URL rather than
     // in the JSON body, so there is no example path without a model.
     examplePath: "v1beta/models/{model}:generateContent",
+    // Text, image and speech models all answer on `generateContent`.
+    endpointPaths: {
+      gemini_native: "v1beta/models/{model}:generateContent",
+      gemini_embedding: "v1beta/models/{model}:embedContent",
+    },
     modelAuthor: "Google",
   },
   perplexity: {
@@ -271,6 +294,7 @@ export const PROVIDER_DESCRIPTORS = {
     ],
     // No `probePath`: Perplexity has no unmetered authenticated endpoint.
     examplePath: "chat/completions",
+    endpointPaths: { chat_completions: "chat/completions" },
     modelAuthor: "Perplexity",
   },
 
@@ -296,6 +320,7 @@ export const PROVIDER_DESCRIPTORS = {
     // DeepSeek's OpenAI base URL carries no `v1` segment.
     probePath: "models",
     examplePath: "chat/completions",
+    endpointPaths: { chat_completions: "chat/completions" },
     modelAuthor: "DeepSeek",
   },
   groq: {
@@ -317,6 +342,10 @@ export const PROVIDER_DESCRIPTORS = {
     // Groq's OpenAI-compatible surface is namespaced under `openai/`.
     probePath: "openai/v1/models",
     examplePath: "openai/v1/chat/completions",
+    endpointPaths: {
+      chat_completions: "openai/v1/chat/completions",
+      audio_transcription: "openai/v1/audio/transcriptions",
+    },
   },
   mistral: {
     label: "Mistral",
@@ -330,6 +359,7 @@ export const PROVIDER_DESCRIPTORS = {
       "v1/audio/speech",
     ],
     probePath: "v1/models",
+    endpointPaths: { chat_completions: "v1/chat/completions" },
     modelAuthor: "Mistral",
   },
   together: {
@@ -355,6 +385,7 @@ export const PROVIDER_DESCRIPTORS = {
       "v1/embeddings",
     ],
     probePath: "v1/models",
+    endpointPaths: { chat_completions: "v1/chat/completions" },
   },
   fireworks: {
     label: "Fireworks AI",
@@ -374,6 +405,7 @@ export const PROVIDER_DESCRIPTORS = {
     // and the account id cannot be derived from the key. Nothing under
     // `inference/v1/` is documented as a GET.
     examplePath: "inference/v1/chat/completions",
+    endpointPaths: { chat_completions: "inference/v1/chat/completions" },
   },
   cerebras: {
     label: "Cerebras",
@@ -383,6 +415,7 @@ export const PROVIDER_DESCRIPTORS = {
     // Legacy completions.
     inferencePaths: [{ path: "v1/completions", clamp: "chat_completions" }],
     probePath: "v1/models",
+    endpointPaths: { chat_completions: "v1/chat/completions" },
   },
   moonshot: {
     label: "Moonshot AI",
@@ -394,6 +427,7 @@ export const PROVIDER_DESCRIPTORS = {
     // The Anthropic-format API.
     inferencePaths: [{ path: "anthropic/v1/messages", clamp: "anthropic" }],
     probePath: "v1/models",
+    endpointPaths: { chat_completions: "v1/chat/completions" },
     modelAuthor: "Moonshot AI",
   },
   huggingface: {
@@ -410,6 +444,7 @@ export const PROVIDER_DESCRIPTORS = {
     // 200 to a garbage token, so probing it would validate every key. The
     // endpoint that does check a token lives on a different origin
     // (`huggingface.co`), which a path under this base URL cannot express.
+    endpointPaths: { chat_completions: "v1/chat/completions" },
   },
   baseten: {
     label: "Baseten",
@@ -419,6 +454,7 @@ export const PROVIDER_DESCRIPTORS = {
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
     probePath: "v1/models",
+    endpointPaths: { chat_completions: "v1/chat/completions" },
   },
   bytedance: {
     label: "ByteDance Ark",
@@ -441,6 +477,7 @@ export const PROVIDER_DESCRIPTORS = {
     // has no models resource. It also authenticates before it routes, so every
     // path answers the same 401 and a probe would prove nothing about the key.
     examplePath: "chat/completions",
+    endpointPaths: { chat_completions: "chat/completions", image_generation: "images/generations" },
   },
 
   openrouter: {
@@ -471,6 +508,7 @@ export const PROVIDER_DESCRIPTORS = {
     // every lab. The declaration owns the parsing and the header that asks for
     // the routing metadata — see `src/shared/cost-report.ts`.
     costReport: OPENROUTER_COST_REPORT,
+    endpointPaths: { chat_completions: "v1/chat/completions" },
     // No `modelAuthor`: an aggregator serves everyone's models, and the slug
     // namespace answers per model instead.
     authorNamespacedModels: true,

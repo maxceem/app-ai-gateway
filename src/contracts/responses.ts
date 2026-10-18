@@ -17,6 +17,7 @@ import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons
 import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
+import { MODEL_KINDS } from "../shared/model-kinds.ts";
 import {
   GATEWAY_DESCRIPTORS,
   GATEWAY_TYPES,
@@ -959,6 +960,10 @@ export const UsageRepriceResponseSchema = z.object({
 });
 
 export const ModelPriceSchema = z.object({
+  kind: z.enum(MODEL_KINDS).meta({
+    description:
+      "What the model does: text, image (generation), speech (text to speech), transcription (speech to text), embedding, or realtime (served only over a realtime session). A custom endpoint serves models of its own kind only.",
+  }),
   input: z.number().optional(),
   output: z.number().optional(),
   image_input: z.number().optional().meta({

@@ -16,14 +16,17 @@
  */
 
 import {
+  endpointKind,
   providerPolicyFor,
   reachableProviders,
   type AuthenticationConfig,
+  type EndpointConfig,
   type ProviderPolicy,
   type RoutingConfig,
 } from "./app-config.ts";
-import { API_STYLE_PATHS, type ApiStyle } from "./capabilities.ts";
-import { classifyPath } from "./protocols.ts";
+import { API_STYLE_PATHS, ENDPOINT_API_STYLES, type ApiStyle } from "./capabilities.ts";
+import { modelKind, type ModelKind } from "./model-kinds.ts";
+import { classifyPath, PROTOCOLS } from "./protocols.ts";
 import { providerDescriptor, type ProviderType } from "./providers.ts";
 import type { ProviderSummary } from "../contracts/responses.ts";
 
@@ -36,7 +39,7 @@ export type ExampleGap = "provider" | "model" | "body";
 
 export const EXAMPLE_GAP_NOTES: Record<ExampleGap, string> = {
   provider: `No provider is configured yet, so ${PROVIDER_PLACEHOLDER} stands in for one. Add a provider key, then use its slug.`,
-  model: `No priced model was found for this provider, so ${MODEL_PLACEHOLDER} stands in for one. Use a model the provider serves.`,
+  model: `No priced model this request can use was found for this provider, so ${MODEL_PLACEHOLDER} stands in for one. Use a model the provider serves.`,
   body: `This app allows no path whose request shape is known here, so ${BODY_PLACEHOLDER} stands in for the body the provider documents.`,
 };
 
@@ -56,8 +59,8 @@ export type ExampleProvider = Pick<
   "slug" | "type" | "status" | "providerGatewayId" | "pricing"
 >;
 
-/** The price catalog, by provider type and model. Only the presence of an output price is read. */
-export type ExamplePrices = Record<string, Record<string, { output?: number }>>;
+/** The price catalog, by provider type and model. Only each model's kind is read. */
+export type ExamplePrices = Record<string, Record<string, { kind: ModelKind }>>;
 
 /** Where a request goes: a provider path through the proxy, or a custom endpoint. */
 export type ExampleTarget =
@@ -66,8 +69,13 @@ export type ExampleTarget =
 
 export interface RequestExample {
   target: ExampleTarget;
-  /** Null when no shape is known for the path, which is what the `body` gap means. */
+  /**
+   * Null when no shape is known for the path, which is what the `body` gap
+   * means, and for a multipart upload, which `form` describes instead.
+   */
   body: Record<string, unknown> | null;
+  /** The fields of a multipart upload, a file one as `@<name>`, where the API takes one. */
+  form?: Record<string, string>;
   /** Whether the request needs Anthropic's client API version header. */
   anthropic: boolean;
   gaps: ExampleGap[];
@@ -98,47 +106,130 @@ export function examplePath(
     : own;
 }
 
-const hello = () => [{ role: "user", content: "Say hello." }];
-
-/** The example body each API style takes. A style with no entry has no example. */
-const EXAMPLE_BODIES: Partial<Record<ApiStyle, (model: string) => Record<string, unknown>>> = {
-  responses: (model) => ({ model, input: "Say hello." }),
-  chat_completions: (model) => ({ model, messages: hello() }),
-  anthropic_messages: (model) => ({ model, max_tokens: 128, messages: hello() }),
-  // The model is in the URL, not the body.
-  gemini_native: () => ({ contents: [{ parts: [{ text: "Say hello." }] }] }),
+/** What an example asks a model of each kind for. */
+const PROMPTS: Record<ModelKind, string> = {
+  text: "Say hello.",
+  image: "A lighthouse at dawn.",
+  speech: "Say hello.",
+  embedding: "Hello.",
+  transcription: "Say hello.",
+  realtime: "Say hello.",
 };
 
+const hello = (kind: ModelKind) => [{ role: "user", content: PROMPTS[kind] }];
+
 /**
- * The request body a path takes, or null where this module knows of none, and
- * whether it is Anthropic's API. The path is classified once, by the same
- * classifier the proxy judges it with, so an example never has a shape for a
- * path the gateway would call something else.
+ * The example request each API style takes, for a model of one kind, which only
+ * an API carrying several kinds reads. `model` is absent where the gateway sets
+ * it — a custom endpoint names its own — and an API that names its model in the
+ * URL never takes it in the body. A style with no entry has no example.
+ */
+const EXAMPLE_BODIES: Partial<Record<ApiStyle, (model: string | undefined, kind: ModelKind) => Record<string, unknown>>> = {
+  responses: (model, kind) => ({ model, input: PROMPTS[kind] }),
+  chat_completions: (model, kind) => ({ model, messages: hello(kind) }),
+  anthropic_messages: (model, kind) => ({ model, max_tokens: 128, messages: hello(kind) }),
+  gemini_native: (_model, kind) => ({
+    contents: [{ parts: [{ text: PROMPTS[kind] }] }],
+    // A speech model answers in audio only when it is asked to.
+    ...(kind === "speech" && { generationConfig: { responseModalities: ["AUDIO"] } }),
+  }),
+  image_generation: (model, kind) => ({ model, prompt: PROMPTS[kind] }),
+  embeddings: (model, kind) => ({ model, input: PROMPTS[kind] }),
+  gemini_embedding: (_model, kind) => ({ content: { parts: [{ text: PROMPTS[kind] }] } }),
+};
+
+/** The multipart upload a transcription takes. */
+const TRANSCRIPTION_FORM = { file: "@recording.m4a" };
+
+/**
+ * What one style's request looks like for a model of one kind: its body, or
+ * its upload, and whether it is Anthropic's API. Null where this module knows
+ * no shape for the style.
+ */
+function exampleRequest(
+  style: ApiStyle,
+  model: string | undefined,
+  kind: ModelKind,
+): Pick<RequestExample, "body" | "form" | "anthropic"> | null {
+  if (style === "audio_transcription") {
+    return { body: null, form: model ? { ...TRANSCRIPTION_FORM, model } : TRANSCRIPTION_FORM, anthropic: false };
+  }
+  const body = EXAMPLE_BODIES[style]?.(model, kind);
+  if (!body) return null;
+  // `model: undefined` is a field nobody should see in an example.
+  if (body.model === undefined) delete body.model;
+  return { body, anthropic: style === "anthropic_messages" };
+}
+
+/**
+ * The request a path takes, or null where this module knows of none. The
+ * path is classified once, by the same classifier the proxy judges it with, so
+ * an example never has a shape for a path the gateway would call something
+ * else. A model of a kind the path's API does not carry is asked what that API
+ * is for instead.
  */
 function requestFor(
   path: string,
   model: string,
-): { body: Record<string, unknown> | null; anthropic: boolean } {
-  const { style } = classifyPath(path).protocol;
-  return {
-    body: EXAMPLE_BODIES[style]?.(model) ?? null,
-    anthropic: style === "anthropic_messages",
-  };
+  kind: ModelKind,
+): Pick<RequestExample, "body" | "form" | "anthropic"> | null {
+  const { protocol } = classifyPath(path);
+  const asked = protocol.kinds.includes(kind) ? kind : protocol.kinds[0] ?? kind;
+  return exampleRequest(protocol.style, model, asked);
 }
 
-/** The models an app may name on a provider, best first. */
+interface ExampleModel {
+  model: string;
+  kind: ModelKind;
+}
+
+/**
+ * The models an app may name on a provider, text first: a first request is a
+ * text one wherever the app can make one. A model only the instance prices is
+ * text by definition, and the catalog's realtime models are left out, because
+ * no HTTP request carries one.
+ */
 function modelsFor(
   provider: ExampleProvider,
   policy: ExamplePolicy | undefined,
   prices: ExamplePrices,
-): string[] {
-  if (policy?.allowed_models?.length) return policy.allowed_models;
+): ExampleModel[] {
+  const kindOf = (model: string): ModelKind =>
+    modelKind(prices, provider.type, model, provider.pricing) ?? "text";
+  const models = policy?.allowed_models?.length
+    ? policy.allowed_models
+    : [
+      ...Object.keys(provider.pricing ?? {}),
+      ...Object.entries(prices[provider.type] ?? {})
+        .filter(([, price]) => price.kind !== "realtime")
+        .map(([model]) => model),
+    ];
+  const candidates = models.map((model) => ({ model, kind: kindOf(model) }));
   return [
-    ...Object.keys(provider.pricing ?? {}),
-    ...Object.entries(prices[provider.type] ?? {})
-      .filter(([, price]) => price.output !== undefined)
-      .map(([model]) => model),
+    ...candidates.filter((candidate) => candidate.kind === "text"),
+    ...candidates.filter((candidate) => candidate.kind !== "text"),
   ];
+}
+
+/**
+ * The first model a path's API carries, or none: an allowlist of embeddings
+ * paths takes an embedding model even where the app's first model is a text
+ * one. An API that names no kinds carries any model.
+ */
+function modelFor(path: string, models: readonly ExampleModel[]): ExampleModel | undefined {
+  const { kinds } = classifyPath(path).protocol;
+  return models.find((candidate) => kinds.length === 0 || kinds.includes(candidate.kind));
+}
+
+/**
+ * The provider's own path for a model of a kind other than text: the one its
+ * descriptor composes that kind through, or none.
+ */
+function kindPath(type: ProviderType, kind: ModelKind, model: string): string | undefined {
+  const paths = providerDescriptor(type).endpointPaths ?? {};
+  const style = ENDPOINT_API_STYLES.find((candidate) =>
+    paths[candidate] !== undefined && PROTOCOLS[candidate].kinds.includes(kind));
+  return style ? paths[style]?.replace("{model}", model) : undefined;
 }
 
 /**
@@ -166,12 +257,12 @@ export function firstRequest(
       ? providerPolicyFor(routing, provider.slug)
       : undefined;
     const models = modelsFor(provider, policy, prices);
-    const model = models[0] ?? MODEL_PLACEHOLDER;
-    const gaps: ExampleGap[] = models.length ? [] : ["model"];
-    const fallbackPath = examplePath(provider.type, {
-      gatewayRouted: Boolean(provider.providerGatewayId),
-      model,
-    });
+    const { model, kind } = models[0] ?? { model: MODEL_PLACEHOLDER, kind: "text" };
+    const gatewayRouted = Boolean(provider.providerGatewayId);
+    // A gateway publishes text APIs alone, so only a direct row has another
+    // kind's path to offer.
+    const fallbackPath = (kind !== "text" && !gatewayRouted ? kindPath(provider.type, kind, model) : undefined)
+      ?? examplePath(provider.type, { gatewayRouted, model });
     const paths = policy?.allowed_paths?.length
       ? policy.allowed_paths
       : fallbackPath
@@ -181,27 +272,45 @@ export function firstRequest(
       const path = typeof entry === "string" ? entry : entry.path;
       if (path.includes("*")) continue;
       const fixed = typeof entry !== "string" ? entry.fixed_model : undefined;
-      const { body, anthropic } = requestFor(path, fixed ?? model);
+      // A fixed model is the app's own, so it is never a gap.
+      const chosen = fixed
+        ? { model: fixed, kind: modelKind(prices, provider.type, fixed, provider.pricing) ?? "text" }
+        : modelFor(path, models);
+      const request = requestFor(path, chosen?.model ?? MODEL_PLACEHOLDER, chosen?.kind ?? "text");
       const example: RequestExample = {
         target: { provider: provider.slug, path },
-        body,
-        anthropic,
-        // A fixed model is the app's own, so a catalog that has none of its
-        // own to offer is not a gap on a path that never carries one.
-        gaps: body && fixed ? [] : gaps,
+        body: request?.body ?? null,
+        ...(request?.form && { form: request.form }),
+        anthropic: request?.anthropic ?? false,
+        gaps: chosen ? [] : ["model"],
       };
-      if (body) return example;
+      if (request) return example;
       fallback ??= { ...example, gaps: [...example.gaps, "body"] };
     }
   }
   return (
     fallback ?? {
       target: { provider: PROVIDER_PLACEHOLDER, path: "v1/chat/completions" },
-      body: requestFor("v1/chat/completions", MODEL_PLACEHOLDER).body,
+      body: requestFor("v1/chat/completions", MODEL_PLACEHOLDER, "text")?.body ?? null,
       anthropic: false,
       gaps: ["provider", "model"],
     }
   );
+}
+
+/**
+ * The first request to a custom endpoint, which holds its provider, model and
+ * parameters: the client sends only what its style and kind document.
+ */
+export function endpointRequest(slug: string, endpoint: Pick<EndpointConfig, "api_style" | "kind">): RequestExample {
+  const request = exampleRequest(endpoint.api_style, undefined, endpointKind(endpoint));
+  return {
+    target: { endpoint: slug },
+    body: request?.body ?? null,
+    ...(request?.form && { form: request.form }),
+    anthropic: request?.anthropic ?? false,
+    gaps: request ? [] : ["body"],
+  };
 }
 
 /** The notes an example's gaps call for, in the order a reader meets them. */
@@ -247,15 +356,44 @@ export function curlSnippet(
   options: SnippetOptions & { keyExpression?: string },
 ): string {
   const { baseUrl, appId, example, notes, keyExpression = "$APP_AI_GATEWAY_KEY" } = options;
-  const body = example.body ? JSON.stringify(example.body) : BODY_PLACEHOLDER;
-  return (
+  const head =
     commented(notes, "#") +
     `curl --fail-with-body ${shellQuote(exampleUrl(baseUrl, appId, example.target))} \\\n` +
-    `  -H "Authorization: Bearer ${keyExpression}" \\\n` +
+    `  -H "Authorization: Bearer ${keyExpression}" \\\n`;
+  if (example.form) {
+    // curl writes the multipart content type, boundary included, itself.
+    const fields = Object.entries(example.form).map(([name, value]) => `-F ${shellQuote(`${name}=${value}`)}`);
+    return `${head}  ${fields.join(" \\\n  ")}\n`;
+  }
+  const body = example.body ? JSON.stringify(example.body) : BODY_PLACEHOLDER;
+  return (
+    head +
     `  -H 'Content-Type: application/json' \\\n` +
     (example.anthropic ? "  -H 'anthropic-version: 2023-06-01' \\\n" : "") +
     `  -d ${shellQuote(body)}\n`
   );
+}
+
+/**
+ * A multipart upload built in Swift: a `@<name>` field is the file of that
+ * name, read from disk, and any other field is its value.
+ */
+function swiftForm(form: Record<string, string>): string {
+  const parts = Object.entries(form).map(([name, value]) => {
+    if (!value.startsWith("@")) {
+      return `form.append(Data("--\\(boundary)\\r\\nContent-Disposition: form-data; name=\\"${name}\\"\\r\\n\\r\\n${value}\\r\\n".utf8))`;
+    }
+    const file = value.slice(1);
+    return `form.append(Data("--\\(boundary)\\r\\nContent-Disposition: form-data; name=\\"${name}\\"; filename=\\"${file}\\"\\r\\n\\r\\n".utf8))
+form.append(try Data(contentsOf: URL(fileURLWithPath: ${JSON.stringify(file)})))
+form.append(Data("\\r\\n".utf8))`;
+  });
+  return `
+let boundary = UUID().uuidString
+var form = Data()
+${parts.join("\n")}
+form.append(Data("--\\(boundary)--\\r\\n".utf8))
+`;
 }
 
 /** The note an issuer-signed-in iOS app's example carries, where its token provider is a stand-in. */
@@ -307,9 +445,14 @@ export function swiftSnippet(
     return try await URLSession.shared.data(for: request)
 }`
     : "{ try await URLSession.shared.data(for: $0) }";
-  const body = example.body
-    ? `body: Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
-    : `// Supply the provider-native JSON body.\n    body: Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
+  const body = example.form
+    ? "body: form"
+    : example.body
+      ? `body: Data(${JSON.stringify(JSON.stringify(example.body))}.utf8)`
+      : `// Supply the provider-native JSON body.\n    body: Data(${JSON.stringify(BODY_PLACEHOLDER)}.utf8)`;
+  const contentType = example.form
+    ? `"multipart/form-data; boundary=\\(boundary)"`
+    : `"application/json"`;
   return (
     commented(notes, "//") +
     `import Foundation
@@ -320,11 +463,11 @@ let gateway = AppAIGatewayClient(
     baseURL: URL(string: ${JSON.stringify(baseUrl.replace(/\/+$/, ""))})!,
     authMode: ${authMode}
 )
-
+${example.form ? swiftForm(example.form) : ""}
 let (data, _) = try await gateway.withAuthorizedRequest(
     ${target},
     ${body},
-    contentType: "application/json"
+    contentType: ${contentType}
 ) ${send}
 print(String(decoding: data, as: UTF8.self))
 `

@@ -13,22 +13,28 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ProviderIcon } from "@/components/brand-icon";
-import { ENDPOINT_PROVIDER_TYPES } from "@shared/providers";
+import { PROTOCOLS } from "@shared/protocols";
 import { EmptyState, Field } from "@/components/field";
 import { DisabledReason } from "@/components/guarded-button";
 import { PageAction } from "@/components/page-action";
 import { JsonEditor, parseJson } from "@/components/json-editor";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
-  ENDPOINT_API_STYLES,
+  ENDPOINT_KINDS,
   providerLabel,
   emptyEndpoint,
   endpointInstances,
+  endpointKind,
   endpointSlugError,
+  endpointStylesFor,
   instanceModels,
   nextEndpointSlug,
   renameEndpoint,
+  reportsCost,
+  retargetEndpoint,
+  type EndpointApiStyle,
   type EndpointConfig,
+  type EndpointKind,
   type EndpointsConfig,
   type EndpointTarget,
   type ProviderInstance,
@@ -37,27 +43,67 @@ import { usePrices, useProviderInstances } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** Only these provider types compose custom-endpoint request shapes; read off the shared matrix. */
-const NO_ELIGIBLE_INSTANCE = `Add a provider of type ${
-  new Intl.ListFormat("en", { type: "disjunction" }).format(
-    ENDPOINT_PROVIDER_TYPES.map((type) => providerLabel(type)),
-  )
-} first — no other instance can serve a custom endpoint`;
+/** Every provider type composes some endpoint, so only a missing or unroutable provider leaves none. */
+const NO_ELIGIBLE_INSTANCE = "Add a provider first — a custom endpoint is served by one of your providers";
 const NO_ELIGIBLE_INSTANCE_ID = "add-endpoint-disabled-reason";
 
-const API_STYLE_HINTS: Record<EndpointConfig["api_style"], string> = {
-  responses: "Clients send an OpenAI Responses body. The gateway overwrites the model and deep-merges the parameters below.",
-  audio_transcription: "Clients send an OpenAI audio-transcription multipart body and may omit the model field entirely.",
+/** What an endpoint does, as a person picks it. */
+const KIND_LABELS: Record<EndpointKind, string> = {
+  text: "Text generation",
+  image: "Image generation",
+  speech: "Speech (text to speech)",
+  transcription: "Transcription (speech to text)",
+  embedding: "Embeddings",
 };
+
+/** The request format each style names, as the picker offers it. */
+const API_STYLE_NAMES: Record<EndpointApiStyle, string> = {
+  responses: "OpenAI Responses",
+  chat_completions: "OpenAI Chat Completions",
+  anthropic_messages: "Anthropic Messages",
+  gemini_native: "Gemini generateContent",
+  audio_transcription: "OpenAI audio transcription",
+  image_generation: "OpenAI image generation",
+  embeddings: "OpenAI embeddings",
+  gemini_embedding: "Gemini embedContent",
+};
+
+const MERGED = "The gateway sets the model and deep-merges the parameters below.";
+
+const API_STYLE_HINTS: Record<EndpointApiStyle, string> = {
+  responses: `Clients send an OpenAI Responses body. ${MERGED}`,
+  chat_completions: `Clients send an OpenAI Chat Completions body. ${MERGED}`,
+  anthropic_messages: `Clients send an Anthropic Messages body; the gateway sends anthropic-version 2023-06-01 when they do not. ${MERGED}`,
+  gemini_native: `Clients send a Gemini generateContent body, and add ?alt=sse to the URL to stream. ${MERGED}`,
+  audio_transcription: "Clients send an OpenAI audio-transcription multipart body and may omit the model field entirely.",
+  image_generation: `Clients send an OpenAI image generation body, such as {"prompt": "…"}. ${MERGED}`,
+  embeddings: `Clients send an OpenAI embeddings body, such as {"input": "…"}. ${MERGED}`,
+  gemini_embedding: `Clients send a Gemini embedContent body. ${MERGED}`,
+};
+
+/** A speech model answers in audio only when asked, which the parameters can do for every client. */
+const SPEECH_HINT = 'A speech model needs {"generationConfig": {"responseModalities": ["AUDIO"]}}: send it from clients or set it in the parameters.';
+
+const OTHER_MODEL = "__other";
+
+/** The models one target may name, and whether it may name one no list knows. */
+export interface TargetModels {
+  models: string[];
+  /**
+   * The instance reports its own cost on this endpoint's API, so the gateway
+   * accepts a model with no price here — one the catalog does not list at all.
+   */
+  anyModel: boolean;
+}
 
 function ModelSelect({
   value,
-  models,
+  options: { models, anyModel },
   onChange,
   label,
 }: {
   value: string;
-  models: string[];
+  options: TargetModels;
   onChange: (model: string) => void;
   label: string;
 }) {
@@ -67,15 +113,32 @@ function ModelSelect({
     () => (value && !models.includes(value) ? [value, ...models] : models),
     [models, value],
   );
+  const [typing, setTyping] = useState(false);
+  if (typing) {
+    return (
+      <Input
+        autoFocus
+        value={value}
+        placeholder="Model ID"
+        aria-label={label}
+        className="bg-background font-mono text-xs"
+        onChange={(event) => onChange(event.target.value.trim())}
+        onBlur={() => setTyping(false)}
+      />
+    );
+  }
   return (
-    <Select value={value || undefined} onValueChange={onChange}>
+    <Select
+      value={value || undefined}
+      onValueChange={(next) => (next === OTHER_MODEL ? setTyping(true) : onChange(next))}
+    >
       <SelectTrigger className="w-full" aria-label={label}>
         <SelectValue placeholder="Select a model" />
       </SelectTrigger>
       <SelectContent>
-        {options.length === 0 ? (
+        {options.length === 0 && !anyModel ? (
           <SelectItem value="__none" disabled>
-            No priced models for this provider
+            No priced models of this kind for this provider
           </SelectItem>
         ) : (
           options.map((model) => (
@@ -84,6 +147,11 @@ function ModelSelect({
             </SelectItem>
           ))
         )}
+        {anyModel ? (
+          <SelectItem value={OTHER_MODEL} className="text-xs">
+            Other model ID…
+          </SelectItem>
+        ) : null}
       </SelectContent>
     </Select>
   );
@@ -130,7 +198,7 @@ function ProviderSelect({
       <SelectContent>
         {options.length === 0 ? (
           <SelectItem value="__none" disabled>
-            No provider instance supports this API style
+            No provider can serve this request format
           </SelectItem>
         ) : (
           options.map((option) => (
@@ -211,6 +279,7 @@ const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 export function endpointSummary(endpoint: EndpointConfig): string {
   const fallback = endpoint.fallback ?? [];
   return [
+    endpointKind(endpoint),
     endpoint.api_style,
     `${endpoint.provider || "no provider"} → ${endpoint.model || "no model"}`,
     ...(fallback.length > 0 ? [count(fallback.length, "fallback")] : []),
@@ -252,16 +321,24 @@ function EndpointPanel({
   endpoint: EndpointConfig;
   endpoints: EndpointsConfig;
   instances: ProviderCredential[];
-  modelsFor: (provider: string) => string[];
+  modelsFor: (provider: string, endpoint: EndpointConfig) => TargetModels;
   onRename: (next: string) => void;
   onChange: (next: EndpointConfig) => void;
   onRemove: () => void;
 }) {
   const slugError = endpointSlugError(slug, endpoints, slug);
   const fallback = endpoint.fallback ?? [];
+  const kind = endpointKind(endpoint);
+  const json = PROTOCOLS[endpoint.api_style].body === "json";
+  // The formats this kind can be served in by some instance, and the one in
+  // use even where none serves it any more, so the select never blanks.
+  const styles = endpointStylesFor(kind, instances);
+  const styleOptions = styles.includes(endpoint.api_style) ? styles : [endpoint.api_style, ...styles];
   // Only instances whose own route serves this style, as the gateway reports
   // on each one — exactly what it validates on save.
   const eligible = endpointInstances(endpoint.api_style, instances);
+  const retarget = (change: { kind?: EndpointKind; api_style?: EndpointApiStyle }) =>
+    onChange(retargetEndpoint(endpoint, change, instances));
 
   const setFallback = (next: EndpointTarget[]) =>
     onChange({ ...endpoint, ...(next.length === 0 ? { fallback: undefined } : { fallback: next }) });
@@ -282,27 +359,42 @@ function EndpointPanel({
             onChange={(event) => onRename(event.target.value)}
           />
         </Field>
-        <Field label="API style" className="min-w-[180px] flex-1">
-          <Select
-            value={endpoint.api_style}
-            onValueChange={(next) =>
-              onChange({ ...endpoint, api_style: next as EndpointConfig["api_style"] })
-            }
-          >
-            <SelectTrigger className="w-full bg-background" aria-label="API style">
+        <Field label="What it does" className="min-w-[180px] flex-1">
+          <Select value={kind} onValueChange={(next) => retarget({ kind: next as EndpointKind })}>
+            <SelectTrigger className="w-full bg-background" aria-label="What it does">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {ENDPOINT_API_STYLES.map((style) => (
+              {ENDPOINT_KINDS.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {KIND_LABELS[option]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Request format" className="min-w-[180px] flex-1">
+          <Select
+            value={endpoint.api_style}
+            onValueChange={(next) => retarget({ api_style: next as EndpointApiStyle })}
+          >
+            <SelectTrigger className="w-full bg-background" aria-label="Request format">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {styleOptions.map((style) => (
                 <SelectItem key={style} value={style}>
-                  {style}
+                  {API_STYLE_NAMES[style]}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </Field>
       </div>
-      <p className="text-xs text-muted-foreground">{API_STYLE_HINTS[endpoint.api_style]}</p>
+      <p className="text-xs text-muted-foreground">
+        {API_STYLE_HINTS[endpoint.api_style]}
+        {kind === "speech" && endpoint.api_style === "gemini_native" ? ` ${SPEECH_HINT}` : ""}
+      </p>
 
       <div className="flex flex-wrap gap-3">
         <Field label="Provider" className="min-w-[180px] flex-1">
@@ -321,24 +413,26 @@ function EndpointPanel({
           <ModelSelect
             label="Model"
             value={endpoint.model}
-            models={modelsFor(endpoint.provider)}
+            options={modelsFor(endpoint.provider, endpoint)}
             onChange={(model) => onChange({ ...endpoint, model })}
           />
         </Field>
       </div>
 
-      {endpoint.api_style === "responses" ? (
-        <>
-          <Field
-            label="Parameters"
-            hint="Deep-merged over the client body; the server wins on conflicts. Leave {} for none."
-          >
-            <ParamsEditor
-              value={endpoint.params}
-              onChange={(params) => onChange({ ...endpoint, params })}
-            />
-          </Field>
+      {json ? (
+        <Field
+          label="Parameters"
+          hint="Deep-merged over the client body; the server wins on conflicts. Leave {} for none."
+        >
+          <ParamsEditor
+            value={endpoint.params}
+            onChange={(params) => onChange({ ...endpoint, params })}
+          />
+        </Field>
+      ) : null}
 
+      {kind === "text" ? (
+        <>
           <Field
             label="Max output tokens"
             hint="Empty = unrestricted. If set, requests above this are rejected and requests without the field get this value injected."
@@ -398,7 +492,7 @@ function EndpointPanel({
                   <ModelSelect
                     label={`Fallback ${index + 1} model`}
                     value={target.model}
-                    models={modelsFor(target.provider)}
+                    options={modelsFor(target.provider, endpoint)}
                     onChange={(model) =>
                       setFallback(
                         fallback.map((item, position) =>
@@ -469,7 +563,7 @@ function EndpointRow({
   endpoints: EndpointsConfig;
   appId: string;
   instances: ProviderCredential[];
-  modelsFor: (provider: string) => string[];
+  modelsFor: (provider: string, endpoint: EndpointConfig) => TargetModels;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onRename: (next: string) => void;
@@ -559,18 +653,20 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   // Catalog prices belong to the provider type, custom ones to the row, so the
   // model list is only knowable per instance slug.
   const bySlug = new Map(instances.map((instance) => [instance.slug, instance]));
-  const modelsFor = (provider: string) => {
+  const modelsFor = (provider: string, endpoint: EndpointConfig): TargetModels => {
     const instance = bySlug.get(provider);
-    return instance ? instanceModels(instance, providerPrices) : [];
+    if (!instance) return { models: [], anyModel: false };
+    return {
+      models: instanceModels(instance, providerPrices, endpointKind(endpoint)),
+      anyModel: reportsCost(instance.type, instance.route, endpoint.api_style),
+    };
   };
   // A new endpoint has to name an instance that can serve it; with none, there
   // is nothing to create rather than a target that cannot be saved.
-  const eligible = endpointInstances("responses", instances);
+  const eligible = instances.filter((instance) => instance.capability.endpointStyles.length > 0);
   // A new endpoint starts on an instance that can actually serve it, so a
   // paused row is only ever the default when there is nothing else.
-  const newEndpoint = () => emptyEndpoint(
-    (eligible.find((entry) => entry.status !== "disabled") ?? eligible[0])?.slug,
-  );
+  const newEndpoint = () => emptyEndpoint(instances);
 
   const replace = (slug: string, endpoint: EndpointConfig) =>
     state.updateEndpoints({ ...endpoints, [slug]: endpoint });

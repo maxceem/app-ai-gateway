@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { clientAuth } from "../src/client-auth/client-auth";
-import { providersForEndpointStyle } from "../src/shared/providers";
+import { PROVIDER_TYPES, providerDescriptor, providersForEndpointStyle } from "../src/shared/providers";
 import { AppConfigSchema } from "../src/contracts/schemas";
-import { budgetScope, parseAppConfig } from "../src/shared/app-config";
+import { budgetScope, endpointStyleKinds, parseAppConfig } from "../src/shared/app-config";
+import type { EndpointApiStyle } from "../src/shared/capabilities";
 import { serverConfig, validateConfig } from "./helpers";
 
 /**
@@ -584,17 +585,47 @@ describe("the application configuration grammar", () => {
 
     it("derives custom-endpoint eligibility from provider registry capabilities", () => {
       expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
-      expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
+      expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai", "groq"]);
+      expect(providersForEndpointStyle("gemini_native")).toEqual(["gemini"]);
     });
 
-    it("keeps a valid endpoints block verbatim", () => {
+    /**
+     * A model's kind names the one API it is reached through on its provider
+     * type, which is what makes "the type serves this style" and "the model is
+     * of a kind the style carries" enough to offer it. Two styles carrying one
+     * kind on one type would offer a Responses-only model on Chat Completions.
+     */
+    it("composes each kind through one endpoint style at most per provider type", () => {
+      for (const type of PROVIDER_TYPES) {
+        const styles = Object.keys(providerDescriptor(type).endpointPaths ?? {}) as EndpointApiStyle[];
+        const kinds = styles.flatMap((style) => endpointStyleKinds(style));
+        expect([type, new Set(kinds).size]).toEqual([type, kinds.length]);
+      }
+    });
+
+    it("keeps a valid endpoints block, writing the kind each style settles", () => {
       const transcribe = {
         api_style: "audio_transcription",
         provider: "openai",
         model: "gpt-4o-mini-transcribe",
       };
       expect(validateConfig(serverConfig({ endpoints: { chat, transcribe } })).endpoints)
-        .toEqual({ chat, transcribe });
+        .toEqual({ chat: { ...chat, kind: "text" }, transcribe: { ...transcribe, kind: "transcription" } });
+    });
+
+    it("takes the kind a multi-kind style is told to serve, and refuses one it cannot", () => {
+      const voice = { api_style: "gemini_native", provider: "gemini", model: "gemini-3.8-flash-tts" };
+      expect(validateConfig(serverConfig({ endpoints: { voice: { ...voice, kind: "speech" } } })).endpoints.voice?.kind)
+        .toBe("speech");
+      // Text is generateContent's own default, and a speech model cannot serve it.
+      expect(validateConfig(serverConfig({ endpoints: { voice: { ...voice, model: "gemini-2.5-flash" } } })).endpoints.voice?.kind)
+        .toBe("text");
+      expect(() => validateConfig(serverConfig({ endpoints: { voice } })))
+        .toThrowError("endpoints.voice.model gemini-3.8-flash-tts is a speech model, which a text endpoint cannot serve");
+      expect(() => parseAppConfig(serverConfig({ endpoints: { voice: { ...voice, kind: "embedding" } } })))
+        .toThrowError("endpoints.voice.kind: cannot be embedding: a gemini_native endpoint serves text, image, or speech");
+      expect(() => parseAppConfig(serverConfig({ endpoints: { chat: { ...chat, kind: "realtime" } } })))
+        .toThrowError("endpoints.chat.kind");
     });
 
     it.each(["Chat", "chat_completions", "", "a".repeat(65), "chat/1", "constructor"])(
@@ -607,7 +638,7 @@ describe("the application configuration grammar", () => {
 
     it("refuses an unknown api_style", () => {
       expect(() => parseAppConfig(serverConfig({
-        endpoints: { chat: { ...chat, api_style: "chat_completions" } },
+        endpoints: { chat: { ...chat, api_style: "other" } },
       }))).toThrowError("endpoints.chat.api_style");
     });
 

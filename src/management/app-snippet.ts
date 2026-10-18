@@ -6,6 +6,7 @@ import type { app } from "../db/schema";
 import { reachableProviders } from "../shared/app-config";
 import {
   curlSnippet,
+  endpointRequest,
   exampleNotes,
   firstRequest,
   ISSUER_TOKEN_NOTE,
@@ -70,14 +71,8 @@ export async function appSnippet(
       throw new GatewayError(404, "endpoint_not_found", "This app has no custom endpoint with that name");
     }
     // A custom endpoint holds the provider, the model and the parameters, so
-    // the client sends only what its style documents.
-    const responses = endpoint.api_style === "responses";
-    example = {
-      target: { endpoint: query.endpoint },
-      body: responses ? { input: "Say hello." } : null,
-      anthropic: false,
-      gaps: responses ? [] : ["body"],
-    };
+    // the client sends only what its style and kind document.
+    example = endpointRequest(query.endpoint, endpoint);
   } else {
     const { providers } = await listProviders(scope, actor);
     // What this application may send to today, which is narrower than what

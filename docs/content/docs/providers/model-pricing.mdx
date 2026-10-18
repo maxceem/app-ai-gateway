@@ -28,6 +28,13 @@ the catalog works on every provider of that type, direct or routed through a
 gateway, because [model IDs stay canonical](/providers/gateways#model-ids-stay-canonical)
 on every route.
 
+Every catalog entry also says what the model does: `text`, `image`, `speech`,
+`transcription`, `embedding` or `realtime` (a model served only over a
+realtime connection). A [custom endpoint](/applications/custom-endpoints)
+offers and accepts only models of its own kind. A model you price yourself
+with the **Pricing** action counts as a text model; a catalog model you
+re-price keeps its kind.
+
 Two provider types ship with no catalog at all, because no static list could
 be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might

@@ -1,4 +1,5 @@
 // Model review is explicit. A discovery never changes the catalog by itself.
+import { MODEL_KINDS } from "./kinds.mjs";
 import { AUDIO_FIELDS, PRICE_FIELDS } from "./price.mjs";
 import { SOURCES } from "./sources.mjs";
 import { MIN_PRICE, MAX_PRICE } from "./rules.mjs";
@@ -11,16 +12,20 @@ export function parseCommands(body) {
   const seen = new Set();
   return lines.map((line) => {
     const match = /^\/models (add|skip) ([a-z][a-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9._:/-]*)(?: (.+))?$/u.exec(line.trim());
-    if (!match || (match[1] === "add" && match[4]) || (match[1] === "skip" && !match[4]?.trim())) {
-      throw new Error("Use /models add provider/model or /models skip provider/model reason.");
+    // An addition may name the model's kind, which overrides the one the lists
+    // or the AI review gave it.
+    if (!match || (match[1] === "add" && match[4] && !MODEL_KINDS.includes(match[4])) || (match[1] === "skip" && !match[4]?.trim())) {
+      throw new Error(`Use /models add provider/model [${MODEL_KINDS.join("|")}] or /models skip provider/model reason.`);
     }
-    const [, action, provider, model, reason] = match;
+    const [, action, provider, model, rest] = match;
+    const kind = action === "add" ? rest : undefined;
+    const reason = action === "skip" ? rest : undefined;
     if (!Object.hasOwn(SOURCES, provider) || !SOURCES[provider].official) throw new Error(`No official discovery source for ${provider}.`);
     const id = `${provider}/${model}`;
     if (seen.has(id)) throw new Error(`Two decisions for ${id}.`);
     seen.add(id);
     if ((reason?.length ?? 0) > 500) throw new Error("Skip reasons must be at most 500 characters.");
-    return { action, provider, model, ...(reason && { reason: reason.trim() }) };
+    return { action, provider, model, ...(kind && { kind }), ...(reason && { reason: reason.trim() }) };
   });
 }
 

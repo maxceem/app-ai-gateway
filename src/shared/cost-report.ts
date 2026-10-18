@@ -226,10 +226,11 @@ const XAI_TICKS_PER_USD = 10_000_000_000;
  * serving host or upstream credential for a response to name.
  */
 export const XAI_COST_REPORT: CostReport = {
-  // Images and videos are provider-native operations, `other` to this gateway.
-  // Its Anthropic-compatible Messages API and `v1/stt` are not documented to
-  // report a cost, so they keep billing on the catalog.
-  styles: ["chat_completions", "responses", "other"],
+  // Videos are provider-native operations, `other` to this gateway. Embeddings
+  // keep the report they were judged by while they were `other` too. Its
+  // Anthropic-compatible Messages API and `v1/stt` are not documented to report
+  // a cost, so they keep billing on the catalog.
+  styles: ["chat_completions", "responses", "image_generation", "embeddings", "other"],
   settled: (report) => report.costUsd !== null,
   readsCredentialSource: false,
   read(root, report) {

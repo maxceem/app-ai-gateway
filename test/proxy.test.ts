@@ -14,6 +14,7 @@ import { examplePath } from "../src/shared/first-request";
 import {
   API_STYLE_PATHS,
   API_STYLES,
+  isDefaultProxyApiStyle,
   type ApiStyle,
   type OutputClampStyle,
 } from "../src/shared/capabilities";
@@ -388,12 +389,15 @@ describe("paths the tables declare classify as what they declare", () => {
 
   // A default inference path that classified as a default style would be dead
   // weight, and one with a leading slash, a wildcard or a repeat would never
-  // match what a client sends the way the descriptor reads.
+  // match what a client sends the way the descriptor reads. One may still
+  // classify as a style of its own — an image or embedding API — that no app
+  // reaches by default.
   it.each(PROVIDER_TYPES)("lists only provider-native, exact paths as %s's default inference paths", (type) => {
     const paths = defaultInferencePaths(type).map((entry) => entry.path);
     expect(new Set(paths).size).toBe(paths.length);
     for (const path of paths) {
-      expect([path, apiStyleFromPath(path.replace("{model}", "a-model"))]).toEqual([path, "other"]);
+      const style = apiStyleFromPath(path.replace("{model}", "a-model"));
+      expect([path, isDefaultProxyApiStyle(style)]).toEqual([path, false]);
       expect([path, /^[a-z0-9][a-z0-9/._-]*(?:\{model\}[a-zA-Z:]*)?$/u.test(path)]).toEqual([path, true]);
     }
   });

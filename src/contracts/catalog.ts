@@ -258,9 +258,9 @@ const ProviderNativeBodySchema = z.record(z.string(), z.unknown()).meta({
   description:
     "Provider-native JSON request. Consult the selected provider's API reference for the exact shape.",
 });
-const ResponsesStyleBodySchema = z.record(z.string(), z.unknown()).meta({
+const EndpointJsonBodySchema = z.record(z.string(), z.unknown()).meta({
   description:
-    "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params.",
+    "The JSON body the endpoint's api_style takes: an OpenAI Responses, Chat Completions, image generation or embeddings body, an Anthropic Messages body, or a Gemini generateContent or embedContent body. The gateway sets the configured model (in the body, or in the URL for the Gemini styles) and deep-merges the configured params.",
 });
 const TranscriptionStyleBodySchema = z.object({
   file: z.string().meta({ format: "binary" }),
@@ -490,16 +490,21 @@ export const CATALOG = {
     path: "/v1/apps/{app}/endpoints/{slug}",
     tags: ["Custom endpoints"],
     summary: "Call a server-configured custom endpoint",
-    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. The body is the one the endpoint's api_style takes, without a model: JSON for every style but audio_transcription, which takes an OpenAI audio transcription multipart body. A gemini_native endpoint streams when the request URL carries alt=sse, as Gemini's own API does; every other style streams as its body asks. The successful response keeps the serving provider's native format and streaming behaviour.",
     security: "gateway",
     params: {
       app: { example: "my-app" },
       slug: { example: "chat", pattern: /^[a-z0-9-]{1,64}$/ },
     },
+    query: z.object({
+      alt: z.literal("sse").optional().meta({
+        description: "gemini_native endpoints only: `sse` streams the response as server-sent events, as Gemini's own API does. Never forwarded upstream.",
+      }),
+    }),
     headers: GatewayClientHeadersSchema,
     request: {
       content: {
-        "application/json": ResponsesStyleBodySchema,
+        "application/json": EndpointJsonBodySchema,
         "multipart/form-data": TranscriptionStyleBodySchema,
       },
     },

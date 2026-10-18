@@ -4,10 +4,12 @@ import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "../shared/providers";
 import { classifyPath } from "../shared/protocols";
 import { type ApiStyle, DEFAULT_PROXY_API_STYLES } from "../shared/capabilities";
-import { hasModelPrice, isBillable } from "../usage/pricing";
+import { catalogKind, hasModelPrice, isBillable } from "../usage/pricing";
+import { servesKind } from "../shared/model-kinds";
 import {
   ConfigError,
   defaultInferencePaths,
+  endpointKind,
   selectedProviderPolicies,
   type AppConfig,
   type EndpointConfig,
@@ -103,6 +105,13 @@ function validateTarget(
       instance.route === "direct"
         ? `${label}.provider ${target.provider} is a ${instance.type} instance, which does not support ${endpoint.api_style}`
         : `${label}.provider ${target.provider} is a ${instance.type} instance routed through a ${instance.route} gateway, which does not support ${endpoint.api_style}`,
+    );
+  }
+  const kind = endpointKind(endpoint);
+  const modelKind = catalogKind(instance.type, target.model, instance.pricing);
+  if (!servesKind(modelKind, kind)) {
+    throw new ConfigError(
+      `${label}.model ${target.model} is a ${modelKind} model, which a ${kind} endpoint cannot serve`,
     );
   }
   if (!isBillable(instance.type, instance.route, endpoint.api_style, target.model, instance.pricing)) {

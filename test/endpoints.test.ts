@@ -1210,3 +1210,239 @@ describe("custom endpoints", () => {
     expect(response.status).toBe(404);
   });
 });
+
+/** What one endpoint request cost and how, once it has settled. */
+async function billed(appId: string): Promise<{ model: string; cost_usd: number; cost_source: string }> {
+  await settleUsage();
+  const row = await env.DB.prepare(
+    "SELECT model, cost_usd, cost_source FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+  )
+    .bind(appId)
+    .first<{ model: string; cost_usd: number; cost_source: string }>();
+  return row!;
+}
+
+/**
+ * Every kind of model an endpoint serves, each through the request format its
+ * provider type composes it in: the URL the gateway posts to, where the model
+ * goes, and the reader that bills the answer.
+ */
+describe("custom endpoints of every kind", () => {
+  it.each([
+    {
+      name: "an OpenAI image",
+      endpoint: { api_style: "image_generation", provider: "openai", model: "gpt-image-2", params: { size: "1024x1024" }, max_output_tokens: 64 },
+      body: { prompt: "a lighthouse" },
+      url: "https://api.openai.com/v1/images/generations",
+      sent: { model: "gpt-image-2", prompt: "a lighthouse", size: "1024x1024" },
+      answer: { data: [{ b64_json: "iVBORw0KGgo=" }], usage: { input_tokens: 12, output_tokens: 1056 } },
+    },
+    {
+      name: "a ModelArk Seedream image",
+      endpoint: { api_style: "image_generation", provider: "bytedance", model: "seedream-4-0-250828" },
+      body: { prompt: "a lighthouse" },
+      url: "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations",
+      sent: { model: "seedream-4-0-250828", prompt: "a lighthouse" },
+      answer: { data: [{ url: "https://example.test/a.jpeg" }], usage: { generated_images: 1, output_tokens: 16384 } },
+    },
+    {
+      name: "OpenAI embeddings",
+      endpoint: { api_style: "embeddings", provider: "openai", model: "text-embedding-3-small" },
+      body: { input: "hello" },
+      url: "https://api.openai.com/v1/embeddings",
+      sent: { model: "text-embedding-3-small", input: "hello" },
+      answer: { object: "list", data: [], usage: { prompt_tokens: 800, total_tokens: 800 } },
+    },
+    {
+      name: "Gemini speech, with its model in the URL",
+      endpoint: {
+        kind: "speech",
+        api_style: "gemini_native",
+        provider: "gemini",
+        model: "gemini-3.8-flash-tts",
+        params: { generationConfig: { responseModalities: ["AUDIO"] } },
+      },
+      body: { model: "client-picked", contents: [{ parts: [{ text: "Say hello." }] }] },
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent",
+      sent: { contents: [{ parts: [{ text: "Say hello." }] }], generationConfig: { responseModalities: ["AUDIO"] } },
+      answer: { candidates: [], usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 200 } },
+    },
+    {
+      name: "Gemini embeddings",
+      endpoint: { api_style: "gemini_embedding", provider: "gemini", model: "gemini-embedding-2" },
+      body: { content: { parts: [{ text: "hello" }] } },
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+      sent: { content: { parts: [{ text: "hello" }] } },
+      answer: { embedding: { values: [0.1] }, usageMetadata: { promptTokenCount: 100 } },
+    },
+    {
+      name: "Anthropic Messages",
+      endpoint: { api_style: "anthropic_messages", provider: "anthropic", model: "claude-haiku-4-5", max_output_tokens: 256 },
+      body: { messages: [{ role: "user", content: "hello" }] },
+      url: "https://api.anthropic.com/v1/messages",
+      sent: { model: "claude-haiku-4-5", messages: [{ role: "user", content: "hello" }], max_tokens: 256 },
+      answer: { usage: { input_tokens: 10, output_tokens: 2 } },
+    },
+    {
+      name: "Groq Chat Completions",
+      endpoint: { api_style: "chat_completions", provider: "groq", model: "openai/gpt-oss-20b" },
+      body: { messages: [{ role: "user", content: "hello" }] },
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      sent: { model: "openai/gpt-oss-20b", messages: [{ role: "user", content: "hello" }] },
+      answer: { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } },
+    },
+  ])("serves $name and bills it", async (testCase) => {
+    const appId = `endpoint-kind-${testCase.endpoint.api_style.replaceAll("_", "-")}-${testCase.endpoint.provider}`;
+    await seedApp(appId, { endpoints: { target: testCase.endpoint } });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => Response.json(testCase.answer));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "target",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify(testCase.body),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe(testCase.url);
+    expect(JSON.parse(captured[0]!.body)).toEqual(testCase.sent);
+    const row = await billed(appId);
+    expect(row).toMatchObject({ model: testCase.endpoint.model, cost_source: "computed" });
+    expect(row.cost_usd).toBeGreaterThan(0);
+  });
+
+  it("streams a Gemini endpoint through the streaming method when the client asks with alt=sse", async () => {
+    const appId = "endpoint-gemini-stream";
+    await seedApp(appId, {
+      endpoints: { chat: { api_style: "gemini_native", provider: "gemini", model: "gemini-2.5-flash" } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => new Response(
+      `data: ${JSON.stringify({ usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1 } })}\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+
+    const response = await workerFetch(`https://example.test/v1/apps/${appId}/endpoints/chat?alt=sse&other=1`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3", "content-type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    // Only the streaming method's own query goes upstream.
+    expect(captured[0]?.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+    );
+  });
+
+  it("sends Anthropic's API version where the client names none, and the client's own where it does", async () => {
+    const appId = "endpoint-anthropic-version";
+    await seedApp(appId, {
+      endpoints: { chat: { api_style: "anthropic_messages", provider: "anthropic", model: "claude-haiku-4-5" } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }));
+    const send = (headers: Record<string, string>) => workerFetch(`https://example.test/v1/apps/${appId}/endpoints/chat`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3", "content-type": "application/json", ...headers },
+      body: JSON.stringify({ max_tokens: 8, messages: [{ role: "user", content: "hi" }] }),
+    }).then((response) => response.text());
+
+    await send({});
+    await send({ "anthropic-version": "2024-10-22" });
+
+    expect(captured.map((request) => request.headers.get("anthropic-version"))).toEqual(["2023-06-01", "2024-10-22"]);
+  });
+
+  it("asks Groq for the transcription format that carries the duration it bills by", async () => {
+    const appId = "endpoint-groq-whisper";
+    await seedApp(appId, {
+      endpoints: { listen: { api_style: "audio_transcription", provider: "groq", model: "whisper-large-v3-turbo" } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => Response.json({ text: "hello", duration: 12 }));
+
+    const form = new FormData();
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "voice.wav", { type: "audio/wav" }));
+    const response = await endpointRequest({ appId, slug: "listen", token, body: form });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe("https://api.groq.com/openai/v1/audio/transcriptions");
+    expect(captured[0]?.form?.get("response_format")).toBe("verbose_json");
+    expect(await billed(appId)).toMatchObject({ model: "whisper-large-v3-turbo", cost_source: "computed" });
+  });
+
+  it("posts to the gateway's own path for a style on a route that publishes one", async () => {
+    const appId = "endpoint-vercel-chat";
+    await seedProvider({
+      type: "deepseek",
+      id: "endpoint-deepseek-vercel",
+      slug: "deepseek-vercel",
+      secret: "vck_deepseek_token",
+      gateway: "vercel",
+    });
+    await seedApp(appId, {
+      endpoints: { chat: { api_style: "chat_completions", provider: "deepseek-vercel", model: "deepseek-v4-flash" } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => Response.json({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    // DeepSeek's own path is `chat/completions`; Vercel's is the shared one.
+    expect(captured[0]?.url).toBe("https://ai-gateway.vercel.sh/v1/chat/completions");
+    expect(JSON.parse(captured[0]!.body).model).toBe("deepseek/deepseek-v4-flash");
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'endpoint-deepseek-vercel'").run();
+  });
+
+  it("drops a fallback of another kind and refuses a primary of one", async () => {
+    const appId = "endpoint-kind-drift";
+    // Written past the save-time check, as a configuration that predates a
+    // catalog change would be.
+    await seedApp(appId, {
+      endpoints: {
+        draw: {
+          api_style: "image_generation",
+          provider: "openai",
+          model: "gpt-image-2",
+          fallback: [{ provider: "openai", model: "gpt-5.6-luna" }],
+        },
+        wrong: { api_style: "image_generation", provider: "openai", model: "gpt-5.6-luna" },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => Response.json({ error: "busy" }, { status: 503 }));
+    const call = (slug: string) => endpointRequest({
+      appId,
+      slug,
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ prompt: "a lighthouse" }),
+    });
+
+    const drawn = await call("draw");
+    await drawn.text();
+    // The text fallback was never tried.
+    expect(captured).toHaveLength(1);
+
+    const refused = await call("wrong");
+    expect(refused.status).toBe(502);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "provider_unavailable", message: "Model gpt-5.6-luna is a text model, which a image endpoint cannot serve" },
+    });
+    expect(captured).toHaveLength(1);
+  });
+});

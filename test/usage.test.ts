@@ -18,6 +18,7 @@ import {
 } from "../src/usage/pricing";
 import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
 import { API_STYLES, type ApiStyle } from "../src/shared/capabilities";
+import { MODEL_KINDS, type ModelKind } from "../src/shared/model-kinds";
 import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 import { shippedRates } from "./shipped-rates";
 
@@ -1211,9 +1212,31 @@ const STYLE_FIXTURES: Record<ApiStyle, {
     expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
     audioSeconds: 12.5,
   },
+  image_generation: {
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: [{ b64_json: "iVBORw0KGgo=" }],
+      usage: { input_tokens: 12, output_tokens: 1056 },
+    }),
+    expected: { inputTokens: 12, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1056 },
+  },
+  embeddings: {
+    contentType: "application/json",
+    body: JSON.stringify({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: [0.1] }],
+      usage: { prompt_tokens: 21, total_tokens: 21 },
+    }),
+    expected: { inputTokens: 21, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+  },
+  gemini_embedding: {
+    contentType: "application/json",
+    body: JSON.stringify({ embedding: { values: [0.1] }, usageMetadata: { promptTokenCount: 29 } }),
+    expected: { inputTokens: 29, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+  },
   other: {
-    // A provider-native operation with no cross-provider contract: an
-    // embeddings call, which no path matcher classifies.
+    // A provider-native operation with no cross-provider contract: ModelArk's
+    // multimodal embeddings, which no path matcher classifies.
     contentType: "application/json",
     body: JSON.stringify({
       object: "list",
@@ -1633,6 +1656,10 @@ describe("the shipped price catalog", () => {
             expect([where, typeof value]).toEqual([where, "string"]);
             continue;
           }
+          if (field === "kind") {
+            expect([where, MODEL_KINDS.includes(value as ModelKind)]).toEqual([where, true]);
+            continue;
+          }
           if (field === "retirement_date") {
             // A real calendar day, as the daily model sync writes it.
             const day = String(value);
@@ -1666,6 +1693,26 @@ describe("the shipped price catalog", () => {
         }
         expect([where, hasTokenModelPrice(provider as ProviderType, model)])
           .toEqual([where, true]);
+      }
+    }
+  });
+
+  /**
+   * The kind decides which endpoints a model may serve, so every entry names
+   * one, and one its billing unit agrees with: an image price is an image
+   * model's, and a time price is a transcription's or a realtime session's.
+   * Token prices fit every kind, image models included.
+   */
+  it("names a kind for every catalogued model that fits how it is billed", () => {
+    for (const [provider, models] of Object.entries(catalog)) {
+      for (const [model, entry] of Object.entries(models)) {
+        const where = `${provider}/${model}`;
+        const kind = entry.kind as ModelKind;
+        expect([where, MODEL_KINDS.includes(kind)]).toEqual([where, true]);
+        if (entry.per_image !== undefined) expect([where, kind]).toEqual([where, "image"]);
+        if (entry.per_minute !== undefined || entry.per_hour !== undefined) {
+          expect([where, ["transcription", "realtime"].includes(kind)]).toEqual([where, true]);
+        }
       }
     }
   });

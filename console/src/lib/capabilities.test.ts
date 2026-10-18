@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   API_STYLE_PATHS,
+  API_STYLES,
   type ApiStyle as CoreApiStyle,
 } from "@shared/capabilities";
 import { GATEWAY_DESCRIPTORS } from "@shared/gateways";
@@ -27,8 +28,9 @@ describe("the console's view of the shared capability matrix", () => {
       expect([style, typeof API_STYLE_LABELS[style as keyof typeof API_STYLE_LABELS]])
         .toEqual([style, "string"]);
     }
-    // And nothing is labelled that has no path to put beside it.
-    expect(Object.keys(API_STYLE_LABELS).sort()).toEqual(Object.keys(API_STYLE_PATHS).sort());
+    // The labels go further: they also name the APIs only a provider's own
+    // paths reach, as a pricing note lists them. Only `other` has none.
+    expect(Object.keys(API_STYLE_LABELS).sort()).toEqual(API_STYLES.filter((style) => style !== "other").sort());
   });
 
   it("says nothing extra for a direct row or a gateway that narrows nothing", () => {

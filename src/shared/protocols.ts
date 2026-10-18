@@ -9,13 +9,15 @@
  *
  * Shared with the console, which classifies an example path with the same
  * classifier the proxy judges real requests by; it imports nothing but the
- * vocabulary in `./capabilities.ts`, for the reason that module gives. The
+ * vocabulary in `./capabilities.ts` and `./model-kinds.ts`, for the reason the
+ * first of them gives. The
  * behaviour that reads the table — clamping a body, reading a usage object —
  * lives in `src/providers/protocols.ts` and `src/usage`, because nothing in a
  * browser build does either.
  */
 
 import type { ApiStyle, OutputClampStyle } from "./capabilities.ts";
+import type { ModelKind } from "./model-kinds.ts";
 
 /** The usage object an answer carries, which picks the reader in `src/usage/usage-readers.ts`. */
 export type UsageFormat = "openai" | "anthropic" | "gemini" | "audio" | "unknown";
@@ -48,6 +50,22 @@ export interface Protocol {
    * that is what a provider-native operation is assumed to send.
    */
   readonly body: "json" | "multipart";
+  /**
+   * The kinds of model this API carries, which is what a custom endpoint of the
+   * style may serve. Empty for `other`, which names no contract to judge by.
+   */
+  readonly kinds: readonly ModelKind[];
+  /**
+   * Where the API streams by calling another method rather than by a body
+   * field: the query a client asks for a stream with, as the provider's own API
+   * spells it, and the method suffix a streamed request is posted to instead.
+   */
+  readonly urlStreaming?: { readonly query: string; readonly from: string; readonly to: string };
+  /**
+   * Headers the API refuses a request without, and the value a custom endpoint
+   * sends where its client named none. Never set over a client's own value.
+   */
+  readonly requiredHeaders?: Readonly<Record<string, string>>;
 }
 
 export const PROTOCOLS: Record<ApiStyle, Protocol> = {
@@ -57,6 +75,7 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "none",
     usage: "audio",
     body: "multipart",
+    kinds: ["transcription"],
   },
   chat_completions: {
     style: "chat_completions",
@@ -64,6 +83,7 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "chat_completions",
     usage: "openai",
     body: "json",
+    kinds: ["text"],
   },
   responses: {
     style: "responses",
@@ -71,6 +91,7 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "responses",
     usage: "openai",
     body: "json",
+    kinds: ["text"],
   },
   gemini_native: {
     style: "gemini_native",
@@ -78,6 +99,9 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "gemini_native",
     usage: "gemini",
     body: "json",
+    // Image and speech models answer on `generateContent` like text ones.
+    kinds: ["text", "image", "speech"],
+    urlStreaming: { query: "alt=sse", from: ":generateContent", to: ":streamGenerateContent" },
   },
   anthropic_messages: {
     style: "anthropic_messages",
@@ -85,6 +109,36 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "native",
     usage: "anthropic",
     body: "json",
+    kinds: ["text"],
+    requiredHeaders: { "anthropic-version": "2023-06-01" },
+  },
+  // Three APIs with no output to cap, each in the exact layouts the descriptors
+  // name: an OpenAI-shaped image or embedding request under `v1/`, ModelArk's
+  // bare `images/generations` and Fireworks' `inference/v1/`, and Gemini's own
+  // embedding method, which like `generateContent` names its model in the URL.
+  image_generation: {
+    style: "image_generation",
+    path: /^(?:v1\/)?images\/generations$/u,
+    clamp: "none",
+    usage: "openai",
+    body: "json",
+    kinds: ["image"],
+  },
+  embeddings: {
+    style: "embeddings",
+    path: /^(?:v1|inference\/v1)\/embeddings$/u,
+    clamp: "none",
+    usage: "openai",
+    body: "json",
+    kinds: ["embedding"],
+  },
+  gemini_embedding: {
+    style: "gemini_embedding",
+    path: /^v1(?:beta)?\/models\/(?<model>[^/]+):embedContent$/du,
+    clamp: "none",
+    usage: "gemini",
+    body: "json",
+    kinds: ["embedding"],
   },
   other: {
     style: "other",
@@ -92,6 +146,7 @@ export const PROTOCOLS: Record<ApiStyle, Protocol> = {
     clamp: "native",
     usage: "unknown",
     body: "json",
+    kinds: [],
   },
 };
 

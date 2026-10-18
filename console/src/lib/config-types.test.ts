@@ -6,11 +6,13 @@ import {
   emptyIssuer,
   endpointInstances,
   endpointSlugError,
+  endpointStylesFor,
   instanceModels,
   nextEndpointSlug,
   providerMode,
   renameEndpoint,
   reportsCost,
+  retargetEndpoint,
   selectedSlugs,
   withIssuer,
   type AuthenticationDraft,
@@ -144,26 +146,40 @@ describe("provider configuration defaults", () => {
 });
 
 describe("the models an instance can be asked for", () => {
-  const catalog = { openai: { "gpt-5.6-luna": {}, "gpt-5.7": {} } };
+  const catalog = {
+    openai: {
+      "gpt-5.6-luna": { kind: "text" as const },
+      "gpt-5.7": { kind: "text" as const },
+      "text-embedding-3-small": { kind: "embedding" as const },
+    },
+  };
 
   it("adds the instance's own priced models to its type's catalog", () => {
     // A model only this row prices is still usable — through this row.
     expect(instanceModels(
       { slug: "openai-dev", type: "openai", name: "Dev", pricing: { "gpt-lab-only": {} } },
       catalog,
-    )).toEqual(["gpt-5.6-luna", "gpt-5.7", "gpt-lab-only"]);
+    )).toEqual(["gpt-5.6-luna", "gpt-5.7", "text-embedding-3-small", "gpt-lab-only"]);
+  });
+
+  it("lists only the models of an endpoint's kind, a model only the row prices as text", () => {
+    const row = { slug: "openai-dev", type: "openai" as const, name: "Dev", pricing: { "gpt-lab-only": {}, "text-embedding-3-small": {} } };
+    expect(instanceModels(row, catalog, "text")).toEqual(["gpt-5.6-luna", "gpt-5.7", "gpt-lab-only"]);
+    // An override shadowing a catalog entry keeps the catalog's kind.
+    expect(instanceModels(row, catalog, "embedding")).toEqual(["text-embedding-3-small"]);
+    expect(instanceModels(row, catalog, "image")).toEqual([]);
   });
 
   it("never lists an overridden model twice", () => {
     expect(instanceModels(
       { slug: "openai", type: "openai", name: "Prod", pricing: { "gpt-5.7": {} } },
       catalog,
-    )).toEqual(["gpt-5.6-luna", "gpt-5.7"]);
+    )).toEqual(["gpt-5.6-luna", "gpt-5.7", "text-embedding-3-small"]);
   });
 
   it("falls back to the catalog for a row with no overrides", () => {
     expect(instanceModels({ slug: "openai", type: "openai", name: "Prod" }, catalog))
-      .toEqual(["gpt-5.6-luna", "gpt-5.7"]);
+      .toEqual(["gpt-5.6-luna", "gpt-5.7", "text-embedding-3-small"]);
     expect(instanceModels({ slug: "claude", type: "anthropic", name: "A", pricing: null }, catalog))
       .toEqual([]);
   });
@@ -172,8 +188,10 @@ describe("the models an instance can be asked for", () => {
 describe("custom endpoint targets", () => {
   it("only offers instances whose type composes the endpoint request shape", () => {
     expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
-    expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai"]);
-    // The Anthropic instance is not an option, whatever its slug.
+    expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai", "groq"]);
+    expect(endpointProviderTypes("anthropic_messages")).toEqual(["anthropic"]);
+    expect(endpointProviderTypes("image_generation")).toEqual(["openai", "xai", "bytedance"]);
+    // The Anthropic instance is not an option for Responses, whatever its slug.
     const rows = INSTANCES.map((instance) => ({ ...instance, ...served(instance.type) }));
     expect(endpointInstances("responses", rows).map((entry) => entry.slug))
       .toEqual(["openai", "openai-dev"]);
@@ -181,6 +199,48 @@ describe("custom endpoint targets", () => {
     const viaVercel = [{ ...INSTANCES[0]!, ...served("openai", "vercel") }];
     expect(endpointInstances("responses", viaVercel)).toHaveLength(1);
     expect(endpointInstances("audio_transcription", viaVercel)).toHaveLength(0);
+  });
+
+  it("offers the request formats that carry a kind and that some instance serves", () => {
+    const rows = INSTANCES.map((instance) => ({ ...instance, ...served(instance.type) }));
+    expect(endpointStylesFor("text", rows)).toEqual(["responses", "anthropic_messages"]);
+    expect(endpointStylesFor("embedding", rows)).toEqual(["embeddings"]);
+    expect(endpointStylesFor("speech", rows)).toEqual([]);
+    const gemini = [{ slug: "gemini", type: "gemini" as const, name: "G", ...served("gemini") }];
+    expect(endpointStylesFor("speech", gemini)).toEqual(["gemini_native"]);
+    expect(endpointStylesFor("image", gemini)).toEqual(["gemini_native"]);
+  });
+
+  it("moves an endpoint to a format and instance that serve its new kind", () => {
+    const rows = [...INSTANCES, { slug: "gemini", type: "gemini" as const, name: "G" }]
+      .map((instance) => ({ ...instance, ...served(instance.type) }));
+    const chat = {
+      kind: "text" as const,
+      api_style: "responses" as const,
+      provider: "openai-dev",
+      model: "gpt-5.6-luna",
+      fallback: [{ provider: "openai", model: "gpt-5.7" }],
+    };
+    expect(retargetEndpoint(chat, { kind: "image" }, rows)).toEqual({
+      kind: "image",
+      api_style: "image_generation",
+      provider: "openai-dev",
+      model: "",
+      fallback: [{ provider: "openai", model: "" }],
+    });
+    // A format only another instance serves moves every target onto one.
+    expect(retargetEndpoint(chat, { kind: "speech" }, rows)).toMatchObject({
+      api_style: "gemini_native",
+      provider: "gemini",
+      fallback: [{ provider: "gemini", model: "" }],
+    });
+    // Switching format within the kind keeps a model its instance still serves.
+    expect(retargetEndpoint(chat, { api_style: "anthropic_messages" }, rows)).toMatchObject({
+      kind: "text",
+      provider: "claude",
+      model: "",
+    });
+    expect(retargetEndpoint(chat, { api_style: "responses" }, rows)).toEqual(chat);
   });
 });
 
@@ -243,8 +303,10 @@ describe("custom endpoint editing", () => {
     transcribe: { api_style: "audio_transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
   };
 
-  it("starts a new endpoint on the responses style with no model chosen", () => {
-    expect(emptyEndpoint()).toEqual({ api_style: "responses", provider: "openai", model: "" });
+  it("starts a new text endpoint on the first style an instance serves, with no model chosen", () => {
+    expect(emptyEndpoint()).toEqual({ kind: "text", api_style: "responses", provider: "", model: "" });
+    const claude = [{ ...INSTANCES[2]!, ...served("anthropic") }];
+    expect(emptyEndpoint(claude)).toEqual({ kind: "text", api_style: "anthropic_messages", provider: "claude", model: "" });
   });
 
   it("never suggests a slug that would replace an existing endpoint", () => {
