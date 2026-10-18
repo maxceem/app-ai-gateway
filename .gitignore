@@ -35,3 +35,6 @@ cli/dist/
 
 # State and cache of a CLI built from this checkout; `pnpm cli:dev:reset` clears it.
 .agw-dev/
+
+# Xcode per-user state.
+xcuserdata/
