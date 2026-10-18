@@ -61,6 +61,19 @@ stream. On a Gemini generateContent endpoint, add `?alt=sse` to the endpoint
 URL instead, as Gemini's own API does; the gateway calls the streaming method
 for you. A fallback happens only if nothing has been streamed yet.
 
+From Swift, pass the query to the request helper rather than adding it to the
+URL afterwards: an App Attest proof is signed over the URL, query included.
+This needs the Swift package 1.6.0 or later.
+
+```swift
+let (bytes, response) = try await gateway.withAuthorizedRequest(
+    endpointSlug: "gemini-chat",
+    query: [URLQueryItem(name: "alt", value: "sse")],
+    body: body,
+    contentType: "application/json"
+) { try await URLSession.shared.bytes(for: $0) }
+```
+
 ## Transcription endpoints
 
 Send an OpenAI audio-transcription multipart body. `model` may be omitted.

@@ -283,7 +283,7 @@ describe("getAppSnippet", () => {
     // Sent through the helper, which resends a request built afresh on a 401.
     expect(swift.body.snippet).toContain("try await gateway.withAuthorizedRequest(");
     expect(swift.body.snippet).toContain(") { try await URLSession.shared.data(for: $0) }");
-    expect(swift.body.snippet).toContain("// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.5.0)");
+    expect(swift.body.snippet).toContain("// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.6.0)");
     // The seeded iOS app signs its users in with an issuer.
     expect(swift.body.snippet).toContain("issuerTokenProvider");
     expect(swift.body.notes.at(-1)).toMatch(/^Replace yourIdentitySDK/u);
