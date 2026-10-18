@@ -43,6 +43,7 @@ struct Composer<Accessory: View>: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(transcribing)
+                        .accessibilityLabel("Dictate")
                     }
                     sendButton
                 }
@@ -73,6 +74,7 @@ struct Composer<Accessory: View>: View {
         }
         .buttonStyle(.plain)
         .disabled(!busy && !canSend)
+        .accessibilityLabel(busy ? "Stop" : "Send")
     }
 
     private var recording: some View {

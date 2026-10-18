@@ -14,13 +14,27 @@ import Foundation
 ///     -GatewayURL https://api.appaigateway.com -AppID my-app-a1b2c3
 ///     -Providers openai,gemini   the providers to turn on, all others off
 ///     -Simulated NO
+///     -APIKeyFile /path/key     sign with the API key in this file
+///
+/// and, for recording a demo, one that plays a prepared voice note when the
+/// record button is tapped, instead of using the microphone:
+///
+///     -RecordingFile /path/voice.m4a
 @MainActor
 enum LaunchOptions {
     private static let defaults = UserDefaults.standard
 
+    static var recordingFile: URL? {
+        defaults.string(forKey: "RecordingFile").map { URL(fileURLWithPath: $0) }
+    }
+
     static func apply(settings: AppSettings, history: HistoryStore, nav: Navigator) {
         if let url = defaults.string(forKey: "GatewayURL") { settings.values.baseURL = url }
         if let appID = defaults.string(forKey: "AppID") { settings.values.appID = appID }
+        if let path = defaults.string(forKey: "APIKeyFile"), let key = try? String(contentsOfFile: path, encoding: .utf8) {
+            settings.apiKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            settings.values.useAPIKey = true
+        }
         if defaults.object(forKey: "Simulated") != nil { settings.values.simulated = defaults.bool(forKey: "Simulated") }
         if let list = defaults.string(forKey: "Providers") {
             let on = Set(list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })

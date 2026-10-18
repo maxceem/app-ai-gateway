@@ -93,11 +93,13 @@ struct TopBar: View {
     var body: some View {
         HStack {
             CircleButton(action: { nav.sidebarOpen.toggle() }) { MenuGlyph() }
+                .accessibilityLabel("Sidebar")
             Spacer(minLength: 12)
             ModelMenu(capability: nav.kind) { pill }
                 .buttonStyle(.plain)
             Spacer(minLength: 12)
             CircleButton("square.and.pencil") { nav.new(nav.kind) }
+                .accessibilityLabel(nav.kind.newTitle)
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -113,6 +115,7 @@ struct TopBar: View {
                 Text(choice?.model ?? "Choose a model")
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .truncationMode(.middle)
                 if let choice {
                     Text(ModelCatalog.label(choice.provider))

@@ -118,9 +118,7 @@ private struct MessageRow: View {
                 } else if entry.text.isEmpty {
                     ThinkingDot()
                 } else {
-                    Text(markdown(entry.text))
-                        .font(.system(size: 17))
-                        .lineSpacing(3)
+                    MarkdownText(text: entry.text)
                         .textSelection(.enabled)
                 }
                 if !entry.pending {
@@ -129,11 +127,6 @@ private struct MessageRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    private func markdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
     }
 }
 

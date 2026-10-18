@@ -93,6 +93,7 @@ struct TranscribeScreen: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(runner.isRunning(itemID))
+                .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Record")
                 Spacer()
                 Color.clear.frame(width: 50, height: 50)
             }
