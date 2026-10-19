@@ -44,7 +44,7 @@ struct TranscribeScreen: View {
 
     private var intro: some View {
         VStack(spacing: 14) {
-            Image(systemName: "waveform")
+            Image(systemName: Capability.transcription.symbol)
                 .font(.system(size: 34, weight: .medium))
                 .frame(width: 84, height: 84)
                 .background(Theme.bubble, in: Circle())

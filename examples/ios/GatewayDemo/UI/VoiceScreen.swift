@@ -50,7 +50,7 @@ struct VoiceScreen: View {
 
     private var intro: some View {
         VStack(spacing: 14) {
-            Image(systemName: "person.wave.2")
+            Image(systemName: Capability.voice.symbol)
                 .font(.system(size: 34, weight: .medium))
                 .frame(width: 84, height: 84)
                 .background(Theme.bubble, in: Circle())

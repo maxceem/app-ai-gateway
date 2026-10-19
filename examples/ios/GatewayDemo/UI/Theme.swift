@@ -69,9 +69,9 @@ extension Capability {
     var symbol: String {
         switch self {
         case .chat: "bubble.left"
-        case .transcription: "waveform"
+        case .transcription: "speaker.wave.2.fill"
         case .image: "photo"
-        case .voice: "person.wave.2"
+        case .voice: "mic.fill"
         }
     }
 
