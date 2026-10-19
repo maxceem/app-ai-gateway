@@ -1,37 +1,56 @@
-import { RpcTarget } from 'cloudflare:workers';
-import { GatewayError } from '../core/errors';
-import { REALTIME_BACKEND_CONTRACT as V, type SessionBackend } from './backend';
-import type { BackendResult, RealtimeBackend } from './rpc';
-import type { QuotaAdmissionInput } from '../do/OrgQuota';
-import { REALTIME_LIMITS } from './limits';
+import { RpcTarget } from "cloudflare:workers";
+import { GatewayError } from "../core/errors";
+import { REALTIME_BACKEND_CONTRACT as V, type SessionBackend } from "./backend";
+import type { BackendResult, RealtimeBackend } from "./rpc";
+import type { QuotaAdmissionInput } from "../do/OrgQuota";
+import { REALTIME_LIMITS } from "./limits";
 
 export function unwrapBackend<T>(result: BackendResult<T>): T {
   if (result.ok) return result.value;
   const e = result.error;
   throw new GatewayError(e.status, e.code, e.message, e.headers, { data: e.data });
 }
+
 /** Retry transport failures only. Public policy failures are never retried. */
-export async function safeBackendCall<T>(call: () => Promise<BackendResult<T>>, deadline = Date.now() + REALTIME_LIMITS.setupMs): Promise<T> {
+export async function safeBackendCall<T>(
+  call: () => Promise<BackendResult<T>>,
+  deadline = Date.now() + REALTIME_LIMITS.setupMs,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     let response: BackendResult<T>;
-    try { response = await call(); }
-    catch (error) {
-      const transient = error instanceof Error && ('retryable' in error && error.retryable === true || 'overloaded' in error && error.overloaded === true);
-      if (!transient || attempt >= 2 || Date.now() + 100 * (attempt + 1) >= deadline) throw new GatewayError(503, 'provider_unavailable', 'Realtime backend unavailable');
-      await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+    try {
+      response = await call();
+    } catch (error) {
+      const transient = error instanceof Error && (
+        ("retryable" in error && error.retryable === true)
+        || ("overloaded" in error && error.overloaded === true)
+      );
+      const backoffMs = 100 * (attempt + 1);
+      if (!transient || attempt >= 2 || Date.now() + backoffMs >= deadline) {
+        throw new GatewayError(503, "provider_unavailable", "Realtime backend unavailable");
+      }
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
       continue;
     }
     return unwrapBackend(response);
   }
 }
+
 class DurableClaimAcknowledgement extends RpcTarget {
-  constructor(private beforeClaim: (claim: QuotaAdmissionInput | null) => void | Promise<void>, private live: () => boolean) { super(); }
+  constructor(
+    private beforeClaim: (claim: QuotaAdmissionInput | null) => void | Promise<void>,
+    private live: () => boolean,
+  ) {
+    super();
+  }
+
   async acknowledge(claim: QuotaAdmissionInput | null) {
-    if (!this.live()) throw new Error('Realtime session ended');
+    if (!this.live()) throw new Error("Realtime session ended");
     // Once journaled the claim goes ahead, and recovery reconciles it.
     await this.beforeClaim(claim);
   }
 }
+
 export function remoteSessionBackend(rpc: Service<typeof RealtimeBackend>): SessionBackend {
   return {
     revalidate: (b, headers) => safeBackendCall(() => rpc.revalidate(V, b, headers)),
