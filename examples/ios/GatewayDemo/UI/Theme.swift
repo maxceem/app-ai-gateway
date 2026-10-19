@@ -11,7 +11,7 @@ enum Theme {
     static let bubble = dynamic(light: 0xF1F1F1, dark: 0x303030)
     static let hairline = dynamic(light: 0xE6E6E6, dark: 0x3A3A3A)
 
-    static func dynamic(light: UInt32, dark: UInt32) -> Color {
+    private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
     }
 }

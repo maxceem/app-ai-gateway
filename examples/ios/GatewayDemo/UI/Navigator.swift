@@ -9,7 +9,6 @@ final class Navigator {
     var itemID: UUID?
     var sidebarOpen = false
     var showSettings = false
-    var showCode = false
 
     func open(_ item: HistoryItem) {
         kind = item.kind

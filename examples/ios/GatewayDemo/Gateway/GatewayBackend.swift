@@ -12,7 +12,6 @@ struct GatewayBackend: AIBackend {
     let slugs: [String: String]
 
     init(baseURL: URL, appID: String, apiKey: String?, slugs: [String: String]) {
-        // snippet chat,image,transcription,voice: Create one client when the app starts
         client = AppAIGatewayClient(
             appID: appID,
             baseURL: baseURL,
@@ -20,20 +19,17 @@ struct GatewayBackend: AIBackend {
             // device. An API key works in the simulator, for testing.
             authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall
         )
-        // snippet end
         self.slugs = slugs
     }
 
     /// POSTs `body` to the model's provider and returns the response body.
     func post(_ model: ModelChoice, path: String, body: Data, contentType: String = "application/json") async throws -> Data {
-        // snippet image,transcription: Send requests through your gateway, which signs each one for this app
         let (data, response) = try await client.withAuthorizedRequest(
             provider: slug(model),
             providerPath: path,
             body: body,
             contentType: contentType
         ) { try await URLSession.shared.data(for: $0) }
-        // snippet end
         try check(response as! HTTPURLResponse, body: data)
         return data
     }
@@ -45,7 +41,6 @@ struct GatewayBackend: AIBackend {
         body: Data,
         headers: [String: String] = [:]
     ) async throws -> AsyncLineSequence<URLSession.AsyncBytes> {
-        // snippet chat: Send requests through your gateway, which signs each one for this app
         let (bytes, response) = try await client.withAuthorizedRequest(
             provider: slug(model),
             providerPath: path,
@@ -57,7 +52,6 @@ struct GatewayBackend: AIBackend {
             for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
             return try await URLSession.shared.bytes(for: request)
         }
-        // snippet end
         let http = response as! HTTPURLResponse
         if !(200..<300).contains(http.statusCode) {
             var data = Data()

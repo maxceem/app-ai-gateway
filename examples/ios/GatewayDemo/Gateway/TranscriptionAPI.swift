@@ -6,7 +6,6 @@ extension GatewayBackend {
         guard let path = ProviderPaths.transcription(model.provider) else {
             throw ProviderError(status: 0, message: "\(model.provider) has no transcription API in this demo.")
         }
-        // snippet transcription: Upload the recording as the provider expects
         var form = MultipartForm()
         form.append("model", model.model)
         form.append("file", fileName: fileName, contentType: "audio/mp4", data: audio)
@@ -16,7 +15,6 @@ extension GatewayBackend {
         let data = try await post(model, path: path, body: form.body, contentType: form.contentType)
         struct Transcription: Decodable { let text: String }
         return try JSONDecoder().decode(Transcription.self, from: data).text
-        // snippet end
     }
 
 }
