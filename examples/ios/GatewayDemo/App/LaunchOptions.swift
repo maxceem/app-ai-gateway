@@ -60,7 +60,7 @@ enum LaunchOptions {
         switch nav.kind {
         case .chat: nav.itemID = runner.sendChat(prompt, image: nil, in: nav.itemID, model: model)
         case .image: nav.itemID = runner.generateImage(prompt, aspect: .square, in: nav.itemID, model: model)
-        case .transcription: break
+        case .transcription, .voice: break
         }
     }
 }

@@ -132,6 +132,7 @@ private struct ProviderRow: View {
             case .chat: "Chat"
             case .transcription: "Transcription"
             case .image: "Images"
+            case .voice: "Voice"
             }
         }.joined(separator: " · ")
     }

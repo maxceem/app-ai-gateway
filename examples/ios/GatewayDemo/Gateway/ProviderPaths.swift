@@ -37,4 +37,11 @@ enum ProviderPaths {
         default: nil
         }
     }
+
+    /// Whether the gateway holds realtime voice conversations with the
+    /// provider. It has no path to choose: the Swift package discovers the
+    /// WebSocket URL, and only direct OpenAI is served so far.
+    static func realtime(_ provider: String) -> Bool {
+        provider == "openai"
+    }
 }

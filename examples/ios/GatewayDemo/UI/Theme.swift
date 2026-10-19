@@ -71,6 +71,7 @@ extension Capability {
         case .chat: "bubble.left"
         case .transcription: "waveform"
         case .image: "photo"
+        case .voice: "person.wave.2"
         }
     }
 
@@ -79,6 +80,7 @@ extension Capability {
         case .chat: "New chat"
         case .transcription: "New transcription"
         case .image: "New image"
+        case .voice: "New voice chat"
         }
     }
 }

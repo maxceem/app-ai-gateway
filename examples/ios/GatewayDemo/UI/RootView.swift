@@ -78,6 +78,7 @@ struct MainView: View {
                 case .chat: ChatScreen(itemID: nav.itemID)
                 case .image: ImageScreen(itemID: nav.itemID)
                 case .transcription: TranscribeScreen(itemID: nav.itemID)
+                case .voice: VoiceScreen(itemID: nav.itemID)
                 }
             }
             .id("\(nav.kind.rawValue)-\(nav.itemID?.uuidString ?? "new")")

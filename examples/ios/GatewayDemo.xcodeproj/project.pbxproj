@@ -190,7 +190,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "App AI Gateway Demo";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record a voice note to transcribe it through your gateway.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record a voice note to transcribe, or talk with a voice model, through your gateway.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save generated images to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -222,7 +222,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "App AI Gateway Demo";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record a voice note to transcribe it through your gateway.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record a voice note to transcribe, or talk with a voice model, through your gateway.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save generated images to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

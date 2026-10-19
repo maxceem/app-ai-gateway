@@ -45,6 +45,10 @@
         "gpt-image-1.5",
         "gpt-image-1-mini",
         "gpt-image-1"
+      ],
+      "voice": [
+        "gpt-realtime-mini",
+        "gpt-realtime"
       ]
     },
     {
@@ -70,7 +74,8 @@
         "claude-haiku-4-5-20251001"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "xai",
@@ -88,7 +93,8 @@
       "transcription": [
         "grok-transcribe"
       ],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "gemini",
@@ -114,7 +120,8 @@
         "gemini-3.1-flash-image",
         "gemini-3.1-flash-lite-image",
         "gemini-3-pro-image"
-      ]
+      ],
+      "voice": []
     },
     {
       "type": "perplexity",
@@ -126,7 +133,8 @@
         "sonar-deep-research"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "deepseek",
@@ -136,7 +144,8 @@
         "deepseek-v4-pro"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "groq",
@@ -150,7 +159,8 @@
         "whisper-large-v3-turbo",
         "whisper-large-v3"
       ],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "mistral",
@@ -161,7 +171,8 @@
         "mistral-small-latest"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "together",
@@ -186,14 +197,16 @@
         "meta-llama/Llama-3.3-70B-Instruct-Turbo"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "fireworks",
       "label": "Fireworks AI",
       "chat": [],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "cerebras",
@@ -203,7 +216,8 @@
         "gpt-oss-120b"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "moonshot",
@@ -215,14 +229,16 @@
         "kimi-k2.6"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "huggingface",
       "label": "Hugging Face",
       "chat": [],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "baseten",
@@ -234,7 +250,8 @@
         "openai/gpt-oss-120b"
       ],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     },
     {
       "type": "bytedance",
@@ -251,14 +268,16 @@
         "seedream-5-0-lite-260128",
         "seedream-4-5-251128",
         "seedream-4-0-250828"
-      ]
+      ],
+      "voice": []
     },
     {
       "type": "openrouter",
       "label": "OpenRouter",
       "chat": [],
       "transcription": [],
-      "image": []
+      "image": [],
+      "voice": []
     }
   ]
 }

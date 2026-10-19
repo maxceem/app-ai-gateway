@@ -79,6 +79,7 @@ final class AppSettings {
         .chat: ModelChoice(provider: "openai", model: "gpt-6-sol"),
         .image: ModelChoice(provider: "openai", model: "gpt-image-2"),
         .transcription: ModelChoice(provider: "openai", model: "gpt-transcribe"),
+        .voice: ModelChoice(provider: "openai", model: "gpt-realtime"),
     ]
 
     func select(_ choice: ModelChoice, for capability: Capability) {

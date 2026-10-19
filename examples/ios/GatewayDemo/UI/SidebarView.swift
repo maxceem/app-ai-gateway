@@ -29,7 +29,7 @@ struct SidebarView: View {
 
                     if recents.isEmpty {
                         Text(query.isEmpty
-                             ? "Your chats, images and transcripts appear here. They stay on this device."
+                             ? "Your chats, images, transcripts and voice chats appear here. They stay on this device."
                              : "Nothing matches “\(query)”.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
