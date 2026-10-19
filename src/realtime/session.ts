@@ -92,7 +92,12 @@ export class SessionCoordinator {
       if (testUpstream) this.upstream = testUpstream;
       else {
         const request = upstreamRequest(policy.protocol, policy.model, provider.secret, provider.route, { appId: this.bootstrap.appId, userId: this.bootstrap.identity.userId });
-        const response = await fetch(request, { signal: AbortSignal.timeout(L.setupMs) });
+        // The deadline bounds the upgrade only: the socket stays bound to the
+        // signal it was opened with, so a timeout signal would close it later.
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort(), L.setupMs);
+        let response: Response;
+        try { response = await fetch(request, { signal: deadline.signal }); } finally { clearTimeout(timer); }
         if (response.status !== 101 || !response.webSocket) throw new GatewayError(502, 'provider_error', 'Realtime provider upgrade failed');
         this.upstream = response.webSocket;
       }
@@ -198,7 +203,11 @@ export class SessionCoordinator {
         await this.schedule();
       }));
     });
-    socket.addEventListener('close', () => this.terminate(null, source === 'client' ? 1000 : 1011));
+    socket.addEventListener('close', event => {
+      // A provider that hangs up says why only here; nothing of it reaches the client.
+      if (source === 'server' && !this.terminating) log('warn', 'realtime_provider_closed', { sessionId: this.bootstrap.sessionId, code: event.code, reason: event.reason.slice(0, 200) });
+      this.terminate(null, source === 'client' ? 1000 : 1011);
+    });
     socket.addEventListener('error', () => this.terminate(new GatewayError(502, 'provider_error', 'Realtime transport failed'), 1011));
   }
 
@@ -319,6 +328,7 @@ export class SessionCoordinator {
   terminate(error: GatewayError | null, code: number): void {
     if (this.terminating) return;
     this.terminating = true;
+    if (error) log('warn', 'realtime_session_failed', { sessionId: this.bootstrap.sessionId, code: error.code, message: error.message });
     if (this.timer) clearTimeout(this.timer);
     // Termination is immediate even while the serial mailbox awaits a quota/DB RPC.
     // Install cleanup before best-effort writes to an already failing transport.

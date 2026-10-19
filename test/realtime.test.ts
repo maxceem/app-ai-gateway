@@ -7,7 +7,7 @@ import type { OrgQuota } from '../src/do/OrgQuota';
 import type { UserLimiter } from '../src/do/UserLimiter';
 import { env } from 'cloudflare:workers';
 import { createExecutionContext, runInDurableObject } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { database } from '../src/db';
 import { app as appTable } from '../src/db/schema';
@@ -264,6 +264,28 @@ function collector(socket: WebSocket) {
       expect(sent).toEqual(['session.update']);
       coordinator.terminate(null, 1000); socket.close(1000); upstream[0].close(1000);
       await new Promise(resolve => setTimeout(resolve, 30));
+    });
+  });
+  it('bounds only the provider upgrade by the setup deadline, not the open socket', async () => {
+    const { bootstrap, headers } = await seeded();
+    const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
+    await runInDurableObject(stub, async (instance, state) => {
+      const upstream = new WebSocketPair(); upstream[0].accept({ allowHalfOpen: true });
+      let signal: AbortSignal | undefined;
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        signal = init?.signal ?? undefined; return new Response(null, { status: 101, webSocket: upstream[1] });
+      });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      // A timeout signal, if the session used one, runs on the same fake clock.
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => { const controller = new AbortController(); setTimeout(() => controller.abort(), ms); return controller.signal; });
+      try {
+        const coordinator = new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers);
+        Reflect.set(instance, "coordinator", coordinator);
+        const response = await coordinator.start(); response.webSocket!.accept();
+        vi.advanceTimersByTime(REALTIME_LIMITS.setupMs + 1);
+        expect(signal?.aborted).toBe(false);
+        coordinator.terminate(null, 1000); response.webSocket!.close(1000); upstream[0].close(1000);
+      } finally { vi.useRealTimers(); fetch.mockRestore(); timeout.mockRestore(); }
     });
   });
   it('ordinary GET returns 426 before auth, URL credentials and forged metadata cannot open a session', async () => {
