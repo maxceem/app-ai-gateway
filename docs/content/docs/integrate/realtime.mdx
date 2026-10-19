@@ -43,10 +43,12 @@ package builds and signs both requests for you.
 
 | Provider | Models | Modes |
 | --- | --- | --- |
-| Direct OpenAI, official origin | `gpt-realtime`, `gpt-realtime-mini` | Manual response creation; gateway-managed `server_vad`; text and 24 kHz PCM audio; application function tools |
+| OpenAI, direct to its official origin or through Cloudflare AI Gateway | `gpt-realtime`, `gpt-realtime-mini` | Manual response creation; gateway-managed `server_vad`; text and 24 kHz PCM audio; application function tools |
 | Gemini Live | Unavailable pending live conformance | The adapter is restricted to explicit text turns or manual audio activities; no enabled model profile yet |
 
-Third-party gateway routes and custom provider origins are unsupported. Pricing
+Through Cloudflare AI Gateway, the conversation uses the OpenAI key stored in
+your Cloudflare gateway. Other gateway routes, such as Vercel AI Gateway, and
+custom provider origins are unsupported. Pricing
 catalog membership does not enable a realtime profile. Custom realtime prices
 must include text input/output, audio input/output, cached text input and cached
 audio input. Images, transcription, hosted tools, stored prompts, semantic VAD,

@@ -13,7 +13,10 @@ export function realtimePolicy(app: AppRecord, provider: ResolvedProvider, reque
   model: string; protocol: RealtimeProtocol; path: string; outputCap: number; price: Price;
 } {
   if (!app.config.realtime.enabled) throw new GatewayError(403, 'realtime_not_supported', 'Realtime is disabled for this app');
-  if (provider.route.kind !== 'direct' || provider.baseUrl !== null) throw new GatewayError(400, 'realtime_not_supported', 'Realtime requires an official direct provider origin');
+  // A provider's own origin, or Cloudflare AI Gateway in front of it: both relay
+  // OpenAI's realtime events unchanged. Other gateways translate or lack sockets.
+  const official = provider.route.kind === 'direct' ? provider.baseUrl === null : provider.route.kind === 'cf_aig';
+  if (!official) throw new GatewayError(400, 'realtime_not_supported', 'Realtime requires an official direct provider origin or Cloudflare AI Gateway');
   const policy = providerPolicyFor(app.config.routing, provider.slug);
   if (!policy) throw new GatewayError(403, 'path_not_allowed', 'Provider is disabled for this app');
   const requested = requestedModel.replace(/^models\//u, '');

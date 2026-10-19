@@ -15,6 +15,8 @@ import app from '../src/index';
 import { OpenAIAdapter, openAIUsage } from '../src/realtime/protocols/openai';
 import { realtimePolicy } from '../src/realtime/policy';
 import { protocolAdapter, upstreamRequest } from '../src/realtime/upstream';
+import { routeThroughGateway } from '../src/providers/route-adapters';
+import { realtimeProtocols } from '../src/shared/capabilities';
 import { SessionCoordinator } from '../src/realtime/session';
 import { SessionJournal } from '../src/realtime/journal';
 import { loadApp } from '../src/core/app-records';
@@ -40,10 +42,10 @@ const usage = { input_tokens: 100, output_tokens: 20, input_token_details: { aud
 function ack(extra: JsonObject = {}): JsonObject { return { type: 'session.updated', session: { model: 'gpt-realtime', max_output_tokens: 4096,
   audio: { input: { turn_detection: null, transcription: null } }, ...extra } }; }
 
-async function seeded(enabled = true) {
+async function seeded(enabled = true, gateway?: 'cf_aig') {
   clearIsolateCaches(); const appId = `realtime-${crypto.randomUUID()}`;
   const key = await seedServerApp(appId, { endUser: 'none' });
-  await seedProvider({ type: 'openai', slug: appId, id: appId });
+  await seedProvider({ type: 'openai', slug: appId, id: appId, ...(gateway ? { gateway } : {}) });
   const loaded = await loadApp(env, appId);
   loaded.config.realtime.enabled = enabled;
   loaded.config.routing.providers = { mode: "all" };
@@ -187,6 +189,10 @@ function collector(socket: WebSocket) {
     const gemini = upstreamRequest('gemini_live', 'candidate', 'fixture');
     expect(new URL(gemini.url).hostname).toBe('generativelanguage.googleapis.com');
     expect(gemini.headers.get('x-goog-api-key')).toBe('fixture'); expect(gemini.headers.has('authorization')).toBe(false); expect(new URL(gemini.url).search).toBe('');
+    const cloudflare = upstreamRequest('openai_realtime', 'gpt-realtime', 'fixture', routeThroughGateway({ id: 'g', type: 'cf_aig', config: { accountId: 'acct', gatewayId: 'gw' } }, null), { appId: 'app', userId: null });
+    expect(cloudflare.url).toBe('https://gateway.ai.cloudflare.com/v1/acct/gw/openai?model=gpt-realtime');
+    expect(cloudflare.headers.get('cf-aig-authorization')).toBe('Bearer fixture'); expect(cloudflare.headers.has('authorization')).toBe(false);
+    expect(cloudflare.headers.get('sec-websocket-protocol')).toBe('realtime'); expect(JSON.parse(cloudflare.headers.get('cf-aig-metadata')!)).toEqual({ app_id: 'app' });
     const adapter = protocolAdapter('gemini_live', 'candidate', 32); expect(adapter.initial()).toBeNull(); expect(adapter.cancel()).toBeNull();
     const { bootstrap, provider } = await seeded();
     const application = await loadApp(env, bootstrap.appId);
@@ -225,13 +231,40 @@ function collector(socket: WebSocket) {
     expect(await limiter.acquireSession('s2', 1)).toMatchObject({ allowed: true });
     expect(await limiter.getStatus(input.now)).toEqual({ requestsToday: 1 });
   });
-  it('requires opt-in, official direct origin and a separately eligible model', async () => {
+  it('requires opt-in, an official origin or Cloudflare AI Gateway, and a separately eligible model', async () => {
     const { bootstrap, provider } = await seeded(false); const application = await loadApp(env, bootstrap.appId);
     expect(() => realtimePolicy(application, provider, 'gpt-realtime')).toThrow();
     application.config.realtime.enabled = true;
     expect(() => realtimePolicy(application, { ...provider, baseUrl: 'https://example.test' }, 'gpt-realtime')).toThrow();
+    expect(realtimePolicy(application, { ...provider, route: routeThroughGateway({ id: 'g', type: 'cf_aig', config: { accountId: 'acct', gatewayId: 'gw' } }, null) }, 'gpt-realtime').protocol).toBe('openai_realtime');
+    expect(() => realtimePolicy(application, { ...provider, route: routeThroughGateway({ id: 'g', type: 'vercel', config: {} }, null) }, 'gpt-realtime')).toThrow(/Cloudflare AI Gateway/u);
+    expect(realtimeProtocols('cf_aig', 'openai')).toEqual(['openai_realtime']); expect(realtimeProtocols('vercel', 'openai')).toEqual([]);
     expect(() => realtimePolicy(application, provider, 'gpt-5.6-sol')).toThrow();
     expect(realtimePolicy(application, provider, 'gpt-realtime').protocol).toBe('openai_realtime');
+  });
+  it('configures a Cloudflare AI Gateway session only once the provider has spoken', async () => {
+    const { bootstrap, headers, provider } = await seeded(true, 'cf_aig');
+    expect(provider.route.kind).toBe('cf_aig');
+    const stub = env.REALTIME_SESSION.get(env.REALTIME_SESSION.newUniqueId());
+    await runInDurableObject(stub, async (instance, state) => {
+      const upstream = new WebSocketPair(); upstream[0].accept({ allowHalfOpen: true });
+      const sent: string[] = [];
+      upstream[0].addEventListener('message', event => {
+        const frame = JSON.parse(String(event.data)) as JsonObject; sent.push(String(frame.type));
+        if (frame.type === 'session.update') upstream[0].send(JSON.stringify(ack()));
+      });
+      const coordinator = new SessionCoordinator(localSessionBackend(env, promise => state.waitUntil(promise)), state, bootstrap, headers);
+      Reflect.set(instance, "coordinator", coordinator);
+      const response = await coordinator.start(upstream[1]);
+      const socket = response.webSocket!; const next = collector(socket); socket.accept({ allowHalfOpen: true });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(sent).toEqual([]);
+      upstream[0].send(JSON.stringify({ type: 'session.created', session: {} }));
+      await next('session.updated');
+      expect(sent).toEqual(['session.update']);
+      coordinator.terminate(null, 1000); socket.close(1000); upstream[0].close(1000);
+      await new Promise(resolve => setTimeout(resolve, 30));
+    });
   });
   it('ordinary GET returns 426 before auth, URL credentials and forged metadata cannot open a session', async () => {
     const url = 'https://gateway.test/v1/apps/no-app/realtime/openai?model=gpt-realtime';

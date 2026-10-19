@@ -2,7 +2,7 @@ import type { AppRecord } from '../core/types';
 import { GatewayError } from '../core/errors';
 import { log } from '../core/log';
 import type { ResolvedProvider } from '../providers/provider-store';
-import { DIRECT_ROUTE } from '../providers/route-adapters';
+import { DIRECT_ROUTE, routeAdapter, type ResolvedRoute } from '../providers/route-adapters';
 import { buildUsageEvent, type AttemptAttribution, type UsageEvent } from '../usage/usage-record';
 import { computeCost } from '../usage/pricing';
 import { realtimePolicy } from './policy';
@@ -52,6 +52,7 @@ export class SessionCoordinator {
   private shuttingDown: Promise<void> | null = null;
   private starting: Promise<void> | null = null;
   private drainUntil = 0;
+  private deferredInitial: JsonObject | null = null;
   private mailbox: Mailbox;
   private authHeaders: Headers;
   readonly journal: SessionJournal;
@@ -90,7 +91,7 @@ export class SessionCoordinator {
       this.adapter = protocolAdapter(policy.protocol, policy.model, policy.outputCap, this.bootstrap.requestedModel);
       if (testUpstream) this.upstream = testUpstream;
       else {
-        const request = upstreamRequest(policy.protocol, policy.model, provider.secret);
+        const request = upstreamRequest(policy.protocol, policy.model, provider.secret, provider.route, { appId: this.bootstrap.appId, userId: this.bootstrap.identity.userId });
         const response = await fetch(request, { signal: AbortSignal.timeout(L.setupMs) });
         if (response.status !== 101 || !response.webSocket) throw new GatewayError(502, 'provider_error', 'Realtime provider upgrade failed');
         this.upstream = response.webSocket;
@@ -101,8 +102,11 @@ export class SessionCoordinator {
       this.client.accept({ allowHalfOpen: true });
       this.attach(this.client, 'client'); this.attach(this.upstream, 'server');
       this.configurationAt = Date.now();
+      // Cloudflare AI Gateway drops a socket written to before the provider has
+      // spoken, so there the configuration waits for the provider's first event.
       const initial = this.adapter.initial();
-      if (initial) send(this.upstream, initial);
+      if (provider.route.kind === 'direct') { if (initial) send(this.upstream, initial); }
+      else this.deferredInitial = initial;
       await this.schedule();
       this.requireStarting();
       return new Response(null, { status: 101, webSocket: pair[0], headers: { 'x-gateway-session-id': this.bootstrap.sessionId } });
@@ -160,6 +164,7 @@ export class SessionCoordinator {
         if (this.active.outputBytes > L.generationOutputBytes) { this.terminate(new GatewayError(413, 'payload_too_large', 'Realtime output limit exceeded'), 1009); return; }
       }
       const raw = event.data;
+      if (source === 'server' && this.deferredInitial) { send(this.upstream, this.deferredInitial); this.deferredInitial = null; }
       this.ctx.waitUntil(this.mailbox.push(bytes, async () => {
         if (this.closed || (source === 'client' && !this.live())) return;
         let frame: JsonObject;
@@ -267,7 +272,7 @@ export class SessionCoordinator {
     if (!this.live()) return;
     const provider = this.provider!; const app = this.app!;
     const policy = realtimePolicy(app, provider, this.bootstrap.requestedModel);
-    const attribution: AttemptAttribution = { provider: provider.type, providerId: provider.id, providerSlug: provider.slug, providerRoute: DIRECT_ROUTE,
+    const attribution: AttemptAttribution = { provider: provider.type, providerId: provider.id, providerSlug: provider.slug, providerRoute: localRoute(provider.route),
       pricing: provider.pricing, model: policy.model, apiStyle: 'other', route: `${provider.slug}/${policy.path}` };
     const at = Date.now(); const generationId = crypto.randomUUID();
     const event = buildUsageEvent({ organizationId: app.organizationId, identity: this.bootstrap.identity, attribution, appVersion: this.bootstrap.appVersion,
@@ -522,4 +527,9 @@ export function settledEvent(generation: Generation, status: CompletionStatus, a
     completionStatus: status, status: status === 'failed' ? 'provider_error' : 'ok', clientAborted: aborted ? 1 : null,
     latencyMs: Math.max(0, Date.now() - generation.at),
   } };
+}
+
+/** The provider's route with this isolate's own adapter: one read over RPC carries only its data. */
+function localRoute(route: ResolvedRoute): ResolvedRoute {
+  return route.kind === 'direct' ? DIRECT_ROUTE : { ...route, adapter: routeAdapter(route.kind) };
 }
