@@ -11,6 +11,7 @@ extension GatewayBackend {
             return try await geminiImage(prompt: prompt, aspect: aspect, model: model, path: path)
         }
 
+        // snippet image: Ask for an image in the provider's own format
         var body: [String: Any] = ["model": model.model, "prompt": prompt, "n": 1]
         switch model.provider {
         case "openai": // GPT Image always answers in base64.
@@ -22,6 +23,7 @@ extension GatewayBackend {
             body["response_format"] = "b64_json"
         }
         let data = try await post(model, path: path, body: JSONSerialization.data(withJSONObject: body))
+        // snippet end
 
         struct Generated: Decodable { struct Image: Decodable { let b64_json: String?; let url: URL? }; let data: [Image] }
         guard let image = try JSONDecoder().decode(Generated.self, from: data).data.first else {

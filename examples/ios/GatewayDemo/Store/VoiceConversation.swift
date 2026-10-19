@@ -99,11 +99,13 @@ final class VoiceConversation {
                 try await audio.start()
                 startMeter()
                 phase = .listening
+                // snippet voice: Stream the microphone, in OpenAI's own realtime events
                 sender = Task {
                     for await pcm in audio.chunks {
                         try? await socket.send(["type": "input_audio_buffer.append", "audio": pcm.base64EncodedString()])
                     }
                 }
+                // snippet end
 
             case "input_audio_buffer.speech_started":
                 // Talking over an answer interrupts it: the gateway cancels the
@@ -126,12 +128,14 @@ final class VoiceConversation {
                 responses += 1
                 answerID = history.append(Entry(role: .assistant, model: model, pending: true), to: id)
 
+            // snippet voice: Play the answer as it arrives
             case "response.output_audio.delta":
                 // While you talk over an answer, what is still in flight of it
                 // belongs to the response the gateway is cancelling.
                 if phase != .hearing, let pcm = (event["delta"] as? String).flatMap({ Data(base64Encoded: $0) }) {
                     audio.play(pcm)
                 }
+            // snippet end
 
             case "response.output_audio_transcript.delta", "response.output_text.delta":
                 if let answerID, let delta = event["delta"] as? String {

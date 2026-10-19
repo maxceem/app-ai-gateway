@@ -8,6 +8,7 @@ extension GatewayBackend {
             let task = Task {
                 do {
                     let anthropic = model.provider == "anthropic"
+                    // snippet chat: Stream the answer, in the provider's own events
                     let lines = try await stream(
                         model,
                         path: ProviderPaths.chat(model.provider),
@@ -22,6 +23,7 @@ extension GatewayBackend {
                             continuation.yield(text)
                         }
                     }
+                    // snippet end
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -41,6 +43,7 @@ extension GatewayBackend {
                 ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image.base64EncodedString())"]],
             ]]
         }
+        // snippet chat: The request is OpenAI's own Chat Completions body
         return try JSONSerialization.data(withJSONObject: [
             "model": model.model,
             "messages": messages,
@@ -48,6 +51,7 @@ extension GatewayBackend {
             // The final event then reports token usage, which the gateway records.
             "stream_options": ["include_usage": true],
         ])
+        // snippet end
     }
 
     private func chatCompletionsText(_ event: Data) -> String? {

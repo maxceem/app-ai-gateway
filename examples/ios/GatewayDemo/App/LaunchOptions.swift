@@ -7,6 +7,7 @@ import Foundation
 ///     -Open 2              open the third history item
 ///     -Sidebar YES         open the sidebar
 ///     -Show settings       open Settings
+///     -Show code           open the code behind the screen's kind of chat
 ///     -Kind image -Send "A red bicycle"   send a prompt on a new screen
 ///
 /// and that point the app at a gateway, saved like changes made in Settings:
@@ -53,6 +54,7 @@ enum LaunchOptions {
         }
         nav.sidebarOpen = defaults.bool(forKey: "Sidebar")
         nav.showSettings = defaults.string(forKey: "Show") == "settings"
+        nav.showCode = defaults.string(forKey: "Show") == "code"
     }
 
     static func send(settings: AppSettings, runner: RequestRunner, nav: Navigator) {

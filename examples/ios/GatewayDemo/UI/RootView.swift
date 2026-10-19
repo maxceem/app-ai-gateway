@@ -60,6 +60,7 @@ struct RootView: View {
         }
         .tint(.primary)
         .sheet(isPresented: $nav.showSettings) { SettingsView() }
+        .sheet(isPresented: $nav.showCode) { CodeSheet(kind: nav.kind) }
         .onChange(of: nav.sidebarOpen) { _, open in
             if open { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         }
@@ -99,8 +100,9 @@ struct TopBar: View {
             ModelMenu(capability: nav.kind) { pill }
                 .buttonStyle(.plain)
             Spacer(minLength: 12)
-            CircleButton("square.and.pencil") { nav.new(nav.kind) }
-                .accessibilityLabel(nav.kind.newTitle)
+            // A new chat starts from the sidebar; this shows the code behind this one.
+            CircleButton("chevron.left.forwardslash.chevron.right") { nav.showCode = true }
+                .accessibilityLabel("Show the code")
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)

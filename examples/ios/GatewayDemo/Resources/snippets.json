@@ -1,0 +1,80 @@
+{
+  "chat": [
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Create one client when the app starts",
+      "code": "client = AppAIGatewayClient(\n    appID: appID,\n    baseURL: baseURL,\n    // App Attest proves the request comes from your app on a real\n    // device. An API key works in the simulator, for testing.\n    authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall\n)"
+    },
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Send requests through your gateway, which signs each one for this app",
+      "code": "let (bytes, response) = try await client.withAuthorizedRequest(\n    provider: slug(model),\n    providerPath: path,\n    body: body,\n    contentType: \"application/json\"\n) { request in\n    // Headers may be added to a signed request; its URL and body may not change.\n    var request = request\n    for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }\n    return try await URLSession.shared.bytes(for: request)\n}"
+    },
+    {
+      "file": "Gateway/ChatAPI.swift",
+      "caption": "Stream the answer, in the provider's own events",
+      "code": "let lines = try await stream(\n    model,\n    path: ProviderPaths.chat(model.provider),\n    body: anthropic ? anthropicBody(turns, model) : chatCompletionsBody(turns, model),\n    headers: anthropic ? [\"anthropic-version\": \"2023-06-01\"] : [:]\n)\n// Both stream server-sent events: `data: {json}` lines.\nfor try await line in lines where line.hasPrefix(\"data:\") {\n    let event = Data(line.dropFirst(5).utf8)\n    if line.hasSuffix(\"[DONE]\") { break }\n    if let text = try anthropic ? anthropicText(event) : chatCompletionsText(event) {\n        continuation.yield(text)\n    }\n}"
+    },
+    {
+      "file": "Gateway/ChatAPI.swift",
+      "caption": "The request is OpenAI's own Chat Completions body",
+      "code": "return try JSONSerialization.data(withJSONObject: [\n    \"model\": model.model,\n    \"messages\": messages,\n    \"stream\": true,\n    // The final event then reports token usage, which the gateway records.\n    \"stream_options\": [\"include_usage\": true],\n])"
+    }
+  ],
+  "image": [
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Create one client when the app starts",
+      "code": "client = AppAIGatewayClient(\n    appID: appID,\n    baseURL: baseURL,\n    // App Attest proves the request comes from your app on a real\n    // device. An API key works in the simulator, for testing.\n    authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall\n)"
+    },
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Send requests through your gateway, which signs each one for this app",
+      "code": "let (data, response) = try await client.withAuthorizedRequest(\n    provider: slug(model),\n    providerPath: path,\n    body: body,\n    contentType: contentType\n) { try await URLSession.shared.data(for: $0) }"
+    },
+    {
+      "file": "Gateway/ImageAPI.swift",
+      "caption": "Ask for an image in the provider's own format",
+      "code": "var body: [String: Any] = [\"model\": model.model, \"prompt\": prompt, \"n\": 1]\nswitch model.provider {\ncase \"openai\": // GPT Image always answers in base64.\n    body[\"size\"] = [\"square\": \"1024x1024\", \"portrait\": \"1024x1536\", \"landscape\": \"1536x1024\"][aspect.rawValue]\ncase \"bytedance\":\n    body[\"size\"] = [\"square\": \"2048x2048\", \"portrait\": \"1728x2304\", \"landscape\": \"2304x1728\"][aspect.rawValue]\n    body[\"response_format\"] = \"b64_json\"\ndefault:\n    body[\"response_format\"] = \"b64_json\"\n}\nlet data = try await post(model, path: path, body: JSONSerialization.data(withJSONObject: body))"
+    }
+  ],
+  "transcription": [
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Create one client when the app starts",
+      "code": "client = AppAIGatewayClient(\n    appID: appID,\n    baseURL: baseURL,\n    // App Attest proves the request comes from your app on a real\n    // device. An API key works in the simulator, for testing.\n    authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall\n)"
+    },
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Send requests through your gateway, which signs each one for this app",
+      "code": "let (data, response) = try await client.withAuthorizedRequest(\n    provider: slug(model),\n    providerPath: path,\n    body: body,\n    contentType: contentType\n) { try await URLSession.shared.data(for: $0) }"
+    },
+    {
+      "file": "Gateway/TranscriptionAPI.swift",
+      "caption": "Upload the recording as the provider expects",
+      "code": "var form = MultipartForm()\nform.append(\"model\", model.model)\nform.append(\"file\", fileName: fileName, contentType: \"audio/mp4\", data: audio)\n\n// Leave `response_format` at its JSON default: a plain-text answer\n// reports nothing to bill, and the gateway refuses it.\nlet data = try await post(model, path: path, body: form.body, contentType: form.contentType)\nstruct Transcription: Decodable { let text: String }\nreturn try JSONDecoder().decode(Transcription.self, from: data).text"
+    }
+  ],
+  "voice": [
+    {
+      "file": "Gateway/GatewayBackend.swift",
+      "caption": "Create one client when the app starts",
+      "code": "client = AppAIGatewayClient(\n    appID: appID,\n    baseURL: baseURL,\n    // App Attest proves the request comes from your app on a real\n    // device. An API key works in the simulator, for testing.\n    authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall\n)"
+    },
+    {
+      "file": "Gateway/RealtimeAPI.swift",
+      "caption": "Open the conversation's WebSocket through your gateway",
+      "code": "let request = try await client.authorizedRealtimeRequest(provider: slug(model), model: model.model)\nlet task = URLSession.shared.webSocketTask(with: request)\n// A single audio delta can be large; the gateway caps provider frames at 1 MiB.\ntask.maximumMessageSize = 1 << 20\ntask.resume()"
+    },
+    {
+      "file": "Store/VoiceConversation.swift",
+      "caption": "Stream the microphone, in OpenAI's own realtime events",
+      "code": "sender = Task {\n    for await pcm in audio.chunks {\n        try? await socket.send([\"type\": \"input_audio_buffer.append\", \"audio\": pcm.base64EncodedString()])\n    }\n}"
+    },
+    {
+      "file": "Store/VoiceConversation.swift",
+      "caption": "Play the answer as it arrives",
+      "code": "case \"response.output_audio.delta\":\n    // While you talk over an answer, what is still in flight of it\n    // belongs to the response the gateway is cancelling.\n    if phase != .hearing, let pcm = (event[\"delta\"] as? String).flatMap({ Data(base64Encoded: $0) }) {\n        audio.play(pcm)\n    }"
+    }
+  ]
+}

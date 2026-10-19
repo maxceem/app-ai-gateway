@@ -14,11 +14,13 @@ extension GatewayBackend {
     func voice(model: ModelChoice) async throws -> any RealtimeSocket {
         // Discovers the conversation's WebSocket URL and signs the handshake
         // for this one connection. Build a new one for every conversation.
+        // snippet voice: Open the conversation's WebSocket through your gateway
         let request = try await client.authorizedRealtimeRequest(provider: slug(model), model: model.model)
         let task = URLSession.shared.webSocketTask(with: request)
         // A single audio delta can be large; the gateway caps provider frames at 1 MiB.
         task.maximumMessageSize = 1 << 20
         task.resume()
+        // snippet end
         return WebSocket(task: task)
     }
 }

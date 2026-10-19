@@ -55,3 +55,15 @@ node --experimental-strip-types examples/ios/scripts/generate-catalog.ts
 ```
 
 The picker's **Other model…** row takes any model ID a provider serves.
+
+## The code sheet
+
+The **</>** button at the top right shows the code behind the screen's kind of
+chat. It is the app's own code, not a copy: `GatewayDemo/Resources/snippets.json`
+holds the lines between `// snippet <kinds>: <caption>` and `// snippet end`
+markers in the app's Swift files. Regenerate it after changing marked code, and
+check that it is current with `--check`:
+
+```sh
+node --experimental-strip-types examples/ios/scripts/generate-snippets.ts
+```
