@@ -170,3 +170,44 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     let total = Int(seconds.rounded())
     return String(format: "%d:%02d", total / 60, total % 60)
 }
+
+/// The shield of the "App [AI] Gateway" wordmark, as the website draws it: the
+/// same blue on both themes, at its own 0.82 aspect, with "AI" set a little
+/// above centre, since a shield's optical centre sits above its geometric one.
+struct BrandMark: View {
+    var height: CGFloat
+
+    var body: some View {
+        ZStack {
+            Shield()
+                .fill(Color(red: 0x23 / 255, green: 0x76 / 255, blue: 0xE4 / 255))
+            Text("AI")
+                .font(.system(size: height * 0.46, weight: .bold))
+                .tracking(height * 0.46 * 0.01)
+                .foregroundStyle(.white)
+                .offset(y: height * -0.06)
+        }
+        .frame(width: height * 0.82, height: height)
+        // Drops against the words' baseline, as on the website.
+        .offset(y: height * 0.04)
+        .accessibilityHidden(true)
+    }
+
+    /// The website's path, in its 82x100 box.
+    private struct Shield: Shape {
+        func path(in rect: CGRect) -> Path {
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: rect.minX + x * rect.width / 82, y: rect.minY + y * rect.height / 100)
+            }
+            var path = Path()
+            path.move(to: point(41, 0))
+            path.addLine(to: point(82, 12))
+            path.addLine(to: point(82, 52))
+            path.addCurve(to: point(41, 100), control1: point(82, 71), control2: point(69.7, 90.3))
+            path.addCurve(to: point(0, 52), control1: point(12.3, 90.3), control2: point(0, 71))
+            path.addLine(to: point(0, 12))
+            path.closeSubpath()
+            return path
+        }
+    }
+}

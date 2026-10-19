@@ -3,9 +3,6 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(Navigator.self) private var nav
     @Environment(HistoryStore.self) private var history
-    @State private var searching = false
-    @State private var query = ""
-    @FocusState private var searchFocused: Bool
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -28,9 +25,7 @@ struct SidebarView: View {
                         .padding(.bottom, 6)
 
                     if recents.isEmpty {
-                        Text(query.isEmpty
-                             ? "Your chats, images, transcripts and voice chats appear here. They stay on this device."
-                             : "Nothing matches “\(query)”.")
+                        Text("Your chats, images, transcripts and voice chats appear here. They stay on this device.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 6)
@@ -50,48 +45,19 @@ struct SidebarView: View {
                 .padding(.bottom, 100)
             }
             .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.immediately)
 
             bottomBar
         }
     }
 
     private var recents: [HistoryItem] {
-        let items = history.items.sorted { $0.updatedAt > $1.updatedAt }
-        guard !query.isEmpty else { return items }
-        return items.filter { item in
-            item.title.localizedCaseInsensitiveContains(query)
-                || item.entries.contains { $0.text.localizedCaseInsensitiveContains(query) }
-        }
+        history.items.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    @ViewBuilder private var header: some View {
-        HStack(spacing: 12) {
-            if searching {
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search", text: $query)
-                        .focused($searchFocused)
-                        .submitLabel(.search)
-                }
-                .padding(.horizontal, 16)
-                .frame(height: 50)
-                .background(Theme.raised, in: Capsule())
-                .floating()
-            } else {
-                Text("App AI Gateway Demo")
-                    .font(.system(size: 30, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                Spacer()
-            }
-            CircleButton(searching ? "xmark" : "magnifyingglass") {
-                withAnimation(.snappy) {
-                    searching.toggle()
-                    query = ""
-                }
-                searchFocused = searching
-            }
+    private var header: some View {
+        // The largest size the lockup fits the sidebar at.
+        ViewThatFits(in: .horizontal) {
+            ForEach([26, 23, 20, 17] as [CGFloat], id: \.self) { Wordmark(size: $0) }
         }
         .frame(height: 64)
     }
@@ -150,5 +116,32 @@ private struct RecentRow: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, -12)
+    }
+}
+
+/// "App [AI] Gateway | Demo", as the website and the docs write it: the shield
+/// stands in for "AI", and the suffix is set apart in a lighter weight.
+private struct Wordmark: View {
+    var size: CGFloat
+
+    var body: some View {
+        HStack(spacing: size * 0.3) {
+            Text("App")
+            BrandMark(height: size * 1.4)
+            Text("Gateway")
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1, height: size * 1.1)
+            Text("Demo")
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: size, weight: .bold))
+        .tracking(-size * 0.015)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("App AI Gateway Demo")
+        .accessibilityAddTraits(.isHeader)
     }
 }
