@@ -128,7 +128,8 @@ Each feature starts on an OpenAI model:
 - **New image** draws with `gpt-image-2`.
 - **New transcription** records a voice note and sends it to `gpt-transcribe`.
 - **New voice chat** talks with `gpt-realtime`: tap the microphone and speak,
-  and it answers aloud once you pause. Talk over an answer to interrupt it.
+  and it answers aloud once you pause. Talk over an answer to interrupt it,
+  and say you're done to have it say goodbye and hang up.
   The whole conversation is one WebSocket, and each answer counts as one
   request. A finished conversation can't be picked up again: tapping the
   microphone in it starts a new voice chat.

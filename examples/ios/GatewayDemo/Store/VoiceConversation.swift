@@ -139,7 +139,14 @@ final class VoiceConversation {
                 }
 
             case "response.done":
-                finishAnswer(event["response"] as? [String: Any], in: id)
+                let response = event["response"] as? [String: Any]
+                finishAnswer(response, in: id)
+                if Self.endsConversation(response) {
+                    // Let the goodbye finish playing, then hang up as the X button would.
+                    while audio.isPlaying { try await Task.sleep(for: .milliseconds(100)) }
+                    socket.close()
+                    return
+                }
 
             case "error":
                 // Talking over an answer just as it finishes sends a cancel that
@@ -177,14 +184,28 @@ final class VoiceConversation {
         }
     }
 
+    /// Whether the model asked to end the conversation, through the one tool it has.
+    private static func endsConversation(_ response: [String: Any]?) -> Bool {
+        let output = response?["output"] as? [[String: Any]] ?? []
+        return output.contains { $0["type"] as? String == "function_call" && $0["name"] as? String == "end_conversation" }
+    }
+
     /// Server voice detection, with the gateway answering each turn and
     /// stopping an answer you talk over. Input transcription is off: the
     /// gateway does not offer it yet, so your turns show as their length.
+    /// The one tool runs here in the app: the model calls it to hang up.
     private static let configuration: [String: Any] = [
         "type": "session.update",
         "session": [
             "type": "realtime",
-            "instructions": "You are a friendly voice assistant in a demo of App AI Gateway. Keep answers short and conversational.",
+            "instructions": "You are a friendly voice assistant in a demo of App AI Gateway. Keep answers short and conversational. "
+                + "When the user wants to stop talking, say a short goodbye and call end_conversation.",
+            "tools": [[
+                "type": "function",
+                "name": "end_conversation",
+                "description": "Ends this voice conversation. Call it when the user says they are done, such as \"that's it\" or \"let's stop\".",
+                "parameters": ["type": "object", "properties": [String: Any]()],
+            ]],
             "output_modalities": ["audio"],
             "audio": [
                 "input": [
