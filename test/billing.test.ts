@@ -144,6 +144,7 @@ describe("billing gateway", () => {
       billing: false,
       registrationOpen: false,
       googleAuth: false,
+      emailVerification: false,
     });
   });
 

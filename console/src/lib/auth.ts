@@ -18,6 +18,11 @@ export interface SignInInput {
 
 export interface SignUpInput extends SignInInput {
   name: string;
+  /**
+   * The console path the verification email continues at, on a deployment
+   * that verifies addresses. Relative, which is all the gateway accepts.
+   */
+  callbackURL?: string;
 }
 
 /** Better Auth's endpoints all take a JSON body and answer with one. */

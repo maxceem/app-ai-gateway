@@ -1,0 +1,163 @@
+---
+title: Run the demo app on your iPhone
+description: Build the open-source demo app and run it on your iPhone through your own gateway app, with chat, images and voice notes from one OpenAI key and no sign-up.
+---
+
+The demo app is a small SwiftUI app that chats, generates images and turns
+voice notes into text through App AI Gateway, from a real iPhone with App
+Attest, the way your own app would. Its source is in
+[`examples/ios`](https://github.com/maxceem/app-ai-gateway/tree/main/examples/ios).
+
+This guide takes about ten minutes: a gateway app from the command line, then
+the demo built onto your phone. You do not need to sign up first. The CLI
+starts a temporary account, and you can claim it at the end to keep it.
+
+The steps work the same for a person at a terminal and for an AI agent. Where
+they differ, both ways are given. Agents should also read
+[Notes for AI agents](#notes-for-ai-agents).
+
+## What you need
+
+- A Mac with Xcode 26, signed in to your Apple ID under **Xcode → Settings →
+  Accounts**. Xcode creates the signing profile App Attest needs, and it
+  cannot without the account.
+- An iPhone on iOS 18 or later with **Developer Mode** on, connected to the
+  Mac by cable or on the same network.
+- Your Apple **Team ID**, ten characters such as `ABCDE12345`. It is on your
+  Apple Developer **Membership** page, and in your development certificate:
+  `security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject`
+  prints it as `OU=`.
+- An OpenAI API key. OpenAI serves all three things the demo does, so a
+  single key lets you try chat, images and transcription.
+- Node.js 22.19 or later, for the CLI.
+
+## 1. Install the CLI
+
+```sh
+npm install -g @maxceem/agw
+agw deployment status
+```
+
+If you already have an account, run `agw account login` now so the app
+lands in it. Otherwise the next step starts a new temporary one.
+
+## 2. Add your OpenAI key
+
+At a terminal, enter the key in a hidden prompt:
+
+```sh
+agw provider add --type openai --name "OpenAI" --key-prompt
+```
+
+An agent hands this step to you instead, so the key never passes through it:
+
+```sh
+agw provider add --type openai --name "OpenAI" --browser --no-open --json
+```
+
+Open the URL it returns, check the provider shown, and paste the key there.
+The agent then finishes with `agw operation wait <id> --json`.
+
+`agw provider list` shows the provider with the slug `openai`.
+
+## 3. Create the app for the demo
+
+Choose a bundle ID that is yours, such as `com.yourname.GatewayDemo`, and
+create an iOS app with it and your Team ID:
+
+```sh
+agw app add --type ios --name "Gateway Demo" \
+  --team-id ABCDE12345 \
+  --bundle-id com.yourname.GatewayDemo \
+  --attest-environments development
+```
+
+The output names the app's ID, such as `gateway-demo-a1b2c3d4e5f6`; with
+`--json` it is `result.app.id`. The app accepts App Attest from development
+builds, which is what Xcode installs, and can reach every provider you add.
+
+## 4. Get the code
+
+```sh
+git clone https://github.com/maxceem/app-ai-gateway.git
+cd app-ai-gateway/examples/ios
+```
+
+## 5. Build and run it on your iPhone
+
+**In Xcode.** Open `GatewayDemo.xcodeproj`. Under the target's **Signing &
+Capabilities**, choose your team and set **Bundle Identifier** to the one
+from step 3. Pick your iPhone and press **Run**. In the app, open the sidebar,
+then **Settings**: enter the app ID, and turn off **Simulate responses**.
+
+**From a terminal.** Find the iPhone's ID, the long value in parentheses:
+
+```sh
+xcrun xctrace list devices
+```
+
+Build, install and launch, with your Team ID, bundle ID, app ID and iPhone ID:
+
+```sh
+xcodebuild -project GatewayDemo.xcodeproj -scheme GatewayDemo \
+  -configuration Debug -destination 'id=IPHONE_ID' -derivedDataPath build \
+  DEVELOPMENT_TEAM=ABCDE12345 PRODUCT_BUNDLE_IDENTIFIER=com.yourname.GatewayDemo \
+  -allowProvisioningUpdates build
+
+xcrun devicectl device install app --device IPHONE_ID \
+  build/Build/Products/Debug-iphoneos/GatewayDemo.app
+
+xcrun devicectl device process launch --device IPHONE_ID --terminate-existing \
+  com.yourname.GatewayDemo -- \
+  -GatewayURL https://api.appaigateway.com -AppID APP_ID -Simulated NO
+```
+
+The arguments after `--` fill in the app's settings, as if you had typed them
+in **Settings**. The app keeps them, so later launches from the home screen
+need nothing. The phone must be unlocked for the launch.
+
+## 6. Try it
+
+Each feature starts on an OpenAI model:
+
+- **New chat** streams an answer from `gpt-6-sol`.
+- **New image** draws with `gpt-image-2`.
+- **New transcription** records a voice note and sends it to `gpt-transcribe`.
+
+The model menu at the top switches models. The first request takes a moment
+longer, while the phone registers its App Attest key with the gateway. See
+what each request did with `agw usage show --app APP_ID`, or on the app's
+**Usage** page in the console.
+
+To try another provider, add its key as in step 2, then turn it on in the
+app's **Settings → Providers**.
+
+## If something fails
+
+| What you see | What to do |
+| --- | --- |
+| `No Accounts`, or a profile that "doesn't include the App Attest capability" | Sign in to Xcode under **Settings → Accounts**, then build again. |
+| The launch says the device is locked | Unlock the iPhone and run the launch command again. |
+| `attest_failed` in the app | The Team ID or bundle ID of the build differs from step 3. Build with the same values. |
+| `provider_not_configured` | The provider is turned on in the app but not added in step 2. Add it, or turn it off in **Settings → Providers**. |
+| `model_not_allowed` or `path_not_allowed` | The app's provider access was narrowed. `agw app show APP_ID` shows what it allows. |
+
+The full list of codes is in [Errors and limits](/integrate/errors).
+
+## Keep the account
+
+A temporary account expires unless you claim it. `agw account status`
+shows when. To keep it, run `agw account claim`, open the URL in your browser,
+and create your sign-in there. The demo app keeps working throughout.
+
+## Notes for AI agents
+
+- Before you start, ask the person for their Team ID (or read it with the
+  certificate command above), a bundle ID they own, and which iPhone to use.
+- Never ask for a provider key in the conversation or put it in a command.
+  Use the browser handoff in step 2 and wait for the person to finish it.
+- Some steps are the person's alone: signing in to Xcode, turning on Developer
+  Mode, unlocking the phone, and claiming the account. Ask for each when you
+  reach it.
+- Run `agw account status --json` before step 2. If an account is already
+  connected and the person wanted a new one, stop and ask.

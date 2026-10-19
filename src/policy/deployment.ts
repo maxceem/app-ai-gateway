@@ -1,9 +1,13 @@
 import type { BillingRuntime } from "../billing/contract";
+import { emailSetup } from "../email/sender";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { ACCOUNT_RECOVERY_MS } from "./accounts";
 
 export type DeploymentMode = "cloud" | "self_hosted";
+
+/** See {@link Deployment.emailVerification}. */
+export type EmailVerification = "required" | "off";
 
 /** Everything a hosted deployment does differently from a self-hosted one. */
 export interface DeploymentRules {
@@ -77,6 +81,17 @@ export interface Deployment {
   readonly registrationEmails: ReadonlySet<string>;
   /** `CLI_BOOTSTRAP_TOKEN_DIGEST`, or null where the deployment has none. */
   readonly bootstrapTokenDigest: string | null;
+  /**
+   * Whether a person's email address has to be verified: `required` wherever
+   * the deployment is configured to send email (Cloudflare Email Service or
+   * SMTP, see `src/email/sender.ts`), on a hosted deployment and a self-host
+   * alike — a configuration that cannot send yet included, so a typo never
+   * quietly turns verification off — and `off` everywhere else. Where it is required, a
+   * claimed account serves application traffic only once an owner has
+   * verified their address, and a claim completes only for a person who has.
+   * Nothing else waits for it: an account is configured in full either way.
+   */
+  readonly emailVerification: EmailVerification;
   /**
    * Public identity and console origin, validated and memoized.
    *
@@ -286,6 +301,7 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
     billing,
     registrationEmails: registrationEmails(env.ALLOWED_REGISTRATION_EMAILS),
     bootstrapTokenDigest: env.CLI_BOOTSTRAP_TOKEN_DIGEST?.trim().toLowerCase() || null,
+    emailVerification: emailSetup(env).state === "off" ? "off" : "required",
     identity(): DeploymentIdentity {
       identity ??= resolveIdentity(env, requestUrl);
       return identity;

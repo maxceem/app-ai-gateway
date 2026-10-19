@@ -971,14 +971,17 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "check_app",
     title: "Check whether an app is ready",
     description:
-      "Checks whether an app can serve requests, without sending any: validates its stored configuration, lists every provider its routing names with that provider's status, and reports ready when the app is active and at least one of them is active. It does not exercise App Attest, issuer sign-in, entitlements or the upstream credentials, and says so in limitations.",
+      "Checks whether an app can serve requests, without sending any: validates its stored configuration, lists every provider its routing names with that provider's status, and reports ready when the app is active, at least one of them is active and the account would serve its requests (accountRefusal names the error code its clients would get otherwise). It does not exercise App Attest, issuer sign-in, entitlements or the upstream credentials, and says so in limitations.",
     operation: "checkApp",
     summary: (result) => {
       const active = result.providers.filter((provider) => provider.status === "active").length;
       const standing = `${result.status}, and ${active} of ${plural(result.providers.length, "provider")} it names ${active === 1 ? "is" : "are"} active`;
+      const refusal = result.accountRefusal === null
+        ? ""
+        : ` Its account refuses requests with ${result.accountRefusal}: ${NEXT_ACTIONS[result.accountRefusal] ?? "see the error reference."}`;
       return result.ready
         ? `App ${result.appId} is ready: it is ${standing}. No request was sent.`
-        : `App ${result.appId} is not ready: it is ${standing}. No request was sent.`;
+        : `App ${result.appId} is not ready: it is ${standing}.${refusal} No request was sent.`;
     },
   }),
   tool({
@@ -1380,6 +1383,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   auth_required: "Reconnect with a valid management key.",
   unclaimed_access_expired: "Call claim_account and give a person the URL to open in their browser; claiming lifts the limit.",
   account_expired: "This account passed its recovery deadline and can no longer be used.",
+  email_unverified: "Ask the account's owner to open the link in the verification email sent to their address, or to send a new one from the console. Requests are served once they do; nothing needs to be reconfigured.",
   rate_limited: "Wait a minute and call the tool again.",
   not_found: "Check the id and call the matching list tool.",
   operation_not_found: "Check the id: get_operation takes the id a change tool answered with, and sees only your account's operations.",

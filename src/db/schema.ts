@@ -100,6 +100,26 @@ export const {
   oauthToken: mgmtOauthToken,
 } = mgmtAuthTables;
 
+/**
+ * An account that may serve application traffic whatever its owner's email.
+ *
+ * Where the deployment sends email, a claimed account serves traffic once an
+ * owner has verified their address; a row here is the other way in. Written
+ * for every account that existed before verification did, and for every one
+ * created or claimed while the deployment sends no email, so adding a sender
+ * later never stops traffic that already flowed. Rows are only ever inserted,
+ * and deleted only with their account, which cascades to them: access this
+ * grants is never withdrawn.
+ *
+ * Its own table rather than a column, because `mgmt_organization` is cf-auth's.
+ */
+export const accountActivation = sqliteTable("account_activation", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
+  activatedAt: text("activated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 export const app = sqliteTable(
   "app",
   {

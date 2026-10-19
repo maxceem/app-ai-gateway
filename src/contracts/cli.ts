@@ -155,6 +155,12 @@ export const CliApprovalRefusalSchema = z.enum([
    * page can fix that; an owner has to add them to an account first.
    */
   "no_eligible_organization",
+  /**
+   * A claim's approver has not verified their email address, on a deployment
+   * that verifies them. The page offers to send the link; the claim can be
+   * approved once it is opened.
+   */
+  "verification_required",
 ]);
 /** Who this browser would approve as: the interactive human holding the session. */
 export const CliViewerSchema = z.object({

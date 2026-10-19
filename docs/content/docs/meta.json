@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "quickstart",
+    "demo-ios-app",
     "how-it-works",
     "providers",
     "applications",

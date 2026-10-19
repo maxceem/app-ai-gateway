@@ -45,7 +45,7 @@ function hostedEnv(): Env {
 }
 function generation(bootstrap: Bootstrap, stage: Generation['stage'] = 'admitted'): Generation {
   const id = crypto.randomUUID(); const at = Date.now();
-  return { id, at, ordinal: 1, stage, observation: null, responseId: null, outputBytes: 0, price: { input: 4, output: 16, audio_input: 32, audio_output: 64, cached_input: .4, cached_audio_input: .4 },
+  return { id, at, ordinal: 1, stage, observation: null, responseId: null, outputBytes: 0, price: { kind: 'realtime', input: 4, output: 16, audio_input: 32, audio_output: 64, cached_input: .4, cached_audio_input: .4 },
     event: buildUsageEvent({ organizationId: bootstrap.organizationId, identity: bootstrap.identity, attribution: testAttribution({ model: 'gpt-realtime', apiStyle: 'other' }),
       appVersion: null, status: 'ok', latencyMs: 0, contentType: 'application/json', observed: null, eventId: id, createdAt: new Date(at).toISOString(),
       realtime: { sessionId: bootstrap.sessionId, generationId: id, protocol: 'openai_realtime', providerResponseId: null, completionStatus: 'interrupted' } }) };

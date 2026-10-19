@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   curlSnippet,
+  endpointRequest,
   exampleNotes,
   firstRequest,
   swiftSignsInUsers,
@@ -27,7 +28,16 @@ const provider = (type: ExampleProvider["type"] = "openai"): ExampleProvider => 
   providerGatewayId: null,
   pricing: null,
 });
-const prices = { openai: { "text-model": { input: 1, output: 2 } } };
+const prices = {
+  // First on purpose: a catalog that opens on an embedding model must still
+  // give a text example.
+  openai: {
+    "embedding-model": { kind: "embedding" as const },
+    "text-model": { kind: "text" as const },
+    "image-model": { kind: "image" as const },
+    "transcribe-model": { kind: "transcription" as const },
+  },
+};
 
 describe("first request examples", () => {
   it("uses the configured slug and catalog model for an unrestricted policy", () => {
@@ -69,10 +79,35 @@ describe("first request examples", () => {
       gaps: ["model"],
     });
   });
-  it("keeps an audio-only app's own path and stands the body in", () => {
+  it("keeps an audio-only app's own path and uploads a recording to it", () => {
     const example = firstRequest(routing({ allowed_paths: ["v1/audio/transcriptions", "v1/*"] }), [provider()], prices);
-    expect(example).toMatchObject({ target: { path: "v1/audio/transcriptions" }, body: null, gaps: ["body"] });
-    expect(curlSnippet({ baseUrl: "https://gw.test", appId: "app-1", example })).toContain("-d 'REQUEST_BODY'");
+    expect(example).toMatchObject({ target: { path: "v1/audio/transcriptions" }, body: null, form: { file: "@recording.m4a", model: "transcribe-model" } });
+    const curl = curlSnippet({ baseUrl: "https://gw.test", appId: "app-1", example });
+    expect(curl).toContain("-F 'file=@recording.m4a'");
+    expect(curl).not.toContain("Content-Type");
+    expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example }))
+      .toContain('contentType: "multipart/form-data; boundary=\\(boundary)"');
+  });
+  it("names a model of the kind each allowed path carries", () => {
+    expect(firstRequest(routing({ allowed_paths: ["v1/embeddings"] }), [provider()], prices)).toMatchObject({
+      target: { path: "v1/embeddings" },
+      body: { model: "embedding-model", input: expect.any(String) },
+      gaps: [],
+    });
+    // An allowlist with nothing the path carries stands a model in, rather
+    // than sending a text model to the embeddings API.
+    const example = firstRequest(
+      routing({ allowed_paths: ["v1/embeddings"], allowed_models: ["text-model"] }),
+      [provider()],
+      prices,
+    );
+    expect(example).toMatchObject({ body: { model: "MODEL" }, gaps: ["model"] });
+  });
+  it("calls an app that allows only image models on the image API", () => {
+    expect(firstRequest(routing({ allowed_models: ["image-model"] }), [provider()], prices)).toMatchObject({
+      target: { path: "v1/images/generations" },
+      body: { model: "image-model", prompt: "A lighthouse at dawn." },
+    });
   });
 
   it("writes both snippets against one example", () => {
@@ -155,5 +190,22 @@ describe("which provider instances an app can reach", () => {
     expect(reachableProviders(selected, instances).map((i) => i.slug)).toEqual(["openai"]);
     expect(providerPolicyFor(selected, "other")).toBeUndefined();
     expect(providerPolicyFor(selected, "constructor")).toBeUndefined();
+  });
+});
+
+describe("custom endpoint examples", () => {
+  it("sends the body its style and kind take, with no model", () => {
+    expect(endpointRequest("draw", { api_style: "image_generation" })).toMatchObject({
+      target: { endpoint: "draw" },
+      body: { prompt: "A lighthouse at dawn." },
+      gaps: [],
+    });
+    expect(endpointRequest("voice", { api_style: "gemini_native", kind: "speech" }).body).toEqual({
+      contents: [{ parts: [{ text: "Say hello." }] }],
+      generationConfig: { responseModalities: ["AUDIO"] },
+    });
+    expect(endpointRequest("chat", { api_style: "anthropic_messages" })).toMatchObject({ anthropic: true, body: { max_tokens: 128 } });
+    expect(endpointRequest("embed", { api_style: "gemini_embedding" }).body).toEqual({ content: { parts: [{ text: "Hello." }] } });
+    expect(endpointRequest("listen", { api_style: "audio_transcription" })).toMatchObject({ body: null, form: { file: "@recording.m4a" }, gaps: [] });
   });
 });

@@ -185,11 +185,11 @@
   },
   {
     "key": "groq/llama-3.1-8b-instant: not added",
-    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+    "reason": "Unsupported public pricing: no public price, the page says to contact sales"
   },
   {
     "key": "groq/llama-3.3-70b-versatile: not added",
-    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+    "reason": "Unsupported public pricing: no public price, the page says to contact sales"
   },
   {
     "key": "groq/canopylabs/orpheus-arabic-saudi: not added",
@@ -209,7 +209,7 @@
   },
   {
     "key": "groq/minimaxai/minimax-m2.7: not added",
-    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+    "reason": "Unsupported public pricing: no public price, the page says to contact sales"
   },
   {
     "key": "groq/openai/gpt-oss-safeguard-20b: not added",
@@ -350,5 +350,9 @@
   {
     "key": "together/prunaai/p-image-ideogram: not added",
     "reason": "Unsupported public pricing: image models, prunaai/p-image-ideogram: billed per image, which the catalog cannot price"
+  },
+  {
+    "key": "groq/meta-models/muse-spark-open: not added",
+    "reason": "Unsupported public pricing: no public price, the page says to contact sales"
   }
 ]

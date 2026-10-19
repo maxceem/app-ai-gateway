@@ -16,6 +16,7 @@ import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
 import {
   expiredUnclaimedAccountsCondition,
+  accountActivatedCondition,
   humanOwnerCondition,
 } from "../policy/sql";
 
@@ -26,16 +27,19 @@ import {
  *
  * What makes that safe is the direction the gated fields can move, not how
  * rarely they move. Neither instant in a row is ever rewritten to a later one:
- * `created_at` is fixed, and `expires_at` only goes from a deadline to `NULL`.
- * So every transition that widens access is a claim — the CLI handoff, or the
- * recovery script promoting an owner, which clears the deadline for the same
- * reason — and every other write that touches this row, such as the scheduled
+ * `created_at` is fixed, and `expires_at` only goes from a deadline to `NULL`;
+ * `activated` only goes from false to true, since an owner's verified email is
+ * never unverified and an `account_activation` row is never removed from a
+ * live account. So every transition that widens access is a claim — the CLI
+ * handoff, or the recovery script promoting an owner, which clears the
+ * deadline for the same reason — or an activation, and every other write that
+ * touches this row, such as the scheduled
  * cleanup deleting an account already past its deadline, either narrows access
  * or leaves the gated fields alone. A stale entry can therefore refuse for a
  * moment longer than necessary, and can never admit for a moment longer than it
  * should.
  *
- * The isolate that serves the claim drops its own entry
+ * The isolate that serves a claim or a verification drops its own entry
  * ({@link invalidateAccountLifecycle}); every other isolate converges within
  * the TTL. Nothing here decides the claim itself: that is settled by the
  * guarded D1 writes in the handoff.
@@ -69,22 +73,23 @@ export async function accountLifecycle(
   // intentional lifecycle staleness window.
   const row = await prepared(env.DB, sql`SELECT o.id, o.name, o.created_at AS createdAt,
     ${humanOwnerCondition(sql.raw("o.id"))} AS claimed,
-    o.expires_at AS expiresAt
+    o.expires_at AS expiresAt,
+    ${accountActivatedCondition(sql.raw("o.id"))} AS activated
     FROM mgmt_organization o WHERE o.id = ${id}`).first<AccountLifecycle>();
   if (!row) throw new GatewayError(404, "not_found", "Account was not found");
-  const value = { ...row, claimed: Boolean(row.claimed) };
+  const value = { ...row, claimed: Boolean(row.claimed), activated: Boolean(row.activated) };
   accountLifecycleCache.set(id, value);
   return value;
 }
 
 /**
- * The one gate on an account's own deadlines.
+ * The one gate on an account's own deadlines, and on its owner's email.
  *
  * The row is read through {@link accountLifecycle}'s short-lived cache, but no
  * decision is: both deadlines are compared against the current instant on every
  * call, so a warm isolate stops an account on the same second a cold one would.
  * What a cached row can cost is the other direction — up to one TTL of refusals
- * after a claim has lifted them.
+ * after a claim or a verification has lifted them.
  */
 export async function assertAccountAccess(
   deployment: Deployment,
@@ -94,7 +99,7 @@ export async function assertAccountAccess(
 ): Promise<AccountLifecycle> {
   const account = await accountLifecycle(env, id);
   const denial = accountAccessDenial(
-    deployment.rules,
+    deployment,
     account,
     mode,
     Date.now(),
@@ -113,6 +118,14 @@ export async function assertAccountAccess(
       "This unclaimed account's free access has ended; claim your account to continue",
     );
   }
+  if (denial === "email_unverified") {
+    throw new GatewayError(
+      403,
+      "email_unverified",
+      "This account's owner has not verified their email address yet. Open the link in the "
+        + "verification email, or send a new one from the console, and requests will be served.",
+    );
+  }
   return account;
 }
 
@@ -120,7 +133,7 @@ export async function assertAccountAccess(
  * Accounts one cleanup pass deletes.
  *
  * The batch is not what bounds a night's work — the loop below is — but a pass
- * costs the same nineteen statements whether it collects one account or two
+ * costs the same twenty statements whether it collects one account or two
  * hundred, so collecting one at a time would make the query allowance, not the
  * database, the thing that decides how fast an expired backlog drains. The
  * ceiling on the batch is transaction size: every statement in a pass is one
@@ -156,6 +169,7 @@ const ORGANIZATION_SCOPED_TABLES = [
   "provider_gateway",
   "mgmt_api_key",
   "mgmt_organization_user",
+  "account_activation",
 ] as const;
 
 /**

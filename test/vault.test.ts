@@ -159,6 +159,7 @@ describe("secret vault validation", () => {
       ok: true,
       service: "app-ai-gateway",
       vault: "misconfigured",
+      email: "off",
       buildId: "development",
       ready: false,
       backendContract: 1,

@@ -48,7 +48,7 @@ if (args[0] === 'secret') {
 }
 if (args[0] === 'd1') {
   const db = new DatabaseSync(process.env.FAKE_DB);
-  if (args[1] === 'migrations') db.exec(readFileSync('migrations/0008_realtime_releases.sql','utf8'));
+  if (args[1] === 'migrations') db.exec(readFileSync('migrations/0009_realtime_releases.sql','utf8'));
   else { const sql = args[args.indexOf('--command')+1]; let results = []; if (sql.includes(';') || sql.startsWith('CREATE')) db.exec(sql); else results = db.prepare(sql).all(); console.log(JSON.stringify([{ success: true, results }])); }
   db.close();
 }

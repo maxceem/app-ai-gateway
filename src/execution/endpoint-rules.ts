@@ -1,6 +1,6 @@
-import { supportsEndpointStyle } from "../providers/capability-matrix";
+import { publishesStylePaths, supportsEndpointStyle } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { isBillable } from "../usage/pricing";
+import { catalogKind, isBillable } from "../usage/pricing";
 import {
   requireProvider,
   resolveProvider,
@@ -22,8 +22,9 @@ import {
   parseForm,
 } from "../providers/request-body";
 import type { AppRecord, EndpointTarget } from "../core/types";
-import type { EndpointApiStyle } from "../shared/capabilities";
-import type { EndpointConfig } from "../shared/app-config";
+import { API_STYLE_PATHS, type EndpointApiStyle, type ProviderRoute } from "../shared/capabilities";
+import { endpointKind, type EndpointConfig } from "../shared/app-config";
+import { servesKind } from "../shared/model-kinds";
 
 /**
  * A custom endpoint is fully described by server configuration, so the gateway
@@ -40,28 +41,65 @@ export interface PreparedEndpointRequest {
   json: Record<string, unknown> | null;
   /** Present for a multipart style; the model field is set per attempt. */
   form: FormData | null;
+  /**
+   * Whether the client asked for a stream the way an API that streams by URL
+   * spells it (Gemini's `alt=sse`), which picks the streaming method upstream.
+   * Always false for an API that streams by a body field instead.
+   */
+  urlStream: boolean;
 }
 
 /**
- * The provider's own path a custom endpoint of this style posts to, from the
- * descriptor that declares it. The key set of `endpointPaths` *is* the type's
- * endpoint capability, so a missing entry means the capability matrix already
- * refused this pairing: reaching here is a bug in this deployment, not a
- * caller's mistake.
+ * The path template a custom endpoint of this style posts to on one route: the
+ * style's one path where the route publishes a layout of its own, and the
+ * provider's own path from the descriptor that declares it everywhere else.
+ * The key set of `endpointPaths` *is* the type's endpoint capability, and a
+ * gateway only narrows it, so a missing path means the capability matrix
+ * already refused this pairing: reaching here is a bug in this deployment, not
+ * a caller's mistake.
  */
 export function endpointProviderPath(
   style: EndpointApiStyle,
   provider: ProviderType,
+  route: ProviderRoute = "direct",
 ): string {
-  const path = providerDescriptor(provider).endpointPaths?.[style];
+  const path = publishesStylePaths(route, provider)
+    ? API_STYLE_PATHS[style as keyof typeof API_STYLE_PATHS]
+    : providerDescriptor(provider).endpointPaths?.[style];
   if (path === undefined) {
     throw new GatewayError(
       500,
       "internal_error",
-      `Provider type ${provider} composes no ${style} endpoint`,
+      `Provider type ${provider} composes no ${style} endpoint on ${route}`,
     );
   }
   return path;
+}
+
+/**
+ * Where one attempt posts: the route's path with the wire model in place of a
+ * `{model}` segment, switched to the streaming method where the client asked
+ * for a stream by URL, and the query that method takes. `modelInPath` says the
+ * API names its model in the URL, as Gemini's methods do, and so takes none in
+ * the body.
+ */
+function attemptTarget(
+  prepared: PreparedEndpointRequest,
+  resolved: ResolvedProvider,
+  wireModel: string,
+): { path: string; query: string; modelInPath: boolean } {
+  const template = endpointProviderPath(prepared.endpoint.api_style, resolved.type, resolved.route.kind);
+  const modelInPath = template.includes("{model}");
+  const path = template.replace("{model}", encodeURIComponent(wireModel));
+  const streaming = PROTOCOLS[prepared.endpoint.api_style].urlStreaming;
+  if (!prepared.urlStream || !streaming) return { path, query: "", modelInPath };
+  return { path: path.replace(streaming.from, streaming.to), query: `?${streaming.query}`, modelInPath };
+}
+
+/** Whether the client's own query asks for every parameter `query` names. */
+function asksFor(request: Request, query: string): boolean {
+  const asked = new URL(request.url).searchParams;
+  return [...new URLSearchParams(query)].every(([name, value]) => asked.get(name) === value);
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -105,6 +143,7 @@ export function endpointAttemptRequest(
   // The configured model is canonical, so it is what gets priced and recorded;
   // only the body the upstream reads carries the route's namespace.
   const wireModel = routeWireModel(route, provider, target.model);
+  const { query, modelInPath } = attemptTarget(prepared, resolved, wireModel);
   let body: BodyInit;
   if (prepared.form) {
     const form = formWithModel(prepared.form, wireModel);
@@ -113,7 +152,9 @@ export function endpointAttemptRequest(
     if (format && format !== "refuse") form.set("response_format", format.send);
     body = form;
   } else {
-    const json = { ...prepared.json, model: wireModel };
+    const json: Record<string, unknown> = { ...prepared.json };
+    if (modelInPath) delete json.model;
+    else json.model = wireModel;
     // The endpoint's own style is the contract, so it names the protocol
     // rather than anything sniffed off a path.
     const protocol = PROTOCOLS[prepared.endpoint.api_style];
@@ -130,8 +171,9 @@ export function endpointAttemptRequest(
     body,
     headers: prepared.headers,
     // The endpoint URL is a gateway contract, not a provider path, so client
-    // query parameters are never forwarded upstream.
-    query: "",
+    // query parameters are never forwarded upstream; only a streaming method's
+    // own query is, and only where the client asked for that stream.
+    query,
   };
 }
 
@@ -193,6 +235,20 @@ export async function resolveEndpointAttempts(
       }
       continue;
     }
+    // A model of another kind is configuration that drifted from the catalog;
+    // the save that wrote it checked, so a fallback is simply dropped.
+    const kind = endpointKind(endpoint);
+    const modelKind = catalogKind(entry.type, target.model, entry.pricing);
+    if (!servesKind(modelKind, kind)) {
+      if (primary) {
+        throw new GatewayError(
+          502,
+          "provider_unavailable",
+          `Model ${target.model} is a ${modelKind} model, which a ${kind} endpoint cannot serve`,
+        );
+      }
+      continue;
+    }
     // A transcription this target would answer in plain text cannot be priced,
     // which is the same as no price at all.
     if (prepared.form && meteredTranscriptionFormat(entry.type, prepared.form) === "refuse") {
@@ -220,9 +276,10 @@ export async function resolveEndpointAttempts(
     const resolved = resolvedProviders.get(target.provider);
     if (!resolved) throw new Error(`Resolved provider missing for ${target.provider}`);
     const buildRequest = () => endpointAttemptRequest(prepared, target, resolved);
+    const wireModel = routeWireModel(resolved.route, resolved.type, target.model);
     return {
       resolved,
-      providerPath: endpointProviderPath(endpoint.api_style, resolved.type),
+      providerPath: attemptTarget(prepared, resolved, wireModel).path,
       model: target.model,
       // The endpoint's own style settles the API, so the answer is read by the
       // reader for the contract this gateway composed rather than a guess.
@@ -251,8 +308,13 @@ export async function prepareEndpointRequest(input: {
   const bytes = await input.body();
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
+  const protocol = PROTOCOLS[input.endpoint.api_style];
+  for (const [name, value] of Object.entries(protocol.requiredHeaders ?? {})) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  const urlStream = protocol.urlStreaming !== undefined && asksFor(input.request, protocol.urlStreaming.query);
 
-  if (PROTOCOLS[input.endpoint.api_style].body === "multipart") {
+  if (protocol.body === "multipart") {
     if (!isMultipart(contentType)) {
       throw new GatewayError(
         400,
@@ -273,6 +335,7 @@ export async function prepareEndpointRequest(input: {
       headers,
       json: null,
       form,
+      urlStream,
     };
   }
 
@@ -286,5 +349,6 @@ export async function prepareEndpointRequest(input: {
     headers,
     json: merged,
     form: null,
+    urlStream,
   };
 }

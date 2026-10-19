@@ -8,7 +8,8 @@
  * instance of — plus the labels and copy that go around them.
  */
 
-import type { EndpointApiStyle } from "@shared/capabilities";
+import { ENDPOINT_API_STYLES, type EndpointApiStyle } from "@shared/capabilities";
+import { modelKind, type EndpointKind, type KindCatalog } from "@shared/model-kinds";
 import {
   PROVIDER_TYPES,
   isProviderType,
@@ -18,6 +19,8 @@ import {
 import { gatewayDescriptor, type GatewayType } from "@shared/gateways";
 import {
   ENDPOINT_SLUG,
+  endpointKind,
+  endpointStyleKinds,
   type AppAttestEnvironment,
   type AppConfigInput,
   type AuthenticationConfigInput,
@@ -33,7 +36,13 @@ import {
 } from "@shared/app-config";
 import { unlimitedScope } from "@shared/app-defaults";
 
-export { DEFAULT_END_USER_HEADER, ENDPOINT_SLUG } from "@shared/app-config";
+export {
+  DEFAULT_END_USER_HEADER,
+  ENDPOINT_SLUG,
+  endpointKind,
+  endpointStyleKinds,
+} from "@shared/app-config";
+export { ENDPOINT_KINDS, type EndpointKind } from "@shared/model-kinds";
 export type {
   AppAttestEnvironment,
   ClaimRequirement,
@@ -122,15 +131,21 @@ export interface ProviderInstance {
 /**
  * The models an instance can be asked for: its type's catalog first, then the
  * ones only it prices. The gateway rejects any model it cannot price, and
- * accepts these, so the picker offers exactly that set.
+ * accepts these, so the picker offers exactly that set. Given a kind, only the
+ * models of that kind, which is what a custom endpoint of it accepts — the
+ * same `modelKind` the gateway judges a saved endpoint by.
  */
 export function instanceModels(
   instance: ProviderInstance,
-  catalog: Partial<Record<Provider, Record<string, unknown>>> | undefined,
+  catalog: KindCatalog | undefined,
+  kind?: EndpointKind,
 ): string[] {
   const priced = Object.keys(catalog?.[instance.type] ?? {});
   const overrides = Object.keys(instance.pricing ?? {});
-  return [...priced, ...overrides.filter((model) => !priced.includes(model))];
+  const models = [...priced, ...overrides.filter((model) => !priced.includes(model))];
+  return kind === undefined
+    ? models
+    : models.filter((model) => modelKind(catalog, instance.type, model, instance.pricing) === kind);
 }
 
 /**
@@ -144,8 +159,8 @@ export type ProxyConfig = AppConfigInput["routing"];
 /**
  * The instances a custom endpoint of this style may target: the ones whose own
  * route serves it, as the gateway reports on each instance. The provider type
- * and the route are both already in that answer — only OpenAI and xAI compose
- * these request shapes, and Vercel serves no transcription API — so nothing is
+ * and the route are both already in that answer — only Anthropic composes
+ * Anthropic Messages, and Vercel serves no transcription API — so nothing is
  * judged here that the server has not.
  */
 export function endpointInstances<T extends { capability: { endpointStyles: readonly EndpointApiStyle[] } }>(
@@ -208,8 +223,69 @@ export function normalizePath(path: AllowedPathObject): AllowedPath {
   };
 }
 
-export function emptyEndpoint(provider = "openai"): EndpointConfig {
-  return { api_style: "responses", provider, model: "" };
+/** As much of an instance as an endpoint's pickers read: what its route can serve. */
+type EndpointCapable = { slug: string; status?: "active" | "disabled"; capability: { endpointStyles: readonly EndpointApiStyle[] } };
+
+/**
+ * The styles an endpoint of this kind can speak with these instances: the ones
+ * that carry the kind and that at least one instance's route serves.
+ */
+export function endpointStylesFor(kind: EndpointKind, instances: EndpointCapable[]): EndpointApiStyle[] {
+  return ENDPOINT_API_STYLES.filter((style) =>
+    endpointStyleKinds(style).includes(kind)
+    && instances.some((instance) => instance.capability.endpointStyles.includes(style)));
+}
+
+/** The instance a new target starts on: an active one where there is one. */
+function defaultInstance<T extends EndpointCapable>(instances: T[]): T | undefined {
+  return instances.find((instance) => instance.status !== "disabled") ?? instances[0];
+}
+
+/**
+ * A fresh endpoint: text, in the first style an instance serves, on that
+ * instance — or a plain Responses endpoint naming no provider where there is
+ * none to start on.
+ */
+export function emptyEndpoint(instances: EndpointCapable[] = []): EndpointConfig {
+  const api_style = endpointStylesFor("text", instances)[0] ?? "responses";
+  const provider = defaultInstance(endpointInstances(api_style, instances))?.slug ?? "";
+  return { kind: "text", api_style, provider, model: "" };
+}
+
+/**
+ * The endpoint after its kind or style changed. A style that no longer carries
+ * the kind gives way to one that does — one the endpoint's own instance serves
+ * where there is one — a target whose instance cannot serve the style moves to
+ * one that can, and a model that may be of another kind is cleared rather than
+ * left for the save to refuse.
+ */
+export function retargetEndpoint(
+  endpoint: EndpointConfig,
+  change: { kind?: EndpointKind; api_style?: EndpointApiStyle },
+  instances: EndpointCapable[],
+): EndpointConfig {
+  const kind = change.kind ?? endpointKind(endpoint);
+  const styles = endpointStylesFor(kind, instances);
+  const wanted = change.api_style ?? endpoint.api_style;
+  const own = instances.find((instance) => instance.slug === endpoint.provider)?.capability.endpointStyles ?? [];
+  const api_style = endpointStyleKinds(wanted).includes(kind)
+    ? wanted
+    : styles.find((style) => own.includes(style)) ?? styles[0] ?? wanted;
+  const eligible = endpointInstances(api_style, instances);
+  const kindChanged = kind !== endpointKind(endpoint);
+  const retarget = <T extends EndpointTarget>(target: T): T => {
+    const served = eligible.some((instance) => instance.slug === target.provider);
+    return served
+      ? { ...target, model: kindChanged ? "" : target.model }
+      : { ...target, provider: defaultInstance(eligible)?.slug ?? "", model: "" };
+  };
+  const { fallback, ...primary } = endpoint;
+  return {
+    ...retarget(primary),
+    kind,
+    api_style,
+    ...(fallback ? { fallback: fallback.map(retarget) } : {}),
+  };
 }
 
 /** Suggests an unused slug so adding a second endpoint never silently replaces one. */

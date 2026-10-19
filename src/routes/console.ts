@@ -3,7 +3,9 @@ import { Hono, type Context } from "hono";
 import type { ConsoleCapabilitiesResponse } from "../contracts/responses";
 import { googleAuthEnabled, identityAuthFor, MANAGEMENT_IDENTITY } from "../auth/identity";
 import { registrationOpen } from "../policy/deployment";
-import { clientAddress } from "../core/endpoint-rate-limit";
+import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
+import { GatewayError } from "../core/errors";
+import { confirmEmailVerification, sendVerificationEmail } from "../auth/email-verification";
 import { publicApiOrigin } from "../core/public-api-url";
 import {
   allowOauthConsent,
@@ -35,6 +37,7 @@ consoleRoutes.get("/capabilities", async (c) => c.json({
   // Present only where the deployment publishes a separate host for application
   // clients; otherwise the console builds client URLs from its own origin.
   apiBaseUrl: publicApiOrigin(c.env),
+  emailVerification: c.get("deployment").emailVerification === "required",
 } satisfies ConsoleCapabilitiesResponse));
 
 /**
@@ -87,3 +90,34 @@ routes.handle("continueOauthWithoutAccount", (c, { params, body, scope }) =>
 
 routes.handle("denyOauthConsent", (_c, { params, body, scope }) =>
   denyOauthConsent(scope, params.id, body), { before: assertConsoleOrigin });
+
+/*
+ * Email verification. Sending needs a person signed in to this browser, and
+ * nothing more: whoever approves a claim has no account yet, and has to verify
+ * before they can. Confirming needs nothing but the link, so it can be opened
+ * on another device than the one that asked for it.
+ */
+routes.handle("sendVerificationEmail", async (c, { body }) => {
+  const session = await browserSession(c);
+  const user = session.authenticated ? session.user : null;
+  if (!user || user.kind !== "human" || session.assurance !== "interactive") {
+    throw new GatewayError(401, "session_required", "Sign in to the console to send a verification link");
+  }
+  const deployment = c.get("deployment");
+  if (deployment.emailVerification === "off") {
+    throw new GatewayError(409, "conflict", "This deployment does not verify email addresses");
+  }
+  if (!user.email) throw new GatewayError(409, "conflict", "This sign-in has no email address");
+  if (user.emailVerified) return { status: "already_verified" as const, email: user.email };
+  await enforceEndpointRateLimit(c.env, "verification_email", user.id);
+  await sendVerificationEmail(
+    c.env,
+    deployment,
+    { id: user.id, email: user.email },
+    body.returnTo ?? null,
+  );
+  return { status: "sent" as const, email: user.email };
+}, { before: assertConsoleOrigin });
+
+routes.handle("confirmEmailVerification", (c, { body }) =>
+  confirmEmailVerification(c.env, body.token), { before: assertConsoleOrigin });

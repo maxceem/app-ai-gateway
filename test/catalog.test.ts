@@ -21,14 +21,14 @@ const CATALOG_MOUNTED_SECURITY: ReadonlySet<SecurityKind> = new Set(["management
 /** Documented, but served by Better Auth's own handler rather than a catalog router. */
 const BETTER_AUTH_TAG = "Console authentication";
 /** The public steps a browser takes through a catalog router: a CLI handoff, and an OAuth consent. */
-const BROWSER_STEP_TAGS = ["CLI", "Console OAuth consent"];
+const BROWSER_STEP_TAGS = ["CLI", "Console OAuth consent", "Console email verification"];
 
 /**
  * The half of the catalog the management app is supposed to serve, picked by
  * the credential that reaches it rather than by where its path lives, so a new
  * surface cannot fall out of this check by choosing a new prefix: everything a
  * management key, a browser session or a CLI poll reaches, and the public
- * steps of a CLI handoff and of an OAuth consent.
+ * steps of a CLI handoff, of an OAuth consent and of email verification.
  * Those public steps are selected by their tags.
  */
 const SERVED = Object.entries<OperationSpec>(CATALOG)

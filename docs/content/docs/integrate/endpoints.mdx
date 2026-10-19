@@ -14,12 +14,25 @@ Authentication is identical to the proxy: a gateway token with
 `X-App-Version`, or an API key. Limits, usage and error codes are the same.
 Only `POST` is accepted.
 
-## Responses-style endpoints
+## Request bodies
 
-Send an OpenAI Responses body. You may omit `model`; if you send one, the
-gateway overwrites it with the endpoint's model. The endpoint's parameters
-are deep-merged over your body, with the endpoint winning on conflicts, and
-its output cap is applied like the proxy's.
+Send the body of the endpoint's request format, as the provider documents it.
+You may omit `model`; if you send one, the gateway replaces it with the
+endpoint's model, and for the Gemini formats it puts the model in the URL
+instead. The endpoint's parameters are deep-merged over your body, with the
+endpoint winning on conflicts, and a text endpoint's output cap is applied
+like the proxy's.
+
+| Request format | Body |
+| --- | --- |
+| OpenAI Responses | `{"input": "…"}` |
+| OpenAI Chat Completions | `{"messages": [{"role": "user", "content": "…"}]}` |
+| Anthropic Messages | `{"max_tokens": 1024, "messages": [{"role": "user", "content": "…"}]}` |
+| Gemini generateContent | `{"contents": [{"parts": [{"text": "…"}]}]}` |
+| OpenAI image generation | `{"prompt": "…"}` |
+| OpenAI embeddings | `{"input": "…"}` |
+| Gemini embedContent | `{"content": {"parts": [{"text": "…"}]}}` |
+| OpenAI audio transcription | A `multipart/form-data` upload with a `file` field |
 
 ```sh
 curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/chat \
@@ -29,12 +42,37 @@ curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/chat \
   -d '{"input":"Suggest a 500 kcal lunch."}'
 ```
 
-The response is in the serving provider's format. If the endpoint falls back
-from OpenAI to xAI, you get xAI's Responses-style body. Both follow the same
-shape, but read the usage and any provider-specific fields defensively.
+The response is in the serving provider's format. If a Responses endpoint
+falls back from OpenAI to xAI, you get xAI's Responses-style body. Both follow
+the same shape, but read the usage and any provider-specific fields
+defensively.
+
+An Anthropic Messages endpoint sends `anthropic-version: 2023-06-01` when your
+request has no `anthropic-version` header, and yours when it does.
+
+A Gemini speech model answers with audio only when the request asks for it
+with `"generationConfig": {"responseModalities": ["AUDIO"]}`. Send it from
+your clients or set it in the endpoint's parameters.
+
+## Streaming
 
 Streaming works as on the proxy: set `"stream": true` and read the event
-stream. A fallback happens only if nothing has been streamed yet.
+stream. On a Gemini generateContent endpoint, add `?alt=sse` to the endpoint
+URL instead, as Gemini's own API does; the gateway calls the streaming method
+for you. A fallback happens only if nothing has been streamed yet.
+
+From Swift, pass the query to the request helper rather than adding it to the
+URL afterwards: an App Attest proof is signed over the URL, query included.
+This needs the Swift package 1.6.0 or later.
+
+```swift
+let (bytes, response) = try await gateway.withAuthorizedRequest(
+    endpointSlug: "gemini-chat",
+    query: [URLQueryItem(name: "alt", value: "sse")],
+    body: body,
+    contentType: "application/json"
+) { try await URLSession.shared.bytes(for: $0) }
+```
 
 ## Transcription endpoints
 

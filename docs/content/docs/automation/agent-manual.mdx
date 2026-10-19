@@ -446,12 +446,17 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `api_style` | `"responses"` or `"audio_transcription"` | Request shape the client sends |
-| `provider` | provider slug | Must be an `openai` or `xai` provider |
-| `model` | string | Must be priced |
-| `params` | object, optional | Deep-merged over the client body, server wins. `responses` only |
-| `max_output_tokens` | positive integer, optional | `responses` only |
-| `fallback` | array of `{ provider, model }`, optional | Tried in order when the primary fails before streaming starts |
+| `api_style` | `"responses"`, `"chat_completions"`, `"anthropic_messages"`, `"gemini_native"`, `"audio_transcription"`, `"image_generation"`, `"embeddings"` or `"gemini_embedding"` | Request format the client sends |
+| `kind` | `"text"`, `"image"`, `"speech"`, `"transcription"` or `"embedding"`, optional | What the endpoint does. Defaults to the format's only kind; `gemini_native` carries text (the default), image and speech |
+| `provider` | provider slug | A provider whose type and route serve the format: OpenAI and xAI for `responses`, the OpenAI-compatible types and OpenRouter for `chat_completions`, Anthropic for `anthropic_messages`, Gemini for both Gemini formats, OpenAI, xAI and Groq for `audio_transcription`, OpenAI, xAI and ByteDance for `image_generation`, OpenAI for `embeddings` |
+| `model` | string | Must be of the endpoint's kind and priced. A model only custom pricing covers counts as text. On a provider that reports its own cost, an unpriced model is accepted |
+| `params` | object, optional | Deep-merged over the client body, server wins. Every format but `audio_transcription` |
+| `max_output_tokens` | positive integer, optional | Text endpoints only |
+| `fallback` | array of `{ provider, model }`, optional | Tried in order when the primary fails before streaming starts. Same format and kind |
+
+`listModelPrices` gives every catalog model's `kind`: `text`, `image`,
+`speech`, `transcription`, `embedding` or `realtime`. Pick an endpoint's
+models by it; a `realtime` model serves no endpoint.
 
 ### Complete examples
 

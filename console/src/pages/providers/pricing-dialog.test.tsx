@@ -16,7 +16,7 @@ describe("pricing note", () => {
   it("names the APIs a partly reporting provider covers, and says the rest need a price", () => {
     const note = pricingNote({ type: "xai", ...served("xai") });
     expect(note).toMatch(
-      /^xAI reports the cost of each Responses, Chat Completions, and provider-native request/u,
+      /^xAI reports the cost of each Responses, Chat Completions, Image generation, Embeddings, and provider-native request/u,
     );
     expect(note).toMatch(/Its other APIs still need a price\.$/u);
   });

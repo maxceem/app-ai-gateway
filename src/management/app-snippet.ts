@@ -6,6 +6,7 @@ import type { app } from "../db/schema";
 import { reachableProviders } from "../shared/app-config";
 import {
   curlSnippet,
+  endpointRequest,
   exampleNotes,
   firstRequest,
   ISSUER_TOKEN_NOTE,
@@ -22,7 +23,7 @@ type AppRow = typeof app.$inferSelect;
 
 /** What a Swift example says before its own notes: where the client comes from, and where it runs. */
 const SWIFT_SETUP_NOTES = [
-  "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.4.1)",
+  "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.7.0)",
   "Where the app verifies App Attest on every request, withAuthorizedRequest signs the request over its body and URL: pass the body to it, and change neither afterwards.",
   "Enable App Attest and test on a supported physical device.",
 ];
@@ -70,14 +71,8 @@ export async function appSnippet(
       throw new GatewayError(404, "endpoint_not_found", "This app has no custom endpoint with that name");
     }
     // A custom endpoint holds the provider, the model and the parameters, so
-    // the client sends only what its style documents.
-    const responses = endpoint.api_style === "responses";
-    example = {
-      target: { endpoint: query.endpoint },
-      body: responses ? { input: "Say hello." } : null,
-      anthropic: false,
-      gaps: responses ? [] : ["body"],
-    };
+    // the client sends only what its style and kind document.
+    example = endpointRequest(query.endpoint, endpoint);
   } else {
     const { providers } = await listProviders(scope, actor);
     // What this application may send to today, which is narrower than what

@@ -1,9 +1,48 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "74d3030a-c1a5-4134-997c-650801063f2e",
+  "id": "8f76e209-7d82-40f3-9dc2-f44cbce7054a",
   "prevId": "5dbc9905-f7c3-4b9b-b89a-753ab72d6226",
   "tables": {
+    "account_activation": {
+      "name": "account_activation",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(datetime('now'))"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "account_activation_organization_id_mgmt_organization_id_fk": {
+          "name": "account_activation_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "account_activation",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "app": {
       "name": "app",
       "columns": {
@@ -735,41 +774,6 @@
         },
         "endpoint_slug": {
           "name": "endpoint_slug",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "realtime_session_id": {
-          "name": "realtime_session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "realtime_generation_id": {
-          "name": "realtime_generation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "realtime_protocol": {
-          "name": "realtime_protocol",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "provider_response_id": {
-          "name": "provider_response_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "completion_status": {
-          "name": "completion_status",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

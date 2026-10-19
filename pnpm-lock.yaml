@@ -121,6 +121,9 @@ importers:
       '@maxceem/cf-kms':
         specifier: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
         version: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
+      '@maxceem/worker-mailer':
+        specifier: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz
+        version: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0
@@ -232,8 +235,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       posthog-js:
-        specifier: ^1.429.5
-        version: 1.429.5(@types/react@19.2.17)(react@19.2.8)
+        specifier: ^1.438.12
+        version: 1.438.12(@types/react@19.2.17)(react@19.2.8)
       radix-ui:
         specifier: ^1.6.7
         version: 1.6.7(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1731,6 +1734,10 @@ packages:
     version: 0.1.0
     engines: {node: '>=20'}
 
+  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz':
+    resolution: {integrity: sha512-HE/DCAsTrITZKSMGC3Y6HSYt/qcI3MMxDct34deeMz95aW27ON50RLbZEZXFlJfwkKcZDTxaeqLCDvXTWCJj8Q==, tarball: https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz}
+    version: 1.4.3
+
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
 
@@ -1831,14 +1838,14 @@ packages:
   '@poppinss/exception@1.2.3':
     resolution: {integrity: sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw==}
 
-  '@posthog/browser-common@0.8.2':
-    resolution: {integrity: sha512-8g7+ijrx8bfWmpDjmP07e0ZmdRnJoFqZ6PCcMQvfBTUrr422GRXvQWpQn7yD028zIJHIIn/rUTipKgUC5UkWpw==}
+  '@posthog/browser-common@0.9.5':
+    resolution: {integrity: sha512-oXnBgZvM8UQ84IcBLfGP0WSGd9rA0PCGR37H8Pw0NszJRwxwbJnFXIUih0pvI/ze2eGmzkIEC9i3SwC+bMAgjQ==}
 
-  '@posthog/core@1.53.1':
-    resolution: {integrity: sha512-7mBwBWbcowIHVgwzGC5SHXI74hHLqu3Z2PDZqtuaSn3h+GHrr9GNf1+tFg85mijPZ97PxamBMm82qd2MmpWxdg==}
+  '@posthog/core@1.59.1':
+    resolution: {integrity: sha512-P39YgzQVDh6oz6wAzQXEnoHgTYpM7gifonmVKq1scAJco79h31XmmNVurRq9tTmmyIrr1uX8FHT0riCsyfV9AQ==}
 
-  '@posthog/types@1.411.0':
-    resolution: {integrity: sha512-QGdIzlcdCHKYvu3aANP2yjM80ly5Y5BRCygFrLMzavJ9WqiLtsPJQG1fRnpMAelK3j07DjmVwgTSlFY1FBCpzw==}
+  '@posthog/types@1.416.0':
+    resolution: {integrity: sha512-0/9+02s/0uDyrH4G/qUg1yyl6gXUg8Uuxw/PlDad3KLzo9FFS9zS/kAQaEshx/saVGupj1aAy/4EUBxWisBogw==}
 
   '@radix-ui/number@1.1.3':
     resolution: {integrity: sha512-Road2bidD0uu/1BGDOWNdPI06g0lIRy6IF9GZcIrDK2KGItfor8IQwQa+yM2ERgHM1MmHxaxpTzk0/Jp42lNfA==}
@@ -4325,8 +4332,8 @@ packages:
     resolution: {integrity: sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg==}
     engines: {node: ^10 || ^12 || >=14}
 
-  posthog-js@1.429.5:
-    resolution: {integrity: sha512-pVV3g0G+1B0XIuttzuTrUPlDONgOd//fijwZceFE8KDrHKTyJYtQqO29T9ol0kDE/XJkBa8jKhiOeZP1fhsxPQ==}
+  posthog-js@1.438.12:
+    resolution: {integrity: sha512-hjhvrtqbk6pFlbtNEGk0FrWKKFdeXe/WWA/LppN0f+uDoHKR9/SZJOxUHSVCGYbGTJvNRoDjjQvZuTcq4oKSlg==}
     peerDependencies:
       '@types/react': '>=16.8.0'
       react: '>=16.8.0'
@@ -5931,6 +5938,8 @@ snapshots:
 
   '@maxceem/cf-kms@https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz': {}
 
+  '@maxceem/worker-mailer@https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz': {}
+
   '@mdx-js/mdx@3.1.1(supports-color@10.2.2)':
     dependencies:
       '@types/estree': 1.0.9
@@ -6025,16 +6034,16 @@ snapshots:
 
   '@poppinss/exception@1.2.3': {}
 
-  '@posthog/browser-common@0.8.2':
+  '@posthog/browser-common@0.9.5':
     dependencies:
-      '@posthog/core': 1.53.1
-      '@posthog/types': 1.411.0
+      '@posthog/core': 1.59.1
+      '@posthog/types': 1.416.0
 
-  '@posthog/core@1.53.1':
+  '@posthog/core@1.59.1':
     dependencies:
-      '@posthog/types': 1.411.0
+      '@posthog/types': 1.416.0
 
-  '@posthog/types@1.411.0': {}
+  '@posthog/types@1.416.0': {}
 
   '@radix-ui/number@1.1.3': {}
 
@@ -8758,11 +8767,11 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  posthog-js@1.429.5(@types/react@19.2.17)(react@19.2.8):
+  posthog-js@1.438.12(@types/react@19.2.17)(react@19.2.8):
     dependencies:
-      '@posthog/browser-common': 0.8.2
-      '@posthog/core': 1.53.1
-      '@posthog/types': 1.411.0
+      '@posthog/browser-common': 0.9.5
+      '@posthog/core': 1.59.1
+      '@posthog/types': 1.416.0
       core-js: 3.50.0
       dompurify: 3.4.15
       fflate: 0.4.9

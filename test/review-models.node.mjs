@@ -7,6 +7,7 @@ import { applyChoices, collectCandidates, modelKey, REVIEW_PATH, validateChoices
 import { notAddedKey } from "../scripts/models/new-models.mjs";
 import { renderReport } from "../scripts/models/report.mjs";
 import { decide, catalogEdits, needsHuman } from "../scripts/models/rules.mjs";
+import { MODEL_KINDS } from "../scripts/models/kinds.mjs";
 import { catalogRates, parseCommands } from "../scripts/models/review.mjs";
 import { githubClient, loadReview, prepareReview, readReview, trustedPull } from "../scripts/review-models.mjs";
 
@@ -14,8 +15,8 @@ const fixture = (name) => readFileSync(new URL(`./fixtures/models/${name}`, impo
 const text = '{\n  "openai": {\n    "old": { "input": 1.0, "output": 2.0 }\n  }\n}\n';
 const today = "2026-10-01";
 const noLists = { modelsDev: {}, litellm: {} };
-const candidate = (model, price = { input: 1, output: 2 }) => ({ provider: "openai", model, canonical: model, ...(price ? { price } : { problem: "No supported public rates." }), info: {} });
-const choice = (model, action = "add", origin = "ai", reason = "Useful current model.") => ({ provider: "openai", model, action, reason, origin, reviewer: origin === "ai" ? "gpt-6-luna" : "owner" });
+const candidate = (model, price = { input: 1, output: 2 }, kind = "text") => ({ provider: "openai", model, canonical: model, ...(price ? { price } : { problem: "No supported public rates." }), ...(kind && { kind }), info: {} });
+const choice = (model, action = "add", origin = "ai", reason = "Useful current model.", kind = "text") => ({ provider: "openai", model, action, kind, reason, origin, reviewer: origin === "ai" ? "gpt-6-luna" : "owner" });
 const context = { today, catalog: { openai: ["old"] }, newModels: [{ provider: "openai", ids: ["new"] }] };
 const response = (decisions, overrides = {}) => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ decisions }) } }], ...overrides }));
 const apiSettings = { url: "https://example.com/v1/chat/completions", key: "private-test-credential-never-in-output" };
@@ -46,11 +47,20 @@ test("candidates: new IDs are priced individually, unsupported formats do not hi
   assert.deepEqual(catalogRates({ input: 1, output: 2, upcoming: [{ date: "2027-01-01", field: "input", value: 3 }] }), { input: 1, output: 2 });
 });
 
+test("candidates: a skip reason says why there is no price", () => {
+  const candidates = collectCandidates({ newModels: [{ provider: "groq", ids: ["llama-3.1-8b-instant", "missing-model"] }], official: { groq: { text: fixture("groq.md") } }, lists: noLists, today });
+  assert.deepEqual(candidates.map(({ problem }) => problem), [
+    "Unsupported public pricing: no public price, the page says to contact sales",
+    "Unsupported public pricing: the official page does not list this model",
+  ]);
+});
+
 test("commands: explicit actions, nested IDs, bounded batches, no executable syntax", () => {
   assert.deepEqual(parseCommands("/models add together/Qwen/Qwen3.8-Flash\n/models skip openai/gpt-4o Old model"), [
     { action: "add", provider: "together", model: "Qwen/Qwen3.8-Flash" }, { action: "skip", provider: "openai", model: "gpt-4o", reason: "Old model" },
   ]);
-  for (const body of ["", "/models skip openai/a", "/models add openai/a reason", "/models add openai/$(id)", "/models add unknown/a", "/models add openai/a\n/models skip openai/a why", "/models add openai/a\nrun me"]) assert.throws(() => parseCommands(body));
+  assert.deepEqual(parseCommands("/models add openai/gpt-image-3 image"), [{ action: "add", provider: "openai", model: "gpt-image-3", kind: "image" }]);
+  for (const body of ["", "/models skip openai/a", "/models add openai/a reason", "/models add openai/a video", "/models add openai/$(id)", "/models add unknown/a", "/models add openai/a\n/models skip openai/a why", "/models add openai/a\nrun me"]) assert.throws(() => parseCommands(body));
   assert.throws(() => parseCommands(`/models add openai/${"a".repeat(9000)}`), /8,000/u);
 });
 
@@ -74,7 +84,7 @@ test("catalog additions: preserve original entries, whole prices and integer thr
 test("classifier: OpenAI-compatible bounded request; credentials only in headers; no tools", async () => {
   const calls = [];
   const classify = createClassifier({ ...apiSettings, fetcher: async (url, options) => {
-    calls.push([url, options]); return response([{ id: "openai/new", action: "add", reason: "Useful current model." }]);
+    calls.push([url, options]); return response([{ id: "openai/new", action: "add", kind: "text", reason: "Useful current model." }]);
   } });
   assert.deepEqual(await classify([candidate("new")], context), [choice("new")]);
   const [url, options] = calls[0];
@@ -93,12 +103,18 @@ test("classifier: OpenAI-compatible bounded request; credentials only in headers
 });
 
 test("classifier: rejects omissions, duplicates, invented models, prices and malformed reasons", async () => {
-  for (const decisions of [[], [{ id: "openai/other", action: "add", reason: "x" }], [{ id: "openai/new", action: "pending", reason: "x" }],
-    [{ id: "openai/new", action: "add", reason: "x", price: 0 }], [{ id: "openai/new", action: "add", reason: "" }], [{ id: "openai/new", action: "add", reason: "x".repeat(501) }]]) {
+  for (const decisions of [[], [{ id: "openai/other", action: "add", kind: "text", reason: "x" }], [{ id: "openai/new", action: "pending", kind: "text", reason: "x" }],
+    [{ id: "openai/new", action: "add", kind: "text", reason: "x", price: 0 }], [{ id: "openai/new", action: "add", kind: "text", reason: "" }], [{ id: "openai/new", action: "add", kind: "text", reason: "x".repeat(501) }],
+    [{ id: "openai/new", action: "add", reason: "x" }], [{ id: "openai/new", action: "add", kind: "video", reason: "x" }]]) {
     await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => response(decisions) })([candidate("new")], context));
   }
-  await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => response([{ id: "openai/new", action: "add", reason: "x" }, { id: "openai/new", action: "skip", reason: "y" }]) })([candidate("new"), candidate("other")], context), /duplicate/u);
-  for (const bad of [{ ...choice("new"), model: null }, { ...choice("new"), input: 0 }, choice("$(id)")]) assert.throws(() => validateChoices([bad]));
+  await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => response([{ id: "openai/new", action: "add", kind: "text", reason: "x" }, { id: "openai/new", action: "skip", kind: "text", reason: "y" }]) })([candidate("new"), candidate("other")], context), /duplicate/u);
+  for (const bad of [{ ...choice("new"), model: null }, { ...choice("new"), input: 0 }, choice("$(id)"), choice("new", "add", "ai", "x", "video")]) assert.throws(() => validateChoices([bad]));
+  // A review file written before kinds existed still reads, additions too.
+  for (const action of ["skip", "add"]) {
+    const { kind: _kind, ...legacy } = choice("new", action);
+    assert.deepEqual(validateChoices([legacy]), [legacy]);
+  }
 });
 
 test("classifier: refusal, truncation and error bodies never leak the key", async () => {
@@ -164,7 +180,9 @@ test("application: prices stay deterministic; additions and skip acknowledgement
   const choices = [choice("new"), choice("skip", "skip")];
   const acknowledged = [{ key: "parser", reason: "Expected" }];
   const applied = applyChoices({ text, acknowledged, candidates, choices });
-  assert.deepEqual(JSON.parse(applied.text).openai.new, { input: 4, output: 10 }, "uses fresh official rates, not cached AI data");
+  assert.deepEqual(JSON.parse(applied.text).openai.new, { kind: "text", input: 4, output: 10 }, "uses fresh official rates, not cached AI data");
+  assert.match(applied.text, /"new": \{ "kind": "text", "input": 4\.0, "output": 10\.0 \}/u);
+  assert.throws(() => applyChoices({ text, acknowledged, candidates: [candidate("seq", { per_image: 0.04 })], choices: [choice("seq")] }), /per-image price/u);
   assert.deepEqual(JSON.parse(applied.text).openai.old, { input: 1, output: 2 });
   assert.deepEqual(applied.acknowledged, [...acknowledged, { key: "openai/skip: not added", reason: "Useful current model." }]);
   assert.throws(() => applyChoices({ text, acknowledged, candidates: [...candidates, candidate("invalid", null)], choices: [choice("new"), choice("invalid")] }), /supported public rates/u);
@@ -198,7 +216,7 @@ test("PR overrides: authorized comment stages data for the same PR, never checks
   const h = harness();
   await prepareReview(event, h.options);
   assert.deepEqual(h.writes.map(([path]) => path), ["review.json", "overrides.json"]);
-  assert.deepEqual(JSON.parse(h.writes[1][1]), [choice("new", "skip", "manual", "Not needed")]);
+  assert.deepEqual(JSON.parse(h.writes[1][1]), [choice("new", "skip", "manual", "Not needed", "")]);
   assert.deepEqual(h.outputs, ["ready=true\n"]);
   assert.ok(h.calls.some(([path]) => path === `contents/${REVIEW_PATH}?ref=${pr.head.sha}`));
   assert.ok(h.calls.every(([path]) => !path.includes(".github") && !path.includes("scripts/update-models")));
@@ -251,4 +269,68 @@ test("GitHub client: credentials stay in headers and comments are JSON, not comm
   assert.equal(calls[0][1].headers.authorization, `Bearer ${apiSettings.key}`);
   assert.equal(calls[0][1].body, '{"body":"$(do not execute)"}');
   assert.ok(!calls[0][0].includes(apiSettings.key));
+});
+
+test("kinds: the lists settle a new model's kind before AI, and refuse kinds the gateway cannot serve", () => {
+  const litellm = {
+    "gpt-image-3": { mode: "image_generation" },
+    "gpt-live-transcribe-2": { mode: "audio_transcription", supported_endpoints: ["/v1/realtime", "/v1/realtime/transcription_sessions"] },
+    "sora-3": { mode: "video_generation" },
+  };
+  const lists = { modelsDev: { openai: { models: { "text-embedding-4": { type: "embedding" } } } }, litellm };
+  const page = fixture("openai.md");
+  const candidates = collectCandidates({ newModels: [{ provider: "openai", ids: ["gpt-6-astra", "gpt-image-3", "gpt-live-transcribe-2", "sora-3", "text-embedding-4"] }], official: { openai: { text: page } }, lists, today });
+  assert.deepEqual(candidates.map(({ kind }) => kind), [undefined, "image", "realtime", undefined, "embedding"]);
+  assert.match(candidates[3].skip, /no video_generation models/u);
+  assert.equal(candidates[1].info.kind, "image");
+});
+
+test("kinds: a person can correct what the lists say, and a legacy addition is settled before it applies", async () => {
+  // Listed as a mode the gateway serves nothing of: the rules skip it, and a
+  // person who knows better adds it with a kind of their own.
+  const mislabeled = { ...candidate("chat", undefined, null), skip: "The gateway serves no video_generation models." };
+  const skipped = await recommendModels([mislabeled], { context, classify: async () => assert.fail("never asked") });
+  assert.deepEqual([skipped.choices[0].action, skipped.choices[0].origin], ["skip", "rules"]);
+  const corrected = await recommendModels([mislabeled], { context, overrides: [choice("chat", "add", "manual", "Mine.", "text")] });
+  assert.deepEqual([corrected.choices[0].action, corrected.choices[0].kind], ["add", "text"]);
+  await assert.rejects(recommendModels([mislabeled], { context, overrides: [choice("chat", "add", "manual", "Mine.", "")] }), /<kind>/u);
+  // An AI addition saved before kinds existed takes the listed kind, or waits.
+  const { kind: _kind, ...legacy } = choice("img", "add");
+  const settled = await recommendModels([candidate("img", undefined, "image")], { context, previous: [legacy] });
+  assert.deepEqual([settled.choices[0].action, settled.choices[0].kind], ["add", "image"]);
+  const waits = await recommendModels([candidate("img", undefined, null)], { context, previous: [legacy] });
+  assert.equal(waits.choices[0].action, "pending");
+  assert.throws(() => applyChoices({ text: "{\"openai\":{}}", acknowledged: [], candidates: [candidate("img")], choices: [legacy] }), /no kind is settled/u);
+});
+
+test("kinds: a listed kind beats the AI's, a person's beats both, and an unbillable kind waits", async () => {
+  const listed = { ...candidate("img", { input: 5, output: 30 }, "image") };
+  const ai = await recommendModels([listed, candidate("unknown", undefined, null)], { context, classify: async (batch) => batch.map(({ model }) => choice(model, "add", "ai", "Useful.", "text")) });
+  assert.deepEqual(ai.choices.map(({ action, kind }) => [action, kind]), [["add", "image"], ["add", "text"]]);
+  const manual = await recommendModels([listed], { context, overrides: [choice("img", "add", "manual", "Mine.", "speech")] });
+  assert.equal(manual.choices[0].kind, "speech");
+  const perImage = candidate("seq", { per_image: 0.04 }, null);
+  const waits = await recommendModels([perImage], { context, classify: async () => [choice("seq", "add", "ai", "Useful.", "text")] });
+  assert.deepEqual([waits.choices[0].action, waits.choices[0].origin], ["pending", "rules"]);
+  assert.match(waits.choices[0].reason, /per-image price/u);
+  await assert.rejects(recommendModels([perImage], { context, overrides: [choice("seq", "add", "manual", "Mine.", "text")] }), /\/models add openai\/seq <kind>/u);
+});
+
+test("PR overrides: an addition keeps the proposal's kind unless the command names one", async () => {
+  const keeps = harness({ comment: { ...comment, body: "/models add openai/new" }, choices: [choice("new", "pending", "rules", "x", "image")] });
+  await prepareReview(event, keeps.options);
+  assert.equal(JSON.parse(keeps.writes[1][1])[0].kind, "image");
+  const names = harness({ comment: { ...comment, body: "/models add openai/new speech" } });
+  await prepareReview(event, names.options);
+  assert.equal(JSON.parse(names.writes[1][1])[0].kind, "speech");
+  const unknown = harness({ comment: { ...comment, body: "/models add openai/new" }, choices: [choice("new", "pending", "rules", "x", "")] });
+  await assert.rejects(prepareReview(event, unknown.options), /name its kind/u);
+});
+
+test("kinds: the model sync names exactly the kinds the gateway knows", () => {
+  // The scripts run as plain Node and cannot import the TypeScript module, so
+  // the list is restated there and held to the source here.
+  const source = readFileSync(new URL("../src/shared/model-kinds.ts", import.meta.url), "utf8");
+  const declared = /export const MODEL_KINDS = \[([^\]]*)\]/u.exec(source)?.[1];
+  assert.deepEqual(JSON.parse(`[${declared}]`), MODEL_KINDS);
 });

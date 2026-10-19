@@ -1,0 +1,264 @@
+{
+  "providers": [
+    {
+      "type": "openai",
+      "label": "OpenAI",
+      "chat": [
+        "gpt-4o",
+        "gpt-6-sol",
+        "gpt-5.5-pro",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+        "gpt-5.2-pro",
+        "gpt-5.1",
+        "gpt-5",
+        "gpt-5-pro",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "o3",
+        "o3-pro",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4o-mini"
+      ],
+      "transcription": [
+        "gpt-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe",
+        "whisper-1"
+      ],
+      "image": [
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare",
+        "gpt-image-2",
+        "gpt-image-1.5",
+        "gpt-image-1-mini",
+        "gpt-image-1"
+      ]
+    },
+    {
+      "type": "anthropic",
+      "label": "Anthropic",
+      "chat": [
+        "claude-mythos-5-1",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-haiku-5-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "xai",
+      "label": "xAI",
+      "chat": [
+        "grok-4.6",
+        "grok-4.7",
+        "grok-4.5",
+        "grok-build-0.1",
+        "grok-4.3",
+        "grok-4.20-multi-agent-0309",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning"
+      ],
+      "transcription": [
+        "grok-transcribe"
+      ],
+      "image": []
+    },
+    {
+      "type": "gemini",
+      "label": "Gemini",
+      "chat": [
+        "gemini-4-argon",
+        "gemini-3.7-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview-customtools",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+      ],
+      "transcription": [],
+      "image": [
+        "gemini-nano-banana-2.1",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-lite-image",
+        "gemini-3-pro-image"
+      ]
+    },
+    {
+      "type": "perplexity",
+      "label": "Perplexity",
+      "chat": [
+        "sonar",
+        "sonar-pro",
+        "sonar-reasoning-pro",
+        "sonar-deep-research"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "deepseek",
+      "label": "DeepSeek",
+      "chat": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "groq",
+      "label": "Groq",
+      "chat": [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b"
+      ],
+      "transcription": [
+        "whisper-large-v3-turbo",
+        "whisper-large-v3"
+      ],
+      "image": []
+    },
+    {
+      "type": "mistral",
+      "label": "Mistral",
+      "chat": [
+        "mistral-medium-latest",
+        "mistral-large-latest",
+        "mistral-small-latest"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "together",
+      "label": "Together AI",
+      "chat": [
+        "reflection/Beam-1.0-501B-A23B",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
+        "meta-models/Muse-Spark-Open-816B-A42B",
+        "thinkingmachines/Inkling",
+        "Qwen/Qwen3.8-Flash",
+        "Qwen/Qwen3.7-Plus",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "zai-org/GLM-5.3-Flash",
+        "zai-org/GLM-5.3",
+        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.6-Plus",
+        "Qwen/Qwen3.8-2.4T-A95B",
+        "MiniMaxAI/MiniMax-M3",
+        "moonshotai/Kimi-K3",
+        "deepseek-ai/DeepSeek-V4-Pro-0813",
+        "openai/gpt-oss-120b",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "fireworks",
+      "label": "Fireworks AI",
+      "chat": [],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "cerebras",
+      "label": "Cerebras",
+      "chat": [
+        "qwen-3.8-27b",
+        "gpt-oss-120b"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "moonshot",
+      "label": "Moonshot AI",
+      "chat": [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "huggingface",
+      "label": "Hugging Face",
+      "chat": [],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "baseten",
+      "label": "Baseten",
+      "chat": [
+        "moonshotai/Kimi-K3",
+        "deepseek-ai/DeepSeek-V4-Pro-0813",
+        "zai-org/GLM-5.3",
+        "openai/gpt-oss-120b"
+      ],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "bytedance",
+      "label": "ByteDance Ark",
+      "chat": [
+        "seed-2-0-pro-260328",
+        "seed-2-0-lite-260428",
+        "deepseek-v4-pro-ga-260813",
+        "gpt-oss-120b-250805"
+      ],
+      "transcription": [],
+      "image": [
+        "dola-seedream-5-0-flash-260915",
+        "seedream-5-0-lite-260128",
+        "seedream-4-5-251128",
+        "seedream-4-0-250828"
+      ]
+    },
+    {
+      "type": "openrouter",
+      "label": "OpenRouter",
+      "chat": [],
+      "transcription": [],
+      "image": []
+    }
+  ]
+}

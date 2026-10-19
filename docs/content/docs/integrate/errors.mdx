@@ -65,6 +65,7 @@ These refusals concern the gateway account, not your app's end-user sign-in:
 | --- | --- | --- |
 | `unclaimed_access_expired` | 403 | The person who started the account must claim it through the CLI or MCP browser handoff. Do not ask the app's end user to sign in again. |
 | `account_expired` | 403 | The account's recovery deadline has passed. Stop automatic retries and ask the person managing the gateway account to investigate. |
+| `email_unverified` | 403 | The gateway account's owner has not verified their email address yet. They open the link in the verification email, or send a new one from the console; requests are served from then on. Do not ask the app's end user to sign in again. |
 
 ## Policy
 

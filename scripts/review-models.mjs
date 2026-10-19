@@ -55,16 +55,20 @@ export async function prepareReview(event, { api, repository, reviewPath, overri
   try {
     const commands = parseCommands(comment.body);
     const previous = await readReview(pr, { api, repository });
-    const ids = new Set(previous.map(modelKey));
-    const overrides = validateChoices(commands.map(({ action, provider, model, reason }) => {
-      if (!ids.has(`${provider}/${model}`)) throw new Error(`${provider}/${model} has no proposal in this PR.`);
-      return { provider, model, action, reason: reason ?? "Added by manual review.", origin: "manual", reviewer: comment.user.login };
+    const proposals = new Map(previous.map((choice) => [modelKey(choice), choice]));
+    const overrides = validateChoices(commands.map(({ action, provider, model, kind, reason }) => {
+      const proposal = proposals.get(`${provider}/${model}`);
+      if (!proposal) throw new Error(`${provider}/${model} has no proposal in this PR.`);
+      // An addition keeps the kind the proposal settled unless the command names one.
+      const settled = action === "add" ? kind ?? proposal.kind ?? "" : "";
+      if (action === "add" && !settled) throw new Error(`${provider}/${model}: name its kind, as /models add ${provider}/${model} <kind>.`);
+      return { provider, model, action, kind: settled, reason: reason ?? "Added by manual review.", origin: "manual", reviewer: comment.user.login };
     }));
     await write(reviewPath, `${JSON.stringify(previous, null, 2)}\n`);
     await write(overridesPath, `${JSON.stringify(overrides, null, 2)}\n`);
     await output("ready=true\n");
   } catch (error) {
-    await api(`issues/${number}/comments`, { method: "POST", body: { body: `Overrides were not applied: ${escape(error.message)}\n\nUse one command per line: \`/models add provider/model\` or \`/models skip provider/model reason\`.` } });
+    await api(`issues/${number}/comments`, { method: "POST", body: { body: `Overrides were not applied: ${escape(error.message)}\n\nUse one command per line: \`/models add provider/model [kind]\` or \`/models skip provider/model reason\`.` } });
     throw error;
   }
 }

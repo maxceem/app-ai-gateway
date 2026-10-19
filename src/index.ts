@@ -29,6 +29,7 @@ import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { billingEntitlementGate } from "./middleware/billing";
+import { emailDeliveryStatus } from "./auth/email-verification";
 import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/serve";
 import { serverTiming } from "./execution/timing";
 import { requestScope } from "./middleware/request-scope";
@@ -85,7 +86,7 @@ function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | 
 app.get("/v1/healthz", async (c) => {
   c.header("Cache-Control", "no-store");
   const state = await healthProbe(c.env);
-  return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env),
+  return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env), email: emailDeliveryStatus(c.env),
     buildId: c.env.GATEWAY_BUILD_ID ?? "development", ready: state !== null && vaultStatus(c.env) === "ok" && Boolean(c.env.USER_LIMITER && c.env.ENDPOINT_RATE_LIMITER),
     backendContract: REALTIME_BACKEND_CONTRACT, realtimeReleaseId: state?.active_realtime_id ?? null } satisfies HealthResponse);
 });

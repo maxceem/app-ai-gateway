@@ -81,6 +81,26 @@ export function useSession() {
   });
 }
 
+/** Sends the signed-in person a link that verifies their address. */
+export function useSendVerificationEmail() {
+  return useMutation({
+    mutationFn: (returnTo?: string) =>
+      call("sendVerificationEmail", { body: returnTo ? { returnTo } : {} }),
+  });
+}
+
+/**
+ * Confirms the link a verification email carried. The session says whether
+ * the address is verified, so it is read again afterwards.
+ */
+export function useConfirmEmailVerification() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) => call("confirmEmailVerification", { body: { token } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.session }),
+  });
+}
+
 export function useSignIn() {
   const client = useQueryClient();
   return useMutation({

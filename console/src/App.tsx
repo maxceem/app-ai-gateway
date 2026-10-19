@@ -19,6 +19,7 @@ import { ProvidersPage } from "@/pages/providers";
 import { RevealPage } from "@/pages/reveal";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
+import { VerifyEmailPage } from "@/pages/verify-email";
 import { ConsoleSessionProvider } from "@/lib/console-session";
 import { analytics, captureSignup, useAnalyticsPageviews } from "@/lib/analytics";
 import { DEFAULT_APP_SECTION } from "@/lib/app-sections";
@@ -203,6 +204,12 @@ export default function App() {
           nobody signed in as often as not, and signing in brings them back.
         */}
         <Route path="/oauth/consent" element={<OAuthConsentPage />} />
+        {/*
+          Where the link in a verification email lands. Outside the shell and
+          `PublicOnly` both: the link alone proves the address, so it works
+          signed in or not, and on another device than the one that asked.
+        */}
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

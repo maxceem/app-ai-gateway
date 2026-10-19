@@ -9,7 +9,7 @@
 import { sql } from "drizzle-orm";
 import type { AuthState, OperationBrowserCredential, OperationDetails } from "@maxceem/cf-auth";
 import { claimRefusal } from "../../auth/operation-kinds";
-import { engineRefused, identityAuthFor } from "../../auth/identity";
+import { claimVerificationRequired, engineRefused, identityAuthFor } from "../../auth/identity";
 import { invalidateBillingAccess } from "../../billing/gateway";
 import {
   assertAccountAccess,
@@ -78,6 +78,7 @@ export function pageRefusal(c: CliContext, verdict: string | null): CliApprovalR
       return null;
     case "registration_required":
     case "sign_out_required":
+    case "verification_required":
       return verdict;
     case "session_required":
       return "registration_required";
@@ -102,7 +103,7 @@ export async function approveClaim(
   const target = details.organization?.id;
   if (!target) throw new GatewayError(500, "internal_error", "A stored operation does not match its kind");
   const state = await authState(c, true);
-  const refusal = claimRefusal(state, target);
+  const refusal = claimRefusal(state, target, c.get("deployment").emailVerification);
   // The refusal names what a person must do; the status names why the request
   // failed. Two audiences, one decision, translated in this one place.
   if (refusal === "registration_required")
@@ -117,6 +118,7 @@ export async function approveClaim(
       "account_exists",
       "This sign-in already has an account; sign out and create a new sign-in to claim this one",
     );
+  if (refusal === "verification_required") throw claimVerificationRequired();
   await assertAccountAccess(c.get("deployment"), c.env, target, entry.open);
 
   const engine = await operationEngine(c);

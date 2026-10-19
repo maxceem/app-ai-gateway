@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { CredentialGrant } from "@maxceem/cf-auth";
 import type { AppCheckResponse, AppSnippetResponse } from "../src/contracts/responses";
 import worker from "../src/index";
+import models from "../src/usage/models.json";
 import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
 import { seedApp, seedHuman, seedProvider, seedServerApp } from "./helpers";
 
@@ -38,7 +39,7 @@ async function account(email: string, grant: CredentialGrant = "manage") {
 function provider(
   organizationId: string,
   slug: string,
-  type: "openai" | "anthropic",
+  type: "openai" | "anthropic" | "gemini",
   status: "active" | "disabled" = "active",
 ) {
   return seedProvider({ type, slug, organizationId, id: `${organizationId}-${slug}`, status });
@@ -74,6 +75,7 @@ describe("checkApp", () => {
       status: "active",
       providers: [{ id: `${organizationId}-claude`, slug: "claude", status: "disabled" }],
       ready: false,
+      accountRefusal: null,
       limitations: [
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",
@@ -156,6 +158,41 @@ describe("getAppSnippet", () => {
     expect(body.snippet).not.toContain(headers.authorization.slice("Bearer ".length));
     expect(body.snippet).not.toContain("agw_");
     expect(body.notes).toEqual([]);
+  });
+
+  /**
+   * The shipped OpenAI catalog opens on its embedding models, and an example
+   * written from its first priced entry once called `v1/responses` with one.
+   */
+  it("calls a text model on the text API from the shipped catalog", async () => {
+    const { organizationId, headers } = await account("snippet-text@example.test");
+    await provider(organizationId, "openai", "openai");
+    await seedServerApp("snippet-text-app", { organizationId, proxy: { provider_mode: "all" } });
+
+    const { body } = await snippet("snippet-text-app", headers);
+    const sent = JSON.parse(/-d '(.*)'/u.exec(body.snippet)![1]!) as { model: string };
+    expect(body.snippet).toContain("/proxy/openai/v1/responses");
+    expect((models.openai as Record<string, { kind: string }>)[sent.model]?.kind).toBe("text");
+  });
+
+  it("writes an endpoint's request in its own format and kind", async () => {
+    const { organizationId, headers } = await account("snippet-kinds@example.test");
+    await provider(organizationId, "gemini", "gemini");
+    await provider(organizationId, "openai", "openai");
+    await seedServerApp("snippet-kinds-app", {
+      organizationId,
+      proxy: { provider_mode: "all" },
+      endpoints: {
+        voice: { kind: "speech", api_style: "gemini_native", provider: "gemini", model: "gemini-3.8-flash-tts" },
+        listen: { api_style: "audio_transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
+      },
+    });
+
+    const voice = await snippet("snippet-kinds-app", headers, "?endpoint=voice");
+    expect(voice.body.snippet).toContain('"generationConfig":{"responseModalities":["AUDIO"]}');
+    const listen = await snippet("snippet-kinds-app", headers, "?endpoint=listen");
+    expect(listen.body.snippet).toContain("-F 'file=@recording.m4a'");
+    expect(listen.body.notes).toEqual([]);
   });
 
   it("names what a new application does not have yet, in the notes and in the snippet", async () => {
@@ -246,7 +283,7 @@ describe("getAppSnippet", () => {
     // Sent through the helper, which resends a request built afresh on a 401.
     expect(swift.body.snippet).toContain("try await gateway.withAuthorizedRequest(");
     expect(swift.body.snippet).toContain(") { try await URLSession.shared.data(for: $0) }");
-    expect(swift.body.snippet).toContain("// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.4.1)");
+    expect(swift.body.snippet).toContain("// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.7.0)");
     // The seeded iOS app signs its users in with an issuer.
     expect(swift.body.snippet).toContain("issuerTokenProvider");
     expect(swift.body.notes.at(-1)).toMatch(/^Replace yourIdentitySDK/u);

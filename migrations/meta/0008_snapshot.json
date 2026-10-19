@@ -1,9 +1,48 @@
 {
-  "id": "4e0dd976-57cf-456a-96cc-4c9b9ad38a3f",
-  "prevId": "74d3030a-c1a5-4134-997c-650801063f2e",
   "version": "6",
   "dialect": "sqlite",
+  "id": "5a9864b4-d78b-4a32-8ae3-8b07c174eecb",
+  "prevId": "8f76e209-7d82-40f3-9dc2-f44cbce7054a",
   "tables": {
+    "account_activation": {
+      "name": "account_activation",
+      "columns": {
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(datetime('now'))"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "account_activation_organization_id_mgmt_organization_id_fk": {
+          "name": "account_activation_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "account_activation",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "app": {
       "name": "app",
       "columns": {
@@ -88,15 +127,15 @@
         "app_organization_id_mgmt_organization_id_fk": {
           "name": "app_organization_id_mgmt_organization_id_fk",
           "tableFrom": "app",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -190,15 +229,15 @@
         "app_api_key_app_id_app_id_fk": {
           "name": "app_api_key_app_id_app_id_fk",
           "tableFrom": "app_api_key",
+          "tableTo": "app",
           "columnsFrom": [
             "app_id"
           ],
-          "tableTo": "app",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -279,15 +318,15 @@
         "app_attest_key_app_id_app_id_fk": {
           "name": "app_attest_key_app_id_app_id_fk",
           "tableFrom": "app_attest_key",
+          "tableTo": "app",
           "columnsFrom": [
             "app_id"
           ],
-          "tableTo": "app",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -340,15 +379,15 @@
         "app_auth_challenge_app_id_app_id_fk": {
           "name": "app_auth_challenge_app_id_app_id_fk",
           "tableFrom": "app_auth_challenge",
+          "tableTo": "app",
           "columnsFrom": [
             "app_id"
           ],
-          "tableTo": "app",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1251,15 +1290,15 @@
         "app_user_app_id_app_id_fk": {
           "name": "app_user_app_id_app_id_fk",
           "tableFrom": "app_user",
+          "tableTo": "app",
           "columnsFrom": [
             "app_id"
           ],
-          "tableTo": "app",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -1426,28 +1465,28 @@
         "mgmt_api_key_user_id_mgmt_user_id_fk": {
           "name": "mgmt_api_key_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_api_key",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mgmt_api_key_organization_id_mgmt_organization_id_fk": {
           "name": "mgmt_api_key_organization_id_mgmt_organization_id_fk",
           "tableFrom": "mgmt_api_key",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1549,15 +1588,15 @@
         "mgmt_oauth_token_api_key_id_mgmt_api_key_id_fk": {
           "name": "mgmt_oauth_token_api_key_id_mgmt_api_key_id_fk",
           "tableFrom": "mgmt_oauth_token",
+          "tableTo": "mgmt_api_key",
           "columnsFrom": [
             "api_key_id"
           ],
-          "tableTo": "mgmt_api_key",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1763,8 +1802,8 @@
           "columns": [
             "user_code_hash"
           ],
-          "where": "\"mgmt_operation\".\"state\" = 'pending'",
-          "isUnique": true
+          "isUnique": true,
+          "where": "\"mgmt_operation\".\"state\" = 'pending'"
         },
         "mgmt_idx_operation_organization": {
           "name": "mgmt_idx_operation_organization",
@@ -1811,41 +1850,41 @@
         "mgmt_operation_opener_user_id_mgmt_user_id_fk": {
           "name": "mgmt_operation_opener_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_operation",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "opener_user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mgmt_operation_organization_id_mgmt_organization_id_fk": {
           "name": "mgmt_operation_organization_id_mgmt_organization_id_fk",
           "tableFrom": "mgmt_operation",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mgmt_operation_decided_by_user_id_mgmt_user_id_fk": {
           "name": "mgmt_operation_decided_by_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_operation",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "decided_by_user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1908,15 +1947,15 @@
         "mgmt_organization_created_by_user_id_mgmt_user_id_fk": {
           "name": "mgmt_organization_created_by_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_organization",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "created_by_user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1997,28 +2036,28 @@
         "mgmt_organization_user_organization_id_mgmt_organization_id_fk": {
           "name": "mgmt_organization_user_organization_id_mgmt_organization_id_fk",
           "tableFrom": "mgmt_organization_user",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mgmt_organization_user_user_id_mgmt_user_id_fk": {
           "name": "mgmt_organization_user_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_organization_user",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2231,15 +2270,15 @@
         "mgmt_user_account_user_id_mgmt_user_id_fk": {
           "name": "mgmt_user_account_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_user_account",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2326,15 +2365,15 @@
         "mgmt_user_session_user_id_mgmt_user_id_fk": {
           "name": "mgmt_user_session_user_id_mgmt_user_id_fk",
           "tableFrom": "mgmt_user_session",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "mgmt_user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2542,28 +2581,28 @@
         "provider_organization_id_mgmt_organization_id_fk": {
           "name": "provider_organization_id_mgmt_organization_id_fk",
           "tableFrom": "provider",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "provider_provider_gateway_id_provider_gateway_id_fk": {
           "name": "provider_provider_gateway_id_provider_gateway_id_fk",
           "tableFrom": "provider",
+          "tableTo": "provider_gateway",
           "columnsFrom": [
             "provider_gateway_id"
           ],
-          "tableTo": "provider_gateway",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2684,15 +2723,15 @@
         "provider_gateway_organization_id_mgmt_organization_id_fk": {
           "name": "provider_gateway_organization_id_mgmt_organization_id_fk",
           "tableFrom": "provider_gateway",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "mgmt_organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2708,9 +2747,9 @@
   "views": {},
   "enums": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
+    "tables": {},
+    "columns": {}
   },
   "internal": {
     "indexes": {

@@ -1,10 +1,10 @@
 [
   {
-    "provider": "gemini",
-    "model": "gemini-4-argon",
+    "provider": "together",
+    "model": "reflection/Beam-1.0-501B-A23B",
     "action": "add",
-    "reason": "Added by manual review.",
-    "origin": "manual",
-    "reviewer": "maxceem"
+    "reason": "Add this currently servable model; sparse metadata alone is not a reason to skip it.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
   }
 ]

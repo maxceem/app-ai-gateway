@@ -62,6 +62,8 @@ import {
   MonthSchema,
   OAuthConsentAllowRequestSchema,
   OAuthConsentProofSchema,
+  SendVerificationEmailRequestSchema,
+  ConfirmEmailVerificationRequestSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
   ProviderCreateRequestSchema,
@@ -103,6 +105,8 @@ import {
   MonthlyUsageResponseSchema,
   OAuthConsentDetailsResponseSchema,
   OAuthConsentRedirectResponseSchema,
+  SendVerificationEmailResponseSchema,
+  ConfirmEmailVerificationResponseSchema,
   OrganizationListResponseSchema,
   PricesResponseSchema,
   ProviderDeleteResponseSchema,
@@ -255,9 +259,9 @@ const ProviderNativeBodySchema = z.record(z.string(), z.unknown()).meta({
   description:
     "Provider-native JSON request. Consult the selected provider's API reference for the exact shape.",
 });
-const ResponsesStyleBodySchema = z.record(z.string(), z.unknown()).meta({
+const EndpointJsonBodySchema = z.record(z.string(), z.unknown()).meta({
   description:
-    "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params.",
+    "The JSON body the endpoint's api_style takes: an OpenAI Responses, Chat Completions, image generation or embeddings body, an Anthropic Messages body, or a Gemini generateContent or embedContent body. The gateway sets the configured model (in the body, or in the URL for the Gemini styles) and deep-merges the configured params.",
 });
 const TranscriptionStyleBodySchema = z.object({
   file: z.string().meta({ format: "binary" }),
@@ -507,16 +511,21 @@ export const CATALOG = {
     path: "/v1/apps/{app}/endpoints/{slug}",
     tags: ["Custom endpoints"],
     summary: "Call a server-configured custom endpoint",
-    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. The body is the one the endpoint's api_style takes, without a model: JSON for every style but audio_transcription, which takes an OpenAI audio transcription multipart body. A gemini_native endpoint streams when the request URL carries alt=sse, as Gemini's own API does; every other style streams as its body asks. The successful response keeps the serving provider's native format and streaming behaviour.",
     security: "gateway",
     params: {
       app: { example: "my-app" },
       slug: { example: "chat", pattern: /^[a-z0-9-]{1,64}$/ },
     },
+    query: z.object({
+      alt: z.literal("sse").optional().meta({
+        description: "gemini_native endpoints only: `sse` streams the response as server-sent events, as Gemini's own API does. Never forwarded upstream.",
+      }),
+    }),
     headers: GatewayClientHeadersSchema,
     request: {
       content: {
-        "application/json": ResponsesStyleBodySchema,
+        "application/json": EndpointJsonBodySchema,
         "multipart/form-data": TranscriptionStyleBodySchema,
       },
     },
@@ -1494,6 +1503,45 @@ export const CATALOG = {
     response: OAuthConsentRedirectResponseSchema,
     responseDescription: "The client's redirect URI with `error=access_denied`.",
     errors: CONSENT_ERRORS,
+  },
+
+  /*
+   * Email verification, on a deployment that sends email. Both are the
+   * console's own and run on its origin alone. Neither needs an account: the
+   * person approving a claim has none yet, and has to verify before the claim
+   * can complete.
+   */
+  sendVerificationEmail: {
+    method: "POST",
+    path: "/v1/console/email-verification/send",
+    tags: ["Console email verification"],
+    summary: "Email verification: send a link",
+    description: "Sends a verification link to the address of the person signed in to this browser, for their console session only. Where the deployment verifies email addresses, an account's apps serve requests only once its owner has verified theirs, and a claim completes only for a person who has; nothing else waits for it. A link lasts 24 hours, and a sign-up with a password sends the first one itself. Counted per person.",
+    security: "public",
+    request: SendVerificationEmailRequestSchema,
+    response: SendVerificationEmailResponseSchema,
+    responseDescription: "Whether a link went out, and to which address.",
+    errors: {
+      401: "No person is signed in to this browser (`session_required`).",
+      409: "This deployment does not verify email addresses, or the sign-in has no address of its own (`conflict`).",
+      429: "Too many links were sent for this sign-in. Carries Retry-After.",
+      503: "The deployment could not send the email (`email_unavailable`).",
+    },
+  },
+
+  confirmEmailVerification: {
+    method: "POST",
+    path: "/v1/console/email-verification/confirm",
+    tags: ["Console email verification"],
+    summary: "Email verification: confirm a link",
+    description: "Verifies the address a verification link was sent to. The link alone is the proof, so no sign-in is needed; it is bound to the sign-in and the address it was sent for, and stops working once it expires or the address changes. Confirming a link again answers the same.",
+    security: "public",
+    request: ConfirmEmailVerificationRequestSchema,
+    response: ConfirmEmailVerificationResponseSchema,
+    responseDescription: "The address verified, and where to continue.",
+    errors: {
+      400: "The link is malformed, has expired, or no longer matches the sign-in's address (`invalid_request`).",
+    },
   },
 
   cliBrowserGoogle: {

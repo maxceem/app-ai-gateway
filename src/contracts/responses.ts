@@ -17,6 +17,7 @@ import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons
 import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
+import { MODEL_KINDS } from "../shared/model-kinds.ts";
 import {
   GATEWAY_DESCRIPTORS,
   GATEWAY_TYPES,
@@ -69,6 +70,13 @@ export const HealthResponseSchema = z.object({
   ok: z.literal(true),
   service: z.literal("app-ai-gateway"),
   vault: z.enum(["ok", "misconfigured"]),
+  /**
+   * Whether this deployment verifies email addresses: `off` with no way to
+   * send email configured, `ok` with Cloudflare Email Service or SMTP ready to
+   * send, `misconfigured` with one that cannot send yet (a setting missing or
+   * contradictory), where verification is required and no link can be sent.
+   */
+  email: z.enum(["off", "ok", "misconfigured"]),
   buildId: z.string(),
   ready: z.boolean(),
   backendContract: z.number(),
@@ -82,6 +90,12 @@ export const ConsoleCapabilitiesResponseSchema = z.object({
   termsOfServiceUrl: z.string().url().optional(),
   privacyPolicyUrl: z.string().url().optional(),
   apiBaseUrl: z.string().url().optional(),
+  /**
+   * Whether this deployment verifies email addresses. Where it does, an
+   * account's apps serve requests only once its owner has verified theirs, and
+   * the console offers the link to do it.
+   */
+  emailVerification: z.boolean(),
 });
 
 /** The provider URL returned when a Google OAuth sign-in is initiated. */
@@ -597,6 +611,13 @@ export const IdentitySessionSchema = z.object({
       credentialId: z.string().nullable(),
       actionSource: z.string(),
     }).nullable(),
+    /**
+     * Whether this account's apps refuse requests with `email_unverified`
+     * right now: the deployment verifies addresses, the account is not
+     * activated, and no owner of it has verified theirs. False wherever
+     * traffic is served, an unverified owner of an activated account included.
+     */
+    verificationPending: z.boolean(),
   }),
 });
 
@@ -657,6 +678,20 @@ export const OAuthConsentDetailsResponseSchema = z.object({
 export const OAuthConsentRedirectResponseSchema = z.object({
   redirect: z.string().meta({
     description: "The client's redirect URI with `code`, `state` and `iss`, or with `error=access_denied` after a denial. Navigate the browser there.",
+  }),
+});
+
+export const SendVerificationEmailResponseSchema = z.object({
+  status: z.enum(["sent", "already_verified"]).meta({
+    description: "`sent` when a link went out now; `already_verified` when the address needs none.",
+  }),
+  email: z.string().meta({ description: "The address the link was sent to, or that is already verified." }),
+});
+
+export const ConfirmEmailVerificationResponseSchema = z.object({
+  email: z.string().meta({ description: "The address now verified." }),
+  returnTo: z.string().nullable().meta({
+    description: "The console path the link was asked for from, to continue there; null for none.",
   }),
 });
 
@@ -775,7 +810,10 @@ export const AppCheckResponseSchema = z.object({
     description: "Every provider instance the application's routing names, a disabled one included so that it shows as disabled rather than missing.",
   }),
   ready: z.boolean().meta({
-    description: "Whether the application is active and at least one provider it names is active.",
+    description: "Whether the application is active, at least one provider it names is active, and the account may serve requests (`accountRefusal` is null).",
+  }),
+  accountRefusal: z.enum(["email_unverified", "unclaimed_access_expired", "account_expired"]).nullable().meta({
+    description: "Why the account would refuse this application's requests, as the error code its clients would get, or null when it would serve them. `email_unverified`: the account's owner has not verified their email address yet, on a deployment that verifies them; it clears once they open the link in the verification email.",
   }),
   limitations: z.array(z.string()).meta({
     description: "What this check did not exercise, one sentence each.",
@@ -932,6 +970,10 @@ export const UsageRepriceResponseSchema = z.object({
 });
 
 export const ModelPriceSchema = z.object({
+  kind: z.enum(MODEL_KINDS).meta({
+    description:
+      "What the model does: text, image (generation), speech (text to speech), transcription (speech to text), embedding, or realtime (served only over a realtime session). A custom endpoint serves models of its own kind only.",
+  }),
   input: z.number().optional(),
   output: z.number().optional(),
   image_input: z.number().optional().meta({
