@@ -44,10 +44,6 @@ struct TranscribeScreen: View {
 
     private var intro: some View {
         VStack(spacing: 14) {
-            Image(systemName: Capability.transcription.symbol)
-                .font(.system(size: 34, weight: .medium))
-                .frame(width: 84, height: 84)
-                .background(Theme.bubble, in: Circle())
             Text("Record a voice note")
                 .font(.system(size: 24, weight: .semibold))
             Text("It goes to \(settings.model(for: .transcription)?.model ?? "a transcription model") through your gateway and comes back as text.")

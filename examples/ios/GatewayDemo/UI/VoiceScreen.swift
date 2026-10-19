@@ -50,10 +50,6 @@ struct VoiceScreen: View {
 
     private var intro: some View {
         VStack(spacing: 14) {
-            Image(systemName: Capability.voice.symbol)
-                .font(.system(size: 34, weight: .medium))
-                .frame(width: 84, height: 84)
-                .background(Theme.bubble, in: Circle())
             Text("Talk it through")
                 .font(.system(size: 24, weight: .semibold))
             Text("A live voice conversation with \(settings.model(for: .voice)?.model ?? "a realtime model"), over one WebSocket through your gateway. Each answer counts as one request.")
