@@ -18,9 +18,10 @@ final class VoiceConversation {
     private(set) var itemID: UUID?
     /// The responses admitted so far: each one counts as one request.
     private(set) var responses = 0
-    /// The microphone's loudness while you talk, the speaker's while it answers; 0...1.
+    /// How loud the answer is coming out of the speaker; 0...1.
     private(set) var level: CGFloat = 0
-    /// The last couple of seconds of `level`, oldest first: what the waveform draws.
+    /// The last couple of seconds of your microphone, oldest first: what the
+    /// waveform draws. Only your voice, so talking over an answer shows at once.
     private(set) var wave = [CGFloat](repeating: 0, count: VoiceConversation.waveLength)
     static let waveLength = 40
     var isActive: Bool { phase != .idle }
@@ -128,7 +129,9 @@ final class VoiceConversation {
                 answerID = history.append(Entry(role: .assistant, model: model, pending: true), to: id)
 
             case "response.output_audio.delta":
-                if let pcm = (event["delta"] as? String).flatMap({ Data(base64Encoded: $0) }) {
+                // While you talk over an answer, what is still in flight of it
+                // belongs to the response the gateway is cancelling.
+                if phase != .hearing, let pcm = (event["delta"] as? String).flatMap({ Data(base64Encoded: $0) }) {
                     audio.play(pcm)
                 }
 
@@ -208,10 +211,10 @@ final class VoiceConversation {
         let playing = audio.isPlaying
         if playing, phase == .listening || phase == .thinking { phase = .speaking }
         if !playing, phase == .speaking, answerID == nil { phase = .listening }
-        let target = CGFloat(phase == .speaking ? levels.output : levels.input)
-        level += (target - level) * 0.5
+        level += (CGFloat(levels.output) - level) * 0.35
+        let last = wave[wave.count - 1]
         wave.removeFirst()
-        wave.append(level)
+        wave.append(last + (CGFloat(levels.input) - last) * 0.5)
     }
 
     private func end() {

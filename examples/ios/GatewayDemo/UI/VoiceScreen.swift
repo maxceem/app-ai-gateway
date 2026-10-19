@@ -67,7 +67,16 @@ struct VoiceScreen: View {
     private var dock: some View {
         VStack(spacing: 18) {
             if live {
-                VoiceWave(samples: voice.wave, phase: voice.phase)
+                // Your turn shows your voice; the model's turn shows the model.
+                Group {
+                    if voice.phase == .thinking || voice.phase == .speaking {
+                        AnswerOrb(level: voice.level, thinking: voice.phase == .thinking)
+                    } else {
+                        VoiceWave(samples: voice.wave, connecting: voice.phase == .connecting, hearing: voice.phase == .hearing)
+                    }
+                }
+                .frame(height: 96)
+                .transition(.opacity)
                 VStack(spacing: 4) {
                     Text(status.title)
                         .font(.system(size: 17, weight: .medium))
@@ -115,7 +124,7 @@ struct VoiceScreen: View {
         case .listening: ("Listening", "Start talking, then pause to get an answer")
         case .hearing: ("Hearing you", "Pause when you're done")
         case .thinking: ("Thinking", "Your turn is sent, the answer is on its way")
-        case .speaking: ("Speaking", "Talk over it to interrupt")
+        case .speaking: ("Answering", "Start talking to interrupt")
         }
     }
 
@@ -131,39 +140,59 @@ struct VoiceScreen: View {
     }
 }
 
-/// The last couple of seconds of sound, scrolling left: your voice while you
-/// talk, the answer while it speaks.
+/// Your voice over the last couple of seconds, scrolling left.
 private struct VoiceWave: View {
     var samples: [CGFloat]
-    var phase: VoiceConversation.Phase
+    var connecting: Bool
+    var hearing: Bool
 
     var body: some View {
         HStack(spacing: 3) {
             ForEach(samples.indices, id: \.self) { index in
                 Capsule()
-                    .fill(color)
+                    .fill(hearing ? Color.primary : Color.secondary.opacity(0.6))
                     .frame(width: 4, height: 4 + samples[index] * 76)
             }
         }
-        .frame(height: 84)
         .overlay {
-            if phase == .connecting || phase == .thinking {
+            if connecting {
                 ProgressView()
                     .padding(10)
                     .background(Theme.canvas, in: Circle())
             }
         }
         .animation(.linear(duration: 0.05), value: samples)
-        .animation(.snappy, value: phase)
+        .animation(.snappy, value: hearing)
         .accessibilityHidden(true)
     }
+}
 
-    private var color: Color {
-        switch phase {
-        case .speaking: .blue
-        case .hearing: .primary
-        default: .secondary.opacity(0.6)
+/// The model's turn: a speaker that swells with the answer, or waits on it.
+private struct AnswerOrb: View {
+    var level: CGFloat
+    var thinking: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.blue.opacity(0.12))
+                .frame(width: 96, height: 96)
+                .scaleEffect(thinking ? 0.8 : 0.8 + level * 0.25)
+            Circle()
+                .fill(Color.blue)
+                .frame(width: 64, height: 64)
+            if thinking {
+                ProgressView()
+                    .tint(.white)
+            } else {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.variableColor.iterative, options: .repeating)
+            }
         }
+        .animation(.linear(duration: 0.08), value: level)
+        .accessibilityHidden(true)
     }
 }
 
