@@ -55,9 +55,9 @@ struct SidebarView: View {
     }
 
     private var header: some View {
-        // The largest size the lockup fits the sidebar at.
+        // About the size the old title showed at, smaller where it does not fit.
         ViewThatFits(in: .horizontal) {
-            ForEach([26, 23, 20, 17] as [CGFloat], id: \.self) { Wordmark(size: $0) }
+            ForEach([21, 19, 17] as [CGFloat], id: \.self) { Wordmark(size: $0) }
         }
         .frame(height: 64)
     }
