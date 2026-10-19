@@ -124,8 +124,10 @@ struct VoiceScreen: View {
         }
     }
 
+    /// What counts against the app's limits: every response, interrupted ones
+    /// and the hang-up included, not only the answers the chat shows.
     private var requests: String {
-        voice.responses == 1 ? "1 answer · 1 request" : "\(voice.responses) answers · \(voice.responses) requests"
+        voice.responses == 1 ? "1 request" : "\(voice.responses) requests"
     }
 
     /// Starts a new conversation: a finished one cannot be picked up again,
