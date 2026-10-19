@@ -65,11 +65,15 @@ struct VoiceScreen: View {
     private var dock: some View {
         VStack(spacing: 18) {
             if live {
-                Orb(level: voice.level, phase: voice.phase)
-                    .frame(height: 120)
-                Text(status)
-                    .font(.system(size: 17, weight: .medium))
-                    .contentTransition(.opacity)
+                VoiceWave(samples: voice.wave, phase: voice.phase)
+                VStack(spacing: 4) {
+                    Text(status.title)
+                        .font(.system(size: 17, weight: .medium))
+                    Text(status.hint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .contentTransition(.opacity)
             }
             HStack {
                 Color.clear.frame(width: 50, height: 50)
@@ -101,14 +105,15 @@ struct VoiceScreen: View {
         .animation(.snappy, value: voice.phase)
     }
 
-    private var status: String {
+    /// What is going on, and what you can do about it.
+    private var status: (title: String, hint: String) {
         switch voice.phase {
-        case .idle: ""
-        case .connecting: "Connecting…"
-        case .listening: "Listening"
-        case .hearing: "Hearing you"
-        case .thinking: "Thinking"
-        case .speaking: "Speaking"
+        case .idle: ("", "")
+        case .connecting: ("Connecting…", "Opening a session through your gateway")
+        case .listening: ("Listening", "Start talking, then pause to get an answer")
+        case .hearing: ("Hearing you", "Pause when you're done")
+        case .thinking: ("Thinking", "Your turn is sent, the answer is on its way")
+        case .speaking: ("Speaking", "Talk over it to interrupt")
         }
     }
 
@@ -124,27 +129,39 @@ struct VoiceScreen: View {
     }
 }
 
-/// A circle that breathes with whoever is talking.
-private struct Orb: View {
-    var level: CGFloat
+/// The last couple of seconds of sound, scrolling left: your voice while you
+/// talk, the answer while it speaks.
+private struct VoiceWave: View {
+    var samples: [CGFloat]
     var phase: VoiceConversation.Phase
 
     var body: some View {
-        let speaking = phase == .speaking
-        ZStack {
-            Circle()
-                .fill((speaking ? Color.blue : Color.primary).opacity(0.08))
-                .frame(width: 120, height: 120)
-                .scaleEffect(0.75 + level * 0.45)
-            Circle()
-                .fill(speaking ? Color.blue : Color.primary)
-                .frame(width: 72, height: 72)
-                .scaleEffect(0.9 + level * 0.25)
-            if phase == .connecting || phase == .thinking {
-                ProgressView().tint(Theme.canvas)
+        HStack(spacing: 3) {
+            ForEach(samples.indices, id: \.self) { index in
+                Capsule()
+                    .fill(color)
+                    .frame(width: 4, height: 4 + samples[index] * 76)
             }
         }
-        .animation(.linear(duration: 0.05), value: level)
+        .frame(height: 84)
+        .overlay {
+            if phase == .connecting || phase == .thinking {
+                ProgressView()
+                    .padding(10)
+                    .background(Theme.canvas, in: Circle())
+            }
+        }
+        .animation(.linear(duration: 0.05), value: samples)
+        .animation(.snappy, value: phase)
+        .accessibilityHidden(true)
+    }
+
+    private var color: Color {
+        switch phase {
+        case .speaking: .blue
+        case .hearing: .primary
+        default: .secondary.opacity(0.6)
+        }
     }
 }
 

@@ -22,6 +22,8 @@ final class VoiceAudio: @unchecked Sendable {
     private var queued = 0
     /// Bumped by `flush`, so a cancelled buffer's completion is not counted.
     private var generation = 0
+    private var stopped = false
+    private var observer: (any NSObjectProtocol)?
 
     enum Problem: LocalizedError {
         case denied, unavailable
@@ -53,22 +55,35 @@ final class VoiceAudio: @unchecked Sendable {
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
         try session.setActive(true)
 
-        let mic = engine.inputNode
-        try mic.setVoiceProcessingEnabled(true)
-        let format = mic.outputFormat(forBus: 0)
-        // Voice processing may hand over several channels; the first is the voice.
-        guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: mono, to: wire)
-        else { throw Problem.unavailable }
-        mic.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 10), format: format) { [weak self] buffer, _ in
-            self?.capture(buffer, mono: mono, converter: converter)
-        }
-
+        try engine.inputNode.setVoiceProcessingEnabled(true)
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: speaker)
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
             let level = Self.loudness(buffer)
             self?.lock.withLock { self?.output = level }
+        }
+        // Voice processing reconfigures the audio route once the engine starts,
+        // and a reconfigured engine stops: start it again, with the microphone's
+        // format as it is now, every time that happens.
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            guard let self, !self.lock.withLock({ self.stopped }), !self.engine.isRunning else { return }
+            try? self.run()
+        }
+        try run()
+    }
+
+    /// Taps the microphone in its current format and runs the engine.
+    private func run() throws {
+        let mic = engine.inputNode
+        mic.removeTap(onBus: 0)
+        let format = mic.outputFormat(forBus: 0)
+        // Voice processing may hand over several channels; the first is the voice.
+        guard format.sampleRate > 0,
+              let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: mono, to: wire)
+        else { throw Problem.unavailable }
+        mic.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 10), format: format) { [weak self] buffer, _ in
+            self?.capture(buffer, mono: mono, converter: converter)
         }
         engine.prepare()
         try engine.start()
@@ -100,6 +115,8 @@ final class VoiceAudio: @unchecked Sendable {
     }
 
     func stop() {
+        lock.withLock { stopped = true }
+        if let observer { NotificationCenter.default.removeObserver(observer) }
         continuation.finish()
         engine.inputNode.removeTap(onBus: 0)
         engine.mainMixerNode.removeTap(onBus: 0)
@@ -132,11 +149,14 @@ final class VoiceAudio: @unchecked Sendable {
         continuation.yield(Data(bytes: converted.int16ChannelData![0], count: Int(converted.frameLength) * 2))
     }
 
-    /// Loudness rather than decibels, so speech rises and falls instead of pinning near the top.
+    /// Decibels from -50 to -10 as 0...1: a quiet room reads near zero and
+    /// ordinary speech fills most of the range, under voice processing's gain.
     private static func loudness(_ buffer: AVAudioPCMBuffer) -> Float {
         guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
         var sum: Float = 0
         for index in 0..<Int(buffer.frameLength) { sum += samples[index] * samples[index] }
-        return min(1, (sum / Float(buffer.frameLength)).squareRoot() * 5)
+        let rms = (sum / Float(buffer.frameLength)).squareRoot()
+        guard rms > 0 else { return 0 }
+        return min(1, max(0, (20 * log10(rms) + 50) / 40))
     }
 }

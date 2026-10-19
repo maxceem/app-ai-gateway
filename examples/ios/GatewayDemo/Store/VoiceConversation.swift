@@ -20,6 +20,9 @@ final class VoiceConversation {
     private(set) var responses = 0
     /// The microphone's loudness while you talk, the speaker's while it answers; 0...1.
     private(set) var level: CGFloat = 0
+    /// The last couple of seconds of `level`, oldest first: what the waveform draws.
+    private(set) var wave = [CGFloat](repeating: 0, count: VoiceConversation.waveLength)
+    static let waveLength = 40
     var isActive: Bool { phase != .idle }
 
     private let history: HistoryStore
@@ -206,7 +209,9 @@ final class VoiceConversation {
         if playing, phase == .listening || phase == .thinking { phase = .speaking }
         if !playing, phase == .speaking, answerID == nil { phase = .listening }
         let target = CGFloat(phase == .speaking ? levels.output : levels.input)
-        level += (target - level) * 0.35
+        level += (target - level) * 0.5
+        wave.removeFirst()
+        wave.append(level)
     }
 
     private func end() {
@@ -221,6 +226,7 @@ final class VoiceConversation {
         speechStart = nil
         turnLength = nil
         level = 0
+        wave = [CGFloat](repeating: 0, count: Self.waveLength)
         phase = .idle
     }
 }
