@@ -18,12 +18,10 @@ final class VoiceConversation {
     private(set) var itemID: UUID?
     /// The responses admitted so far: each one counts as one request.
     private(set) var responses = 0
-    /// How loud the answer is coming out of the speaker; 0...1.
-    private(set) var level: CGFloat = 0
-    /// The last couple of seconds of your microphone, oldest first: what the
-    /// waveform draws. Only your voice, so talking over an answer shows at once.
-    private(set) var wave = [CGFloat](repeating: 0, count: VoiceConversation.waveLength)
-    static let waveLength = 40
+    /// How loud you are in the microphone, and the answer in the speaker; 0...1.
+    /// Kept apart, so talking over an answer shows your voice at once.
+    private(set) var inputLevel: CGFloat = 0
+    private(set) var outputLevel: CGFloat = 0
     var isActive: Bool { phase != .idle }
 
     private let history: HistoryStore
@@ -144,8 +142,11 @@ final class VoiceConversation {
                 finishAnswer(event["response"] as? [String: Any], in: id)
 
             case "error":
-                // The provider's own error; the gateway closes the session after it.
+                // Talking over an answer just as it finishes sends a cancel that
+                // crosses its end on the wire; OpenAI answers it with this error,
+                // which changes nothing. Any other provider error ends the session.
                 let error = event["error"] as? [String: Any]
+                if error?["code"] as? String == "response_cancel_not_active" { break }
                 throw ProviderError(status: 0, message: error?["message"] as? String ?? "The provider ended the conversation.")
 
             default:
@@ -211,10 +212,8 @@ final class VoiceConversation {
         let playing = audio.isPlaying
         if playing, phase == .listening || phase == .thinking { phase = .speaking }
         if !playing, phase == .speaking, answerID == nil { phase = .listening }
-        level += (CGFloat(levels.output) - level) * 0.35
-        let last = wave[wave.count - 1]
-        wave.removeFirst()
-        wave.append(last + (CGFloat(levels.input) - last) * 0.5)
+        inputLevel += (CGFloat(levels.input) - inputLevel) * 0.35
+        outputLevel += (CGFloat(levels.output) - outputLevel) * 0.35
     }
 
     private func end() {
@@ -228,8 +227,8 @@ final class VoiceConversation {
         answerID = nil
         speechStart = nil
         turnLength = nil
-        level = 0
-        wave = [CGFloat](repeating: 0, count: Self.waveLength)
+        inputLevel = 0
+        outputLevel = 0
         phase = .idle
     }
 }

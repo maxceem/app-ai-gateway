@@ -67,15 +67,15 @@ struct VoiceScreen: View {
     private var dock: some View {
         VStack(spacing: 18) {
             if live {
-                // Your turn shows your voice; the model's turn shows the model.
+                // Your turn is a green microphone, the model's a blue speaker.
                 Group {
                     if voice.phase == .thinking || voice.phase == .speaking {
-                        AnswerOrb(level: voice.level, thinking: voice.phase == .thinking)
+                        TurnOrb(color: .blue, symbol: "speaker.wave.2.fill", level: voice.outputLevel, busy: voice.phase == .thinking)
                     } else {
-                        VoiceWave(samples: voice.wave, connecting: voice.phase == .connecting, hearing: voice.phase == .hearing)
+                        TurnOrb(color: .green, symbol: "mic.fill", level: voice.inputLevel, busy: voice.phase == .connecting)
                     }
                 }
-                .frame(height: 96)
+                .frame(height: 120)
                 .transition(.opacity)
                 VStack(spacing: 4) {
                     Text(status.title)
@@ -140,54 +140,35 @@ struct VoiceScreen: View {
     }
 }
 
-/// Your voice over the last couple of seconds, scrolling left.
-private struct VoiceWave: View {
-    var samples: [CGFloat]
-    var connecting: Bool
-    var hearing: Bool
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(samples.indices, id: \.self) { index in
-                Capsule()
-                    .fill(hearing ? Color.primary : Color.secondary.opacity(0.6))
-                    .frame(width: 4, height: 4 + samples[index] * 76)
-            }
-        }
-        .overlay {
-            if connecting {
-                ProgressView()
-                    .padding(10)
-                    .background(Theme.canvas, in: Circle())
-            }
-        }
-        .animation(.linear(duration: 0.05), value: samples)
-        .animation(.snappy, value: hearing)
-        .accessibilityHidden(true)
-    }
-}
-
-/// The model's turn: a speaker that swells with the answer, or waits on it.
-private struct AnswerOrb: View {
+/// Whose turn it is, with rings that swell as they get louder: you at the
+/// microphone, or the model at the speaker. A spinner while it waits.
+private struct TurnOrb: View {
+    var color: Color
+    var symbol: String
     var level: CGFloat
-    var thinking: Bool
+    var busy: Bool
 
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.blue.opacity(0.12))
-                .frame(width: 96, height: 96)
-                .scaleEffect(thinking ? 0.8 : 0.8 + level * 0.25)
+                .fill(color.opacity(0.08))
+                .frame(width: 120, height: 120)
+                .scaleEffect(busy ? 0.6 : 0.6 + level * 0.4)
             Circle()
-                .fill(Color.blue)
+                .fill(color.opacity(0.16))
+                .frame(width: 92, height: 92)
+                .scaleEffect(busy ? 0.75 : 0.75 + level * 0.25)
+            Circle()
+                .fill(color)
                 .frame(width: 64, height: 64)
-            if thinking {
+            if busy {
                 ProgressView()
                     .tint(.white)
             } else {
-                Image(systemName: "speaker.wave.2.fill")
+                Image(systemName: symbol)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(.white)
+                    // The speaker's waves play; a microphone has none to play.
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
         }
