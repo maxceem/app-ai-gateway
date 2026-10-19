@@ -119,25 +119,21 @@ private struct RecentRow: View {
     }
 }
 
-/// "App [AI] Gateway | Demo", as the website and the docs write it: the shield
-/// stands in for "AI", and the suffix is set apart in a lighter weight.
+/// "App [AI] Gateway Demo", as the website writes it, with the shield standing
+/// in for "AI". Kept light, so it names the app without drawing the eye.
 private struct Wordmark: View {
     var size: CGFloat
 
     var body: some View {
-        HStack(spacing: size * 0.3) {
+        HStack(spacing: size * 0.28) {
             Text("App")
-            BrandMark(height: size * 1.4)
+            BrandMark(height: size * 1.3)
             Text("Gateway")
-            Rectangle()
-                .fill(Theme.hairline)
-                .frame(width: 1, height: size * 1.1)
             Text("Demo")
-                .fontWeight(.medium)
+                .fontWeight(.regular)
                 .foregroundStyle(.secondary)
         }
-        .font(.system(size: size, weight: .bold))
-        .tracking(-size * 0.015)
+        .font(.system(size: size, weight: .medium))
         .lineLimit(1)
         .fixedSize()
         .accessibilityElement(children: .ignore)
