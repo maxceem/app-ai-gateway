@@ -10,6 +10,8 @@ struct VoiceScreen: View {
 
     /// Whether this screen shows the conversation that is going on.
     private var live: Bool { voice.isActive && voice.itemID == itemID }
+    /// A finished conversation: the mic starts a new one rather than continuing it.
+    private var ended: Bool { !live && !(history.item(itemID)?.entries.isEmpty ?? true) }
 
     var body: some View {
         let entries = history.item(itemID)?.entries ?? []
@@ -90,12 +92,12 @@ struct VoiceScreen: View {
                     .floating()
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(live ? "End conversation" : "Start talking")
+                .accessibilityLabel(live ? "End conversation" : ended ? "Start a new voice chat" : "Start talking")
                 Spacer()
                 Color.clear.frame(width: 50, height: 50)
             }
             .padding(.horizontal, 28)
-            Text(live ? requests : "Tap to start talking")
+            Text(live ? requests : ended ? "This chat has ended. Tap to start a new one." : "Tap to start talking")
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(.secondary)
         }

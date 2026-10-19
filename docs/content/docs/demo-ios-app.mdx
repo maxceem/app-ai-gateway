@@ -130,7 +130,8 @@ Each feature starts on an OpenAI model:
 - **New voice chat** talks with `gpt-realtime`: tap the microphone and speak,
   and it answers aloud once you pause. Talk over an answer to interrupt it.
   The whole conversation is one WebSocket, and each answer counts as one
-  request.
+  request. A finished conversation can't be picked up again: tapping the
+  microphone in it starts a new voice chat.
 
 The model menu at the top switches models. The first request takes a moment
 longer, while the phone registers its App Attest key with the gateway. See
