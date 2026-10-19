@@ -8,10 +8,9 @@ realtime models, through App AI Gateway, using the
 To run it on your iPhone through a gateway app of your own, follow
 [Run the demo app on your iPhone](https://docs.appaigateway.com/demo-ios-app/).
 
-Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. It starts with
-**Simulated responses** on, so every screen works without a gateway. To use
-yours, open **Settings** from the sidebar, turn simulated responses off, and
-fill in your gateway URL and app ID:
+Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. Every request goes
+through your gateway, so open **Settings** from the sidebar first and fill in
+your gateway URL and app ID:
 
 - **App Attest** is what a real app uses. It needs a real device: set your team
   and a bundle ID of your own under **Signing & Capabilities**, and register
@@ -37,7 +36,7 @@ stands on its own:
 | `Failure+Gateway.swift` | Telling a gateway refusal from a provider's own error |
 
 The rest is the app: `UI/` for the screens, `Store/` for settings and the
-history, `Simulated/` for the on-device answers. `Store/VoiceConversation.swift`
+history. `Store/VoiceConversation.swift`
 drives a voice chat in OpenAI's realtime events, and `Store/VoiceAudio.swift`
 turns the microphone into the 24 kHz PCM they carry and plays the answers.
 Voice chat needs **Realtime sessions** turned on in your app's settings.

@@ -13,7 +13,6 @@ import Foundation
 ///
 ///     -GatewayURL https://api.appaigateway.com -AppID my-app-a1b2c3
 ///     -Providers openai,gemini   the providers to turn on, all others off
-///     -Simulated NO
 ///     -APIKeyFile /path/key     sign with the API key in this file
 ///
 /// and, for recording a demo, one that plays a prepared voice note when the
@@ -35,7 +34,6 @@ enum LaunchOptions {
             settings.apiKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
             settings.values.useAPIKey = true
         }
-        if defaults.object(forKey: "Simulated") != nil { settings.values.simulated = defaults.bool(forKey: "Simulated") }
         if let list = defaults.string(forKey: "Providers") {
             let on = Set(list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
             for provider in ModelCatalog.providers {

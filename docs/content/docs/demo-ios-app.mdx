@@ -92,7 +92,7 @@ cd app-ai-gateway/examples/ios
 **In Xcode.** Open `GatewayDemo.xcodeproj`. Under the target's **Signing &
 Capabilities**, choose your team and set **Bundle Identifier** to the one
 from step 3. Pick your iPhone and press **Run**. In the app, open the sidebar,
-then **Settings**: enter the app ID, and turn off **Simulate responses**.
+then **Settings** and enter the app ID.
 
 **From a terminal.** Find the iPhone's ID, the long value in parentheses:
 
@@ -113,7 +113,7 @@ xcrun devicectl device install app --device IPHONE_ID \
 
 xcrun devicectl device process launch --device IPHONE_ID --terminate-existing \
   com.yourname.GatewayDemo -- \
-  -GatewayURL https://api.appaigateway.com -AppID APP_ID -Simulated NO
+  -GatewayURL https://api.appaigateway.com -AppID APP_ID
 ```
 
 The arguments after `--` fill in the app's settings, as if you had typed them

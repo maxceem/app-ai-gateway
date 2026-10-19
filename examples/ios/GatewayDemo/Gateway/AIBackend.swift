@@ -1,7 +1,6 @@
 import Foundation
 
-/// What the screens ask for. `GatewayBackend` sends it through App AI Gateway;
-/// `SimulatedBackend` answers on the device, so the app runs without one.
+/// What the screens ask for. `GatewayBackend` sends it through App AI Gateway.
 protocol AIBackend: Sendable {
     func chat(_ turns: [ChatTurn], model: ModelChoice) -> AsyncThrowingStream<String, Error>
     func transcribe(audio: Data, fileName: String, model: ModelChoice) async throws -> String
