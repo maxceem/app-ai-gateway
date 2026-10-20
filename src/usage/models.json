@@ -546,6 +546,13 @@
     "mistral-small-latest": { "kind": "text", "input": 0.15, "cached_input": 0.015, "output": 0.6 }
   },
   "together": {
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+      "kind": "text",
+      "input": 0.3,
+      "cached_input": 0.006,
+      "output": 1.2,
+      "author": "DeepSeek"
+    },
     "reflection/Beam-1.0-501B-A23B": {
       "kind": "text",
       "input": 0.4,

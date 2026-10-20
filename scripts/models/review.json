@@ -1,9 +1,19 @@
 [
   {
+    "provider": "perplexity",
+    "model": "perplexity/sonar",
+    "action": "skip",
+    "kind": "text",
+    "reason": "Skip: a stable Sonar alias is already in the catalog, so this is a dated snapshot of that model.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
     "provider": "together",
-    "model": "reflection/Beam-1.0-501B-A23B",
+    "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
     "action": "add",
-    "reason": "Add this currently servable model; sparse metadata alone is not a reason to skip it.",
+    "kind": "text",
+    "reason": "Add this current text model; the catalog has no matching versioned ID, and an older or newer generation is not a reason to skip it.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }
