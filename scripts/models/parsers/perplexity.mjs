@@ -1,71 +1,45 @@
-// https://docs.perplexity.ai/getting-started/pricing.md
+// https://docs.perplexity.ai/docs/agent-api/models.md
 //
-// The page embeds its prices as a JSON literal, `export const PRICING = {…}`,
-// for a calculator widget. Only the `"sonar"` object is read: it is cut out by
-// brace matching and handed to `JSON.parse`, never evaluated. Per-request fees
-// (`request`) are out of scope.
+// The Agent API's rate card, one tab per model family. Only the "Perplexity"
+// tab is read: the other tabs are third-party models Perplexity resells, and
+// this provider type names Perplexity as the author of every model it serves.
+// Prices are plain decimals in $ per 1M tokens.
+//
+// Sonar Chat Completions support ended on September 27, 2026, and its prices
+// left the pricing page with it. The Agent API names its models with a
+// `perplexity/` prefix, so `perplexity/sonar` is not the old `sonar`.
 
-import { ParseError, put } from "../price.mjs";
+import { ParseError, decimal, findLine, findNextLine, put, readTable } from "../price.mjs";
 
-const UNITS = '"sonar.input/output/citation/reasoning": "$ per 1,000,000 tokens"';
-const KEY = '\n  "sonar": {';
-// Every key a sonar model may carry. A new one (a cache price, a tiered
-// input) could change what a token costs, so it fails the page.
-const KNOWN = new Set(["id", "label", "input", "output", "request", "citation", "reasoning", "searchQueries"]);
-
-/** The text of the object literal opening at `start`, respecting strings. */
-function objectAt(text, start) {
-  let depth = 0;
-  let inString = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (char === "\\") index += 1;
-      else if (char === '"') inString = false;
-    } else if (char === '"') {
-      inString = true;
-    } else if (char === "{" || char === "[") {
-      depth += 1;
-    } else if (char === "}" || char === "]") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, index + 1);
-    }
-  }
-  throw new ParseError('the "sonar" object never closes');
-}
+const HEADER = ["Model", "Input (\\$/1M)", "Output (\\$/1M)", "Cache read (\\$/1M)", "Service tiers", "Docs"];
+const MODEL_ID = /^`(perplexity\/[A-Za-z0-9][A-Za-z0-9._-]*)`$/u;
+// An em dash is an empty cell: no cache read price, or no tier but the
+// default. `flex` and `priority` multiply the listed rates by 0.5 and 2 for
+// whoever asks for them, which a single catalog price cannot express, so a
+// model that gains one fails the page.
+const NONE = "—";
 
 export function parsePerplexity(text, { wanted }) {
-  if (!text.includes("export const PRICING = {")) throw new ParseError("the PRICING literal is missing");
-  if (!text.includes(UNITS)) throw new ParseError("the sonar price unit changed");
-  const at = text.indexOf(KEY);
-  if (at === -1 || text.indexOf(KEY, at + 1) !== -1) {
-    throw new ParseError('expected exactly one top-level "sonar" object');
-  }
-
-  let sonar;
-  try {
-    sonar = JSON.parse(objectAt(text, at + KEY.length - 1));
-  } catch (error) {
-    if (error instanceof ParseError) throw error;
-    throw new ParseError(`the "sonar" object is not JSON: ${error.message}`);
-  }
-  if (!Array.isArray(sonar?.models) || Object.keys(sonar).length !== 1) {
-    throw new ParseError('"sonar" is not { models: [...] }');
-  }
+  const lines = text.split("\n");
+  const tab = findLine(lines, '<Tab title="Perplexity">', "Perplexity tab");
+  const end = findNextLine(lines, "</Tab>", "Perplexity tab", tab);
+  const table = lines.findIndex((line, index) => index > tab && index < end && line.trim().startsWith("|"));
+  if (table === -1) throw new ParseError("Perplexity tab: the table is missing");
 
   const prices = new Map();
-  for (const model of sonar.models) {
-    if (typeof model?.id !== "string") throw new ParseError("a sonar model has no id");
-    if (!wanted.has(model.id)) {
-      put(prices, model.id, null);
+  for (const row of readTable(lines, table, HEADER, "Perplexity tab")) {
+    const id = MODEL_ID.exec(row[0])?.[1];
+    if (!id) throw new ParseError(`Perplexity tab: unexpected model "${row[0]}"`);
+    if (!wanted.has(id)) {
+      put(prices, id, null);
       continue;
     }
-    const unknown = Object.keys(model).filter((key) => !KNOWN.has(key));
-    if (unknown.length > 0) throw new ParseError(`${model.id}: unknown keys ${unknown.join(", ")}`);
-    if (!Number.isFinite(model.input) || !Number.isFinite(model.output)) {
-      throw new ParseError(`${model.id}: input or output is not a number`);
-    }
-    put(prices, model.id, { input: model.input, output: model.output });
+    const where = `Perplexity tab, ${id}`;
+    if (row[4] !== NONE) throw new ParseError(`${where}: service tiers "${row[4]}"`);
+    const price = { input: decimal(row[1], where) };
+    if (row[3] !== NONE) price.cached_input = decimal(row[3], where);
+    price.output = decimal(row[2], where);
+    put(prices, id, price);
   }
   return prices;
 }

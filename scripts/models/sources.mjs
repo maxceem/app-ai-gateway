@@ -160,7 +160,7 @@ export const SOURCES = {
   },
   perplexity: {
     official: {
-      url: "https://docs.perplexity.ai/getting-started/pricing.md",
+      url: "https://docs.perplexity.ai/docs/agent-api/models.md",
       type: MARKDOWN,
       parse: parsePerplexity,
     },
