@@ -354,5 +354,9 @@
   {
     "key": "groq/meta-models/muse-spark-open: not added",
     "reason": "Unsupported public pricing: no public price, the page says to contact sales"
+  },
+  {
+    "key": "perplexity/perplexity/sonar: not added",
+    "reason": "Skip: a stable Sonar alias is already in the catalog, so this is a dated snapshot of that model."
   }
 ]
