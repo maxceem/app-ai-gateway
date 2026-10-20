@@ -1,58 +1,47 @@
-# Pricing
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.perplexity.ai/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-export const PRICING = {
-  "_meta": {
-    "units": {
-      "model input/output/cache": "$ per 1,000,000 tokens",
-      "tools": "$ per invocation",
-      "sandbox.session": "$ per session (<=20-min billing window)",
-      "search.per1k": "$ per 1,000 requests",
-      "sonar.input/output/citation/reasoning": "$ per 1,000,000 tokens",
-      "sonar.request.{low,medium,high}": "$ per 1,000 requests (varies by search context size)",
-      "sonar.searchQueries": "$ per 1,000 searches (Deep Research only)",
-      "embeddings.rate": "$ per 1,000,000 tokens"
-    },
-  },
-  "sonar": {
-    "models": [{
-      "id": "sonar",
-      "label": "Sonar",
-      "input": 1,
-      "output": 1,
-      "request": {
-        "low": 5,
-        "medium": 8,
-        "high": 12
-      }
-    }, {
-      "id": "sonar-pro",
-      "label": "Sonar Pro",
-      "input": 3,
-      "output": 15,
-      "request": {
-        "low": 6,
-        "medium": 10,
-        "high": 14
-      }
-    }, {
-      "id": "sonar-reasoning-pro",
-      "label": "Sonar Reasoning Pro",
-      "input": 2,
-      "output": 8,
-      "request": {
-        "low": 6,
-        "medium": 10,
-        "high": 14
-      }
-    }, {
-      "id": "sonar-deep-research",
-      "label": "Sonar Deep Research",
-      "input": 2,
-      "output": 8,
-      "citation": 2,
-      "reasoning": 3,
-      "searchQueries": 5
-    }]
-  },
-  "embeddings": []
-};
+# Agent API Models
+
+> Compare Agent API models, token pricing, supported service tiers, and provider documentation.
+
+## Available Models
+
+The Agent API provides a unified interface to models from multiple providers with transparent token-based pricing.
+
+Pricing rates are published per model and may differ from provider list prices. All charges are based on actual token consumption, and every API response includes exact token counts so you know your costs per request.
+
+The **Service tiers** column lists optional non-default tiers. An em dash means the model uses default processing only.
+
+A rate with a context-length range, such as `(≤272k)`, changes when the input is above that range. A single value applies at every context length.
+
+<Tip>
+  Looking for pre-configured model setups? See [**Presets**](/docs/agent-api/presets) — optimized for specific use cases.
+</Tip>
+
+<Tabs>
+  <Tab title="NVIDIA">
+    <Card title="NVIDIA">
+      Nemotron 3.5 Super is a reasoning model with a 1,048,576-token context window and up to 131,072 output tokens. It accepts text input only.
+    </Card>
+
+    | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+    | - | - | - | - | - | - |
+    | `perplexity/nemotron-3.5-super-120b-a12b` | 0.20 | 0.50 | 0.04 | — | — |
+  </Tab>
+
+  <Tab title="Perplexity">
+    <Card title="Perplexity">
+      Perplexity's grounded search model.
+    </Card>
+
+    | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+    | - | - | - | - | - | - |
+    | `perplexity/sonar` | 0.25 | 2.50 | 0.0625 | — | — |
+  </Tab>
+</Tabs>
+
+## Service tiers
+
+Omit `service_tier`, or set it to `auto` or `default`, to use default processing. `flex` uses lower-cost, best-effort capacity at 0.5× the listed token prices. `priority` uses higher-priority processing at 2× the listed token prices. `fast` is accepted as an alias for `priority`. These multipliers apply only to models that list the tier in the **Service tiers** column. Other models always bill at the listed rate.

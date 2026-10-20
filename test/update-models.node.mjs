@@ -366,17 +366,20 @@ test("deepseek: reads the PEAK row of the transposed table", () => {
   assertFails(parseDeepseek, replaceOnce(text, "<td>$1.2</td>", "<td>$1.2 USD</td>"), ["deepseek-flash"], /not a price/);
 });
 
-test("perplexity: parses the sonar object as JSON, never as code", () => {
+test("perplexity: reads only Perplexity's own tab of the Agent API rate card", () => {
   const text = fixture("perplexity.md");
-  const prices = parse(parsePerplexity, text, ["sonar", "sonar-pro", "sonar-deep-research"]);
-  assert.deepEqual(prices.get("sonar"), { input: 1, output: 1 });
-  assert.deepEqual(prices.get("sonar-deep-research"), { input: 2, output: 8 });
-  // Braces inside strings do not end the object.
-  const braces = replaceOnce(text, '"label": "Sonar Pro"', '"label": "Sonar } Pro {"');
-  assert.deepEqual(parse(parsePerplexity, braces, ["sonar-pro"]).get("sonar-pro"), { input: 3, output: 15 });
-  assertFails(parsePerplexity, replaceOnce(text, '"label": "Sonar",', '"label": "Sonar", "cache": 0.1,'), ["sonar"], /unknown keys/);
-  assertFails(parsePerplexity, replaceOnce(text, '"input": 1,', '"input": 1 + 1,'), ["sonar"], /not JSON/);
-  assertFails(parsePerplexity, replaceOnce(text, "$ per 1,000,000 tokens\",\n      \"sonar.request", "$ per 1,000 tokens\",\n      \"sonar.request"), ["sonar"], /unit/);
+  const prices = parse(parsePerplexity, text, ["perplexity/sonar"]);
+  assert.deepEqual(prices.get("perplexity/sonar"), { input: 0.25, cached_input: 0.0625, output: 2.5 });
+  // Resold models carry the same prefix in another tab, and are not Perplexity's.
+  assert.equal(prices.has("perplexity/nemotron-3.5-super-120b-a12b"), false);
+  assert.deepEqual([...prices.keys()], ["perplexity/sonar"]);
+  const noCache = replaceOnce(text, "| 2.50 | 0.0625 |", "| 2.50 | — |");
+  assert.deepEqual(parse(parsePerplexity, noCache, ["perplexity/sonar"]).get("perplexity/sonar"), { input: 0.25, output: 2.5 });
+  assertFails(parsePerplexity, replaceOnce(text, "| 0.0625 | — |", "| 0.0625 | `flex`, `priority` |"), ["perplexity/sonar"], /service tiers/);
+  assertFails(parsePerplexity, replaceOnce(text, "| 0.25 | 2.50 |", "| 0.25 (≤200k)<br />0.50 (>200k) | 2.50 |"), ["perplexity/sonar"], /plain decimal/);
+  assertFails(parsePerplexity, replaceOnce(text, "`perplexity/sonar`", "`sonar`"), ["perplexity/sonar"], /unexpected model/);
+  assertFails(parsePerplexity, text.replaceAll("Cache read (\\$/1M)", "Cache hit (\\$/1M)"), ["perplexity/sonar"], /header changed/);
+  assertFails(parsePerplexity, replaceOnce(text, '<Tab title="Perplexity">', '<Tab title="Sonar">'), ["perplexity/sonar"], /Perplexity/);
 });
 
 test("cerebras: converts $ per token strings to $ per 1M", () => {
