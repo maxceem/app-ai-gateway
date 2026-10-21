@@ -50,9 +50,9 @@ function replaceOnce(text, from, to) {
 
 // Parsers -------------------------------------------------------------------
 
-test("openai: reads the standard, specialized and transcription tables", () => {
+test("openai: reads every standard, the specialized and the transcription tables", () => {
   const text = fixture("openai.md");
-  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "Whisper"];
+  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "Whisper"];
   const prices = parse(parseOpenai, text, wanted);
   assert.deepEqual(prices.get("gpt-5.6-sol"), {
     input: 4,
@@ -74,7 +74,11 @@ test("openai: reads the standard, specialized and transcription tables", () => {
     long_cached_input: 1,
     long_output: 45,
   });
+  // The plain table under the first standard one, with no heading of its own.
   assert.deepEqual(prices.get("gpt-5.4-mini"), { input: 0.75, output: 4.5, cached_input: 0.075 });
+  assert.deepEqual(prices.get("gpt-5.2-pro"), { input: 21, output: 168 });
+  // The Cyber family's standard table, with the 30-minute cache write.
+  assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625 });
   // The standard specialized table, not the Fast one below it.
   assert.deepEqual(prices.get("gpt-5.3-codex"), { input: 1.75, output: 14, cached_input: 0.175 });
   // An embedding generates nothing, so its missing output price is 0.
@@ -84,6 +88,8 @@ test("openai: reads the standard, specialized and transcription tables", () => {
   // Listed but not read, so unknown cells such as "Free" do not matter.
   assert.equal(prices.get("gpt-6-astra"), null);
   assert.equal(prices.get("omni-moderation-latest"), null);
+  // A grouped table under its own heading is not a standard one.
+  assert.equal(prices.has("gpt-rosalind-research"), false);
 });
 
 test("openai: fails on a renamed header, an added column, an unknown cell or a duplicate", () => {
@@ -92,7 +98,7 @@ test("openai: fails on a renamed header, an added column, an unknown cell or a d
   assertFails(parseOpenai, replaceOnce(text, "| Model | Short context input |", "| Model | Short-context input |"), wanted, /header changed/);
   assertFails(
     parseOpenai,
-    text.replace(/\| Long context output \|\n\| --- /u, "| Long context output | Notes |\n| --- | --- "),
+    text.replace(/\| Long context 12h write \|\n\| --- /u, "| Long context 12h write | Notes |\n| --- | --- "),
     wanted,
     /header changed/,
   );
@@ -101,10 +107,14 @@ test("openai: fails on a renamed header, an added column, an unknown cell or a d
   assertFails(parseOpenai, replaceOnce(text, "Short context: ≤272K", "Short context: ≤256K"), wanted, /threshold/);
   assertFails(
     parseOpenai,
-    replaceOnce(text, "| gpt-5.4-mini |", "| gpt-5.6-sol | $5.00 | $0.50 | $6.25 | $30.00 | - | - | - | - |\n| gpt-5.4-mini |"),
+    replaceOnce(text, "| gpt-5.4-mini |", "| gpt-5.6-sol | $5.00 | $30.00 | $0.50 |\n| gpt-5.4-mini |"),
     wanted,
     /twice/,
   );
+  // The same model in two families' tables must carry the same price.
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 | $10.00 | $8.00 | $30.00 | $0.80 | $10.00 | $20.00 |\n| gpt-5.6-cyber", "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 | $10.00 | $8.00 | $31.00 | $0.80 | $10.00 | $20.00 |\n| gpt-5.6-cyber"), wanted, /twice/);
+  assertFails(parseOpenai, replaceOnce(text, "| Model | Input | Output | Cached input |", "| Model | Input | Cached input | Output |"), wanted, /header changed/);
+  assertFails(parseOpenai, text.replaceAll("### Standard pricing data", "### Standard pricing"), wanted, /missing/);
   assertFails(parseOpenai, replaceOnce(text, "Transcription models", "Speech models"), wanted, /missing/);
 });
 
@@ -126,15 +136,15 @@ test("openai: fails on an image table it was not written against", () => {
   const text = fixture("openai.md");
   const wanted = ["gpt-image-2"];
   assertFails(parseOpenai, replaceOnce(text, "Image generation models", "Image models"), wanted, /missing/);
-  assertFails(parseOpenai, replaceOnce(text, "Prices per 1M tokens.\n\nStandard", "Prices per image.\n\nStandard"), wanted, /Standard per-1M-token/);
+  assertFails(parseOpenai, replaceOnce(text, "Image generation models\n\nPrices per 1M tokens.", "Image generation models\n\nPrices per image."), wanted, /Standard per-1M-token/);
   assertFails(parseOpenai, replaceOnce(text, "\nStandard\n\n      For image", "\nBatch\n\n      For image"), wanted, /Standard per-1M-token/);
-  assertFails(parseOpenai, replaceOnce(text, "| Model | Modality | Input | Cached input | Output |", "| Model | Modality | Input | Cached input | Output / image |"), wanted, /header changed/);
+  assertFails(parseOpenai, replaceOnce(text, "| Model | Modality | Input | Output | Cached input |", "| Model | Modality | Input | Output / image | Cached input |"), wanted, /header changed/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Audio | $5.00 |"), wanted, /unexpected modality "Audio"/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Image | $5.00 |"), wanted, /two Image rows/);
-  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 | $30.00 |", "| gpt-image-2 | Image | $8.00 | $2.00 | $0.04 / image |"), wanted, /plain decimal/);
-  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 | $30.00 |", "| gpt-image-2 | Image | $8.00 | $2.00 | - |"), wanted, /image output price/);
-  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $2.00 |", "| gpt-image-2 | Image | $8.00 | - |"), wanted, /only one modality has a cached price/);
-  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 | $1.25 | - |\n", ""), wanted, /both a Text and an Image row/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $30.00 | $2.00 |", "| gpt-image-2 | Image | $8.00 | $0.04 / image | $2.00 |"), wanted, /plain decimal/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $30.00 | $2.00 |", "| gpt-image-2 | Image | $8.00 | - | $2.00 |"), wanted, /image output price/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Image | $8.00 | $30.00 | $2.00 |", "| gpt-image-2 | Image | $8.00 | $30.00 | - |"), wanted, /only one modality has a cached price/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 | - | $1.25 |\n", ""), wanted, /both a Text and an Image row/);
 });
 
 test("anthropic: reads display names, footnotes and the 5-minute cache write", () => {
@@ -366,11 +376,11 @@ test("deepseek: reads the PEAK row of the transposed table", () => {
   assertFails(parseDeepseek, replaceOnce(text, "<td>$1.2</td>", "<td>$1.2 USD</td>"), ["deepseek-flash"], /not a price/);
 });
 
-test("perplexity: reads only Perplexity's own tab of the Agent API rate card", () => {
+test("perplexity: reads only Perplexity's own section of the Agent API rate card", () => {
   const text = fixture("perplexity.md");
   const prices = parse(parsePerplexity, text, ["perplexity/sonar"]);
   assert.deepEqual(prices.get("perplexity/sonar"), { input: 0.25, cached_input: 0.0625, output: 2.5 });
-  // Resold models carry the same prefix in another tab, and are not Perplexity's.
+  // Resold models carry the same prefix in another section, and are not Perplexity's.
   assert.equal(prices.has("perplexity/nemotron-3.5-super-120b-a12b"), false);
   assert.deepEqual([...prices.keys()], ["perplexity/sonar"]);
   const noCache = replaceOnce(text, "| 2.50 | 0.0625 |", "| 2.50 | — |");
@@ -379,7 +389,10 @@ test("perplexity: reads only Perplexity's own tab of the Agent API rate card", (
   assertFails(parsePerplexity, replaceOnce(text, "| 0.25 | 2.50 |", "| 0.25 (≤200k)<br />0.50 (>200k) | 2.50 |"), ["perplexity/sonar"], /plain decimal/);
   assertFails(parsePerplexity, replaceOnce(text, "`perplexity/sonar`", "`sonar`"), ["perplexity/sonar"], /unexpected model/);
   assertFails(parsePerplexity, text.replaceAll("Cache read (\\$/1M)", "Cache hit (\\$/1M)"), ["perplexity/sonar"], /header changed/);
-  assertFails(parsePerplexity, replaceOnce(text, '<Tab title="Perplexity">', '<Tab title="Sonar">'), ["perplexity/sonar"], /Perplexity/);
+  assertFails(parsePerplexity, replaceOnce(text, "\n**Perplexity**\n", "\n**Sonar**\n"), ["perplexity/sonar"], /Perplexity/);
+  // A section that lost its table never reads the next family's.
+  const moved = replaceOnce(replaceOnce(text, "**NVIDIA**", "**Perplexity**\n\n**NVIDIA**"), "\n**Perplexity**\n\n>", "\n**Other**\n\n>");
+  assertFails(parsePerplexity, moved, ["perplexity/sonar"], /table is missing/);
 });
 
 test("cerebras: converts $ per token strings to $ per 1M", () => {

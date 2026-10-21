@@ -16,31 +16,29 @@ The **Service tiers** column lists optional non-default tiers. An em dash means 
 
 A rate with a context-length range, such as `(≤272k)`, changes when the input is above that range. A single value applies at every context length.
 
-<Tip>
-  Looking for pre-configured model setups? See [**Presets**](/docs/agent-api/presets) — optimized for specific use cases.
-</Tip>
+> [!TIP]
+>
+> Looking for pre-configured model setups? See [**Presets**](/docs/agent-api/presets) — optimized for specific use cases.
 
-<Tabs>
-  <Tab title="NVIDIA">
-    <Card title="NVIDIA">
-      Nemotron 3.5 Super is a reasoning model with a 1,048,576-token context window and up to 131,072 output tokens. It accepts text input only.
-    </Card>
+**NVIDIA**
 
-    | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
-    | - | - | - | - | - | - |
-    | `perplexity/nemotron-3.5-super-120b-a12b` | 0.20 | 0.50 | 0.04 | — | — |
-  </Tab>
+> **NVIDIA**
+>
+> Nemotron 3.5 Super is a reasoning model with a 1,048,576-token context window and up to 131,072 output tokens. It accepts text input only.
 
-  <Tab title="Perplexity">
-    <Card title="Perplexity">
-      Perplexity's grounded search model.
-    </Card>
+| Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+| - | - | - | - | - | - |
+| `perplexity/nemotron-3.5-super-120b-a12b` | 0.20 | 0.50 | 0.04 | — | — |
 
-    | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
-    | - | - | - | - | - | - |
-    | `perplexity/sonar` | 0.25 | 2.50 | 0.0625 | — | — |
-  </Tab>
-</Tabs>
+**Perplexity**
+
+> **Perplexity**
+>
+> Perplexity's grounded search model.
+
+| Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+| - | - | - | - | - | - |
+| `perplexity/sonar` | 0.25 | 2.50 | 0.0625 | — | — |
 
 ## Service tiers
 

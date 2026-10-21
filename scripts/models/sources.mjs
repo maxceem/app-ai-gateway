@@ -140,7 +140,7 @@ export const SOURCES = {
   },
   moonshot: {
     official: {
-      url: "https://platform.moonshot.ai/docs/pricing/chat.md",
+      url: "https://platform.kimi.ai/docs/pricing/chat.md",
       type: MARKDOWN,
       parse: parseMoonshot,
     },
@@ -149,7 +149,9 @@ export const SOURCES = {
   },
   deepseek: {
     official: {
-      url: "https://api-docs.deepseek.com/quick_start/pricing",
+      // With the trailing slash: without it, the docs host has at times served
+      // another page's HTML under this path.
+      url: "https://api-docs.deepseek.com/quick_start/pricing/",
       type: "text/html",
       parse: parseDeepseek,
       // Retired name, still accepted and billed as deepseek-flash.

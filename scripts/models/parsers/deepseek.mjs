@@ -1,4 +1,4 @@
-// https://api-docs.deepseek.com/quick_start/pricing
+// https://api-docs.deepseek.com/quick_start/pricing/
 //
 // Server-rendered HTML with one transposed table: a column per model and, in
 // its PRICING block, an OFF-PEAK and a PEAK row per token kind. The catalog

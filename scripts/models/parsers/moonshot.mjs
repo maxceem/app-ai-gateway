@@ -1,4 +1,4 @@
-// https://platform.moonshot.ai/docs/pricing/chat.md
+// https://platform.kimi.ai/docs/pricing/chat.md
 //
 // Each table is a JSX `<DocTable columns={[…]} rows={[…]} />`. It is never
 // evaluated: the column titles must be one of the layouts below exactly, and
