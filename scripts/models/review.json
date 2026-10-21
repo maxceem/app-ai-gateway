@@ -1,19 +1,19 @@
 [
   {
-    "provider": "perplexity",
-    "model": "perplexity/sonar",
-    "action": "skip",
+    "provider": "openai",
+    "model": "gpt-5.6-cyber",
+    "action": "add",
     "kind": "text",
-    "reason": "Skip: a stable Sonar alias is already in the catalog, so this is a dated snapshot of that model.",
+    "reason": "Add as a current text model; the supplied information gives no exclusion rule.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   },
   {
-    "provider": "together",
-    "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "provider": "openai",
+    "model": "gpt-5.5-cyber",
     "action": "add",
     "kind": "text",
-    "reason": "Add this current text model; the catalog has no matching versioned ID, and an older or newer generation is not a reason to skip it.",
+    "reason": "Add as a current text model; the supplied information gives no exclusion rule.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }
