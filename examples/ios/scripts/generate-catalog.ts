@@ -24,18 +24,22 @@ const prices = JSON.parse(readFileSync(join(root, "src/usage/models.json"), "utf
 const today = new Date().toISOString().slice(0, 10);
 
 /** What the demo does with a model, from the kind the catalog gives it. */
-function kind(price: Price): "chat" | "transcription" | "image" | undefined {
-  // Speech, embeddings and realtime models are not something the demo shows.
+function kind(price: Price): "chat" | "transcription" | "image" | "voice" | undefined {
+  // Speech and embedding models are not something the demo shows.
   switch (price.kind) {
     case "text": return "chat";
     case "image": return "image";
     case "transcription": return "transcription";
+    // A realtime conversation is billed by its text and audio tokens. A
+    // realtime model priced by the minute, such as live transcription, is not
+    // one the gateway holds a conversation with.
+    case "realtime": return price.audio_output === undefined ? undefined : "voice";
     default: return undefined;
   }
 }
 
 const providers = PROVIDER_TYPES.map((type) => {
-  const entry = { type, label: providerDescriptor(type).label, chat: [] as string[], transcription: [] as string[], image: [] as string[] };
+  const entry = { type, label: providerDescriptor(type).label, chat: [] as string[], transcription: [] as string[], image: [] as string[], voice: [] as string[] };
   for (const [id, price] of Object.entries(prices[type] ?? {})) {
     if (price.retirement_date && price.retirement_date <= today) continue;
     const k = kind(price);

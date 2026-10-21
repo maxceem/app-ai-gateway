@@ -18,6 +18,8 @@ export const PRICE_FIELDS = [
   "audio_input",
   "video_input",
   "image_output",
+  "audio_output",
+  "cached_audio_input",
   "long_input",
   "long_cached_input",
   "long_cache_write",

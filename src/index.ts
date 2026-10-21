@@ -17,8 +17,13 @@ import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
+import { ttlCache } from "./core/ttl-cache";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
+import { serveRealtime, discoverRealtime } from "./realtime/serve";
+import { REALTIME_BACKEND_CONTRACT } from "./realtime/backend";
+import { RealtimeSession } from "./do/RealtimeSession";
+import { INFERENCE_ROUTES } from "./contracts/inference-routes";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
@@ -35,7 +40,9 @@ import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
 
-export { EndpointRateLimiter, OrgQuota, UserLimiter };
+export { RealtimeBackend } from "./realtime/rpc";
+
+export { EndpointRateLimiter, OrgQuota, UserLimiter, RealtimeSession };
 
 type AppEnv = {
   Bindings: Env;
@@ -46,12 +53,43 @@ const app = new Hono<AppEnv>();
 
 app.use("*", requestScope);
 
-app.get("/v1/healthz", (c) => c.json({
-  ok: true,
-  service: "app-ai-gateway",
-  vault: vaultStatus(c.env),
-  email: emailDeliveryStatus(c.env),
-} satisfies HealthResponse));
+/**
+ * Whether the database and the Durable Object namespace answer, and which
+ * realtime release is active. The route is public, so one isolate probes at
+ * most once every five seconds however often it is called; a deploy polls it
+ * every second and a half, and needs only a fresh `buildId`, which is read from
+ * the Worker's own binding on every call. One isolate serves one deployment,
+ * so the one entry needs no key.
+ */
+const healthProbes = ttlCache<"probe", Promise<{ active_realtime_id: string | null } | null>>({
+  name: "health-probe",
+  ttlMs: 5_000,
+  maxEntries: 1,
+});
+
+function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | null> {
+  const cached = healthProbes.get("probe");
+  if (cached) return cached;
+  const state = (async () => {
+    const row = await env.DB.prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1").first<{ active_realtime_id: string | null }>();
+    await env.ORG_QUOTA.getByName("__deployment_health__").usage("health");
+    return row;
+  })();
+  healthProbes.set("probe", state);
+  // A failure is kept for one second instead of five, so a blip does not read
+  // as a five-second outage, and an outage still costs each isolate at most
+  // one probe a second.
+  state.catch(() => { if (healthProbes.get("probe") === state) healthProbes.set("probe", state, { ttlMs: 1_000 }); });
+  return state;
+}
+
+app.get("/v1/healthz", async (c) => {
+  c.header("Cache-Control", "no-store");
+  const state = await healthProbe(c.env);
+  return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env), email: emailDeliveryStatus(c.env),
+    buildId: c.env.GATEWAY_BUILD_ID ?? "development", ready: state !== null && vaultStatus(c.env) === "ok" && Boolean(c.env.USER_LIMITER && c.env.ENDPOINT_RATE_LIMITER),
+    backendContract: REALTIME_BACKEND_CONTRACT, realtimeReleaseId: state?.active_realtime_id ?? null } satisfies HealthResponse);
+});
 
 /**
  * Keeps the operator surface off the host application clients call.
@@ -139,8 +177,10 @@ app.route("/v1/apps/:app/auth", authRoutes);
 // credential, plan, admission, provider — in `./execution/serve`. Named
 // endpoints are POST-only, so any other method is an unrouted path and is
 // answered before a body is read or a credential checked.
-app.all("/v1/apps/:app/proxy/:provider/*", serveProxy);
-app.post("/v1/apps/:app/endpoints/:slug", serveEndpoint);
+app.all(INFERENCE_ROUTES.proxyProviderRequest, serveProxy);
+app.all(INFERENCE_ROUTES.connectRealtime, serveRealtime);
+app.get(INFERENCE_ROUTES.discoverRealtime, discoverRealtime);
+app.post(INFERENCE_ROUTES.callNamedEndpoint, serveEndpoint);
 
 app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);

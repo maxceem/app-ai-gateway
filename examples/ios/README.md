@@ -1,16 +1,16 @@
 # App AI Gateway Demo for iOS
 
 A small SwiftUI app that sends chat, image generation and transcription
-requests to many providers through App AI Gateway, using the
+requests to many providers, and holds live voice conversations with OpenAI's
+realtime models, through App AI Gateway, using the
 [Swift package](../../app-ai-gateway-swift). Its history stays on the device.
 
 To run it on your iPhone through a gateway app of your own, follow
 [Run the demo app on your iPhone](https://docs.appaigateway.com/demo-ios-app/).
 
-Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. It starts with
-**Simulated responses** on, so every screen works without a gateway. To use
-yours, open **Settings** from the sidebar, turn simulated responses off, and
-fill in your gateway URL and app ID:
+Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. Every request goes
+through your gateway, so open **Settings** from the sidebar first and fill in
+your gateway URL and app ID:
 
 - **App Attest** is what a real app uses. It needs a real device: set your team
   and a bundle ID of your own under **Signing & Capabilities**, and register
@@ -31,11 +31,15 @@ stands on its own:
 | `ChatAPI.swift` | Streaming chat in OpenAI Chat Completions and Anthropic Messages |
 | `TranscriptionAPI.swift` | Uploading a recording as multipart form data |
 | `ImageAPI.swift` | Image generation: OpenAI-style, and Gemini's `generateContent` |
+| `RealtimeAPI.swift` | Opening a realtime WebSocket, and reading the gateway's `gateway.error` |
 | `ProviderPaths.swift` | The path each provider type serves each capability at |
 | `Failure+Gateway.swift` | Telling a gateway refusal from a provider's own error |
 
 The rest is the app: `UI/` for the screens, `Store/` for settings and the
-history, `Simulated/` for the on-device answers.
+history. `Store/VoiceConversation.swift`
+drives a voice chat in OpenAI's realtime events, and `Store/VoiceAudio.swift`
+turns the microphone into the 24 kHz PCM they carry and plays the answers.
+Voice chat needs **Realtime sessions** turned on in your app's settings.
 
 ## The model list
 

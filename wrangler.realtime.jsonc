@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway-realtime-local",
+  "main": "src/realtime/worker.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "REALTIME_RELEASE_ID": "local", "GATEWAY_ORIGIN": "http://localhost:8787" },
+  "services": [{ "binding": "BACKEND", "service": "app-ai-gateway", "entrypoint": "RealtimeBackend" }],
+  "durable_objects": { "bindings": [{ "name": "REALTIME_SESSION", "class_name": "RealtimeSession" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RealtimeSession"] }],
+  "observability": { "enabled": true, "logs": { "enabled": true }, "traces": { "enabled": true, "head_sampling_rate": 0.01 } }
+}

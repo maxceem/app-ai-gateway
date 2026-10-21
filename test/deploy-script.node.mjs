@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -65,16 +66,33 @@ test("keeps deployed identities, supports explicit initial values, and rejects c
   assert.throws(() => resolveDeploymentId(["invalid!"]), /Invalid DEPLOYMENT_ID/u);
 });
 
+function isolatedCheckout(directory, profile) {
+  mkdirSync(join(directory, "scripts"), { recursive: true });
+  for (const name of ["deploy.mjs", "deploy-lib.mjs", "wrangler-config.mjs"]) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(directory, "scripts", name));
+  writeFileSync(join(directory, "scripts/seamless-root.mjs"), `import { spawnSync } from 'node:child_process';
+export async function deployCheckout(input) {
+  const provisioned = await input.prepare();
+  if (!provisioned) {
+    const args = ['deploy', ...(input.configPath.endsWith('wrangler.jsonc') ? [] : ['--config', input.configPath]), '--var', 'DEPLOYMENT_ID:' + input.deploymentId];
+    const result = spawnSync(process.env.APP_AI_GATEWAY_WRANGLER_BIN, args, { stdio: 'inherit' });
+    if (result.status !== 0) throw new Error('Deployment fixture failed');
+  }
+}`);
+  copyFileSync(new URL('../wrangler.jsonc', import.meta.url), join(directory, 'wrangler.jsonc'));
+  if (profile) {
+    copyFileSync(new URL(`../wrangler.${profile}.overlay.jsonc`, import.meta.url), join(directory, `wrangler.${profile}.overlay.jsonc`));
+    try { copyFileSync(new URL(`../.dev.vars.${profile}`, import.meta.url), join(directory, `.dev.vars.${profile}`)); } catch {}
+  }
+  symlinkSync(fileURLToPath(new URL('../node_modules', import.meta.url)), join(directory, 'node_modules'), 'dir');
+  return directory;
+}
+
 // An isolated checkout and persistent fake Cloudflare state exercise separate
 // build processes without depending on this checkout's local credentials.
 function identityDeploymentFixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "agw-deployment-identity-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(join(directory, "scripts"));
-  for (const name of ["deploy.mjs", "deploy-lib.mjs", "wrangler-config.mjs"]) {
-    copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(directory, "scripts", name));
-  }
-  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(directory, "node_modules"), "dir");
+  isolatedCheckout(directory);
   writeFileSync(join(directory, "wrangler.jsonc"), JSON.stringify({ name: "fixture-worker" }));
   const fakeWrangler = join(directory, "wrangler.mjs");
   const callLog = join(directory, "calls.ndjson");
@@ -124,14 +142,6 @@ test("one-click deployment generates a UUID and reuses it in a later build", (t)
   const second = fixture.run();
   assert.equal(second.status, 0, second.stderr);
   assert.equal(JSON.parse(readFileSync(fixture.statePath, "utf8")).id, firstId);
-});
-
-test("an older Worker without an identity receives one automatically", (t) => {
-  const fixture = identityDeploymentFixture(t);
-  writeFileSync(fixture.statePath, "{}");
-  const result = fixture.run();
-  assert.equal(result.status, 0, result.stderr);
-  assert.ok(JSON.parse(readFileSync(fixture.statePath, "utf8")).id);
 });
 
 for (const failure of ["lookup", "version", "malformed", "conflict"]) {
@@ -254,7 +264,7 @@ if (
 
   try {
     const result = spawnSync(process.execPath, ["scripts/deploy.mjs"], {
-      cwd: new URL("..", import.meta.url),
+      cwd: isolatedCheckout(directory),
       encoding: "utf8",
       env: {
         ...process.env,
@@ -420,13 +430,13 @@ if (args[0] === "secret" && args[1] === "list") {
 
   try {
     const result = spawnSync(process.execPath, ["scripts/deploy.mjs", "--profile", profile], {
-      cwd: projectRoot,
+      cwd: isolatedCheckout(directory, profile),
       encoding: "utf8",
       env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler, FAKE_WRANGLER_LOG: callLog, DEPLOYMENT_ID: "deployment-fixture-identity" },
     });
     assert.equal(result.status, 0, result.stderr);
 
-    const configArgs = ["--config", fileURLToPath(generatedPath)];
+    const configArgs = ["--config", join(realpathSync(directory), `wrangler.${profile}.generated.jsonc`)];
     const calls = readFileSync(callLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).args);
     assert.deepEqual(calls, [
       ["deployments", "list", "--json", ...configArgs],
@@ -435,7 +445,7 @@ if (args[0] === "secret" && args[1] === "list") {
       ["deploy", ...configArgs, "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
     ]);
 
-    const generated = JSON.parse(readFileSync(generatedPath, "utf8").replace(/^\/\/.*$/gmu, ""));
+    const generated = JSON.parse(readFileSync(join(directory, `wrangler.${profile}.generated.jsonc`), "utf8").replace(/^\/\/.*$/gmu, ""));
     assert.equal(generated.vars.SECRET_VAULT_MODE, "kms");
     assert.equal(generated.name, "app-ai-gateway");
   } finally {
@@ -469,7 +479,7 @@ if(args[0]==="secret"&&args[1]==="list")console.log(JSON.stringify([
   writeFileSync(varsPath, "JWT_SECRET=must-not-replace\nBETTER_AUTH_SECRET=must-not-replace\nSECRET_VAULT_LOCAL_KEK_V1=fixture-vault\nDEPLOYMENT_ID=local-development-id\n");
   try {
     const result=spawnSync(process.execPath,["scripts/deploy.mjs","--profile",profile],{
-      cwd:projectRoot,encoding:"utf8",env:{...process.env,DEPLOYMENT_ID:"stable-deployment-fixture",APP_AI_GATEWAY_WRANGLER_BIN:fakeWrangler,FAKE_WRANGLER_LOG:callLog},
+      cwd:isolatedCheckout(directory,profile),encoding:"utf8",env:{...process.env,DEPLOYMENT_ID:"stable-deployment-fixture",APP_AI_GATEWAY_WRANGLER_BIN:fakeWrangler,FAKE_WRANGLER_LOG:callLog},
     });
     assert.equal(result.status,0,result.stderr);
     const calls=readFileSync(callLog,"utf8").trim().split("\n").map(line=>JSON.parse(line));

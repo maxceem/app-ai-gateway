@@ -144,6 +144,27 @@ function registeredKey(env: Env, appId: string, keyId: string): Promise<Register
 }
 
 /**
+ * The install's registered key, as long as the application still accepts it:
+ * registered, and in an environment the application still allows. Refused
+ * with `attest_failed` otherwise.
+ */
+export async function requireRegisteredKey(env: Env, app: AppRecord, installId: string): Promise<RegisteredKey> {
+  const authentication = app.config.authentication;
+  if (authentication.type !== "apple_app_attest") {
+    throw new GatewayError(403, "attest_failed", "This application does not sign requests with App Attest");
+  }
+  const key = await registeredKey(env, app.id, installId);
+  if (!key) throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
+  // An assertion carries no aaguid, so the environment recorded at
+  // registration is the only record of it; withdrawing one stops its keys on
+  // their next request.
+  if (!authentication.app_attest.environments.includes(key.environment)) {
+    throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
+  }
+  return key;
+}
+
+/**
  * Verifies one request's proof against the install its token names, and
  * answers the assertion's counter for the install's limiter to judge.
  *
@@ -166,14 +187,7 @@ export async function verifyRequestProof(input: {
     throw new GatewayError(403, "attest_failed", "This application does not sign requests with App Attest");
   }
   const proof = parseProof(input.header);
-  const key = await registeredKey(input.env, app.id, identity.installId);
-  if (!key) throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
-  // An assertion carries no aaguid, so the environment recorded at
-  // registration is the only record of it; withdrawing one stops its keys on
-  // their next request.
-  if (!authentication.app_attest.environments.includes(key.environment)) {
-    throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
-  }
+  const key = await requireRegisteredKey(input.env, app, identity.installId);
   // The path and query as the runtime's WHATWG parser left them, which is
   // also the form the Swift package normalizes its URL to before signing; the
   // shared fixtures in app-ai-gateway-swift/Tests pin the two together.

@@ -293,3 +293,13 @@ export function narrowedCapability(
       : base.endpointStyles,
   };
 }
+
+/** Separate from HTTP ApiStyle: sockets carry provider-native event streams. */
+export const REALTIME_PROTOCOLS = ["openai_realtime", "gemini_live"] as const;
+export type RealtimeProtocol = (typeof REALTIME_PROTOCOLS)[number];
+export function realtimeProtocols(route: ProviderRoute | null, provider: ProviderType, customOrigin = false): RealtimeProtocol[] {
+  // Gemini remains unavailable until a current profile passes live conformance.
+  // Cloudflare AI Gateway relays OpenAI's realtime events unchanged.
+  const official = route === "direct" ? !customOrigin : route === "cf_aig";
+  return official && provider === "openai" ? ["openai_realtime"] : [];
+}

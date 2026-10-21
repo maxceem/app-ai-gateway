@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// A few made-up sessions, so the sidebar has something in it.
 @MainActor
@@ -8,7 +8,7 @@ enum SampleHistory {
         let gpt = ModelChoice(provider: "openai", model: "gpt-5.6-sol")
         let banana = ModelChoice(provider: "gemini", model: "gemini-nano-banana-2.1")
         let transcribe = ModelChoice(provider: "openai", model: "gpt-transcribe")
-        let image = SimulatedBackend.render(prompt: "A fox reading a newspaper in a Paris café, watercolor", aspect: .square)
+        let image = render(prompt: "A fox reading a newspaper in a Paris café, watercolor", aspect: .square)
         let hour: TimeInterval = 3600
 
         return [
@@ -45,5 +45,25 @@ enum SampleHistory {
                 """, model: gpt),
             ]),
         ]
+    }
+
+    /// A gradient picked from the prompt, so each prompt gets its own picture.
+    private static func render(prompt: String, aspect: ImageAspect) -> Data {
+        let seed = prompt.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF }
+        let hue = Double(seed % 360) / 360
+        let canvas = ZStack {
+            LinearGradient(
+                colors: [Color(hue: hue, saturation: 0.55, brightness: 0.95),
+                         Color(hue: (hue + 0.18).truncatingRemainder(dividingBy: 1), saturation: 0.7, brightness: 0.6)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            Circle().fill(.white.opacity(0.18)).frame(width: 260).offset(x: 120, y: -140)
+            Circle().fill(.white.opacity(0.12)).frame(width: 180).offset(x: -140, y: 160)
+            Image(systemName: "sparkles").font(.system(size: 120, weight: .light)).foregroundStyle(.white.opacity(0.9))
+        }
+        .frame(width: 512 * min(aspect.ratio, 1), height: 512 / max(aspect.ratio, 1))
+        let renderer = ImageRenderer(content: canvas)
+        renderer.scale = 2
+        return renderer.uiImage?.pngData() ?? Data()
     }
 }

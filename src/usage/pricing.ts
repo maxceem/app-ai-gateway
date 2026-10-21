@@ -16,7 +16,7 @@ import { type ProviderType, reportsCost } from "../shared/providers";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 
-interface Price {
+export interface Price {
   /** What the model does, which decides the custom endpoints it may serve. */
   kind: ModelKind;
   input?: number;
@@ -33,6 +33,8 @@ interface Price {
    * less. Absent means every output token bills at `output`.
    */
   image_output?: number;
+  audio_output?: number;
+  cached_audio_input?: number;
   cached_input?: number;
   cache_write?: number;
   per_minute?: number;
@@ -105,18 +107,14 @@ function catalogPrice(provider: ProviderType, model: string): Price | undefined 
  * overrides win, then the deployment-global catalog. A model priced by neither
  * never proxies unless its route reports cost, so `cost_usd` is never NULL.
  */
-function modelPrice(
+export function modelPrice(
   provider: ProviderType,
   model: string,
   overrides?: ProviderPricing | null,
 ): Price | undefined {
   const override = lookup(overrides, model);
   if (override) {
-    return {
-      kind: catalogKind(provider, model, overrides) ?? "text",
-      input: override.input,
-      output: override.output,
-    };
+    return { ...override, kind: catalogKind(provider, model, overrides) ?? "text" };
   }
   return catalogPrice(provider, model);
 }
@@ -224,7 +222,7 @@ export function reportsPricedMeasure(
 }
 
 const INPUT_RATES = { image: "image_input", audio: "audio_input", video: "video_input" } as const;
-const OUTPUT_RATES = { image: "image_output" } as const;
+const OUTPUT_RATES = { image: "image_output", audio: "audio_output" } as const;
 
 /** The modalities a model prices apart on one side, with their rates. */
 function modalityRates(
@@ -279,7 +277,7 @@ export function pricesModalities(
 ): boolean {
   const price = modelPrice(provider, model, overrides);
   return price !== undefined
-    && (modalityRates(price, INPUT_RATES).length > 0 || modalityRates(price, OUTPUT_RATES).length > 0);
+    && (modalityRates(price, INPUT_RATES).length > 0 || modalityRates(price, OUTPUT_RATES).length > 0 || price.cached_audio_input !== undefined);
 }
 
 export function computeCost(
@@ -313,7 +311,7 @@ export function computeCost(
     : (price.cache_write ?? inputPrice);
   return (
     sideCost(usage.inputTokens, inputPrice, modalityRates(price, INPUT_RATES), usage.modalityTokens?.input) +
-    usage.cachedInputTokens * cachedPrice +
+    sideCost(usage.cachedInputTokens, cachedPrice, modalityRates(price, { audio: "cached_audio_input" }), usage.modalityTokens?.cachedInput) +
     usage.cacheWriteTokens * cacheWritePrice +
     sideCost(usage.outputTokens, outputPrice, modalityRates(price, OUTPUT_RATES), usage.modalityTokens?.output)
   ) / 1_000_000;

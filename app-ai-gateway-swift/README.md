@@ -9,7 +9,7 @@ Add `https://github.com/maxceem/app-ai-gateway-swift` in Xcode's **File → Add
 Package Dependencies**, or add this dependency to `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.6.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.7.0")
 ```
 
 Add the `AppAIGateway` product to your target.
@@ -129,10 +129,19 @@ gets it whenever the app verifies every request. If you send requests built
 with `authorizedRequest`, handle a `401` yourself: call `discardAccessToken()`
 and build the request again, once.
 
+### Realtime sessions (1.7)
+
+1.7 adds provider-native realtime WebSockets. `authorizedRealtimeRequest(provider:model:)`
+discovers the connection URL with a signed request, then builds the WebSocket
+handshake, signed as well where the app verifies every request. Open it with
+`URLSession.webSocketTask(with:)`, and build a new one for every connection,
+a reconnect included: each handshake's proof is accepted once.
+
 Requires iOS 16 or macOS 13. App Attest needs a real device.
 
 - Guide: https://docs.appaigateway.com/integrate/ios/
 - Errors and limits: https://docs.appaigateway.com/integrate/errors/
+- Realtime sessions: https://docs.appaigateway.com/integrate/realtime/
 
 This repository is published from the `app-ai-gateway-swift` directory of
 [maxceem/app-ai-gateway](https://github.com/maxceem/app-ai-gateway). Open
@@ -142,7 +151,7 @@ To release a new version, update `app-ai-gateway-swift/VERSION` in the source
 repository and merge the pull request into `main`. After tests pass, the
 publishing workflow syncs this repository and creates the matching immutable
 version tag. Changes without a version bump sync `main` without changing any
-released version. The current version is `1.6.0`. A failed publish can be retried
+released version. The current version is `1.7.0`. A failed publish can be retried
 with the source repository's **Publish Swift package** workflow.
 
 Licensed under the Apache License 2.0.

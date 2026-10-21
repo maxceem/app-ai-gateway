@@ -61,7 +61,7 @@ struct GatewayBackend: AIBackend {
         return bytes.lines
     }
 
-    private func slug(_ model: ModelChoice) -> String {
+    func slug(_ model: ModelChoice) -> String {
         slugs[model.provider] ?? model.provider
     }
 

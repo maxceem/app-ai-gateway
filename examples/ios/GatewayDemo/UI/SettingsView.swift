@@ -51,13 +51,6 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle(isOn: $settings.values.simulated) {
-                        Text("Simulate responses")
-                        Text("When on, requests don't go to your gateway: answers are made up on this device.")
-                    }
-                }
-
-                Section {
                     Button("Delete all history", role: .destructive) { confirmingDelete = true }
                 } footer: {
                     Text("Chats, images and transcripts are stored only on this device.")
@@ -132,6 +125,7 @@ private struct ProviderRow: View {
             case .chat: "Chat"
             case .transcription: "Transcription"
             case .image: "Images"
+            case .voice: "Voice"
             }
         }.joined(separator: " · ")
     }

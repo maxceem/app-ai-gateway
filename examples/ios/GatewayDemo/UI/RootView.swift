@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// The main screen over the sidebar. It slides right to show the sidebar,
-/// on the menu button or a drag from the left edge.
+/// on the menu button or a swipe right anywhere on it.
 struct RootView: View {
     @Environment(Navigator.self) private var nav
-    @GestureState private var drag: CGFloat = 0
+    @State private var drag: CGFloat = 0
 
     var body: some View {
         @Bindable var nav = nav
@@ -40,20 +40,14 @@ struct RootView: View {
                         }
                     }
                     .offset(x: offset)
-                    .gesture(
-                        DragGesture(minimumDistance: 12)
-                            .updating($drag) { value, state, _ in
-                                let horizontal = abs(value.translation.width) > abs(value.translation.height)
-                                if horizontal, nav.sidebarOpen || value.startLocation.x < 32 {
-                                    state = value.translation.width
-                                }
-                            }
-                            .onEnded { value in
-                                guard nav.sidebarOpen || value.startLocation.x < 32 else { return }
-                                let end = (nav.sidebarOpen ? width : 0) + value.predictedEndTranslation.width
-                                nav.sidebarOpen = end > width / 2
-                            }
-                    )
+                    .gesture(SidebarSwipe(open: nav.sidebarOpen) { translation in
+                        drag = translation
+                    } ended: { translation, velocity in
+                        // Where a flick would carry it, about a fifth of a second on.
+                        let end = (nav.sidebarOpen ? width : 0) + translation + velocity * 0.2
+                        nav.sidebarOpen = end > width / 2
+                        drag = 0
+                    })
             }
             .animation(.spring(response: 0.36, dampingFraction: 0.88), value: nav.sidebarOpen)
             .animation(.interactiveSpring, value: drag)
@@ -62,6 +56,54 @@ struct RootView: View {
         .sheet(isPresented: $nav.showSettings) { SettingsView() }
         .onChange(of: nav.sidebarOpen) { _, open in
             if open { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+        }
+    }
+}
+
+/// A sideways swipe that slides the sidebar: right to open it, left to close.
+///
+/// A UIKit pan rather than a SwiftUI drag, for two things a drag cannot do:
+/// it starts only when the finger moves mostly sideways, so a conversation
+/// still scrolls under it, and once started it cancels the touch beneath it,
+/// so a swipe across a starter prompt does not also send it.
+private struct SidebarSwipe: UIGestureRecognizerRepresentable {
+    var open: Bool
+    var changed: (CGFloat) -> Void
+    var ended: (_ translation: CGFloat, _ velocity: CGFloat) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.open = open
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let translation = recognizer.translation(in: recognizer.view).x
+        switch recognizer.state {
+        case .changed: changed(translation)
+        case .ended, .cancelled: ended(translation, recognizer.velocity(in: recognizer.view).x)
+        default: break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var open = false
+
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            // Mostly sideways, and toward where the sidebar can go.
+            return abs(velocity.x) > abs(velocity.y) * 1.5 && (open ? velocity.x < 0 : velocity.x > 0)
+        }
+
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
         }
     }
 }
@@ -78,6 +120,7 @@ struct MainView: View {
                 case .chat: ChatScreen(itemID: nav.itemID)
                 case .image: ImageScreen(itemID: nav.itemID)
                 case .transcription: TranscribeScreen(itemID: nav.itemID)
+                case .voice: VoiceScreen(itemID: nav.itemID)
                 }
             }
             .id("\(nav.kind.rawValue)-\(nav.itemID?.uuidString ?? "new")")

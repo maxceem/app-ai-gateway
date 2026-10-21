@@ -5,6 +5,11 @@ interface Env {
   JWT_SECRET: string;
   BETTER_AUTH_SECRET: string;
   DEPLOYMENT_ID?: string;
+  // Injected by the release engine, never shown in the setup form.
+  GATEWAY_BUILD_ID?: string;
+  // `seamless` runs realtime sessions in a Worker of their own per release;
+  // anything else, the default, has the gateway serve them itself.
+  REALTIME_RELEASES?: string;
   CLI_CONSOLE_ORIGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -89,6 +94,9 @@ declare namespace Cloudflare {
     JWT_SECRET: string;
     BETTER_AUTH_SECRET: string;
   DEPLOYMENT_ID?: string;
+  // Injected by the release engine, never shown in the setup form.
+  GATEWAY_BUILD_ID?: string;
+  REALTIME_RELEASES?: string;
   CLI_CONSOLE_ORIGIN?: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;

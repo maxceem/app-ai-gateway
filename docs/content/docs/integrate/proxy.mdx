@@ -176,3 +176,8 @@ whose request counts and, by default, spend are per install; it is `null` on
 a server app. `requests_today` is `null` when the app sets no per-user limit, because
 requests are then not counted. An app with no user identity answers
 `404 auth_method_not_supported`.
+
+## Realtime sessions
+
+Direct OpenAI `gpt-realtime` and `gpt-realtime-mini` conversations run over a
+WebSocket instead of this proxy. See [Realtime WebSockets](/integrate/realtime).

@@ -56,6 +56,8 @@ export async function repriceAppUsage(
       outputTokens: appUsageEvent.outputTokens,
       modalityTokens: appUsageEvent.modalityTokens,
       costUsd: appUsageEvent.costUsd,
+      costSource: appUsageEvent.costSource,
+      realtimeSessionId: appUsageEvent.realtimeSessionId,
       pricing: providerTable.pricing,
     })
     .from(appUsageEvent)
@@ -97,8 +99,9 @@ export async function repriceAppUsage(
     // A row recorded before modality records were kept says nothing about what
     // its tokens were. Where the price depends on that, any figure would be a
     // guess, and the highest-rate one could multiply a text request's cost.
+    const unresolvedRealtime = row.realtimeSessionId !== null && row.costSource === "unresolved";
     const unrecorded = row.modalityTokens === null && pricesModalities(provider, model, row.pricing);
-    const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded
+    const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded && !unresolvedRealtime
       ? computeCost(provider, model, { ...row, modalityTokens: row.modalityTokens ?? undefined }, row.pricing)
       : null;
     if (costUsd === null) {

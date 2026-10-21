@@ -1,7 +1,7 @@
 import Foundation
 
 enum Capability: String, Codable, CaseIterable, Sendable {
-    case chat, image, transcription
+    case chat, image, transcription, voice
 }
 
 /// The models the picker offers, generated from the gateway's price catalog by
@@ -12,6 +12,7 @@ struct CatalogProvider: Decodable, Identifiable {
     let chat: [String]
     let transcription: [String]
     let image: [String]
+    let voice: [String]
 
     var id: String { type }
 
@@ -20,6 +21,7 @@ struct CatalogProvider: Decodable, Identifiable {
         case .chat: chat
         case .transcription: transcription
         case .image: image
+        case .voice: voice
         }
     }
 
@@ -30,6 +32,7 @@ struct CatalogProvider: Decodable, Identifiable {
         case .chat: true
         case .transcription: ProviderPaths.transcription(type) != nil
         case .image: ProviderPaths.image(type, model: "") != nil
+        case .voice: ProviderPaths.realtime(type)
         }
     }
 }

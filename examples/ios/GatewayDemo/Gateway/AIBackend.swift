@@ -1,11 +1,12 @@
 import Foundation
 
-/// What the screens ask for. `GatewayBackend` sends it through App AI Gateway;
-/// `SimulatedBackend` answers on the device, so the app runs without one.
+/// What the screens ask for. `GatewayBackend` sends it through App AI Gateway.
 protocol AIBackend: Sendable {
     func chat(_ turns: [ChatTurn], model: ModelChoice) -> AsyncThrowingStream<String, Error>
     func transcribe(audio: Data, fileName: String, model: ModelChoice) async throws -> String
     func generateImage(prompt: String, aspect: ImageAspect, model: ModelChoice) async throws -> Data
+    /// Opens a realtime voice conversation: one WebSocket for its whole length.
+    func voice(model: ModelChoice) async throws -> any RealtimeSocket
 }
 
 /// A provider type and one of its model IDs, as the picker offers them.

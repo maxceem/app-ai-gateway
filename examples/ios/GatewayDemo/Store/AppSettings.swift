@@ -11,7 +11,6 @@ final class AppSettings {
     }
 
     struct Values: Codable, Equatable {
-        var simulated = true
         var baseURL = "https://api.appaigateway.com"
         var appID = ""
         var useAPIKey = false
@@ -49,14 +48,9 @@ final class AppSettings {
         Dictionary(uniqueKeysWithValues: ModelCatalog.providers.map { ($0.type, provider($0.type).slug) })
     }
 
-    /// The providers the picker offers for a capability. Simulated responses
-    /// offer every provider; your gateway, the ones you turned on.
+    /// The providers the picker offers for a capability: the ones you turned on.
     func providers(for capability: Capability) -> [CatalogProvider] {
-        ModelCatalog.providers.filter { entry in
-            entry.supports(capability)
-                && (values.simulated || provider(entry.type).enabled)
-                && (!entry.models(for: capability).isEmpty || !values.simulated)
-        }
+        ModelCatalog.providers.filter { $0.supports(capability) && provider($0.type).enabled }
     }
 
     // MARK: Models
@@ -79,6 +73,7 @@ final class AppSettings {
         .chat: ModelChoice(provider: "openai", model: "gpt-6-sol"),
         .image: ModelChoice(provider: "openai", model: "gpt-image-2"),
         .transcription: ModelChoice(provider: "openai", model: "gpt-transcribe"),
+        .voice: ModelChoice(provider: "openai", model: "gpt-realtime"),
     ]
 
     func select(_ choice: ModelChoice, for capability: Capability) {
@@ -92,7 +87,6 @@ final class AppSettings {
     /// The backend requests go to. The gateway one is kept while the settings
     /// stay the same, so its client keeps its token between requests.
     func backend() throws -> any AIBackend {
-        if values.simulated { return SimulatedBackend() }
         if let gateway, gateway.values == values, gateway.apiKey == apiKey { return gateway.backend }
         guard let url = URL(string: values.baseURL), url.scheme != nil, !values.appID.isEmpty else {
             throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")

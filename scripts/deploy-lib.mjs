@@ -1,18 +1,24 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
-export function deploymentVersionIds(output) {
+export function latestDeployment(output) {
   const deployments = JSON.parse(output);
   if (!Array.isArray(deployments)) throw new Error("Unexpected Wrangler deployment list");
-  if (deployments.length === 0) return [];
+  if (deployments.length === 0) return undefined;
   if (deployments.some((d) => typeof d?.created_on !== "string" || !Number.isFinite(Date.parse(d.created_on)))) {
     throw new Error("Unexpected Wrangler deployment dates");
   }
   const latest = deployments.reduce((a, b) => Date.parse(a.created_on) >= Date.parse(b.created_on) ? a : b);
-  const versions = latest.versions;
-  if (!Array.isArray(versions) || versions.length === 0
-    || versions.some((v) => typeof v?.version_id !== "string" || !v.version_id)) {
+  if (!Array.isArray(latest.versions) || latest.versions.length === 0
+    || latest.versions.some((v) => typeof v?.version_id !== "string" || !v.version_id)) {
     throw new Error("Unexpected Wrangler deployment versions");
   }
+  return latest;
+}
+
+export function deploymentVersionIds(output) {
+  const latest = latestDeployment(output);
+  if (!latest) return [];
+  const versions = latest.versions;
   return [...new Set(versions.map((v) => v.version_id))];
 }
 

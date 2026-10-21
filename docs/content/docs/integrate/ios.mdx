@@ -24,7 +24,7 @@ https://github.com/maxceem/app-ai-gateway-swift
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.6.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.7.0")
 ```
 
 Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
@@ -368,6 +368,16 @@ The client has already started waiting that window out, so show "try again in
 
 The full code list and what each one means for your app is on
 [Errors and limits](/integrate/errors).
+
+## Realtime sessions
+
+For a provider-native [realtime WebSocket](/integrate/realtime), build the
+handshake with `authorizedRealtimeRequest(provider:model:)`, in the package 1.7
+or later, and pass it to `URLSession.webSocketTask(with:)`. It discovers the
+connection URL and, where the app verifies App Attest on every request, signs
+the handshake like any other request, so build a new one for every connection.
+Each response the conversation generates counts as one request; the handshake
+and the audio do not.
 
 ## Server-side use of the package
 

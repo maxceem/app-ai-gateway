@@ -10,6 +10,8 @@ extension Failure {
         switch error {
         case let error as GatewayError:
             self.init(code: error.code.rawValue, message: error.message)
+        case let error as RealtimeRefusal:
+            self.init(code: error.code, message: error.message)
         case let error as ProviderError:
             self.init(code: error.status > 0 ? "HTTP \(error.status)" : "Not sent", message: error.message)
         case let error as URLError:

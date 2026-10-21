@@ -14,7 +14,7 @@ import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
 import type { SpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
-import { attemptAttribution, type ExecutionPlan } from "./plan";
+import { attemptAttribution, type AttemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 
 /**
@@ -69,11 +69,18 @@ export interface AdmissionInput {
   /**
    * The counter of the App Attest assertion the request was signed with,
    * which the install's limiter accepts once and refuses as a replay after.
-   * Null where nothing was signed: a server application, or an App Attest one
-   * whose `verify_on` is `token_exchange`.
+   * Null where nothing was signed: a server application, an App Attest one
+   * whose `verify_on` is `token_exchange`, or a realtime generation, whose
+   * session's handshake spent its counter when it was opened.
    */
   assertionCounter: number | null;
-  plan: ExecutionPlan;
+  attribution: AttemptAttribution;
+  endpointSlug: string | null;
+  admissionId?: string;
+  now?: number;
+  freshSpend?: boolean;
+  beforeClaim?: (input: import("../do/OrgQuota").QuotaAdmissionInput | null) => void | Promise<void>;
+  mayContinue?: () => boolean;
   appVersion: string | null;
   waitUntil: (promise: Promise<unknown>) => void;
 }
@@ -124,12 +131,21 @@ export function callerLimiter(
  * throws, and `onDuration` has reported the same figure by then.
  */
 export async function admitRequest(
+  input: Omit<AdmissionInput, "attribution" | "endpointSlug"> & { plan: ExecutionPlan },
+  onDuration: (durationMs: number) => void = () => {},
+): Promise<number> {
+  return admitGeneration({ ...input, attribution: attemptAttribution(input.plan.attempts[0]), endpointSlug: input.plan.endpointSlug }, onDuration);
+}
+
+export async function admitGeneration(
   input: AdmissionInput,
   onDuration: (durationMs: number) => void = () => {},
 ): Promise<number> {
   const start = performance.now();
-  const { env, app, identity, plan } = input;
-  const firstAttempt = plan.attempts[0];
+  const { env, app, identity } = input;
+  const ensureLive = () => {
+    if (input.mayContinue && !input.mayContinue()) throw new GatewayError(409, "conflict", "Session ended during admission");
+  };
 
   const blockedEvent = (
     reason: RejectionReason,
@@ -140,8 +156,8 @@ export async function admitRequest(
       recordRejectionEvent({
         env,
         identity,
-        attribution: attemptAttribution(firstAttempt),
-        endpointSlug: plan.endpointSlug,
+        attribution: input.attribution,
+        endpointSlug: input.endpointSlug,
         appVersion: input.appVersion,
         reason,
         scope,
@@ -209,7 +225,7 @@ export async function admitRequest(
     identity.userId === null
       ? Promise.resolve(false)
       : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
-    billingQuota(input.deployment, env, app.organizationId, input.billingCache),
+    billingQuota(input.deployment, env, app.organizationId, input.billingCache, input.now),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -230,12 +246,15 @@ export async function admitRequest(
    * one: a request the app-wide window refuses has spent one of the caller's
    * own tokens, which costs only the caller already being refused.
    */
-  const now = Date.now();
+  ensureLive();
+  const now = input.now ?? Date.now();
   const caller = callerLimiter(app, identity, input.assertionCounter);
   if (caller !== null) {
     const perUser = app.config.limits.per_user;
     const check: LimiterCheckInput = {
       now,
+      admissionId: input.admissionId,
+      freshSpend: input.freshSpend,
       rpm: perUser.requests.per_minute,
       rpd: perUser.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(perUser),
@@ -243,6 +262,7 @@ export async function admitRequest(
       ...(input.assertionCounter === null ? {} : { assertionCounter: input.assertionCounter }),
     };
     const result = await env.USER_LIMITER.getByName(caller.name).checkAndIncrement(check);
+    ensureLive();
     if (!result.allowed) {
       // A request limit refuses for the caller the limiter counts; a budget
       // for whoever's month it is measured over.
@@ -252,11 +272,14 @@ export async function admitRequest(
   if (hasAppLevelLimits(app.config)) {
     const result = await env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
       now,
+      admissionId: input.admissionId,
+      freshSpend: input.freshSpend,
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
       spend: { appId: identity.appId, scope: "app", key: null },
     });
+    ensureLive();
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }
 
@@ -271,14 +294,24 @@ export async function admitRequest(
   requireActiveBilling(quota.access);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
-  if (quota.kind === "unmetered") return finish();
+  if (quota.kind === "unmetered") {
+    ensureLive();
+    await input.beforeClaim?.(null);
+    return finish();
+  }
 
   const { period } = quota;
-  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
+  const claim = {
     periodId: period.periodId,
     periodEnd: period.periodEnd,
     limit: quota.limit,
-  });
+    admissionId: input.admissionId,
+  };
+  ensureLive();
+  // A journaled claim is always attempted: the session reconciles it through
+  // its receipt, so refusing it here would leave nothing to reconcile.
+  await input.beforeClaim?.(claim);
+  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit(claim);
   const durationMs = finish();
   if (!admission.allowed) {
     blockedEvent("blocked_billing", "account", durationMs);

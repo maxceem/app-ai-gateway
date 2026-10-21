@@ -41,9 +41,15 @@ Leave the other fields at their defaults; everything else is provisioned for
 you. When the deployment finishes, open the console, register with an email you
 listed, and add your provider keys.
 
+Updates deploy the stable gateway at 100% and switch new realtime connections to
+an immutable release Worker. Established realtime sessions keep their existing
+Worker through ordinary updates. Setup provisions these resources automatically
+and keeps authentication, secrets, limits, and usage in the stable gateway.
+See [updating and rollback](https://docs.appaigateway.com/self-hosting/updating).
+
 ## Local development
 
-Requirements: Node.js 22+, pnpm 11, and Wrangler 4.
+Requirements: Node.js 22.19+, pnpm 12, and Wrangler 4.113.0.
 
 ```sh
 pnpm install

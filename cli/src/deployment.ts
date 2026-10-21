@@ -1,5 +1,6 @@
+import { deployRelease, setBuild } from './seamless.ts';
 import { createHash, randomUUID } from "node:crypto";
-import { writeFile, unlink } from "node:fs/promises";
+import { writeFile, unlink, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { release, type ReleaseArtifact } from "./release.ts";
 import { CliError, fail, origin, randomToken } from "./common.ts";
@@ -42,9 +43,14 @@ export interface DeploymentUpdatePlan {
   databaseId: string | undefined;
   fromVersion: string;
   toVersion: string;
+  /** How realtime sessions are served after the update. */
+  realtimeReleases: RealtimeReleases;
   dryRun?: true;
   updated?: true;
 }
+
+/** `seamless` gives realtime sessions a Worker of their own per release; `simple` has the gateway serve them. */
+export type RealtimeReleases = "simple" | "seamless";
 
 /**
  * What a setup run reports. Every field is optional because the three answers
@@ -66,7 +72,10 @@ export interface DeploymentSetupPlan {
   pendingDomain?: string;
 }
 
-export type DeploymentResult = DomainPlan | DeploymentUpdatePlan | DeploymentSetupPlan;
+export interface DeploymentMaintenancePlan {
+  action: 'cleanup' | 'rollback'; worker: string; releaseId?: string; dryRun?: true; completed?: true;
+}
+export type DeploymentResult = DomainPlan | DeploymentUpdatePlan | DeploymentSetupPlan | DeploymentMaintenancePlan;
 
 /**
  * What all three commands need before they touch anything: the release they
@@ -112,33 +121,42 @@ export async function deploymentUpdate(
 ): Promise<DeploymentUpdatePlan> {
   const artifact = await authorized(flags, cf, loadRelease);
   const journal = await matchExisting(ctx, cf, flags, selectedInstallation(ctx));
-  if (!artifact.manifest.upgradeFrom.includes(journal.version))
+  // Redeploying the installed version migrates nothing, so it is always
+  // allowed: that is how the realtime mode changes without a new release.
+  if (journal.version !== artifact.manifest.version && !artifact.manifest.upgradeFrom.includes(journal.version))
     fail(
       "unsupported_upgrade",
       "This release cannot upgrade the selected database schema.",
       "Use a supported migration release; no data was changed.",
     );
+  const requested = flags["realtime-releases"];
+  if (requested !== undefined && requested !== "simple" && requested !== "seamless")
+    fail("invalid_input", "--realtime-releases must be simple or seamless.");
+  const realtimeReleases: RealtimeReleases = requested ?? (journal.vars?.REALTIME_RELEASES === "seamless" ? "seamless" : "simple");
   const plan: DeploymentUpdatePlan = {
     worker: journal.name,
     accountId: journal.accountId,
     databaseId: journal.databaseId,
     fromVersion: journal.version,
     toVersion: artifact.manifest.version,
+    realtimeReleases,
   };
   if (flags["dry-run"]) return { dryRun: true, ...plan };
   await confirm(
     `Update ${journal.name} to ${artifact.manifest.version}? Database migrations cannot be rolled back automatically.`,
     flags,
   );
+  journal.vars = { ...journal.vars, REALTIME_RELEASES: realtimeReleases };
   const file = await configFile(ctx, journal, artifact);
-  await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], {
-    cwd: file.directory,
+  try { await deployRelease(cf, journal, artifact, file, async () => {
+    await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], { cwd: file.directory });
+  }, async (buildId, signal) => {
+    await setBuild(file, buildId);
+    await cf.run(["deploy", "--config", file.path, "--keep-vars"], { cwd: file.directory, signal });
   });
-  await cf.run(["deploy", "--config", file.path, "--keep-vars"], {
-    cwd: file.directory,
-  });
+  } finally { await rm(file.directory, { recursive: true, force: true }); }
   await verifyDeployment(ctx, ctx.url, journal.id);
-  await advance(ctx, journal, journal.phase, { version: artifact.manifest.version });
+  await advance(ctx, journal, journal.phase, { version: artifact.manifest.version, vars: journal.vars });
   return { updated: true, ...plan };
 }
 
@@ -243,9 +261,6 @@ async function install(
     await advance(ctx, journal, journal.phase, { databaseId: database.uuid });
   }
   const file = await configFile(ctx, journal, artifact);
-  await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], {
-    cwd: file.directory,
-  });
   const secrets = {
     ...journal.secrets,
     SECRET_VAULT_LOCAL_KEK_V1: await ctx.store.vaultKey(journal.id),
@@ -258,12 +273,15 @@ async function install(
     mode: 0o600,
   });
   try {
-    await cf.run(["deploy", "--config", file.path, "--secrets-file", secretPath], {
-      cwd: file.directory,
-      redact: Object.values(secrets),
+    await deployRelease(cf, journal, artifact, file, async () => {
+      await cf.run(["d1", "migrations", "apply", "DB", "--remote", "--config", file.path], { cwd: file.directory });
+    }, async (buildId, signal) => {
+      await setBuild(file, buildId);
+      await cf.run(["deploy", "--config", file.path, "--secrets-file", secretPath], { cwd: file.directory, redact: Object.values(secrets), signal });
     });
   } finally {
     await unlink(secretPath).catch(() => {});
+    await rm(file.directory, { recursive: true, force: true });
   }
   await advance(ctx, journal, "deployed");
   await verifyDeployment(ctx, url, journal.id);
@@ -378,6 +396,24 @@ export async function deploymentSetup(
   }
 }
 
+export async function deploymentMaintenance(ctx: Context, flags: Flags, action: 'cleanup' | 'rollback', cf: CloudflareClient, loadRelease: typeof release): Promise<DeploymentMaintenancePlan> {
+  const artifact = await authorized(flags, cf, loadRelease);
+  const journal = await matchExisting(ctx, cf, flags, selectedInstallation(ctx));
+  const target = flags['release-id'];
+  if (action === 'rollback' && (!target || !/^[a-f0-9-]{36}$/u.test(target))) fail('invalid_input', 'Supply the recorded deployment build ID with --release-id.');
+  const plan: DeploymentMaintenancePlan = { action, worker: journal.name, ...(target ? { releaseId: target } : {}) };
+  if (flags['dry-run']) return { ...plan, dryRun: true };
+  await confirm(action === 'rollback' ? `Roll back ${journal.name} to retained deployment ${target}? Database changes are kept.` : `Clean up expired retired realtime releases for ${journal.name}?`, flags);
+  const file = await configFile(ctx, journal, artifact);
+  try { await deployRelease(cf, journal, artifact, file, async () => {}, async () => {}, action, target); }
+  finally { await rm(file.directory, { recursive: true, force: true }); }
+  if (action === 'rollback') {
+    const capabilities = await verifyDeployment(ctx, ctx.url, journal.id);
+    await advance(ctx, journal, journal.phase, { version: capabilities.serverVersion });
+  }
+  return { ...plan, completed: true };
+}
+
 /**
  * The three deployment commands by name.
  *
@@ -392,6 +428,7 @@ export async function deploymentCommand(
   cf: CloudflareClient = new Cloudflare(),
   loadRelease: typeof release = release,
 ): Promise<DeploymentResult> {
+  if (command === "deployment cleanup" || command === "deployment rollback") return deploymentMaintenance(ctx, flags, command === "deployment cleanup" ? "cleanup" : "rollback", cf, loadRelease);
   if (command === "deployment setup") return deploymentSetup(ctx, flags, cf, loadRelease);
   if (command === "deployment domain") return deploymentDomain(ctx, flags, cf, loadRelease);
   if (command === "deployment update") return deploymentUpdate(ctx, flags, cf, loadRelease);

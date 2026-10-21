@@ -1,3 +1,4 @@
+import { deployCheckout } from './seamless-root.mjs';
 // Deploys the gateway Worker.
 //
 //   pnpm run deploy                    # the tracked wrangler.jsonc, as one-click deploy uses it
@@ -6,7 +7,7 @@
 // See scripts/wrangler-config.mjs for how profiles are resolved.
 import { existsSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import {
   createMissingGeneratedSecrets,
@@ -26,60 +27,78 @@ import {
 
 function parseArguments(argv) {
   const { profile, rest } = takeProfileArgument(argv);
-  if (rest.length > 0) {
+  const action = rest[0] === "cleanup" ? "cleanup" : rest[0] === "rollback" ? "rollback" : "deploy";
+  const rollbackId = action === "rollback" ? rest[1] : undefined;
+  if (rest.length > (action === "deploy" ? 0 : action === "rollback" ? 2 : 1) || action === "rollback" && !rollbackId) {
     throw new Error(`Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>]`);
   }
-  return { profile };
+  return { profile, action, rollbackId };
 }
 
 let profile;
 let config;
+let configPath;
+let action;
+let rollbackId;
 let configArgs = [];
 let deploymentId;
 let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
-function prepare(argv) {
-  ({ profile } = parseArguments(argv));
-  ({ config, configArgs } = resolveWranglerConfig(profile));
+async function prepare(argv) {
+  ({ profile, action, rollbackId } = parseArguments(argv));
+  ({ config, configArgs, configPath } = resolveWranglerConfig(profile));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
   const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};
   deploymentId = resolveDeploymentId(
-    readDeployedIds(),
+    await readDeployedIds(),
     process.env.DEPLOYMENT_ID || config.vars?.DEPLOYMENT_ID,
     local.DEPLOYMENT_ID,
   );
 }
 
-function readDeployedIds() {
-  const result = wrangler(["deployments", "list", "--json"], { capture: true, allowFailure: true });
+async function readDeployedIds() {
+  const result = await wrangler(["deployments", "list", "--json"], { capture: true, allowFailure: true });
   if (result.status !== 0) {
     // Cloudflare's specific Worker-not-found code. Authentication, network and
     // other lookup failures must never be interpreted as a fresh installation.
-    if (/\[code: 10007\]/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) return [];
+    if (/\[code: (?:10007|10090)\]/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) return [];
     throw new Error("Unable to inspect the deployed identity; check Wrangler authentication and retry");
   }
-  return deploymentVersionIds(result.stdout).map((id) => {
-    const version = wrangler(["versions", "view", id, "--json"], { capture: true });
-    return deploymentIdFromVersion(version.stdout);
-  });
+  const ids = [];
+  for (const id of deploymentVersionIds(result.stdout)) {
+    const version = await wrangler(["versions", "view", id, "--json"], { capture: true });
+    ids.push(deploymentIdFromVersion(version.stdout));
+  }
+  return ids;
 }
 
-function wrangler(args, options = {}) {
-  const result = spawnSync(wranglerBin, [...args, ...configArgs, ...(args[0] === "deploy" ? ["--var", `DEPLOYMENT_ID:${deploymentId}`] : [])], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: process.env,
-    input: options.input,
-    stdio: options.capture
-      ? ["ignore", "pipe", "pipe"]
-      : options.input
-        ? ["pipe", "inherit", "inherit"]
-        : "inherit",
+/**
+ * Runs Wrangler without blocking the event loop, so the release lease's
+ * heartbeat keeps renewing while preparation, migrations and deploys run.
+ */
+async function wrangler(args, options = {}) {
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(wranglerBin, [...args, ...(args.includes("--config") ? [] : configArgs), ...(args[0] === "deploy" ? ["--var", `DEPLOYMENT_ID:${deploymentId}`] : [])], {
+      cwd: projectRoot,
+      env: process.env,
+      stdio: options.capture
+        ? ["ignore", "pipe", "pipe"]
+        : options.input
+          ? ["pipe", "inherit", "inherit"]
+          : "inherit",
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    // A Wrangler that exits before reading its input must fail as itself, not as an EPIPE.
+    if (options.input !== undefined) child.stdin?.on("error", reject).end(options.input);
   });
 
-  if (result.error) throw result.error;
   if (result.status !== 0 && !options.allowFailure) {
     throw new Error(`Wrangler exited with status ${result.status ?? "unknown"}`);
   }
@@ -91,23 +110,23 @@ function workerDoesNotExist(result) {
   return output.includes("not found") && output.includes("wrangler deploy");
 }
 
-function uploadLocalSecretsFile(allowedNames) {
+async function uploadLocalSecretsFile(allowedNames) {
   console.log(`Uploading the values from ${localSecretsFile}.`);
   const values = parseEnv(readFileSync(localSecretsPath, "utf8"));
   delete values.DEPLOYMENT_ID;
-  uploadSecrets(allowedNames ? Object.fromEntries(Object.entries(values).filter(([name]) => allowedNames.has(name))) : values);
+  await uploadSecrets(allowedNames ? Object.fromEntries(Object.entries(values).filter(([name]) => allowedNames.has(name))) : values);
 }
 
-function listSecrets() {
-  let result = wrangler(["secret", "list", "--format", "json"], {
+async function listSecrets() {
+  let result = await wrangler(["secret", "list", "--format", "json"], {
     allowFailure: true,
     capture: true,
   });
 
   if (result.status !== 0 && workerDoesNotExist(result) && existsSync(localSecretsPath)) {
     console.log("No deployed Worker found.");
-    uploadLocalSecretsFile();
-    result = wrangler(["secret", "list", "--format", "json"], {
+    await uploadLocalSecretsFile();
+    result = await wrangler(["secret", "list", "--format", "json"], {
       allowFailure: true,
       capture: true,
     });
@@ -122,9 +141,9 @@ function listSecrets() {
   return parseSecretList(result.stdout);
 }
 
-function uploadSecrets(secrets) {
+async function uploadSecrets(secrets) {
   if (Object.keys(secrets).length === 0) return;
-  wrangler(["secret", "bulk"], { input: JSON.stringify(secrets) });
+  await wrangler(["secret", "bulk"], { input: JSON.stringify(secrets) });
 }
 
 function printCaptured(result) {
@@ -139,13 +158,13 @@ function databaseNeedsProvisioning(result) {
     && (output.includes("wrangler d1 create") || output.includes("wrangler deploy"));
 }
 
-function ensureDeploymentSecrets() {
+async function ensureDeploymentSecrets() {
   const required = requiredUserSecrets(config);
-  let existingNames = listSecrets();
+  let existingNames = await listSecrets();
   let missing = missingRequiredSecrets(existingNames, required);
   if (missing.length > 0 && existsSync(localSecretsPath)) {
-    uploadLocalSecretsFile(new Set(missing));
-    existingNames = listSecrets();
+    await uploadLocalSecretsFile(new Set(missing));
+    existingNames = await listSecrets();
     missing = missingRequiredSecrets(existingNames, required);
   }
   if (missing.length > 0) {
@@ -159,7 +178,7 @@ function ensureDeploymentSecrets() {
   }
 
   const generated = createMissingGeneratedSecrets(existingNames);
-  uploadSecrets(generated);
+  await uploadSecrets(generated);
   if ("JWT_SECRET" in generated || "BETTER_AUTH_SECRET" in generated) {
     console.log("Generated and securely uploaded missing internal signing secrets.");
   } else {
@@ -167,9 +186,9 @@ function ensureDeploymentSecrets() {
   }
 }
 
-function applyMigrations() {
+async function applyMigrations() {
   const args = ["d1", "migrations", "apply", "DB", "--remote"];
-  const result = wrangler(args, { allowFailure: true, capture: true });
+  const result = await wrangler(args, { allowFailure: true, capture: true });
   printCaptured(result);
 
   if (result.status === 0) return false;
@@ -179,21 +198,29 @@ function applyMigrations() {
 
   console.log("");
   console.log("The D1 database has not been provisioned yet; creating its binding first.");
-  wrangler(["deploy"]);
-  wrangler(args);
+  await wrangler(["deploy"]);
+  await wrangler(args);
   return true;
 }
 
-function deploy() {
+async function deploy() {
   if (profile) console.log(`Deploying with the "${profile}" profile.`);
-  ensureDeploymentSecrets();
-  const deployedWhileProvisioning = applyMigrations();
-  if (!deployedWhileProvisioning) wrangler(["deploy"]);
+  await deployCheckout({ config, configPath, deploymentId, action, rollbackId,
+    prepare: async (path, options) => { if (path) configArgs = ['--config', path]; if (action === 'deploy') { if (options?.initial) await wrangler(['deploy', '--config', path]); await ensureDeploymentSecrets(); return applyMigrations(); } },
+    bootstrap: async path => {
+      configArgs = ['--config', path];
+      const probe = await wrangler(['d1', 'execute', 'DB', '--remote', '--command', 'SELECT 1', '--json'], { capture: true, allowFailure: true });
+      if (probe.status === 0) return;
+      if (!databaseNeedsProvisioning(probe)) throw new Error('Unable to inspect D1 before acquiring deployment lease');
+      console.log('First installation: provisioning the primary Worker and D1 before acquiring the release lease. Retry this command if interrupted.');
+      await wrangler(['deploy', '--config', path]);
+    },
+  });
 }
 
 try {
-  prepare(process.argv.slice(2));
-  deploy();
+  await prepare(process.argv.slice(2));
+  await deploy();
 } catch (error) {
   console.error("");
   console.error(error instanceof Error ? error.message : String(error));
