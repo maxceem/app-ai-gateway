@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
-import { GatewayError } from "../core/errors";
+import { GatewayError, type ErrorCode, type GatewayErrorReason } from "../core/errors";
 import { log } from "../core/log";
 import { asGatewayError } from "../core/platform-errors";
 import { clientAuth, type ExchangeType, type TokenExchange } from "../client-auth/client-auth";
@@ -20,6 +20,7 @@ import { jsonBody } from "./admin/body";
 import { appAuthChallenge, type AuthEventName } from "../db/schema";
 import type { RequestVariables } from "../middleware/request-scope";
 import { errorFacts } from "../core/error-facts";
+import { contained } from "../core/background";
 
 /** A JSON body that is an object, which every documented body on this surface is. */
 async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
@@ -104,13 +105,13 @@ async function recorded(
   const appVersion = c.req.header("x-app-version") ?? null;
   const attempt: AuthAttempt = { authMethod: null, userId: null, claimDelayMs: null };
   let settled = false;
-  const record = (outcome: string, reason?: string): void => {
+  const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
     if (settled) return;
     settled = true;
     // An app that does not exist has nothing to attribute a row to, and
     // recording one would let anyone grow this table with invented app ids.
     if (outcome === "app_not_found") return;
-    c.executionCtx.waitUntil(recordAuthEvent({
+    c.executionCtx.waitUntil(contained("auth_event", recordAuthEvent({
       env: c.env,
       appId,
       event,
@@ -121,7 +122,7 @@ async function recorded(
       appVersion,
       latencyMs: Date.now() - startedAt,
       claimDelayMs: attempt.claimDelayMs,
-    }));
+    })));
   };
 
   const deadline = c.get("deadline");
@@ -151,7 +152,7 @@ async function recorded(
     // Not for an attempt the deadline already settled: a retry may have
     // succeeded and closed the window since, which this would reopen.
     if (!settled && gateway?.code === "issuer_claims_missing" && attempt.userId) {
-      c.executionCtx.waitUntil(markClaimPending(c.env, appId, attempt.userId));
+      c.executionCtx.waitUntil(contained("claim_pending", markClaimPending(c.env, appId, attempt.userId)));
     }
     record(gateway?.code ?? "internal_error", gateway?.reason);
     throw gateway ?? error;

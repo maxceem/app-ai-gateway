@@ -37,6 +37,7 @@ import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
 import { errorFacts, refusalFacts } from "./core/error-facts";
+import { contained } from "./core/background";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
@@ -343,6 +344,6 @@ async function prune(env: Env): Promise<void> {
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     // An unrelated trigger must not spend the maintenance budget.
-    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(prune(env));
+    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(contained("maintenance", prune(env)));
   },
 });

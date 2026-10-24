@@ -195,7 +195,7 @@ const IssuerAuthenticationSchema = z.object({
   audience: IssuerClaimValuesSchema,
   user_id_claim: z.string().min(1),
   /** Lowercased, because header lookups ignore case. */
-  token_header: z.string().min(1).toLowerCase().optional(),
+  token_header: z.string().min(1).toLowerCase().superRefine(refuseReservedHeader).optional(),
   required_claims: z.array(ClaimRequirementSchema),
   max_token_lifetime_seconds: z.number().int().positive(),
   /**
@@ -213,18 +213,31 @@ const IssuerAuthenticationSchema = z.object({
 }).strict();
 
 /**
- * Headers the gateway already owns, which an application may therefore not read
- * its end-user id from. Naming a credential carrier would read the caller's own
- * key as a user id and then store and display it.
+ * Headers the gateway already owns, which an application may therefore name
+ * neither as its end-user id header nor as its issuer token header. Naming a
+ * credential carrier as the user id header would read the caller's own key as
+ * a user id, then store, display and log it; naming `x-app-version` as the
+ * token header would send a credential where the gateway logs the app version.
  */
-const RESERVED_END_USER_HEADERS: ReadonlySet<string> = new Set([
+const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
+  "cookie",
+  "x-appattest-proof",
   ...PROVIDER_CREDENTIAL_HEADERS,
   "x-app-version",
   "content-type",
   "content-length",
   "host",
 ]);
+
+function refuseReservedHeader(header: string, context: z.RefinementCtx): void {
+  if (RESERVED_APP_HEADERS.has(header)) {
+    context.addIssue({
+      code: "custom",
+      message: `cannot be ${header}: the gateway already uses that header`,
+    });
+  }
+}
 
 /**
  * A header name, as HTTP defines one (RFC 9110 field names). Bounded because it
@@ -237,14 +250,7 @@ const EndUserHeaderSchema = z.string()
   .min(1)
   .max(64)
   .regex(HTTP_FIELD_NAME, { error: "must be a valid HTTP header name" })
-  .superRefine((header, context) => {
-    if (RESERVED_END_USER_HEADERS.has(header)) {
-      context.addIssue({
-        code: "custom",
-        message: `cannot be ${header}: the gateway already uses that header`,
-      });
-    }
-  });
+  .superRefine(refuseReservedHeader);
 
 const HeaderEndUserSchema = z.object({
   source: z.literal("header"),

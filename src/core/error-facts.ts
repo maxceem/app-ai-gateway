@@ -39,7 +39,8 @@ type ErrorClass =
   | "EvalError"
   | "Error"
   | "other"
-  | "not_an_error";
+  | "not_an_error"
+  | "unreadable";
 
 /** Most specific first: `instanceof` matches a subclass's ancestors as well. */
 const ERROR_CLASSES: readonly (readonly [new (...args: never[]) => Error, ErrorClass])[] = [
@@ -252,8 +253,20 @@ function flag(value: unknown): boolean | undefined {
 /**
  * The facts about `error` that are safe to log, and the only description of
  * an error a log line may carry.
+ *
+ * Never throws. Reading an error runs its getters, and a getter or a `Proxy`
+ * may throw; this is called from error handlers, where a throw would let the
+ * original error escape to the runtime, which logs its message and stack.
  */
 export function errorFacts(error: unknown, depth = 0): ErrorFacts {
+  try {
+    return readFacts(error, depth);
+  } catch {
+    return { class: "unreadable" };
+  }
+}
+
+function readFacts(error: unknown, depth: number): ErrorFacts {
   if (!(error instanceof Error)) return { class: "not_an_error" };
   const flags = error as { retryable?: unknown; overloaded?: unknown; remote?: unknown };
   const recognised = recognisedFailure(error);

@@ -240,9 +240,7 @@ export async function sendFirstVerificationEmail(
     await enforceEndpointRateLimit(env, "verification_email", user.id);
     await sendVerificationEmail(env, deployment, { id: user.id, email: user.email }, returnTo);
   } catch (error) {
-    log("warn", "verification_email_not_sent", {
-      reason: error instanceof GatewayError ? error.code : "unexpected",
-    });
+    log("warn", "verification_email_not_sent", { error: errorFacts(error) });
   }
 }
 

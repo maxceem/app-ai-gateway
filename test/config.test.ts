@@ -194,6 +194,16 @@ describe("the application configuration grammar", () => {
         .toThrowError("authentication.end_user.issuer.token_header");
     });
 
+    it.each(["x-app-version", "cookie", "x-appattest-proof", "authorization", "x-api-key", "Content-Type"])(
+      "refuses %s as the token header, which the gateway already uses",
+      (header) => {
+        // The version header above all: the gateway logs it, so a token sent
+        // there would be logged too.
+        expect(() => parseAppConfig(withIssuer({ token_header: header })))
+          .toThrowError("the gateway already uses that header");
+      },
+    );
+
     it.each([null, 0, -1, 1.5])("refuses the token lifetime %s", (value) => {
       expect(() => parseAppConfig(withIssuer({ max_token_lifetime_seconds: value })))
         .toThrowError("authentication.end_user.issuer.max_token_lifetime_seconds");
@@ -276,6 +286,10 @@ describe("the application configuration grammar", () => {
       ["a Google provider auth header", "x-goog-api-key"],
       ["the version header", "x-app-version"],
       ["content-type", "content-type"],
+      // A user id is logged with every usage line: a cookie or an App Attest
+      // proof read as one would be logged with it.
+      ["the cookie header", "cookie"],
+      ["the App Attest proof", "x-appattest-proof"],
     ])("refuses %s, which the gateway already uses", (_case, header) => {
       expect(() => parseAppConfig(withHeader(header)))
         .toThrowError("the gateway already uses that header");

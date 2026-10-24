@@ -1,3 +1,4 @@
+import type { ErrorCode } from "../core/errors";
 import { log } from "../core/log";
 import { timeOrderedId } from "../core/ids";
 import { database } from "../db/index";
@@ -26,7 +27,8 @@ export interface AuthEventInput {
   userId?: string | null;
   authMethod?: AuthMethod | null;
   /** `ok`, or the error code the client was handed. */
-  outcome: string;
+  /** A refusal code, or `ok`: a constant either way, so it may be logged. */
+  outcome: "ok" | ErrorCode;
   reason?: string | null;
   appVersion?: string | null;
   latencyMs: number;

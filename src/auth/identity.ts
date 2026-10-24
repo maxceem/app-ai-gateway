@@ -2,6 +2,8 @@ import type { CfAuth, CfAuthError, CfAuthEvent, OperationSweepStatements } from 
 import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
+import { log } from "../core/log";
 import {
   registrationAllowed,
   shouldProvisionDefaultOrganization,
@@ -188,6 +190,30 @@ function oauthOptions(deployment: Deployment, realm: string | null) {
   };
 }
 
+/**
+ * cf-auth's own scopes for a failure it recovers from. One raised by an event
+ * hook is logged as `onEvent`, without the event name its scope appends.
+ */
+const IDENTITY_ERROR_SCOPES = [
+  "databaseHooks.user.create.after",
+  "runAtomically.compensate",
+  "operations.afterCommit",
+  "operations.execute",
+] as const;
+
+/**
+ * Reports a failure cf-auth recovered from. Without it cf-auth writes the raw
+ * error to the console, and an error can quote what it was given — a failed
+ * query lists its bound values — so only constants are logged.
+ */
+function reportIdentityError(error: unknown, { scope }: { scope: string }): void {
+  log("error", "identity_internal_error", {
+    scope: IDENTITY_ERROR_SCOPES.find((known) => known === scope)
+      ?? (scope.startsWith("onEvent:") ? "onEvent" : "unrecognised"),
+    error: errorFacts(error),
+  });
+}
+
 export async function createIdentityAuth(
   deployment: Deployment,
   env: Env,
@@ -227,6 +253,7 @@ export async function createIdentityAuth(
       }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
+    onError: reportIdentityError,
     // The CLI's operations: the engine, its table and the built-in `login`
     // are cf-auth's; the kinds and what completes them are this gateway's.
     operations: {

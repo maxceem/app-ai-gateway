@@ -61,15 +61,25 @@ export interface RecognisedFailure {
 
 /** Whether this one error, not its causes, is the platform failing. */
 export function recognisedFailure(error: unknown): RecognisedFailure | null {
+  try {
+    return recognise(error);
+  } catch {
+    // An error whose properties cannot be read is not one the platform is
+    // known to have raised. Never thrown on: callers are error handlers.
+    return null;
+  }
+}
+
+function recognise(error: unknown): RecognisedFailure | null {
   if (!(error instanceof Error)) return null;
   const flags = error as CloudflareErrorFlags;
   // Durable Object stubs mark their own failures; an overloaded object is
   // still the platform's state, not a fault in the call that met it.
   if (flags.overloaded === true) return { reason: "platform_overloaded" };
   if (flags.retryable === true) return { reason: "platform_unavailable" };
-  const message = error.message.startsWith(D1_ERROR_PREFIX)
-    ? error.message.slice(D1_ERROR_PREFIX.length)
-    : error.message;
+  const text: unknown = error.message;
+  if (typeof text !== "string") return null;
+  const message = text.startsWith(D1_ERROR_PREFIX) ? text.slice(D1_ERROR_PREFIX.length) : text;
   if (message.startsWith(D1_OVERLOADED_PREFIX)) {
     return { reason: "platform_overloaded", message: D1_OVERLOADED_PREFIX };
   }
@@ -88,10 +98,14 @@ export function recognisedFailure(error: unknown): RecognisedFailure | null {
  */
 export function platformFailure(error: unknown): PlatformFailureReason | null {
   let current = error;
-  for (let depth = 0; depth <= MAX_CAUSE_DEPTH && current instanceof Error; depth += 1) {
-    const recognised = recognisedFailure(current);
-    if (recognised !== null) return recognised.reason;
-    current = current.cause;
+  try {
+    for (let depth = 0; depth <= MAX_CAUSE_DEPTH && current instanceof Error; depth += 1) {
+      const recognised = recognisedFailure(current);
+      if (recognised !== null) return recognised.reason;
+      current = current.cause;
+    }
+  } catch {
+    // A cause that cannot be read ends the search, as it would end any other.
   }
   return null;
 }

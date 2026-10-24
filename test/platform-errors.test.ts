@@ -3,6 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { DrizzleQueryError } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { contained } from "../src/core/background";
 import { errorFacts, refusalFacts } from "../src/core/error-facts";
 import { GatewayError, type GatewayErrorReason } from "../src/core/errors";
 import { platformFailure } from "../src/core/platform-errors";
@@ -211,6 +212,30 @@ describe("error facts", () => {
     for (const error of planted()) {
       expect(JSON.stringify(errorFacts(error))).not.toContain(SECRET);
     }
+  });
+
+  it("never throws, whatever reading the error does", () => {
+    const hostile = new Error("x");
+    Object.defineProperty(hostile, "cause", { get: () => { throw new Error(SECRET); } });
+    const trap = new Proxy(new Error("x"), {
+      getPrototypeOf: () => { throw new Error(SECRET); },
+      get: () => { throw new Error(SECRET); },
+    });
+    for (const error of [hostile, trap]) {
+      expect(() => errorFacts(error)).not.toThrow();
+      expect(JSON.stringify(errorFacts(error))).not.toContain(SECRET);
+      expect(() => platformFailure(error)).not.toThrow();
+    }
+    expect(errorFacts(hostile)).toEqual({ class: "unreadable" });
+  });
+
+  it("contains a failed background task, logging it as facts", async () => {
+    const logs = captureLogs();
+    await expect(contained("maintenance", Promise.reject(new Error(SECRET)))).resolves.toBeUndefined();
+    expect(logs).toEqual([
+      expect.objectContaining({ message: "background_task_failed", task: "maintenance", error: { class: "Error" } }),
+    ]);
+    expect(JSON.stringify(logs)).not.toContain(SECRET);
   });
 
   it("logs a refusal by its code and reason only, each checked against its list", () => {
