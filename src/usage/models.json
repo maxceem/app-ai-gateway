@@ -554,6 +554,13 @@
     "mistral-small-latest": { "kind": "text", "input": 0.15, "cached_input": 0.015, "output": 0.6 }
   },
   "together": {
+    "MiniMaxAI/MiniMax-M3.1-Flash": {
+      "kind": "text",
+      "input": 0.15,
+      "cached_input": 0.015,
+      "output": 0.6,
+      "author": "Minimax"
+    },
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
       "kind": "text",
       "input": 0.3,
