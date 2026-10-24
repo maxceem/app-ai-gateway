@@ -88,6 +88,7 @@ These refusals concern the gateway account, not your app's end-user sign-in:
 | `provider_disabled` | 502 | The provider with this slug is paused | Enable it in the console |
 | `provider_unavailable` | 502 | The provider's key could not be read | Check the gateway's health |
 | `provider_error` | 502 or 504 | The provider could not be reached, or sent no response headers before the timeout (120 seconds by default) | Retry with backoff |
+| `service_unavailable` | 503 | The infrastructure the gateway runs on failed or was overloaded, or a sign-in or `/me` call took longer than 10 seconds. Nothing about the request is known to be wrong | Retry after `Retry-After` with backoff |
 | `internal_error` | 500 | Something failed inside the gateway | Retry with backoff |
 
 ## A sensible client policy

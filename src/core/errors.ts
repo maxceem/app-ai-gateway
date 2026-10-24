@@ -173,6 +173,13 @@ export type ErrorCode =
    * Worth trying again later; the person managing the deployment fixes it.
    */
   | "email_unavailable"
+  /**
+   * The platform the gateway runs on failed underneath it — its database or
+   * one of its Durable Objects was unreachable or overloaded — or the request
+   * ran past its deadline waiting on one. Nothing about the request is known
+   * to be wrong: retry after `Retry-After`.
+   */
+  | "service_unavailable"
   | "internal_error";
 
 /**
@@ -203,6 +210,11 @@ export interface GatewayErrorDetails {
   userId?: string;
   /** Serialized into the response body as `error.data`. */
   data?: GatewayErrorData;
+  /**
+   * The failure this refusal stands for, which the error log describes. Never
+   * serialized.
+   */
+  cause?: unknown;
 }
 
 export class GatewayError extends Error {
@@ -217,7 +229,7 @@ export class GatewayError extends Error {
     readonly headers?: HeadersInit,
     details: GatewayErrorDetails = {},
   ) {
-    super(message);
+    super(message, details.cause === undefined ? undefined : { cause: details.cause });
     this.name = "GatewayError";
     this.reason = details.reason;
     this.userId = details.userId;

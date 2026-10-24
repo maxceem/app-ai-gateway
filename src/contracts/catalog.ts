@@ -223,6 +223,13 @@ const ISSUER_ERRORS = {
   503: "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
 } as const;
 
+/**
+ * Every client call that is not a served request can meet this: the platform
+ * failing underneath the gateway, or the call running past its deadline.
+ */
+const SERVICE_UNAVAILABLE =
+  "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.";
+
 /** The three refusals every CLI handoff endpoint shares. */
 const CLI_ERRORS = {
   409: "A conflicting transition or setup cap prevents this operation.",
@@ -414,7 +421,7 @@ export const CATALOG = {
     params: APP_PARAM,
     response: AppAttestChallengeResponseSchema,
     responseDescription: "A five-minute, single-use challenge.",
-    errors: { 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED, 404: NO_END_USERS },
+    errors: { 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED, 404: NO_END_USERS, 503: SERVICE_UNAVAILABLE },
   },
 
   registerAppAttestKey: {
@@ -427,7 +434,12 @@ export const CATALOG = {
     request: AppAttestRegisterRequestSchema,
     response: AppAttestRegisterResponseSchema,
     responseDescription: "The key was registered for the verified issuer identity.",
-    errors: { ...ISSUER_ERRORS, 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED },
+    errors: {
+      ...ISSUER_ERRORS,
+      402: NO_PLAN,
+      429: APP_AUTH_RATE_LIMITED,
+      503: `${ISSUER_ERRORS[503]} ${SERVICE_UNAVAILABLE}`,
+    },
   },
 
   exchangeGatewayToken: {
@@ -441,7 +453,12 @@ export const CATALOG = {
     request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
     response: GatewayTokenResponseSchema,
     responseDescription: "A short-lived gateway access token.",
-    errors: { ...ISSUER_ERRORS, 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED },
+    errors: {
+      ...ISSUER_ERRORS,
+      402: NO_PLAN,
+      429: APP_AUTH_RATE_LIMITED,
+      503: `${ISSUER_ERRORS[503]} ${SERVICE_UNAVAILABLE}`,
+    },
   },
 
   getCurrentUser: {
@@ -455,7 +472,7 @@ export const CATALOG = {
     headers: GatewayClientHeadersSchema,
     response: CurrentUserResponseSchema,
     responseDescription: "Current user state.",
-    errors: { 402: NO_PLAN, 404: NO_END_USERS },
+    errors: { 402: NO_PLAN, 404: NO_END_USERS, 503: SERVICE_UNAVAILABLE },
   },
 
   proxyProviderRequest: {

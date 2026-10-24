@@ -3636,6 +3636,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -3748,7 +3758,7 @@
             }
           },
           "503": {
-            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff. `service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3888,7 +3898,7 @@
             }
           },
           "503": {
-            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff. `service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4083,6 +4093,16 @@
           },
           "404": {
             "description": "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
