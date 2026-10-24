@@ -3,7 +3,7 @@ import type { z } from "zod";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { GatewayError } from "../core/errors";
 import { asGatewayError } from "../core/platform-errors";
-import { errorFacts, refusalFacts } from "../core/error-facts";
+import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { SERVER_VERSION } from "../core/version";
 import {
@@ -271,7 +271,8 @@ function refused(
   error: GatewayError,
 ): CallToolResult {
   log(error.status >= 500 ? "error" : "warn", "gateway_error", {
-    ...refusalFacts(error),
+    code: error.code,
+    reason: error.reason,
     status: error.status,
     path: "/mcp",
     method: "POST",

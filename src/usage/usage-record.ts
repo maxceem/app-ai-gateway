@@ -28,26 +28,6 @@ import { appUsageEvent, type CostSource, type ProviderPricing } from "../db/sche
 import { errorFacts } from "../core/error-facts";
 
 /** Everything a usage row records about which provider served an attempt. */
-/**
- * The media types a usage log line names. A content type is the provider's
- * own header text, so any other is logged as `other`, and parameters such as
- * `charset` are never copied.
- */
-const LOGGED_CONTENT_TYPES = [
-  "application/json",
-  "text/event-stream",
-  "application/x-ndjson",
-  "application/jsonl",
-  "text/plain",
-  "text/html",
-  "application/octet-stream",
-] as const;
-
-function loggedContentType(contentType: string): (typeof LOGGED_CONTENT_TYPES)[number] | "other" | "none" {
-  const mediaType = contentType.split(";", 1)[0]!.trim().toLowerCase();
-  if (mediaType === "") return "none";
-  return LOGGED_CONTENT_TYPES.find((known) => known === mediaType) ?? "other";
-}
 
 export interface AttemptAttribution {
   provider: ProviderType;
@@ -241,7 +221,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         appId: identity.appId,
         userId: identity.userId,
         provider: attribution.provider,
-        contentType: loggedContentType(input.contentType),
+        contentType: input.contentType,
         totalBytes: body.totalBytes,
       });
     }
@@ -322,7 +302,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       providerSlug: attribution.providerSlug,
       model: attribution.model,
       route: attribution.route,
-      contentType: loggedContentType(input.contentType),
+      contentType: input.contentType,
       // A client that hung up first is the explanation for everything that
       // follows, so it is reported ahead of the shape of what was missing.
       reason: aborted

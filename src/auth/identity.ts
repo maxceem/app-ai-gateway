@@ -191,27 +191,13 @@ function oauthOptions(deployment: Deployment, realm: string | null) {
 }
 
 /**
- * cf-auth's own scopes for a failure it recovers from. One raised by an event
- * hook is logged as `onEvent`, without the event name its scope appends.
- */
-const IDENTITY_ERROR_SCOPES = [
-  "databaseHooks.user.create.after",
-  "runAtomically.compensate",
-  "operations.afterCommit",
-  "operations.execute",
-] as const;
-
-/**
  * Reports a failure cf-auth recovered from. Without it cf-auth writes the raw
  * error to the console, and an error can quote what it was given — a failed
- * query lists its bound values — so only constants are logged.
+ * query lists its bound values — so it is logged as facts. `scope` is
+ * cf-auth's own constant.
  */
 function reportIdentityError(error: unknown, { scope }: { scope: string }): void {
-  log("error", "identity_internal_error", {
-    scope: IDENTITY_ERROR_SCOPES.find((known) => known === scope)
-      ?? (scope.startsWith("onEvent:") ? "onEvent" : "unrecognised"),
-    error: errorFacts(error),
-  });
+  log("error", "identity_internal_error", { scope, error: errorFacts(error) });
 }
 
 export async function createIdentityAuth(

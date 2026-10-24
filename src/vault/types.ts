@@ -25,26 +25,22 @@ export interface SecretVault {
 }
 
 /**
- * What a configuration problem is about, spelled as constants so a log line
- * can name it: the message also names the binding, but a log copies no text
- * an error carries. A local KEK is named by its `kekVersion` beside the
- * `SECRET_VAULT_LOCAL_KEK_V<n>` family.
+ * What a configuration problem is about, as constants a log line can name
+ * without copying the message. A local KEK is named by its `kekVersion`
+ * beside the `SECRET_VAULT_LOCAL_KEK_V<n>` family.
  */
-export const SECRET_VAULT_SETTINGS = [
-  "env",
-  "SECRET_VAULT_MODE",
-  "SECRET_VAULT_KMS_URL",
-  "SECRET_VAULT_KMS_TOKEN",
-  "SECRET_VAULT_KMS_*",
-  "SECRET_VAULT_LOCAL_*",
-  "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION",
-  "SECRET_VAULT_LOCAL_KEK_V<n>",
-  "context",
-] as const;
-export type SecretVaultSetting = (typeof SECRET_VAULT_SETTINGS)[number];
+export type SecretVaultSetting =
+  | "env"
+  | "SECRET_VAULT_MODE"
+  | "SECRET_VAULT_KMS_URL"
+  | "SECRET_VAULT_KMS_TOKEN"
+  | "SECRET_VAULT_KMS_*"
+  | "SECRET_VAULT_LOCAL_*"
+  | "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION"
+  | "SECRET_VAULT_LOCAL_KEK_V<n>"
+  | "context";
 
-export const SECRET_VAULT_PROBLEMS = ["missing", "not_allowed", "invalid"] as const;
-export type SecretVaultProblem = (typeof SECRET_VAULT_PROBLEMS)[number];
+export type SecretVaultProblem = "missing" | "not_allowed" | "invalid";
 
 export interface SecretVaultConfigurationDetail {
   setting: SecretVaultSetting;

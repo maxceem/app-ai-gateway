@@ -109,28 +109,6 @@ export interface BillingRuntime {
 const errorNamePrefix = "BillingHttpError";
 
 /**
- * The billing service's error codes this gateway acts on. A log line names one
- * of these or says `unrecognised`: the code is read off whatever the binding
- * threw, and is text like any other an error carries.
- */
-const KNOWN_BILLING_ERROR_CODES = [
-  "service_not_found",
-  "service_inactive",
-  "billing_plan_not_found",
-  "billing_plan_price_not_found",
-  "billing_manually_managed",
-  "billing_subscription_already_active",
-] as const;
-
-export type LoggedBillingErrorCode = (typeof KNOWN_BILLING_ERROR_CODES)[number] | "unrecognised";
-
-/** What a log line may say about a billing error code: a known one, or that it was not. */
-export function loggedBillingErrorCode(code: string | null): LoggedBillingErrorCode | undefined {
-  if (code === null) return undefined;
-  return KNOWN_BILLING_ERROR_CODES.find((known) => known === code) ?? "unrecognised";
-}
-
-/**
  * Reads the billing service's stable error code off anything it threw.
  *
  * Workers RPC serialises a thrown error using the standard `Error` fields only,

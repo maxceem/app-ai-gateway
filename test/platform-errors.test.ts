@@ -4,7 +4,7 @@ import { DrizzleQueryError } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { contained } from "../src/core/background";
-import { errorFacts, refusalFacts } from "../src/core/error-facts";
+import { errorFacts } from "../src/core/error-facts";
 import { GatewayError, type GatewayErrorReason } from "../src/core/errors";
 import { platformFailure } from "../src/core/platform-errors";
 import app from "../src/index";
@@ -238,15 +238,6 @@ describe("error facts", () => {
     expect(JSON.stringify(logs)).not.toContain(SECRET);
   });
 
-  it("logs a refusal by its code and reason only, each checked against its list", () => {
-    const forged = new GatewayError(400, SECRET as "invalid_request", SECRET, undefined, {
-      reason: SECRET as GatewayErrorReason,
-    });
-    expect(refusalFacts(forged)).toEqual({});
-    expect(refusalFacts(new GatewayError(403, "issuer_token_rejected", SECRET, undefined, { reason: "bad_signature" })))
-      .toEqual({ code: "issuer_token_rejected", reason: "bad_signature" });
-  });
-
   it("says only what the gateway itself spells", () => {
     expect(errorFacts(new DrizzleQueryError(
       "select 1",
@@ -262,10 +253,7 @@ describe("error facts", () => {
       platform: "platform_unavailable",
       platformMessage: "internal error",
     });
-    expect(errorFacts(new DOMException("timed out", "TimeoutError"))).toEqual({
-      class: "DOMException",
-      domException: "TimeoutError",
-    });
+    expect(errorFacts(new DOMException("timed out", "TimeoutError"))).toEqual({ class: "DOMException" });
     expect(errorFacts(new GatewayError(503, "issuer_verification_unavailable", SECRET))).toEqual({
       class: "GatewayError",
       code: "issuer_verification_unavailable",

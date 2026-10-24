@@ -36,7 +36,7 @@ import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
-import { errorFacts, refusalFacts } from "./core/error-facts";
+import { errorFacts } from "./core/error-facts";
 import { contained } from "./core/background";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
@@ -196,9 +196,10 @@ app.onError((error, c) => {
     // version, because this line is emitted for authentication failures whose
     // request payload is a credential.
     log(gateway.status >= 500 ? "error" : "warn", "gateway_error", {
+      code: gateway.code,
       // Undefined fields are dropped by JSON.stringify, so a rejection with no
       // granular cause simply has no `reason` key.
-      ...refusalFacts(gateway),
+      reason: gateway.reason,
       status: gateway.status,
       path: c.req.path,
       method: c.req.method,
