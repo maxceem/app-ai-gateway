@@ -52,7 +52,7 @@ Outcomes:
 | `issuer_token_rejected` | The sign-in token did not verify |
 | `issuer_claims_missing` | The token verified but a required entitlement claim is not there yet. Amber, because it is a wait, not a failure |
 | `issuer_verification_unavailable` | The identity provider's key set could not be fetched. Amber, transient |
-| `service_unavailable` | The infrastructure the gateway runs on failed, or the exchange took longer than 10 seconds. **Reason** is `platform_unavailable`, `platform_overloaded` or `deadline_exceeded`. Amber, transient: the app retries |
+| `service_unavailable` | The infrastructure the gateway runs on failed, or the exchange took longer than 10 seconds. **Reason** is `platform_unavailable`, `platform_overloaded` or `deadline_exceeded`. Amber, transient: worth retrying |
 | `internal_error` | Something failed inside the gateway itself |
 | `attest_failed` | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted |
 | `auth_required` | No usable credential, or a blocked user |

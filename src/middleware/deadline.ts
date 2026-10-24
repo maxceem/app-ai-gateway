@@ -21,9 +21,12 @@ export const CLIENT_CALL_DEADLINE_MS = 10_000;
  * The call it abandons is not cancelled — nothing in it takes a signal — so a
  * write in flight may still land. Every one of these is safe to repeat from a
  * fresh challenge: a consumed challenge or an advanced assertion counter is
- * exactly what a retry needs anyway. Should the abandoned call still finish
- * while the request lives, its own failure is logged then, which is what names
- * the call that hung.
+ * exactly what a retry needs anyway. The abandoned call is kept alive with
+ * `waitUntil`, for as long as the platform allows after the response: should
+ * it fail, `app.onError` logs its failure as a diagnostic rather than as a
+ * second answer, and that failure is what names the call that hung. An
+ * authentication attempt that reaches `recorded` only after the deadline does
+ * no work at all.
  */
 export const clientCallDeadline: MiddlewareHandler<{
   Bindings: Env;
@@ -41,8 +44,12 @@ export const clientCallDeadline: MiddlewareHandler<{
       reject(error);
     }, CLIENT_CALL_DEADLINE_MS);
   });
+  const pending = next();
   try {
-    await Promise.race([next(), expired]);
+    await Promise.race([pending, expired]);
+  } catch (error) {
+    if (controller.signal.aborted) c.executionCtx.waitUntil(pending.catch(() => undefined));
+    throw error;
   } finally {
     clearTimeout(timer);
   }

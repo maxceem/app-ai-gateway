@@ -120,29 +120,55 @@ export interface ErrorDescription {
 }
 
 /**
+ * A D1 type error quotes the value it refused, which may be one the caller
+ * sent; the code before it is all that is kept.
+ */
+const D1_VALUE_QUOTING_PREFIX = "D1_TYPE_ERROR";
+
+/**
+ * The frames of `error`'s stack, or none where they cannot be told apart from
+ * its message. V8 opens a stack with `name: message`, and a message may run
+ * over several lines — a Drizzle query error's lists the bound values — so
+ * the whole header is cut off before any line is read as a frame.
+ */
+function stackFrames(error: Error): string[] {
+  const header = error.message === "" ? error.name : `${error.name}: ${error.message}`;
+  if (!error.stack?.startsWith(header)) return [];
+  return error.stack
+    .slice(header.length)
+    .split("\n")
+    .filter((line) => /^ {4}at /u.test(line))
+    .slice(0, MAX_STACK_FRAMES)
+    .map((line) => line.trim());
+}
+
+function loggableMessage(error: Error): string {
+  if (error instanceof DrizzleQueryError) return `Failed query: ${error.query}`;
+  if (error.message.startsWith(D1_VALUE_QUOTING_PREFIX)) return `${D1_VALUE_QUOTING_PREFIX} (value withheld)`;
+  return error.message;
+}
+
+/**
  * Everything worth logging about an unexpected error: its class, message,
  * Cloudflare's flags, where it was thrown, and what it wrapped.
  *
- * A Drizzle query error is reduced to the SQL it ran. Its message and the
- * first line of its stack carry the bound parameters, which may be a caller's
- * credential material, so neither is copied; the stack keeps only its frames.
+ * Bound values are never copied. A Drizzle query error is reduced to the SQL
+ * it ran, since its message lists the values, which may be a caller's
+ * credential material; a D1 type error loses the value it quotes; and the
+ * stack keeps only frames that follow the message.
  */
 export function describeError(error: unknown, depth = 0): ErrorDescription {
   if (!(error instanceof Error)) return { name: typeof error, message: String(error) };
   const query = error instanceof DrizzleQueryError;
   const flags = error as CloudflareErrorFlags;
-  const frames = error.stack
-    ?.split("\n")
-    .filter((line) => line.trimStart().startsWith("at "))
-    .slice(0, MAX_STACK_FRAMES)
-    .map((line) => line.trim());
+  const frames = stackFrames(error);
   return {
     name: query ? "DrizzleQueryError" : error.name,
-    message: query ? `Failed query: ${error.query}` : error.message,
+    message: loggableMessage(error),
     ...(typeof flags.retryable === "boolean" ? { retryable: flags.retryable } : {}),
     ...(typeof flags.overloaded === "boolean" ? { overloaded: flags.overloaded } : {}),
     ...(typeof flags.remote === "boolean" ? { remote: flags.remote } : {}),
-    ...(frames && frames.length > 0 ? { stack: frames } : {}),
+    ...(frames.length > 0 ? { stack: frames } : {}),
     ...(error.cause !== undefined && depth < MAX_CAUSE_DEPTH
       ? { cause: describeError(error.cause, depth + 1) }
       : {}),

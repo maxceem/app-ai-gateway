@@ -87,6 +87,8 @@ const heldRuntime = new Proxy(runtime, {
 
 /** Bound parameters that make the database fail, quoting them, as drizzle's errors do. */
 const FAILING_MARKER = "fault-marker-";
+/** Bound parameters that make the database lose its connection, as D1 reports it. */
+const LOST_MARKER = "lost-marker-";
 
 function failingStatement(statement: D1PreparedStatement, query: string, values: unknown[] = []): D1PreparedStatement {
   return new Proxy(statement, {
@@ -99,6 +101,9 @@ function failingStatement(statement: D1PreparedStatement, query: string, values:
         return async (...args: unknown[]) => {
           if (values.some((value) => String(value).includes(FAILING_MARKER))) {
             throw new Error(`Failed query: ${query}\nparams: ${values.join(",")}`);
+          }
+          if (values.some((value) => String(value).includes(LOST_MARKER))) {
+            throw new Error("D1_ERROR: Network connection lost.");
           }
           return method.apply(target, args);
         };
@@ -811,6 +816,13 @@ describe("MCP browser steps", () => {
     expect(logged).toContainEqual(expect.objectContaining({ message: "unhandled_error", tool: "get_app", error: "Error" }));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) expect(line.includes(marker)).toBe(false);
+  });
+
+  it("refuses a platform failure as service_unavailable, telling the caller to retry", async () => {
+    const result = await callTool(TEST_MANAGEMENT_KEY, "get_app", { app: `${LOST_MARKER}${crypto.randomUUID()}` }, failingRuntime);
+    expectRefusal(result, "service_unavailable");
+    expect(result.structuredContent).toMatchObject({ status: 503 });
+    expect(String(result.structuredContent.next)).toContain("call the tool again");
   });
 
   it("judges a URL anywhere in a browser step as it will be stored: trimmed, and refused only for what leaks", async () => {

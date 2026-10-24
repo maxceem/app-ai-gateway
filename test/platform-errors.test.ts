@@ -14,17 +14,56 @@ interface Line {
   [field: string]: unknown;
 }
 
-function captureErrors(): Line[] {
+/** The structured lines written at warn and error, in order. */
+function captureLogs(): Line[] {
   const lines: Line[] = [];
-  vi.spyOn(console, "error").mockImplementation((value: unknown) => {
+  const collect = (value: unknown) => {
     if (typeof value !== "string") return;
     try {
       lines.push(JSON.parse(value) as Line);
     } catch {
       // Not one of ours.
     }
-  });
+  };
+  vi.spyOn(console, "warn").mockImplementation(collect);
+  vi.spyOn(console, "error").mockImplementation(collect);
   return lines;
+}
+
+/**
+ * A fetch that hangs until released: the issuer's key fetch stands in for
+ * whatever hangs, being the first outbound call the exchange makes.
+ */
+function hungFetch(): { reached: Promise<void>; release: (response: Response) => void } {
+  let arrived!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  let release!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    arrived();
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  });
+  return { reached, release: (response) => release(response) };
+}
+
+/** Runs the deadline out on a request already waiting on `reached`, and returns its answer. */
+async function pastDeadline(pending: Response | Promise<Response>, reached: Promise<void>): Promise<Response> {
+  await reached;
+  await vi.advanceTimersByTimeAsync(CLIENT_CALL_DEADLINE_MS);
+  const response = await pending;
+  vi.useRealTimers();
+  return response;
+}
+
+async function pendingSince(appId: string, userId: string): Promise<string | null> {
+  const row = await env.DB
+    .prepare("SELECT claim_pending_since FROM app_user WHERE app_id = ? AND id = ?")
+    .bind(appId, userId)
+    .first<{ claim_pending_since: string | null }>();
+  return row?.claim_pending_since ?? null;
 }
 
 /** An error shaped like the ones a Durable Object stub throws. */
@@ -53,7 +92,9 @@ function apiKeyReadsLost(): D1Database {
   } as unknown as D1Database;
 }
 
-async function signingFixture(kid: string): Promise<{ publicJwk: JWK; token: () => Promise<string> }> {
+async function signingFixture(
+  kid: string,
+): Promise<{ publicJwk: JWK; token: (claims?: Record<string, unknown>) => Promise<string> }> {
   const pair = await generateKeyPair("RS256", { extractable: true });
   const publicJwk = await exportJWK(pair.publicKey);
   publicJwk.kid = kid;
@@ -61,8 +102,8 @@ async function signingFixture(kid: string): Promise<{ publicJwk: JWK; token: () 
   const now = Math.floor(Date.now() / 1000);
   return {
     publicJwk,
-    token: () =>
-      new SignJWT({})
+    token: (claims = {}) =>
+      new SignJWT(claims)
         .setProtectedHeader({ alg: "RS256", kid })
         .setSubject("platform-user")
         .setIssuer(TEST_ISSUER)
@@ -146,6 +187,27 @@ describe("error descriptions", () => {
     expect(description.stack?.every((frame) => frame.startsWith("at "))).toBe(true);
     expect(JSON.stringify(description)).not.toContain("credential-material");
   });
+
+  it("never reads a bound value as a stack frame, whatever lines it holds", () => {
+    const wrapped = new DrizzleQueryError(
+      "select 1",
+      ["label\n    at forged-frame", "credential-material"],
+      new Error("D1_ERROR: Network connection lost."),
+    );
+
+    const description = describeError(wrapped);
+
+    expect(description.stack?.length).toBeGreaterThan(0);
+    expect(JSON.stringify(description)).not.toContain("forged-frame");
+    expect(JSON.stringify(description)).not.toContain("credential-material");
+  });
+
+  it("withholds the value a D1 type error quotes", () => {
+    const description = describeError(new Error("D1_TYPE_ERROR: Type 'object' not supported for value 'credential-material'"));
+
+    expect(description.message).toBe("D1_TYPE_ERROR (value withheld)");
+    expect(JSON.stringify(description)).not.toContain("credential-material");
+  });
 });
 
 describe("platform failures on a client call", () => {
@@ -153,7 +215,7 @@ describe("platform failures on a client call", () => {
     const fixture = await signingFixture("platform-lost");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
     const key = await seedServerApp("platform-lost", { issuer: {} });
-    const errors = captureErrors();
+    const logs = captureLogs();
 
     const ctx = createExecutionContext();
     const response = await app.fetch(
@@ -166,7 +228,7 @@ describe("platform failures on a client call", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");
     await expect(response.json()).resolves.toMatchObject({ error: { code: "service_unavailable" } });
-    const line = errors.find((entry) => entry.message === "gateway_error");
+    const line = logs.find((entry) => entry.message === "gateway_error");
     expect(line).toMatchObject({
       code: "service_unavailable",
       reason: "platform_unavailable",
@@ -174,7 +236,7 @@ describe("platform failures on a client call", () => {
       app: "platform-lost",
       cause: { name: "DrizzleQueryError", cause: { message: "D1_ERROR: Network connection lost." } },
     });
-    expect(errors.some((entry) => entry.message === "unhandled_error")).toBe(false);
+    expect(logs.some((entry) => entry.message === "unhandled_error")).toBe(false);
     expect(await outcomesFor("platform-lost")).toEqual([
       { outcome: "service_unavailable", reason: "platform_unavailable" },
     ]);
@@ -184,51 +246,113 @@ describe("platform failures on a client call", () => {
     const fixture = await signingFixture("platform-hang");
     const key = await seedServerApp("platform-hang", { issuer: {} });
     const token = await fixture.token();
-    let reached!: () => void;
-    const hanging = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    let release!: (response: Response) => void;
-    // The issuer's key fetch stands in for whatever hangs: it is the first
-    // outbound call the exchange makes after the deadline is set.
-    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-      reached();
-      return new Promise<Response>((resolve) => {
-        release = resolve;
-      });
-    });
+    const hung = hungFetch();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const errors = captureErrors();
+    const logs = captureLogs();
 
     const ctx = createExecutionContext();
-    const pending = app.fetch(tokenRequest("platform-hang", { api_key: key, issuer_token: token }), env, ctx);
-    await hanging;
-    await vi.advanceTimersByTimeAsync(CLIENT_CALL_DEADLINE_MS);
-    const response = await pending;
+    const response = await pastDeadline(
+      app.fetch(tokenRequest("platform-hang", { api_key: key, issuer_token: token }), env, ctx),
+      hung.reached,
+    );
 
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");
     await expect(response.json()).resolves.toMatchObject({ error: { code: "service_unavailable" } });
-    expect(errors.find((entry) => entry.message === "gateway_error")).toMatchObject({
-      code: "service_unavailable",
-      reason: "deadline_exceeded",
-    });
 
-    // The abandoned exchange finishing afterwards must not add a second row.
-    // It is done once it has stored the user, a step that follows the key
-    // fetch, and its own recording would be in the context's `waitUntil` then.
-    vi.useRealTimers();
-    release(Response.json({ keys: [fixture.publicJwk] }));
-    await vi.waitFor(async () => {
-      const user = await env.DB
-        .prepare("SELECT id FROM app_user WHERE app_id = ? AND id = ?")
-        .bind("platform-hang", "platform-user")
-        .first();
-      expect(user).not.toBeNull();
+    // The abandoned exchange fails afterwards: logged as what hung, not as a
+    // second refusal, and not recorded as a second attempt.
+    hung.release(new Response("unavailable", { status: 500 }));
+    await vi.waitFor(() => {
+      expect(logs.some((entry) => entry.message === "abandoned_call_failed")).toBe(true);
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
     await waitOnExecutionContext(ctx);
+    expect(logs.filter((entry) => entry.message === "gateway_error")).toEqual([
+      expect.objectContaining({ code: "service_unavailable", reason: "deadline_exceeded" }),
+    ]);
+    expect(logs.find((entry) => entry.message === "abandoned_call_failed")).toMatchObject({
+      app: "platform-hang",
+      error: { name: "GatewayError" },
+    });
     expect(await outcomesFor("platform-hang")).toEqual([
+      { outcome: "service_unavailable", reason: "deadline_exceeded" },
+    ]);
+  });
+
+  it("records and does not start an attempt that the steps before it ran past the deadline", async () => {
+    const fixture = await signingFixture("platform-late-start");
+    const issuerFetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    const key = await seedServerApp("platform-late-start", { issuer: {} });
+    const token = await fixture.token();
+    // The endpoint rate limiter, which runs before the attempt, is what hangs.
+    let arrived!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let admit!: () => void;
+    const limiter = {
+      getByName: () => ({
+        check: () => {
+          arrived();
+          return new Promise((resolve) => {
+            admit = () => resolve({ allowed: true, retryAfterSeconds: 0 });
+          });
+        },
+      }),
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const ctx = createExecutionContext();
+    const response = await pastDeadline(
+      app.fetch(
+        tokenRequest("platform-late-start", { api_key: key, issuer_token: token }),
+        { ...env, ENDPOINT_RATE_LIMITER: limiter } as unknown as Env,
+        ctx,
+      ),
+      reached,
+    );
+    expect(response.status).toBe(503);
+
+    admit();
+    await vi.waitFor(async () => {
+      expect(await outcomesFor("platform-late-start")).toEqual([
+        { outcome: "service_unavailable", reason: "deadline_exceeded" },
+      ]);
+    });
+    await waitOnExecutionContext(ctx);
+    // Never started: the issuer token was not even verified.
+    expect(issuerFetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves the claim window alone when an abandoned attempt is refused for a missing claim", async () => {
+    const fixture = await signingFixture("platform-claims");
+    const key = await seedServerApp("platform-claims", {
+      issuer: { required_claims: [{ path: "entitlements", contains: "pro" }] },
+    });
+    const token = await fixture.token();
+    const hung = hungFetch();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const logs = captureLogs();
+
+    const ctx = createExecutionContext();
+    const response = await pastDeadline(
+      app.fetch(tokenRequest("platform-claims", { api_key: key, issuer_token: token }), env, ctx),
+      hung.reached,
+    );
+    expect(response.status).toBe(503);
+
+    // The keys arrive late and the token verifies without the claim. A retry
+    // may have closed the window by now, so the abandoned refusal must not
+    // open it.
+    hung.release(Response.json({ keys: [fixture.publicJwk] }));
+    await vi.waitFor(() => {
+      expect(logs.find((entry) => entry.message === "abandoned_call_failed")).toMatchObject({
+        error: { name: "GatewayError" },
+      });
+    });
+    await waitOnExecutionContext(ctx);
+    expect(await pendingSince("platform-claims", "platform-user")).toBeNull();
+    expect(await outcomesFor("platform-claims")).toEqual([
       { outcome: "service_unavailable", reason: "deadline_exceeded" },
     ]);
   });

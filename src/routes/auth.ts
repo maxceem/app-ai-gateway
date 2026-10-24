@@ -124,10 +124,19 @@ async function recorded(
   };
 
   const deadline = c.get("deadline");
-  deadline?.addEventListener("abort", () => {
-    const refusal = asGatewayError(deadline.reason);
+  const recordDeadline = (): void => {
+    const refusal = asGatewayError(deadline?.reason);
     record(refusal?.code ?? "internal_error", refusal?.reason);
-  }, { once: true });
+  };
+  if (deadline?.aborted) {
+    // Reached only after the client was answered — the steps in front of this
+    // one took the whole deadline. The attempt is recorded as what the client
+    // got and not started: nobody is waiting for its result, and starting it
+    // would spend a challenge and write rows for an answer never read.
+    recordDeadline();
+    return new Response(null, { status: 503 });
+  }
+  deadline?.addEventListener("abort", recordDeadline, { once: true });
 
   try {
     const response = await handler(attempt);
@@ -138,7 +147,9 @@ async function recorded(
     // The verified user id travels on the error for exactly this: a
     // claims-missing rejection is the one failure that knows who it refused.
     attempt.userId = attempt.userId ?? gateway?.userId ?? null;
-    if (gateway?.code === "issuer_claims_missing" && attempt.userId) {
+    // Not for an attempt the deadline already settled: a retry may have
+    // succeeded and closed the window since, which this would reopen.
+    if (!settled && gateway?.code === "issuer_claims_missing" && attempt.userId) {
       c.executionCtx.waitUntil(markClaimPending(c.env, appId, attempt.userId));
     }
     record(gateway?.code ?? "internal_error", gateway?.reason);

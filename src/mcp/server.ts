@@ -2,6 +2,7 @@ import type { CallToolResult, McpServer, StandardSchemaWithJSON } from "@modelco
 import type { z } from "zod";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { GatewayError } from "../core/errors";
+import { asGatewayError } from "../core/platform-errors";
 import { log } from "../core/log";
 import { SERVER_VERSION } from "../core/version";
 import {
@@ -217,7 +218,9 @@ async function callTool(
       structuredContent: result as Record<string, unknown>,
     };
   } catch (error) {
-    const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : error;
+    // A platform failure is refused like any gateway error, so the caller is
+    // told to retry rather than that the gateway broke.
+    const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : asGatewayError(error) ?? error;
     if (refusal instanceof GatewayError) return refused(tool, caller, refusal);
     // Answered with nothing of it, and logged with nothing of it either: a
     // failure's message can carry what the call sent — a database error

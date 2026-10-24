@@ -168,6 +168,19 @@ app.onError((error, c) => {
   headers.set("content-type", "application/json; charset=UTF-8");
   const timings = c.get("servedTimings");
   if (timings !== undefined) headers.set("server-timing", serverTiming(timings));
+  // The client already has its deadline refusal: this is the call it
+  // abandoned failing afterwards. Logged once, as what names the call that
+  // hung, and never as a second refusal of the same request.
+  const deadline = c.get("deadline");
+  if (deadline?.aborted && error !== deadline.reason) {
+    log("warn", "abandoned_call_failed", {
+      path: c.req.path,
+      method: c.req.method,
+      app: c.req.param("app"),
+      error: describeError(error),
+    });
+    return new Response(null, { status: 503, headers });
+  }
   // A platform failure is answered as the refusal it is, not as a fault in
   // the gateway: the client should retry, and the log should not call it a bug.
   const gateway = asGatewayError(error);

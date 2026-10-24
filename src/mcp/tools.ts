@@ -1385,6 +1385,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   account_expired: "This account passed its recovery deadline and can no longer be used.",
   email_unverified: "Ask the account's owner to open the link in the verification email sent to their address, or to send a new one from the console. Requests are served once they do; nothing needs to be reconfigured.",
   rate_limited: "Wait a minute and call the tool again.",
+  service_unavailable: "The gateway's infrastructure failed for a moment; nothing about the call was wrong. Wait a few seconds and call the tool again. For a change, first read it back with the matching get or list tool: it may have landed.",
   not_found: "Check the id and call the matching list tool.",
   operation_not_found: "Check the id: get_operation takes the id a change tool answered with, and sees only your account's operations.",
   operation_expired: "It lapsed before it completed. Call the tool that opened it again to start a new one.",
