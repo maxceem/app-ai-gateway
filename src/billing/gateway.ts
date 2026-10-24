@@ -7,6 +7,7 @@ import {
   type SubscriptionActions,
 } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { ttlCache } from "../core/ttl-cache";
 
@@ -149,6 +150,7 @@ async function loadBillingAccess(
       serviceId: BILLING_SERVICE_ID,
       organizationId,
       billingErrorCode: code,
+      error: errorFacts(error),
     }));
     /*
      * Fail closed on an unknown allowance, not on a known one. An organization

@@ -31,6 +31,7 @@ import type {
   AppAttestEnvironment,
   IssuerAuthentication,
 } from "../shared/app-config";
+import { errorFacts } from "../core/error-facts";
 
 /**
  * What a handler learns about the attempt as it runs, for the event row it will
@@ -304,7 +305,7 @@ export async function markClaimPending(env: Env, appId: string, userId: string):
     log("warn", "claim_pending_mark_failed", {
       app: appId,
       userId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
   }
 }
@@ -341,7 +342,7 @@ async function settleClaimDelay(
       app: appId,
       userId,
       delayMs,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     // Not reported as recovered, and not recorded on the event: a window that
     // is still open has not been measured, and a figure written next to one

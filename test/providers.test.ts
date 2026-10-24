@@ -429,7 +429,7 @@ describe("provider resolution on the hot path", () => {
     expect(fetchSpy).toHaveLength(0);
     const logged = errorSpy.mock.calls.flat().join(" ");
     expect(logged).toContain("secret_vault_misconfigured");
-    expect(logged).toContain("SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION is not allowed in kms mode");
+    expect(logged).toContain('"vault":{"setting":"SECRET_VAULT_LOCAL_*","problem":"not_allowed"}');
   });
 
   it("keeps a disabled credential in rotation only until the cache TTL expires", async () => {

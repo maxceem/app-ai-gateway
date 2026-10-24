@@ -3,8 +3,9 @@ import { sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
-import { GatewayError } from "../core/errors";
+import { GatewayError, type ErrorCode, type GatewayErrorReason } from "../core/errors";
 import { log } from "../core/log";
+import { asGatewayError } from "../core/platform-errors";
 import { clientAuth, type ExchangeType, type TokenExchange } from "../client-auth/client-auth";
 import {
   EXCHANGES,
@@ -17,6 +18,9 @@ import { database } from "../db";
 import { parseRequest } from "../management/validation";
 import { jsonBody } from "./admin/body";
 import { appAuthChallenge, type AuthEventName } from "../db/schema";
+import type { RequestVariables } from "../middleware/request-scope";
+import { errorFacts } from "../core/error-facts";
+import { contained } from "../core/background";
 
 /** A JSON body that is an object, which every documented body on this surface is. */
 async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
@@ -82,12 +86,17 @@ async function registerKey<K extends ExchangeType>(input: {
  * Wraps one authentication handler so every attempt, successful or refused,
  * leaves exactly one `app_auth_event` row behind.
  *
- * Failures are recorded and rethrown unchanged: the client contract is
- * untouched, and `app.onError` still logs and serializes the error. Recording
- * happens in `waitUntil` so neither path waits on a diagnostic write.
+ * Failures are recorded and rethrown, a platform failure as the
+ * `service_unavailable` it is answered with, so `app.onError` still logs and
+ * serializes the error. Recording happens in `waitUntil` so neither path waits
+ * on a diagnostic write.
+ *
+ * An attempt that runs past the request's deadline is recorded when the
+ * deadline passes, since the client has its answer then, and not again should
+ * the abandoned call finish afterwards.
  */
 async function recorded(
-  c: Context<{ Bindings: Env }>,
+  c: Context<{ Bindings: Env; Variables: RequestVariables }>,
   event: AuthEventName,
   handler: (attempt: AuthAttempt) => Promise<Response>,
 ): Promise<Response> {
@@ -95,11 +104,14 @@ async function recorded(
   const appId = c.req.param("app") ?? "";
   const appVersion = c.req.header("x-app-version") ?? null;
   const attempt: AuthAttempt = { authMethod: null, userId: null, claimDelayMs: null };
-  const record = (outcome: string, reason?: string): void => {
+  let settled = false;
+  const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
+    if (settled) return;
+    settled = true;
     // An app that does not exist has nothing to attribute a row to, and
     // recording one would let anyone grow this table with invented app ids.
     if (outcome === "app_not_found") return;
-    c.executionCtx.waitUntil(recordAuthEvent({
+    c.executionCtx.waitUntil(contained("auth_event", recordAuthEvent({
       env: c.env,
       appId,
       event,
@@ -110,27 +122,44 @@ async function recorded(
       appVersion,
       latencyMs: Date.now() - startedAt,
       claimDelayMs: attempt.claimDelayMs,
-    }));
+    })));
   };
+
+  const deadline = c.get("deadline");
+  const recordDeadline = (): void => {
+    const refusal = asGatewayError(deadline?.reason);
+    record(refusal?.code ?? "internal_error", refusal?.reason);
+  };
+  if (deadline?.aborted) {
+    // Reached only after the client was answered — the steps in front of this
+    // one took the whole deadline. The attempt is recorded as what the client
+    // got and not started: nobody is waiting for its result, and starting it
+    // would spend a challenge and write rows for an answer never read.
+    recordDeadline();
+    return new Response(null, { status: 503 });
+  }
+  deadline?.addEventListener("abort", recordDeadline, { once: true });
 
   try {
     const response = await handler(attempt);
     record("ok");
     return response;
   } catch (error) {
-    const gateway = error instanceof GatewayError ? error : null;
+    const gateway = asGatewayError(error);
     // The verified user id travels on the error for exactly this: a
     // claims-missing rejection is the one failure that knows who it refused.
     attempt.userId = attempt.userId ?? gateway?.userId ?? null;
-    if (gateway?.code === "issuer_claims_missing" && attempt.userId) {
-      c.executionCtx.waitUntil(markClaimPending(c.env, appId, attempt.userId));
+    // Not for an attempt the deadline already settled: a retry may have
+    // succeeded and closed the window since, which this would reopen.
+    if (!settled && gateway?.code === "issuer_claims_missing" && attempt.userId) {
+      c.executionCtx.waitUntil(contained("claim_pending", markClaimPending(c.env, appId, attempt.userId)));
     }
     record(gateway?.code ?? "internal_error", gateway?.reason);
-    throw error;
+    throw gateway ?? error;
   }
 }
 
-export const authRoutes = new Hono<{ Bindings: Env }>();
+export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
 
 /**
  * Bounds flooding of one application's unauthenticated authentication routes
@@ -148,7 +177,7 @@ export const authRoutes = new Hono<{ Bindings: Env }>();
  * app is loaded, so a flood aimed at an invented app id costs no read either.
  */
 async function enforceAppAuthLimit(
-  c: Context<{ Bindings: Env }>,
+  c: Context<{ Bindings: Env; Variables: RequestVariables }>,
   policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
 ): Promise<void> {
   const appId = c.req.param("app") ?? "";
@@ -177,7 +206,7 @@ authRoutes.post("/challenge", async (c) => {
     c.executionCtx.waitUntil(
       pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorFacts(error),
         });
       }),
     );

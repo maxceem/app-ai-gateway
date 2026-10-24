@@ -20,6 +20,11 @@ export interface RequestVariables {
    * options concurrently share one build instead of racing to make two.
    */
   identityAuthCache: Map<string, Promise<CfAuth>>;
+  /**
+   * Aborted when a client call runs past its deadline, with the refusal as its
+   * `reason`. Set only on the routes `./deadline` guards.
+   */
+  deadline?: AbortSignal;
 }
 
 /**

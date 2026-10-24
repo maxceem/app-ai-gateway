@@ -23,6 +23,7 @@ import {
   MAINTENANCE_SLACK_QUERIES,
   QueryBudget,
 } from "../core/query-budget";
+import { errorFacts } from "../core/error-facts";
 
 /** How long a raw, per-event row survives. */
 export const USAGE_EVENT_RETENTION_DAYS = 90;
@@ -307,7 +308,7 @@ export async function runUsageRetention(
       if (deleted > 0) log("info", "usage_spend_pruned", { deleted });
     } catch (error) {
       log("error", "usage_spend_prune_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
     }
   }
@@ -319,7 +320,7 @@ export async function runUsageRetention(
     log("info", "usage_events_compacted", { ...result, retentionDays: USAGE_EVENT_RETENTION_DAYS });
   } catch (error) {
     log("error", "usage_events_compact_failed", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
   }
   try {
@@ -329,7 +330,7 @@ export async function runUsageRetention(
     }
   } catch (error) {
     log("error", "usage_rollup_fold_failed", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
   }
 }

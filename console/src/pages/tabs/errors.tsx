@@ -31,6 +31,7 @@ const OUTCOME_FILTERS = [
   "issuer_claims_missing",
   "issuer_token_rejected",
   "issuer_verification_unavailable",
+  "service_unavailable",
   "attest_failed",
   "auth_required",
   "ok",

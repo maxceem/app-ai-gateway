@@ -1,9 +1,11 @@
+import type { ErrorCode } from "../core/errors";
 import { log } from "../core/log";
 import { timeOrderedId } from "../core/ids";
 import { database } from "../db/index";
 import type { AuthMethod } from "../core/types";
 import { appAuthEvent, type AuthEventName } from "../db/schema";
 import { storedAppVersion } from "../core/app-version";
+import { errorFacts } from "../core/error-facts";
 
 /**
  * How long an authentication attempt stays on file. Long enough to answer "did
@@ -25,7 +27,8 @@ export interface AuthEventInput {
   userId?: string | null;
   authMethod?: AuthMethod | null;
   /** `ok`, or the error code the client was handed. */
-  outcome: string;
+  /** A refusal code, or `ok`: a constant either way, so it may be logged. */
+  outcome: "ok" | ErrorCode;
   reason?: string | null;
   appVersion?: string | null;
   latencyMs: number;
@@ -81,7 +84,7 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
     userId: input.userId ?? null,
     event: input.event,
     outcome: input.outcome,
-    error: lastError instanceof Error ? lastError.message : String(lastError),
+    error: errorFacts(lastError),
   });
 }
 

@@ -77,15 +77,20 @@ function assertUsable(kind: string, context: Record<string, string>): SecretVaul
   if (entries.length > MAX_ENTRIES) {
     throw new SecretVaultConfigurationError(
       `${kind} context has ${entries.length} entries; at most ${MAX_ENTRIES} are allowed`,
+      { setting: "context", problem: "invalid" },
     );
   }
   for (const [key, value] of entries) {
     if (key.length > MAX_KEY_LENGTH || !KEY_PATTERN.test(key)) {
-      throw new SecretVaultConfigurationError(`${kind} context key ${JSON.stringify(key)} is not usable`);
+      throw new SecretVaultConfigurationError(`${kind} context key ${JSON.stringify(key)} is not usable`, {
+        setting: "context",
+        problem: "invalid",
+      });
     }
     if (value.length > MAX_VALUE_LENGTH) {
       throw new SecretVaultConfigurationError(
         `${kind} context value for ${key} is ${value.length} characters; at most ${MAX_VALUE_LENGTH} are allowed`,
+        { setting: "context", problem: "invalid" },
       );
     }
   }

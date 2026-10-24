@@ -23,6 +23,7 @@ import { isGatewayType, type StoredGateway } from "../shared/gateways";
 import { invalidStoredGateway, readStoredGateway } from "./gateway-adapters";
 import { recordFromEntries } from "../shared/records";
 import type { ProviderType } from "../shared/providers";
+import { errorFacts } from "../core/error-facts";
 
 export interface ResolvedProvider {
   id: string;
@@ -282,7 +283,7 @@ async function plaintextSecret(
         providerSlug: row.slug,
         providerType: row.type,
         ageMs: stale.ageMs,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
       return stale.secret;
     }
@@ -291,7 +292,7 @@ async function plaintextSecret(
       providerId: row.id,
       providerSlug: row.slug,
       providerType: row.type,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "Provider credential could not be read");
   }
@@ -324,14 +325,14 @@ export async function decryptProviderGatewaySecret(
         organizationId,
         providerGatewayId,
         ageMs: stale.ageMs,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
       return stale.secret;
     }
     log("error", "provider_gateway_secret_unavailable", {
       organizationId,
       providerGatewayId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "Provider gateway credential could not be read");
   }

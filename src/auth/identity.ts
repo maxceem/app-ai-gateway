@@ -2,6 +2,8 @@ import type { CfAuth, CfAuthError, CfAuthEvent, OperationSweepStatements } from 
 import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
+import { log } from "../core/log";
 import {
   registrationAllowed,
   shouldProvisionDefaultOrganization,
@@ -188,6 +190,30 @@ function oauthOptions(deployment: Deployment, realm: string | null) {
   };
 }
 
+/**
+ * Reports a failure cf-auth recovered from. Without it cf-auth writes the raw
+ * error to the console, and an error can quote what it was given — a failed
+ * query lists its bound values — so it is logged as facts. `scope` is
+ * cf-auth's own constant.
+ */
+function reportIdentityError(error: unknown, { scope }: { scope: string }): void {
+  log("error", "identity_internal_error", { scope, error: errorFacts(error) });
+}
+
+/**
+ * Where better-auth's own log calls go. Its message is not logged: some
+ * interpolate request data, such as an `Origin` header. Only the level is,
+ * and the facts of an error it passed.
+ */
+function reportBetterAuthLog(
+  level: "debug" | "info" | "warn" | "error",
+  _message: string,
+  ...args: unknown[]
+): void {
+  const error = args.find((arg) => arg instanceof Error);
+  log(level === "debug" ? "info" : level, "better_auth_log", error === undefined ? {} : { error: errorFacts(error) });
+}
+
 export async function createIdentityAuth(
   deployment: Deployment,
   env: Env,
@@ -227,6 +253,8 @@ export async function createIdentityAuth(
       }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
+    onError: reportIdentityError,
+    logger: { log: reportBetterAuthLog },
     // The CLI's operations: the engine, its table and the built-in `login`
     // are cf-auth's; the kinds and what completes them are this gateway's.
     operations: {

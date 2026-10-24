@@ -39,6 +39,7 @@ import { execute } from "./execute";
 import type { ExecutionPlan } from "./plan";
 import { prepareEndpointPlan, prepareProxyPlan, type PrepareInput } from "./prepare";
 import type { ServedTimings } from "./timing";
+import { contained } from "../core/background";
 
 export interface ServedVariables extends RequestVariables {
   /**
@@ -114,7 +115,7 @@ async function serve(
     await authenticated(c, timings, providerSlug, body);
   const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
   const appVersion = c.req.header("x-app-version") ?? null;
-  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(contained("served_request", promise));
   await admitRequest(
     {
       env: c.env,
