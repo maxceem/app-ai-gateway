@@ -720,3 +720,31 @@ describe("password sign-in throttling", () => {
     );
   });
 });
+
+describe("better-auth's own logging", () => {
+  /**
+   * better-auth logs a refused origin with the origin in its message. Through
+   * the gateway's logger it is logged by level alone: no message, so nothing
+   * the request sent.
+   */
+  it("logs its level, never its message", async () => {
+    const planted = "https://sk-planted-origin.example";
+    const output: string[] = [];
+    for (const level of ["debug", "info", "log", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation((...values: unknown[]) => {
+        output.push(values.map(String).join(" "));
+      });
+    }
+
+    const response = await worker.request(`${ORIGIN}/v1/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: planted, cookie: "session=planted" },
+      body: JSON.stringify({ email: "origin-log@example.test", password: "not-the-password" }),
+    }, env);
+
+    expect(response.status).toBe(403);
+    const logged = output.join("\n");
+    expect(logged).toContain('"message":"better_auth_log"');
+    expect(logged).not.toContain("sk-planted-origin");
+  });
+});
