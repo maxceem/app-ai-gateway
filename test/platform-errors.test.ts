@@ -17,20 +17,41 @@ interface Line {
   [field: string]: unknown;
 }
 
-/** The structured lines written at warn and error, in order. */
-function captureLogs(): Line[] {
+/**
+ * One console argument as text, the whole of it: an error with its message
+ * and stack, so a test asserting on this output also catches a raw
+ * `console.error(error)`, not only lines written through `log`.
+ */
+function rendered(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * The structured lines written at warn and error, in order, and as `output`
+ * every argument of every console call, rendered whole.
+ */
+function captureLogs(): Line[] & { output: string[] } {
   const lines: Line[] = [];
-  const collect = (value: unknown) => {
-    if (typeof value !== "string") return;
+  const output: string[] = [];
+  const collect = (...values: unknown[]) => {
+    output.push(...values.map(rendered));
+    if (typeof values[0] !== "string") return;
     try {
-      lines.push(JSON.parse(value) as Line);
+      lines.push(JSON.parse(values[0]) as Line);
     } catch {
-      // Not one of ours.
+      // Not one of ours; still in `output`.
     }
   };
-  vi.spyOn(console, "warn").mockImplementation(collect);
-  vi.spyOn(console, "error").mockImplementation(collect);
-  return lines;
+  for (const level of ["debug", "info", "log", "warn", "error"] as const) {
+    vi.spyOn(console, level).mockImplementation(collect);
+  }
+  return Object.assign(lines, { output });
 }
 
 /**
@@ -183,7 +204,9 @@ describe("error facts", () => {
       override name = SECRET;
     })(SECRET);
     const gateway = new GatewayError(400, "invalid_request", SECRET, { "x-planted": SECRET }, {
-      // Typed as a closed set; cast here to prove the log re-checks it at runtime.
+      // Cast past its closed type only to plant the secret: errorFacts reads
+      // neither a refusal's reason nor its message. The reason a refusal log
+      // line does carry is checked in the gateway_error tests.
       reason: SECRET as GatewayErrorReason,
       userId: SECRET,
       data: { planted: SECRET },
@@ -232,10 +255,10 @@ describe("error facts", () => {
   it("contains a failed background task, logging it as facts", async () => {
     const logs = captureLogs();
     await expect(contained("maintenance", Promise.reject(new Error(SECRET)))).resolves.toBeUndefined();
-    expect(logs).toEqual([
+    expect([...logs]).toEqual([
       expect.objectContaining({ message: "background_task_failed", task: "maintenance", error: { class: "Error" } }),
     ]);
-    expect(JSON.stringify(logs)).not.toContain(SECRET);
+    expect(logs.output.join("\n")).not.toContain(SECRET);
   });
 
   it("says only what the gateway itself spells", () => {
@@ -293,6 +316,11 @@ describe("platform failures on a client call", () => {
       },
     });
     expect(logs.some((entry) => entry.message === "unhandled_error")).toBe(false);
+    // The failed query names its table and binds the key's hash: neither the
+    // query nor the key reaches any console output, however it was written.
+    const output = logs.output.join("\n");
+    expect(output).not.toContain("app_api_key");
+    expect(output).not.toContain(key);
     expect(await outcomesFor("platform-lost")).toEqual([
       { outcome: "service_unavailable", reason: "platform_unavailable" },
     ]);

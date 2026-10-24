@@ -12,23 +12,44 @@ interface Line {
 }
 
 /**
- * Captures the structured lines the Worker emits, by level.
+ * One console argument as text, the whole of it: an error with its message
+ * and stack, so a test asserting on this output also catches a raw
+ * `console.error(error)`, not only lines written through `log`.
+ */
+function rendered(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Captures the structured lines the Worker emits, by level, and as `output`
+ * every argument of every console call, rendered whole.
  *
  * `log` writes one JSON document per call, so a test can assert on the fields
- * an operator would actually search on rather than on a formatted string.
+ * an operator would actually search on rather than on a formatted string;
+ * `output` is for asserting what must appear nowhere at all.
  */
-function captureLogs(): { warn: Line[]; error: Line[] } {
-  const captured = { warn: [] as Line[], error: [] as Line[] };
-  const collect = (bucket: Line[]) => (value: unknown) => {
-    if (typeof value !== "string") return;
+function captureLogs(): { warn: Line[]; error: Line[]; output: string[] } {
+  const captured = { warn: [] as Line[], error: [] as Line[], output: [] as string[] };
+  const collect = (bucket: Line[] | null) => (...values: unknown[]) => {
+    captured.output.push(...values.map(rendered));
+    if (bucket === null || typeof values[0] !== "string") return;
     try {
-      bucket.push(JSON.parse(value) as Line);
+      bucket.push(JSON.parse(values[0]) as Line);
     } catch {
-      // Not one of ours.
+      // Not one of ours; still in `output`.
     }
   };
   vi.spyOn(console, "warn").mockImplementation(collect(captured.warn));
   vi.spyOn(console, "error").mockImplementation(collect(captured.error));
+  for (const level of ["debug", "info", "log"] as const) {
+    vi.spyOn(console, level).mockImplementation(collect(null));
+  }
   return captured;
 }
 
@@ -143,8 +164,10 @@ describe("gateway error logging", () => {
     // decoder throws a plain SyntaxError when the request loads this row, which
     // exercises the unexpected-error path without relying on malformed request
     // JSON that the public endpoint now rejects before recording begins.
+    // The value is short enough for V8 to quote it whole in the SyntaxError's
+    // message, so the message itself carries the planted marker.
     await env.DB.prepare("UPDATE app SET config_json=? WHERE id=?")
-      .bind("{ not json", "log-unhandled")
+      .bind("sk-leaked", "log-unhandled")
       .run();
     const logs = captureLogs();
 
@@ -155,7 +178,8 @@ describe("gateway error logging", () => {
     // Its class, and nothing it carries: a JSON parse error quotes its input.
     const line = logs.error.find((entry) => entry.message === "unhandled_error");
     expect(line).toMatchObject({ app: "log-unhandled", error: { class: "SyntaxError" } });
-    expect(JSON.stringify(line)).not.toContain("not json");
+    // Nowhere in any console output, not only absent from this line.
+    expect(logs.output.join("\n")).not.toContain("sk-leaked");
     expect(logs.error.some((entry) => entry.message === "gateway_error")).toBe(false);
   });
 
