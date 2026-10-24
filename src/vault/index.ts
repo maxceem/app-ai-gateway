@@ -8,6 +8,7 @@ import {
   type SecretVault,
   type SecretVaultMode,
 } from "./types";
+import { errorFacts } from "../core/error-facts";
 
 export type { SecretVault, SecretVaultContext, SecretVaultMode } from "./types";
 export { SecretVaultBlobError, SecretVaultConfigurationError } from "./types";
@@ -16,24 +17,30 @@ const vaultByEnv = new WeakMap<object, SecretVault>();
 
 function requiredString(
   env: Record<string, unknown>,
-  binding: string,
+  binding: "SECRET_VAULT_KMS_URL" | "SECRET_VAULT_KMS_TOKEN",
   mode: SecretVaultMode,
 ): string {
   const value = env[binding];
   if (typeof value !== "string" || value.trim() === "") {
-    throw new SecretVaultConfigurationError(`${binding} is required in ${mode} mode`);
+    throw new SecretVaultConfigurationError(`${binding} is required in ${mode} mode`, {
+      setting: binding,
+      problem: "missing",
+    });
   }
   return value.trim();
 }
 
 function rejectMixedBindings(
   env: Record<string, unknown>,
-  prefix: string,
+  prefix: "SECRET_VAULT_LOCAL_" | "SECRET_VAULT_KMS_",
   mode: SecretVaultMode,
 ): void {
   const binding = Object.keys(env).find((name) => name.startsWith(prefix));
   if (binding) {
-    throw new SecretVaultConfigurationError(`${binding} is not allowed in ${mode} mode`);
+    throw new SecretVaultConfigurationError(`${binding} is not allowed in ${mode} mode`, {
+      setting: prefix === "SECRET_VAULT_LOCAL_" ? "SECRET_VAULT_LOCAL_*" : "SECRET_VAULT_KMS_*",
+      problem: "not_allowed",
+    });
   }
 }
 
@@ -41,7 +48,10 @@ function createVault(envObject: object): SecretVault {
   const env = envObject as Record<string, unknown>;
   const mode = env.SECRET_VAULT_MODE;
   if (mode !== "kms" && mode !== "local") {
-    throw new SecretVaultConfigurationError("SECRET_VAULT_MODE must be either kms or local");
+    throw new SecretVaultConfigurationError("SECRET_VAULT_MODE must be either kms or local", {
+      setting: "SECRET_VAULT_MODE",
+      problem: "invalid",
+    });
   }
   if (mode === "kms") {
     rejectMixedBindings(env, "SECRET_VAULT_LOCAL_", mode);
@@ -57,7 +67,7 @@ function createVault(envObject: object): SecretVault {
 
 export function secretVault(env: unknown): SecretVault {
   if (typeof env !== "object" || env === null) {
-    throw new SecretVaultConfigurationError("env must be an object");
+    throw new SecretVaultConfigurationError("env must be an object", { setting: "env", problem: "invalid" });
   }
   const cached = vaultByEnv.get(env);
   if (cached) return cached;
@@ -67,7 +77,7 @@ export function secretVault(env: unknown): SecretVault {
     return vault;
   } catch (error) {
     log("error", "secret_vault_misconfigured", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     throw error;
   }

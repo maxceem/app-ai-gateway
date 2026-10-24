@@ -25,6 +25,7 @@ import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
 import { database } from "../db/index";
 import { appUsageEvent, type CostSource, type ProviderPricing } from "../db/schema";
+import { errorFacts } from "../core/error-facts";
 
 /** Everything a usage row records about which provider served an attempt. */
 export interface AttemptAttribution {
@@ -140,7 +141,7 @@ async function recordStep(
       appId: event.row.appId,
       userId: event.row.userId,
       step,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     return false;
   }
@@ -239,7 +240,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         appId: identity.appId,
         userId: identity.userId,
         provider: attribution.provider,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
     }
   }

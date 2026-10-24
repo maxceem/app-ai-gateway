@@ -152,10 +152,10 @@ describe("gateway error logging", () => {
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
-    // Described rather than reduced to its message, so the log says what threw.
+    // Its class, and nothing it carries: a JSON parse error quotes its input.
     const line = logs.error.find((entry) => entry.message === "unhandled_error");
-    expect(line).toMatchObject({ app: "log-unhandled", error: { name: "SyntaxError" } });
-    expect((line?.error as { stack?: string[] }).stack?.length).toBeGreaterThan(0);
+    expect(line).toMatchObject({ app: "log-unhandled", error: { class: "SyntaxError" } });
+    expect(JSON.stringify(line)).not.toContain("not json");
     expect(logs.error.some((entry) => entry.message === "gateway_error")).toBe(false);
   });
 

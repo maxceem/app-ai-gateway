@@ -4,6 +4,7 @@ import { providerProbeHeaders } from "./provider-type";
 import { DIRECT_ADAPTER, routeAdapter, type RouteRequest } from "./route-adapters";
 import type { ProviderType } from "../shared/providers";
 import type { StoredGateway } from "../shared/gateways";
+import { errorFacts } from "../core/error-facts";
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -61,7 +62,7 @@ async function runProbe(
   } catch (error) {
     log("warn", "provider_probe_unreachable", {
       probe: label,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     return { validated: false, reason: "unreachable" };
   }

@@ -9,6 +9,7 @@ import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
 import { derive } from "../routes/cli/security";
 import { emailSender, emailSetup } from "../email/sender";
+import { errorFacts } from "../core/error-facts";
 
 /**
  * Email verification, where the deployment sends email.
@@ -204,10 +205,7 @@ export async function sendVerificationEmail(
   } catch (error) {
     log("error", "verification_email_failed", {
       transport: sender.transport,
-      reason: error instanceof Error ? error.name : typeof error,
-      ...(typeof (error as { code?: unknown } | null)?.code === "string"
-        ? { code: (error as { code: string }).code }
-        : {}),
+      error: errorFacts(error),
     });
     throw new GatewayError(
       503,

@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { GatewayError } from "../core/errors";
 import { asGatewayError } from "../core/platform-errors";
+import { errorFacts, refusalFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { SERVER_VERSION } from "../core/version";
 import {
@@ -86,7 +87,7 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
       responseMode: "json",
       maxSubscriptions: 0,
       // Reporting only: what the SDK refused, it has already answered.
-      onerror: (error) => log("warn", "mcp_request_rejected", failureKind(error)),
+      onerror: (error) => log("warn", "mcp_request_rejected", { error: errorFacts(error) }),
     })).catch((error: unknown) => {
       handler = undefined;
       throw error;
@@ -94,19 +95,6 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
 
 let handler: Promise<McpHttpHandler> | undefined;
 
-/**
- * What may be logged about a failure: its class and name, and a gateway
- * error's code — never its message, its stack or its cause, any of which can
- * quote what the caller sent.
- */
-function failureKind(error: unknown): { error: string; errorClass?: string; code?: string } {
-  if (!(error instanceof Error)) return { error: typeof error };
-  return {
-    error: /^[A-Za-z_]\w{0,63}$/u.test(error.name) ? error.name : "Error",
-    errorClass: error.constructor.name,
-    ...(error instanceof GatewayError ? { code: error.code } : {}),
-  };
-}
 
 function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   const caller = extra?.caller as OperationCaller | undefined;
@@ -231,7 +219,7 @@ async function callTool(
       method: "POST",
       tool: tool.name,
       source: actionSource(caller),
-      ...failureKind(error),
+      error: errorFacts(error),
     });
     return {
       isError: true,
@@ -283,8 +271,7 @@ function refused(
   error: GatewayError,
 ): CallToolResult {
   log(error.status >= 500 ? "error" : "warn", "gateway_error", {
-    code: error.code,
-    reason: error.reason,
+    ...refusalFacts(error),
     status: error.status,
     path: "/mcp",
     method: "POST",

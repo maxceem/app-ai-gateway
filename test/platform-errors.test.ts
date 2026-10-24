@@ -3,7 +3,9 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { DrizzleQueryError } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { describeError, platformFailure } from "../src/core/platform-errors";
+import { errorFacts, refusalFacts } from "../src/core/error-facts";
+import { GatewayError, type GatewayErrorReason } from "../src/core/errors";
+import { platformFailure } from "../src/core/platform-errors";
 import app from "../src/index";
 import { CLIENT_CALL_DEADLINE_MS } from "../src/middleware/deadline";
 import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
@@ -168,45 +170,83 @@ describe("platform failure classification", () => {
   });
 });
 
-describe("error descriptions", () => {
-  it("names the query that failed without the values bound to it", () => {
-    const cause = stubError("Network connection lost.", { retryable: true });
-    const wrapped = new DrizzleQueryError(
-      'select "id" from "app_api_key" where "key_hash" = ?',
-      ["credential-material"],
-      cause,
-    );
+describe("error facts", () => {
+  const SECRET = "sk-planted-credential-0123456789";
 
-    const description = describeError(wrapped);
-
-    expect(description).toMatchObject({
-      name: "DrizzleQueryError",
-      message: 'Failed query: select "id" from "app_api_key" where "key_hash" = ?',
-      cause: { name: "Error", message: "Network connection lost.", retryable: true },
+  /** An error of every shape, with the secret in every text-bearing slot it has. */
+  function planted(): unknown[] {
+    const named = new Error(SECRET);
+    named.name = SECRET;
+    const coded = Object.assign(new Error(SECRET), { code: SECRET, retryable: SECRET, remote: SECRET });
+    const custom = new (class extends Error {
+      override name = SECRET;
+    })(SECRET);
+    const gateway = new GatewayError(400, "invalid_request", SECRET, { "x-planted": SECRET }, {
+      // Typed as a closed set; cast here to prove the log re-checks it at runtime.
+      reason: SECRET as GatewayErrorReason,
+      userId: SECRET,
+      data: { planted: SECRET },
+      cause: new Error(SECRET),
     });
-    expect(description.stack?.every((frame) => frame.startsWith("at "))).toBe(true);
-    expect(JSON.stringify(description)).not.toContain("credential-material");
+    return [
+      named,
+      coded,
+      custom,
+      gateway,
+      new DrizzleQueryError(`select '${SECRET}'`, [SECRET, `label\n    at ${SECRET}`], new Error(`D1_ERROR: ${SECRET}`)),
+      new Error(`D1_TYPE_ERROR: Type 'object' not supported for value '${SECRET}'`),
+      new Error(`internal error; reference = ${SECRET}`),
+      new SyntaxError(`Unexpected token, "${SECRET}" is not valid JSON`),
+      new DOMException(SECRET, SECRET),
+      new DOMException(SECRET, "TimeoutError"),
+      new AggregateError([new Error(SECRET)], SECRET),
+      new Error(SECRET, { cause: new Error(SECRET, { cause: SECRET }) }),
+      SECRET,
+      { message: SECRET, stack: SECRET },
+      null,
+    ];
+  }
+
+  it("copies nothing an error carries, whatever slot it is in", () => {
+    for (const error of planted()) {
+      expect(JSON.stringify(errorFacts(error))).not.toContain(SECRET);
+    }
   });
 
-  it("never reads a bound value as a stack frame, whatever lines it holds", () => {
-    const wrapped = new DrizzleQueryError(
+  it("logs a refusal by its code and reason only, each checked against its list", () => {
+    const forged = new GatewayError(400, SECRET as "invalid_request", SECRET, undefined, {
+      reason: SECRET as GatewayErrorReason,
+    });
+    expect(refusalFacts(forged)).toEqual({});
+    expect(refusalFacts(new GatewayError(403, "issuer_token_rejected", SECRET, undefined, { reason: "bad_signature" })))
+      .toEqual({ code: "issuer_token_rejected", reason: "bad_signature" });
+  });
+
+  it("says only what the gateway itself spells", () => {
+    expect(errorFacts(new DrizzleQueryError(
       "select 1",
-      ["label\n    at forged-frame", "credential-material"],
-      new Error("D1_ERROR: Network connection lost."),
-    );
-
-    const description = describeError(wrapped);
-
-    expect(description.stack?.length).toBeGreaterThan(0);
-    expect(JSON.stringify(description)).not.toContain("forged-frame");
-    expect(JSON.stringify(description)).not.toContain("credential-material");
-  });
-
-  it("withholds the value a D1 type error quotes", () => {
-    const description = describeError(new Error("D1_TYPE_ERROR: Type 'object' not supported for value 'credential-material'"));
-
-    expect(description.message).toBe("D1_TYPE_ERROR (value withheld)");
-    expect(JSON.stringify(description)).not.toContain("credential-material");
+      [SECRET],
+      Object.assign(new Error("Network connection lost."), { retryable: true, remote: false }),
+    ))).toEqual({
+      class: "DrizzleQueryError",
+      // Recognised by the Durable Object flag, so no message is named.
+      cause: { class: "Error", platform: "platform_unavailable", retryable: true, remote: false },
+    });
+    expect(errorFacts(new Error("internal error; reference = c26r4312qjkuaef6181kt8en"))).toEqual({
+      class: "Error",
+      platform: "platform_unavailable",
+      platformMessage: "internal error",
+    });
+    expect(errorFacts(new DOMException("timed out", "TimeoutError"))).toEqual({
+      class: "DOMException",
+      domException: "TimeoutError",
+    });
+    expect(errorFacts(new GatewayError(503, "issuer_verification_unavailable", SECRET))).toEqual({
+      class: "GatewayError",
+      code: "issuer_verification_unavailable",
+    });
+    expect(errorFacts(new (class Unlisted extends Error {})("x"))).toEqual({ class: "other" });
+    expect(errorFacts(SECRET)).toEqual({ class: "not_an_error" });
   });
 });
 
@@ -234,7 +274,10 @@ describe("platform failures on a client call", () => {
       reason: "platform_unavailable",
       status: 503,
       app: "platform-lost",
-      cause: { name: "DrizzleQueryError", cause: { message: "D1_ERROR: Network connection lost." } },
+      cause: {
+        class: "DrizzleQueryError",
+        cause: { class: "Error", platform: "platform_unavailable", platformMessage: "Network connection lost." },
+      },
     });
     expect(logs.some((entry) => entry.message === "unhandled_error")).toBe(false);
     expect(await outcomesFor("platform-lost")).toEqual([
@@ -272,7 +315,7 @@ describe("platform failures on a client call", () => {
     ]);
     expect(logs.find((entry) => entry.message === "abandoned_call_failed")).toMatchObject({
       app: "platform-hang",
-      error: { name: "GatewayError" },
+      error: { class: "GatewayError", code: "issuer_verification_unavailable" },
     });
     expect(await outcomesFor("platform-hang")).toEqual([
       { outcome: "service_unavailable", reason: "deadline_exceeded" },
@@ -347,7 +390,7 @@ describe("platform failures on a client call", () => {
     hung.release(Response.json({ keys: [fixture.publicJwk] }));
     await vi.waitFor(() => {
       expect(logs.find((entry) => entry.message === "abandoned_call_failed")).toMatchObject({
-        error: { name: "GatewayError" },
+        error: { class: "GatewayError", code: "issuer_claims_missing" },
       });
     });
     await waitOnExecutionContext(ctx);

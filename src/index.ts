@@ -16,7 +16,7 @@ import { MAINTENANCE_CRON } from "./core/maintenance-cron";
 import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { ROUTE_NOT_FOUND } from "./core/errors";
-import { asGatewayError, describeError } from "./core/platform-errors";
+import { asGatewayError } from "./core/platform-errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
@@ -36,6 +36,7 @@ import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
+import { errorFacts, refusalFacts } from "./core/error-facts";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
@@ -177,7 +178,7 @@ app.onError((error, c) => {
       path: c.req.path,
       method: c.req.method,
       app: c.req.param("app"),
-      error: describeError(error),
+      error: errorFacts(error),
     });
     return new Response(null, { status: 503, headers });
   }
@@ -194,19 +195,18 @@ app.onError((error, c) => {
     // version, because this line is emitted for authentication failures whose
     // request payload is a credential.
     log(gateway.status >= 500 ? "error" : "warn", "gateway_error", {
-      code: gateway.code,
       // Undefined fields are dropped by JSON.stringify, so a rejection with no
       // granular cause simply has no `reason` key.
-      reason: gateway.reason,
+      ...refusalFacts(gateway),
       status: gateway.status,
       path: c.req.path,
       method: c.req.method,
       app: c.req.param("app"),
       appVersion: storedAppVersion(c.req.header("x-app-version")) ?? undefined,
-      // The platform failure a `service_unavailable` stands for: which call
-      // failed, and with what. Described without any query's bound values,
-      // so it keeps the promise above.
-      cause: gateway.cause === undefined ? undefined : describeError(gateway.cause),
+      // The platform failure a `service_unavailable` stands for, as the
+      // constants of `errorFacts`: nothing the error carries is copied, so it
+      // keeps the promise above.
+      cause: gateway.cause === undefined ? undefined : errorFacts(gateway.cause),
     });
     return new Response(
       JSON.stringify({
@@ -225,7 +225,7 @@ app.onError((error, c) => {
     path: c.req.path,
     method: c.req.method,
     app: c.req.param("app"),
-    error: describeError(error),
+    error: errorFacts(error),
   });
   return new Response(JSON.stringify({ error: { code: "internal_error", message: "Internal server error" } }), {
     status: 500,
@@ -247,7 +247,7 @@ function sweepFailed(sweep: string, code: string, error: unknown): void {
     return;
   }
   log("error", code, {
-    error: error instanceof Error ? error.message : String(error),
+    error: errorFacts(error),
   });
 }
 

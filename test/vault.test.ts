@@ -93,27 +93,38 @@ describe("kms secret vault", () => {
 
 describe("secret vault validation", () => {
   it.each([
-    [{}, "SECRET_VAULT_MODE"],
-    [{ SECRET_VAULT_MODE: "unknown" }, "SECRET_VAULT_MODE"],
-    [{ SECRET_VAULT_MODE: "kms" }, "SECRET_VAULT_KMS_URL"],
+    [{}, { setting: "SECRET_VAULT_MODE", problem: "invalid" }],
+    [{ SECRET_VAULT_MODE: "unknown" }, { setting: "SECRET_VAULT_MODE", problem: "invalid" }],
+    [{ SECRET_VAULT_MODE: "kms" }, { setting: "SECRET_VAULT_KMS_URL", problem: "missing" }],
     [{
       SECRET_VAULT_MODE: "kms",
       SECRET_VAULT_KMS_URL: "https://kms.example.test",
-    }, "SECRET_VAULT_KMS_TOKEN"],
-    [{ SECRET_VAULT_MODE: "local" }, "SECRET_VAULT_LOCAL_KEK_V1"],
+    }, { setting: "SECRET_VAULT_KMS_TOKEN", problem: "missing" }],
+    [{ SECRET_VAULT_MODE: "local" }, { setting: "SECRET_VAULT_LOCAL_KEK_V<n>", problem: "missing", kekVersion: 1 }],
     [{
       SECRET_VAULT_MODE: "local",
       SECRET_VAULT_LOCAL_KEK_V1: "not-base64",
-    }, "SECRET_VAULT_LOCAL_KEK_V1"],
+    }, { setting: "SECRET_VAULT_LOCAL_KEK_V<n>", problem: "invalid", kekVersion: 1 }],
     [{
       SECRET_VAULT_MODE: "local",
       SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "2",
       SECRET_VAULT_LOCAL_KEK_V1: TEST_KEK_V1,
-    }, "SECRET_VAULT_LOCAL_KEK_V2"],
-  ])("fails loudly for invalid configuration %#", (config, binding) => {
+    }, { setting: "SECRET_VAULT_LOCAL_KEK_V<n>", problem: "missing", kekVersion: 2 }],
+  ])("fails loudly for invalid configuration %#, naming the setting and never its value", (config, vault) => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect(() => secretVault(config)).toThrow(SecretVaultConfigurationError);
-    expect(errorSpy.mock.calls.flat().join(" ")).toContain(binding);
+    const lines = errorSpy.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(lines).toContainEqual(expect.objectContaining({
+      message: "secret_vault_misconfigured",
+      error: { class: "SecretVaultConfigurationError", vault },
+    }));
+    const logged = errorSpy.mock.calls.flat().join(" ");
+    // The mode and the version number are not secret, and short enough to
+    // appear in a timestamp; every other setting's value must never be logged.
+    for (const [setting, value] of Object.entries(config)) {
+      if (setting === "SECRET_VAULT_MODE" || setting === "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION") continue;
+      expect(logged).not.toContain(value);
+    }
   });
 
   it("rejects variables from the other vault mode", () => {

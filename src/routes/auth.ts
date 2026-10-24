@@ -19,6 +19,7 @@ import { parseRequest } from "../management/validation";
 import { jsonBody } from "./admin/body";
 import { appAuthChallenge, type AuthEventName } from "../db/schema";
 import type { RequestVariables } from "../middleware/request-scope";
+import { errorFacts } from "../core/error-facts";
 
 /** A JSON body that is an object, which every documented body on this surface is. */
 async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
@@ -204,7 +205,7 @@ authRoutes.post("/challenge", async (c) => {
     c.executionCtx.waitUntil(
       pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorFacts(error),
         });
       }),
     );

@@ -4,6 +4,7 @@ import { database } from "../db/index";
 import type { AuthMethod } from "../core/types";
 import { appAuthEvent, type AuthEventName } from "../db/schema";
 import { storedAppVersion } from "../core/app-version";
+import { errorFacts } from "../core/error-facts";
 
 /**
  * How long an authentication attempt stays on file. Long enough to answer "did
@@ -81,7 +82,7 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
     userId: input.userId ?? null,
     event: input.event,
     outcome: input.outcome,
-    error: lastError instanceof Error ? lastError.message : String(lastError),
+    error: errorFacts(lastError),
   });
 }
 

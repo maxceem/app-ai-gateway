@@ -1,3 +1,6 @@
+import type { IssuerRejectionReason } from "../client-auth/issuer";
+import type { PlatformFailureReason } from "./platform-errors";
+
 export type ErrorCode =
   | "auth_required"
   | "forbidden"
@@ -191,6 +194,12 @@ export type ErrorCode =
 export type GatewayErrorData = Record<string, string | number | boolean>;
 
 /**
+ * The granular causes a refusal may carry: a closed set, so a `reason` is
+ * always a constant this codebase spells, and logging one copies no text.
+ */
+export type GatewayErrorReason = IssuerRejectionReason | PlatformFailureReason;
+
+/**
  * What a rejection knows about itself beyond the wire contract. `reason` and
  * `userId` are never serialized: they are for the operator's logs and the auth
  * event log. `data` is, and is part of the public contract.
@@ -198,10 +207,11 @@ export type GatewayErrorData = Record<string, string | number | boolean>;
 export interface GatewayErrorDetails {
   /**
    * The granular cause behind a behaviour-class code — `claims_missing`,
-   * `bad_signature`, `jwks_unreachable`, and so on. Deliberately a free string:
-   * the vocabulary grows without any client having to learn a new code.
+   * `bad_signature`, `jwks_unreachable`, and so on. Never sent to a client, so
+   * the vocabulary grows without any client having to learn a new code; a
+   * closed set all the same, so a log line names one without copying text.
    */
-  reason?: string;
+  reason?: GatewayErrorReason;
   /**
    * The end-user identity the verification had already established when it
    * failed. Only set where the signature was checked first, so it is a verified
@@ -218,7 +228,7 @@ export interface GatewayErrorDetails {
 }
 
 export class GatewayError extends Error {
-  readonly reason?: string;
+  readonly reason?: GatewayErrorReason;
   readonly userId?: string;
   readonly data?: GatewayErrorData;
 

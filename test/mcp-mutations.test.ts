@@ -813,7 +813,7 @@ describe("MCP browser steps", () => {
     expectRefusal(result!, "internal_error");
     expect(JSON.stringify(result)).not.toContain(marker);
     const logged = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(logged).toContainEqual(expect.objectContaining({ message: "unhandled_error", tool: "get_app", error: "Error" }));
+    expect(logged).toContainEqual(expect.objectContaining({ message: "unhandled_error", tool: "get_app", error: { class: "DrizzleQueryError", cause: { class: "Error" } } }));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) expect(line.includes(marker)).toBe(false);
   });

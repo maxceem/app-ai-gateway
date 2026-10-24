@@ -1,4 +1,4 @@
-import { billingErrorCodeOf, type BillingRuntime } from "./contract";
+import { billingErrorCodeOf, loggedBillingErrorCode, type BillingRuntime } from "./contract";
 import type { Deployment } from "../policy/deployment";
 import {
   PlanLimitsInputSchema,
@@ -7,6 +7,7 @@ import {
   type SubscriptionActions,
 } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { ttlCache } from "../core/ttl-cache";
 
@@ -148,7 +149,8 @@ async function loadBillingAccess(
       message: "billing access RPC failed",
       serviceId: BILLING_SERVICE_ID,
       organizationId,
-      billingErrorCode: code,
+      billingErrorCode: loggedBillingErrorCode(code),
+      error: errorFacts(error),
     }));
     /*
      * Fail closed on an unknown allowance, not on a known one. An organization
@@ -162,7 +164,11 @@ async function loadBillingAccess(
       const endsAt = entitlementEndsAt(known);
       if (endsAt === null || endsAt > Date.now()) {
         const ageMs = Date.now() - (lastKnownAccess.peek(organizationId)?.storedAt ?? 0);
-        log("warn", "billing_access_stale", { organizationId, ageMs, billingErrorCode: code });
+        log("warn", "billing_access_stale", {
+          organizationId,
+          ageMs,
+          billingErrorCode: loggedBillingErrorCode(code),
+        });
         return { ...known, stale: true, ...(code ? { billingErrorCode: code } : {}) };
       }
     }
