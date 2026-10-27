@@ -1,10 +1,10 @@
 [
   {
-    "provider": "together",
-    "model": "MiniMaxAI/MiniMax-M3.1-Flash",
+    "provider": "openai",
+    "model": "gpt-6.1-terra",
     "action": "add",
     "kind": "text",
-    "reason": "Add this text model; no supplied information indicates a skip rule applies.",
+    "reason": "Add this current text model; its ID is distinct from the catalog’s GPT-6.1 Sol and other GPT-6 Terra versions.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }
