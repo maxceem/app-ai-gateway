@@ -362,5 +362,9 @@
   {
     "key": "moonshot: parser failed",
     "reason": "Since the move to platform.kimi.ai, the pricing page's markdown renders each DocTable as an empty <table>, so it has no prices to read. Its prices come from the lists until the markdown carries them again; remove this then."
+  },
+  {
+    "key": "gemini/gemini-embedding-001: not added",
+    "reason": "Unsupported public pricing: gemini-embedding-001: no input or output row"
   }
 ]
