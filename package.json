@@ -2,7 +2,7 @@
   "name": "app-ai-gateway",
   "version": "0.10.3",
   "private": true,
-  "packageManager": "pnpm@12.3.4",
+  "packageManager": "pnpm@12.16.1",
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @app-ai-gateway/console dev",
