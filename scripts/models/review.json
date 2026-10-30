@@ -1,11 +1,11 @@
 [
   {
-    "provider": "openai",
-    "model": "gpt-6.1-terra",
-    "action": "add",
-    "kind": "text",
-    "reason": "Add this current text model; its ID is distinct from the catalog’s GPT-6.1 Sol and other GPT-6 Terra versions.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
+    "provider": "gemini",
+    "model": "gemini-embedding-001",
+    "action": "skip",
+    "kind": "embedding",
+    "reason": "Unsupported public pricing: gemini-embedding-001: no input or output row",
+    "origin": "rules",
+    "reviewer": ""
   }
 ]
