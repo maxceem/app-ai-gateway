@@ -389,10 +389,14 @@ test("perplexity: reads only Perplexity's own section of the Agent API rate card
   assertFails(parsePerplexity, replaceOnce(text, "| 0.25 | 2.50 |", "| 0.25 (≤200k)<br />0.50 (>200k) | 2.50 |"), ["perplexity/sonar"], /plain decimal/);
   assertFails(parsePerplexity, replaceOnce(text, "`perplexity/sonar`", "`sonar`"), ["perplexity/sonar"], /unexpected model/);
   assertFails(parsePerplexity, text.replaceAll("Cache read (\\$/1M)", "Cache hit (\\$/1M)"), ["perplexity/sonar"], /header changed/);
-  assertFails(parsePerplexity, replaceOnce(text, "\n**Perplexity**\n", "\n**Sonar**\n"), ["perplexity/sonar"], /Perplexity/);
-  // A section that lost its table never reads the next family's.
-  const moved = replaceOnce(replaceOnce(text, "**NVIDIA**", "**Perplexity**\n\n**NVIDIA**"), "\n**Perplexity**\n\n>", "\n**Other**\n\n>");
-  assertFails(parsePerplexity, moved, ["perplexity/sonar"], /table is missing/);
+  assertFails(parsePerplexity, replaceOnce(text, "> [tab] Perplexity", "> [tab] Sonar"), ["perplexity/sonar"], /Perplexity/);
+  // A tab that lost its table never reads the next family's, whether a blank
+  // line separates the two or not.
+  const renamed = replaceOnce(text, "> [tab] Perplexity", "> [tab] Other");
+  for (const between of ["\n\n", "\n"]) {
+    const moved = replaceOnce(renamed, "> [tab] NVIDIA", `> [tab] Perplexity${between}> [tab] NVIDIA`);
+    assertFails(parsePerplexity, moved, ["perplexity/sonar"], /table is missing/);
+  }
 });
 
 test("cerebras: converts $ per token strings to $ per 1M", () => {

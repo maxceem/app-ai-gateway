@@ -6,6 +6,10 @@
 
 > Compare Agent API models, token pricing, supported service tiers, and provider documentation.
 
+> [!NOTE]
+>
+> Looking for ranked web results instead of a generated answer? Use the Search API at `POST /search`. It takes no `model` parameter and bills per successful request, not per token. Start with the [Search API quickstart](https://docs.perplexity.ai/docs/search/quickstart.md).
+
 ## Available Models
 
 The Agent API provides a unified interface to models from multiple providers with transparent token-based pricing.
@@ -18,27 +22,27 @@ A rate with a context-length range, such as `(≤272k)`, changes when the input 
 
 > [!TIP]
 >
-> Looking for pre-configured model setups? See [**Presets**](/docs/agent-api/presets) — optimized for specific use cases.
+> Looking for pre-configured model setups? See [**Effort Levels**](https://docs.perplexity.ai/docs/agent-api/effort.md) — optimized for specific use cases.
 
-**NVIDIA**
-
-> **NVIDIA**
+> [tab] NVIDIA
 >
-> Nemotron 3.5 Super is a reasoning model with a 1,048,576-token context window and up to 131,072 output tokens. It accepts text input only.
-
-| Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
-| - | - | - | - | - | - |
-| `perplexity/nemotron-3.5-super-120b-a12b` | 0.20 | 0.50 | 0.04 | — | — |
-
-**Perplexity**
-
-> **Perplexity**
+> > [card] NVIDIA
+> >
+> > Nemotron 3.5 Super is a reasoning model with a 1,048,576-token context window and up to 131,072 output tokens. It accepts text input only.
 >
-> Perplexity's grounded search model.
+> | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+> | - | - | - | - | - | - |
+> | `perplexity/nemotron-3.5-super-120b-a12b` | 0.20 | 0.50 | 0.04 | — | — |
 
-| Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
-| - | - | - | - | - | - |
-| `perplexity/sonar` | 0.25 | 2.50 | 0.0625 | — | — |
+> [tab] Perplexity
+>
+> > [card] Perplexity
+> >
+> > Perplexity's grounded search model.
+>
+> | Model | Input (\$/1M) | Output (\$/1M) | Cache read (\$/1M) | Service tiers | Docs |
+> | - | - | - | - | - | - |
+> | `perplexity/sonar` | 0.25 | 2.50 | 0.0625 | — | — |
 
 ## Service tiers
 
