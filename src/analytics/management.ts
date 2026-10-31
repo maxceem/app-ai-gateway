@@ -17,7 +17,8 @@
  * email address or name ever reaches the dataset. What a client says about
  * itself — its `user-agent`, an MCP client's declared name — is the caller's
  * to choose, so it is reduced to one of {@link KNOWN_CLIENTS} or `other`, and
- * of its version only the digits are kept. The data point
+ * of its version only the digits are kept. The request is named by the id
+ * Cloudflare gave it, which the gateway's log lines carry too. The data point
  * is built field by field from plain values, never by spreading an object, so
  * a field added anywhere else cannot ride along.
  *
@@ -32,6 +33,7 @@
 import { GatewayError } from "../core/errors";
 import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
+import { requestIdOf } from "../core/request-id";
 import { asGatewayError } from "../core/platform-errors";
 import { ACCOUNT_ID_MAX_LENGTH } from "../policy/deployment";
 
@@ -76,6 +78,11 @@ export interface ManagementCall {
   client: string | null;
   /** The client's version where it names one: the CLI's, or what an MCP client declares. */
   clientVersion: string | null;
+  /**
+   * Cloudflare's id for the request, as `requestIdOf` reads it, so the call can
+   * be found in the gateway's log: every refusal and failure is logged with it.
+   */
+  requestId: string | null;
   durationMs: number;
 }
 
@@ -157,7 +164,7 @@ export const KNOWN_CLIENTS: Readonly<Record<string, string>> = {
  *
  * Positions are the dataset's schema. Blobs: 1 channel, 2 operation, 3 tool,
  * 4 kind, 5 outcome, 6 code, 7 reason, 8 field, 9 issue, 10 credential,
- * 11 identity, 12 client, 13 client version. Doubles: 1 status, 2 duration in
+ * 11 identity, 12 client, 13 client version, 14 request id. Doubles: 1 status, 2 duration in
  * milliseconds. The index is the account, so sampling keeps an account's
  * calls together; a call with none shares the empty index.
  */
@@ -181,6 +188,7 @@ export function recordManagementCall(env: Env, call: ManagementCall): void {
         call.identity,
         token(call.client),
         token(call.clientVersion),
+        requestIdOf(call.requestId),
       ],
       doubles: [call.status, Math.max(0, Math.round(call.durationMs))],
     });

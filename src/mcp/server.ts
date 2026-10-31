@@ -14,6 +14,7 @@ import { GatewayError } from "../core/errors";
 import { asGatewayError } from "../core/platform-errors";
 import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
+import { requestIdOf } from "../core/request-id";
 import { SERVER_VERSION } from "../core/version";
 import {
   runOperation,
@@ -73,7 +74,13 @@ export async function serveMcp(request: Request, caller: OperationCaller): Promi
       token: "",
       clientId: caller.auth?.actor.credentialId ?? "",
       scopes: caller.auth ? [caller.auth.actor.grant] : [],
-      extra: { caller, userAgent: request.headers.get("user-agent") ?? undefined },
+      extra: {
+        caller,
+        request: {
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          requestId: requestIdOf(request.headers.get("cf-ray")),
+        } satisfies McpRequest,
+      },
     },
   });
 }
@@ -91,7 +98,7 @@ type McpHttpHandler = ReturnType<Sdk["createMcpHandler"]>;
  */
 const mcpHandler = (): Promise<McpHttpHandler> =>
   (handler ??= mcpSdk().then((sdk) =>
-    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra), userAgentOf(context.authInfo?.extra)), {
+    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra), requestOf(context.authInfo?.extra)), {
       legacy: "stateless",
       responseMode: "json",
       maxSubscriptions: 0,
@@ -112,11 +119,19 @@ function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   return caller;
 }
 
-function userAgentOf(extra: Record<string, unknown> | undefined): string | undefined {
-  return typeof extra?.userAgent === "string" ? extra.userAgent : undefined;
+/** What a tool call's analytics and log lines need of the HTTP request that carried it. */
+interface McpRequest {
+  userAgent: string | undefined;
+  /** Cloudflare's id for the request, which the call's log lines and data point both carry. */
+  requestId: string | null;
 }
 
-function mcpServer(sdk: Sdk, caller: OperationCaller, userAgent: string | undefined): McpServer {
+function requestOf(extra: Record<string, unknown> | undefined): McpRequest {
+  // `serveMcp` is the only way in, and it always passes one.
+  return (extra?.request as McpRequest | undefined) ?? { userAgent: undefined, requestId: null };
+}
+
+function mcpServer(sdk: Sdk, caller: OperationCaller, request: McpRequest): McpServer {
   const server = new sdk.McpServer(
     { name: "app-ai-gateway", version: SERVER_VERSION },
     {
@@ -140,7 +155,7 @@ function mcpServer(sdk: Sdk, caller: OperationCaller, userAgent: string | undefi
         inputSchema: advertised(tool.input),
         annotations: tool.annotations,
       },
-      (input, ctx) => callTool(tool, input, caller, toolClient(ctx.mcpReq.envelope, userAgent)),
+      (input, ctx) => callTool(tool, input, caller, toolClient(ctx.mcpReq.envelope, request.userAgent), request.requestId),
     );
   }
   server.registerResource(
@@ -208,6 +223,7 @@ async function callTool(
   input: Record<string, unknown>,
   caller: OperationCaller,
   client: ToolClient,
+  requestId: string | null,
 ): Promise<CallToolResult> {
   const started = Date.now();
   try {
@@ -220,14 +236,14 @@ async function callTool(
       content: [{ type: "text", text: tool.summary(result, redactSecrets(input)) }],
       structuredContent: result as Record<string, unknown>,
     };
-    recordToolCall(tool, caller, client, started, endingOf(200));
+    recordToolCall(tool, caller, client, requestId, started, endingOf(200));
     return answer;
   } catch (error) {
     // A platform failure is refused like any gateway error, so the caller is
     // told to retry rather than that the gateway broke.
     const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : asGatewayError(error) ?? error;
-    recordToolCall(tool, caller, client, started, refusalOf(refusal));
-    if (refusal instanceof GatewayError) return refused(tool, caller, refusal);
+    recordToolCall(tool, caller, client, requestId, started, refusalOf(refusal));
+    if (refusal instanceof GatewayError) return refused(tool, caller, refusal, requestId);
     // Answered with nothing of it, and logged with nothing of it either: a
     // failure's message can carry what the call sent — a database error
     // quotes its bound parameters — so only what kind of failure it was is
@@ -237,6 +253,7 @@ async function callTool(
       method: "POST",
       tool: tool.name,
       source: actionSource(caller),
+      ray: requestId ?? undefined,
       error: errorFacts(error),
     });
     return {
@@ -282,6 +299,7 @@ function recordToolCall(
   tool: McpTool,
   caller: OperationCaller,
   client: ToolClient,
+  requestId: string | null,
   started: number,
   ending: CallEnding,
 ): void {
@@ -298,6 +316,7 @@ function recordToolCall(
     ...ending,
     client: client.name,
     clientVersion: client.version,
+    requestId,
     durationMs: Date.now() - started,
   });
 }
@@ -337,6 +356,7 @@ function refused(
   tool: McpTool,
   caller: OperationCaller,
   error: GatewayError,
+  requestId: string | null,
 ): CallToolResult {
   log(error.status >= 500 ? "error" : "warn", "gateway_error", {
     code: error.code,
@@ -349,6 +369,7 @@ function refused(
     // refused, wherever the caller put it, so a refusal is logged by its code
     // and the tool alone.
     source: actionSource(caller),
+    ray: requestId ?? undefined,
   });
   const next = tool.next?.[error.code] ?? nextAction(error.code);
   const message = error.message.replace(/[.\s]+$/u, "");

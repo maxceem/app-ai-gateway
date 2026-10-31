@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { clientOf, endingOf, recordManagementCall, refusalOf, type CallEnding } from "../analytics/management";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { ROUTE_NOT_FOUND } from "../core/errors";
+import { requestIdOf } from "../core/request-id";
 import { authenticateMcp } from "../mcp/auth";
 import { consoleHost, originDecision } from "../mcp/origin";
 import { jsonRpcRefusal } from "../mcp/refusal";
@@ -80,6 +81,7 @@ function recordGateRefusal(c: Context<McpEnv>, ending: CallEnding, started: numb
     ...ending,
     client: clientOf(userAgent),
     clientVersion: null,
+    requestId: requestIdOf(c.req.header("cf-ray")),
     durationMs: Date.now() - started,
   });
 }

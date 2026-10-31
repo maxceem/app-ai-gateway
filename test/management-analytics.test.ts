@@ -24,7 +24,7 @@ function call(): ManagementCall {
     accountId: null, channel: "api", credential: "apiKey", identity: "human",
     operation: "listApps", tool: null, kind: null,
     outcome: "ok", status: 200, code: null, reason: null, field: null, issue: null,
-    client: null, clientVersion: null, durationMs: 1,
+    client: null, clientVersion: null, requestId: null, durationMs: 1,
   };
 }
 
@@ -39,8 +39,11 @@ const ORIGIN = "https://example.test";
 /** The blobs of a data point, by the positions `recordManagementCall` documents. */
 const BLOBS = [
   "channel", "operation", "tool", "kind", "outcome", "code", "reason",
-  "field", "issue", "credential", "identity", "client", "clientVersion",
+  "field", "issue", "credential", "identity", "client", "clientVersion", "requestId",
 ] as const;
+
+/** A request id as Cloudflare's edge sends it in `cf-ray`. */
+const RAY = "8f1a2b3c4d5e6f70-SJC";
 
 type Point = Record<(typeof BLOBS)[number], string | null> & { account: string; status: number };
 
@@ -181,14 +184,14 @@ describe("management analytics", () => {
     expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("do-not-record");
   });
 
-  it("records a credential refused before any operation or account is known", async () => {
+  it("records a credential refused before sign-in by the operation it asked for", async () => {
     const { points, dataset, send } = recording();
     const response = await send("/v1/admin/apps", { headers: key("agw_mgmt_not-a-real-key") });
     expect(response.status).toBe(401);
     expect(points).toEqual([expect.objectContaining({
       account: "",
       channel: "api",
-      operation: null,
+      operation: "listApps",
       outcome: "refused",
       status: 401,
       code: "auth_required",
@@ -196,6 +199,34 @@ describe("management analytics", () => {
       identity: null,
     })]);
     expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("not-a-real-key");
+  });
+
+  it("names an operation by its path's template, never by its parameters", async () => {
+    const { points, dataset, send } = recording();
+    const refused = { headers: key("agw_mgmt_not-a-real-key") };
+    await send("/v1/admin/apps/secret-looking-app-id", refused);
+    await send("/v1/admin/apps/secret-looking-app-id", { ...refused, method: "DELETE" });
+    expect(points.map((point) => point.operation)).toEqual(["getApp", "deleteApp"]);
+    expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("secret-looking-app-id");
+  });
+
+  it("carries Cloudflare's request id on the data point and on the gateway's log line", async () => {
+    const { points, send } = recording();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await send("/v1/admin/apps", { headers: { ...key("agw_mgmt_not-a-real-key"), "cf-ray": RAY } });
+      expect(points).toEqual([expect.objectContaining({ requestId: RAY, code: "auth_required" })]);
+      const line = warn.mock.calls.map(([entry]) => JSON.parse(String(entry))).find((entry) => entry.message === "gateway_error");
+      expect(line).toMatchObject({ ray: RAY, code: "auth_required", status: 401 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("records no request id unless it is shaped like Cloudflare's", async () => {
+    const { points, send } = recording();
+    await send("/v1/admin/apps", { headers: { ...key("agw_mgmt_not-a-real-key"), "cf-ray": "alice@example.com" } });
+    expect(points).toEqual([expect.objectContaining({ requestId: null })]);
   });
 
   it("records an unknown admin path as refused", async () => {
@@ -209,10 +240,11 @@ describe("management analytics", () => {
   it("records an MCP tool call with the client's declared name", async () => {
     const { points, send } = recording();
     const owner = await account("analytics-mcp@example.test");
-    const response = await send("/mcp", toolCall("list_apps", {}, key(owner.key)));
+    const response = await send("/mcp", toolCall("list_apps", {}, { ...key(owner.key), "cf-ray": RAY }));
     expect(response.status).toBe(200);
     expect(points).toEqual([expect.objectContaining({
       account: owner.organizationId,
+      requestId: RAY,
       channel: "mcp",
       operation: "listApps",
       tool: "list_apps",
@@ -240,10 +272,11 @@ describe("management analytics", () => {
 
   it("records the MCP bearer gate's refusal", async () => {
     const { points, send } = recording();
-    const response = await send("/mcp", toolCall("list_apps", {}, { "user-agent": "claude-code/2.3.1" }));
+    const response = await send("/mcp", toolCall("list_apps", {}, { "user-agent": "claude-code/2.3.1", "cf-ray": RAY }));
     expect(response.status).toBe(401);
     expect(points).toEqual([expect.objectContaining({
       account: "",
+      requestId: RAY,
       channel: "mcp",
       outcome: "refused",
       status: 401,

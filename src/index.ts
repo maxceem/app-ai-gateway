@@ -18,6 +18,7 @@ import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/re
 import { ROUTE_NOT_FOUND } from "./core/errors";
 import { asGatewayError } from "./core/platform-errors";
 import { log } from "./core/log";
+import { requestIdOf } from "./core/request-id";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
 import { OrgQuota } from "./do/OrgQuota";
@@ -193,10 +194,13 @@ app.onError((error, c) => {
     // response was returned and the reason went nowhere.
     //
     // Deliberately nothing else: no body, no token, no header but the client
-    // version, because this line is emitted for authentication failures whose
-    // request payload is a credential.
+    // version and Cloudflare's request id, because this line is emitted for
+    // authentication failures whose request payload is a credential.
     log(gateway.status >= 500 ? "error" : "warn", "gateway_error", {
       code: gateway.code,
+      // The same id a management analytics data point carries, so a refusal
+      // found there leads straight to this line.
+      ray: requestIdOf(c.req.header("cf-ray")) ?? undefined,
       // Undefined fields are dropped by JSON.stringify, so a rejection with no
       // granular cause simply has no `reason` key.
       reason: gateway.reason,
@@ -224,6 +228,7 @@ app.onError((error, c) => {
     );
   }
   log("error", "unhandled_error", {
+    ray: requestIdOf(c.req.header("cf-ray")) ?? undefined,
     path: c.req.path,
     method: c.req.method,
     app: c.req.param("app"),
