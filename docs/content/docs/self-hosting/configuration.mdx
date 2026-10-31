@@ -442,27 +442,41 @@ WHERE timestamp > NOW() - INTERVAL '7' DAY
 GROUP BY channel
 ```
 
-## Console build variables
+## Sign-up analytics
 
-The console is a static bundle, so anything it needs is read when it is built,
-not when it runs. Both of these are optional and unset by default.
+Optional and unset by default. Bind a Worker of your own as `ANALYTICS` to be
+told each time an account is created, for your own sign-up reporting. With
+nothing bound, the gateway reads nothing for it and sends nothing.
 
-| Variable | Effect |
-| --- | --- |
-| `VITE_POSTHOG_KEY` | [PostHog](https://posthog.com) project API key for console analytics. |
-| `VITE_POSTHOG_HOST` | PostHog ingestion host, for example `https://eu.i.posthog.com`. |
-
-Both must be set for analytics to be built in. With either missing, the
-console collects nothing and does not load the SDK. Put them in a gitignored
-`console/.env.production.local` or export them before `pnpm run deploy`:
-
-```sh title="console/.env.production.local"
-VITE_POSTHOG_KEY=phc_your_project_key
-VITE_POSTHOG_HOST=https://eu.i.posthog.com
+```jsonc title="wrangler.<profile>.overlay.jsonc"
+{
+  "services": [
+    { "binding": "ANALYTICS", "service": "your-analytics-worker", "entrypoint": "AnalyticsHook" }
+  ]
+}
 ```
 
-They are read by `pnpm run console:build`, which the deploy script runs first,
-so changing either means deploying again.
+Your Worker exports that entrypoint with one method, `accountCreated(event)`.
+The event below is everything it receives, defined in `src/analytics/hook.ts`.
+It never includes a key, a password, an email address, a name or the request.
+
+| Field | What it is |
+| --- | --- |
+| `accountId` | The new account's random ID. |
+| `userId` | The random ID of the person who created it. |
+| `kind` | `created`, or `claimed` when a person takes over an account an agent set up. |
+| `occurredAt` | When it happened. |
+| `country` | The two-letter country Cloudflare placed the sign-up in, or `null`. |
+| `firstTouch` | Where the visitor first came from, or `null`. |
+
+`firstTouch` comes from a `first_touch` cookie that your own website sets on a
+first visit, on a parent domain the console shares. The gateway reads only that
+cookie, only when an account is created and never when the browser sends Do
+Not Track (which also leaves `country` empty), and keeps only these fields, each checked and length-limited: `referrerHost`, `landingPath`, `utmSource`,
+`utmMedium`, `utmCampaign`, `firstSeenAt` and `visitorId`.
+
+The call runs after the account is saved. Its result is ignored and a failure
+is only logged, so the bound Worker cannot slow down or change a sign-up.
 
 ## Summary
 
@@ -493,4 +507,4 @@ so changing either means deploying again.
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
 | `MANAGEMENT_ANALYTICS` | Analytics Engine binding | Unset (nothing recorded) |
-| `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | Console build | Unset |
+| `ANALYTICS` | Service binding | Unset |

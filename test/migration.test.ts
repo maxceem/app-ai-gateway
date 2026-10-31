@@ -232,12 +232,19 @@ describe("initial database migration", () => {
       "mgmt_oauth_token",
       "mgmt_operation",
       "mgmt_organization",
+      "mgmt_organization_invitation",
       "mgmt_organization_user",
       "mgmt_user",
       "mgmt_user_account",
       "mgmt_user_session",
       "mgmt_verification",
     ]);
+    const membershipColumns = await env.DB.prepare(
+      "PRAGMA table_info(mgmt_organization_user)",
+    ).all<{ name: string; notnull: number }>();
+    // When the member last used the account; written by cf-auth's middleware.
+    expect(membershipColumns.results.find((column) => column.name === "last_active_at"))
+      .toMatchObject({ notnull: 0 });
     const organizationColumns = await env.DB.prepare(
       "PRAGMA table_info(mgmt_organization)",
     ).all<{ name: string }>();

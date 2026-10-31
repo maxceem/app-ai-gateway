@@ -9,6 +9,7 @@ import {
   shouldProvisionDefaultOrganization,
   type Deployment,
 } from "../policy/deployment";
+import { accountNotifier, type AccountNotifier } from "../analytics/hook";
 import { activateAccount } from "./email-verification";
 import { oauthClients } from "./oauth-clients";
 import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
@@ -224,6 +225,7 @@ export async function createIdentityAuth(
     claimRegistration = false,
     onRegistrationDenied,
   }: IdentityAuthOptions = {},
+  notifyAccount: AccountNotifier | null = null,
 ): Promise<CfAuth> {
   const { createCfAuth } = await cfAuth();
   const origin = new URL(requestUrl).origin;
@@ -253,6 +255,11 @@ export async function createIdentityAuth(
       }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
+    // When each person last used their account, from the console, the CLI, MCP
+    // or the API: one timestamp on their membership, written at most once an
+    // hour after the response. Never on the application request path, which
+    // does not run cf-auth at all.
+    memberActivity: true,
     onError: reportIdentityError,
     logger: { log: reportBetterAuthLog },
     // The CLI's operations: the engine, its table and the built-in `login`
@@ -278,10 +285,19 @@ export async function createIdentityAuth(
     // and reports a failure to its own error hook rather than undoing
     // anything, which is the right way round: an account this misses only
     // has to verify its owner's address once a sender exists.
-    ...(deployment.emailVerification === "off"
+    //
+    // With an `ANALYTICS` binding, the same two events are also reported to it;
+    // see `src/analytics/hook.ts` for exactly what that sends.
+    ...(deployment.emailVerification === "off" || notifyAccount
       ? {
           onEvent: async (event: CfAuthEvent) => {
-            if (event.type === "organization.created" || event.type === "organization.claimed") {
+            if (event.type !== "organization.created" && event.type !== "organization.claimed") return;
+            notifyAccount?.({
+              accountId: event.organizationId,
+              userId: event.userId,
+              kind: event.type === "organization.created" ? "created" : "claimed",
+            });
+            if (deployment.emailVerification === "off") {
               await activateAccount(env.DB, event.organizationId);
             }
           },
@@ -353,7 +369,8 @@ export async function operationSweepStatements(
 /** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
 export interface IdentityAuthScope {
   env: Env;
-  req: { url: string };
+  req: { url: string; header(name: string): string | undefined; raw: Request };
+  executionCtx: { waitUntil(promise: Promise<unknown>): void };
   get(key: "deployment"): Deployment;
   get(key: "identityAuthCache"): Map<string, Promise<CfAuth>>;
 }
@@ -374,8 +391,20 @@ export function identityAuthFor(
   options: IdentityAuthOptions = {},
 ): Promise<CfAuth> {
   const deployment = c.get("deployment");
+  const notifyAccount = accountNotifier(c.env, {
+    cookieHeader: () => c.req.header("Cookie"),
+    doNotTrackHeader: () => c.req.header("DNT"),
+    country: () => c.req.raw.cf?.country,
+    waitUntil: (promise) => {
+      try {
+        c.executionCtx.waitUntil(promise);
+      } catch {
+        // No execution context (tests): the promise still runs, unheld.
+      }
+    },
+  });
   if (options.onRegistrationDenied) {
-    return createIdentityAuth(deployment, c.env, c.req.url, options);
+    return createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount);
   }
   const key = JSON.stringify({
     suppressDefaultOrganization: options.suppressDefaultOrganization ?? false,
@@ -390,7 +419,7 @@ export function identityAuthFor(
   // kept, for the reason `cfAuth()` forgets its own: a pinned failed promise
   // would answer the rest of this request with a transient failure a second
   // attempt might not hit.
-  const built = createIdentityAuth(deployment, c.env, c.req.url, options).catch(
+  const built = createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount).catch(
     (error: unknown) => {
       cache.delete(key);
       throw error;
