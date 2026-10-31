@@ -51,6 +51,9 @@ The primary target is iOS applications, with secure measures for calling AI APIs
   in `src/analytics/management.ts`, built field by field there: constants and
   bounded tokens, never an error message, a request value or a credential.
   Never write it from the application request path.
+- Everything the optional `ANALYTICS` binding is sent is declared in
+  `src/analytics/hook.ts`, built field by field there. Never pass it anything
+  else, and never call it from the application request path.
 
 ## Verification
 

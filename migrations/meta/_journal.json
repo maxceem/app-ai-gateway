@@ -57,6 +57,13 @@
       "when": 1792118249007,
       "tag": "0007_account_activation",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793421988024,
+      "tag": "0008_cf_auth_0_10",
+      "breakpoints": true
     }
   ]
 }

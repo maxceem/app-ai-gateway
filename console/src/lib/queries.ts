@@ -12,7 +12,6 @@ import {
   type SignInInput,
   type SignUpInput,
 } from "./auth";
-import { analytics, captureAppCreated, captureProviderAdded, noteAuthMethod } from "./analytics";
 import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
   AppCreateBody,
@@ -105,7 +104,6 @@ export function useSignIn() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: SignInInput) => {
-      noteAuthMethod("password");
       return signInWithPassword(input);
     },
     onSuccess: () => client.invalidateQueries(),
@@ -116,7 +114,6 @@ export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: SignUpInput) => {
-      noteAuthMethod("password");
       return signUpWithPassword(input);
     },
     onSuccess: () => client.invalidateQueries(),
@@ -128,11 +125,8 @@ export function useSignOut() {
   return useMutation({
     mutationFn: () => signOut(),
     // Clearing rather than invalidating drops every organization-scoped cache
-    // so the next operator never sees the previous one's data. Analytics is
-    // reset for the same reason: whoever signs in next on this browser is
-    // somebody else until they say otherwise.
+    // so the next operator never sees the previous one's data.
     onSettled: () => {
-      analytics.reset();
       client.clear();
     },
   });
@@ -243,9 +237,7 @@ export function useCreateProvider() {
   return useMutation({
     mutationFn: (body: ProviderCreateBody) => call("createProvider", { body }),
     gcTime: 0,
-    onSuccess: (_result, body) => {
-      // The provider type and the route it takes; `body.secret` stays here.
-      captureProviderAdded(body.type, body.providerGatewayId !== undefined);
+    onSuccess: () => {
       invalidateProviderLists(client);
     },
   });
@@ -469,10 +461,7 @@ export function useCreateApp() {
   return useMutation({
     mutationFn: (body: AppCreateBody): Promise<CreatedApp> =>
       call("createApp", { body: toAppWrite(body) }),
-    onSuccess: (created, body) => {
-      // Which of the two ways in the application was born with, since App
-      // Attest rather than an API key is what this product is built for.
-      captureAppCreated(body.config.authentication.type);
+    onSuccess: (created) => {
       void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
       void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },

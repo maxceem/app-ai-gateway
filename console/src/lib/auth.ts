@@ -1,5 +1,4 @@
 import { request } from "./api";
-import { noteAuthMethod } from "./analytics";
 import { DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
 
 /**
@@ -69,9 +68,6 @@ export function changePassword(input: {
  */
 export async function startGoogleSignIn(returnPath?: string): Promise<void> {
   const destination = isSafeReturnPath(returnPath) ? returnPath : DEFAULT_LANDING;
-  // Recorded now because the provider's redirect is what returns the operator,
-  // and it carries no indication of how they got here.
-  noteAuthMethod("google");
   const result = await post<{ url?: string; redirect?: boolean }>(
     `${AUTH_BASE}/sign-in/social`,
     {

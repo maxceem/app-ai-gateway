@@ -98,6 +98,11 @@ export const {
    * gateway reads them yet.
    */
   oauthToken: mgmtOauthToken,
+  /**
+   * cf-auth's invitations by email address. The gateway issues none yet, but
+   * cf-auth reads the table when it provisions a new person, so it has to exist.
+   */
+  organizationInvitation: mgmtOrganizationInvitation,
 } = mgmtAuthTables;
 
 /**

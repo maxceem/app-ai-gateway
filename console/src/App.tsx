@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -21,7 +20,6 @@ import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
 import { VerifyEmailPage } from "@/pages/verify-email";
 import { ConsoleSessionProvider } from "@/lib/console-session";
-import { analytics, captureSignup, useAnalyticsPageviews } from "@/lib/analytics";
 import { DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { DEFAULT_LANDING, loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
 import { useBillingStatus, useCapabilities, useSession } from "@/lib/queries";
@@ -47,35 +45,6 @@ function AuthenticatedConsole() {
   const location = useLocation();
   // Billing status feeds the global banner, so it is fetched at the shell level.
   const billing = useBillingStatus(Boolean(capabilities.data?.billing) && session.isSuccess);
-
-  const userId = session.data?.user?.id;
-  const createdAt = session.data?.user?.createdAt;
-  const organizationId = session.data?.organization?.id ?? null;
-  const role = session.data?.role;
-  const plan = billing.data?.access.state === "billed"
-    ? billing.data.access.plan?.planKey ?? null
-    : null;
-
-  /*
-   * The single place the console names who is using it.
-   *
-   * Every authenticated route renders through here, so identifying here rather
-   * than on the screens that cause it means no path can be signed in and
-   * unreported. It is also what joins this account to whatever the same browser
-   * did on the marketing site beforehand: the visitor identity is held on the
-   * shared parent domain, so identifying it here attributes that earlier visit —
-   * and its campaign — to this account.
-   */
-  useEffect(() => {
-    if (!userId || !createdAt || !role) return;
-    analytics.identify(userId, role, createdAt);
-    captureSignup(userId, createdAt);
-  }, [userId, createdAt, role]);
-
-  useEffect(() => {
-    if (!organizationId) return;
-    analytics.group(organizationId, plan === null ? undefined : { plan });
-  }, [organizationId, plan]);
 
   if (session.isPending || capabilities.isPending) return <FullPageSpinner />;
 
@@ -162,8 +131,6 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  useAnalyticsPageviews();
-
   return (
     <TooltipProvider>
       <Routes>

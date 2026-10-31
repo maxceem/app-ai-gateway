@@ -50,6 +50,9 @@ interface Env {
   // its operation and how it ended. Unbound means nothing is recorded. Only
   // src/analytics/management.ts writes it; see there for every field.
   MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
+  // A Worker of the deployment's own, told when an account is created; see
+  // src/analytics/hook.ts for everything it is sent. Unset means nothing is.
+  ANALYTICS?: import("./analytics/hook").AnalyticsHook;
   // How the deployment sends email, if it does; see src/email/sender.ts. Any of
   // these set means it does, and then an account serves application traffic
   // only once its owner has verified their address. All deliberately absent
@@ -108,6 +111,7 @@ declare namespace Cloudflare {
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
+    ANALYTICS?: import("./analytics/hook").AnalyticsHook;
     EMAIL?: SendEmail;
     SMTP_HOST?: string;
     SMTP_PORT?: string;
