@@ -4,7 +4,7 @@ import { DrizzleQueryError } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { contained } from "../src/core/background";
-import { errorFacts } from "../src/core/error-facts";
+import { errorFacts, type ErrorFacts } from "../src/core/error-facts";
 import { GatewayError, type GatewayErrorReason } from "../src/core/errors";
 import { platformFailure } from "../src/core/platform-errors";
 import app from "../src/index";
@@ -192,8 +192,15 @@ describe("platform failure classification", () => {
   });
 });
 
+/** Error facts without where each error was thrown, for comparing the rest exactly. */
+function withoutWhere(facts: ErrorFacts): ErrorFacts {
+  const { where: _where, cause, ...rest } = facts;
+  return cause === undefined ? rest : { ...rest, cause: withoutWhere(cause) };
+}
+
 describe("error facts", () => {
   const SECRET = "sk-planted-credential-0123456789";
+  const factsOf = errorFacts;
 
   /** An error of every shape, with the secret in every text-bearing slot it has. */
   function planted(): unknown[] {
@@ -256,12 +263,13 @@ describe("error facts", () => {
     const logs = captureLogs();
     await expect(contained("maintenance", Promise.reject(new Error(SECRET)))).resolves.toBeUndefined();
     expect([...logs]).toEqual([
-      expect.objectContaining({ message: "background_task_failed", task: "maintenance", error: { class: "Error" } }),
+      expect.objectContaining({ message: "background_task_failed", task: "maintenance", error: expect.objectContaining({ class: "Error" }) }),
     ]);
     expect(logs.output.join("\n")).not.toContain(SECRET);
   });
 
   it("says only what the gateway itself spells", () => {
+    const errorFacts = (error: unknown) => withoutWhere(factsOf(error));
     expect(errorFacts(new DrizzleQueryError(
       "select 1",
       [SECRET],
@@ -283,6 +291,58 @@ describe("error facts", () => {
     });
     expect(errorFacts(new (class Unlisted extends Error {})("x"))).toEqual({ class: "other" });
     expect(errorFacts(SECRET)).toEqual({ class: "not_an_error" });
+  });
+
+  it("says where an error was thrown, from the stack below its message", () => {
+    // A message can run over lines that look like frames; none of it is read.
+    function throwsHere(): never {
+      throw new Error(`${SECRET}\n    at planted (${SECRET}.js:1:1)`);
+    }
+    let thrown: unknown;
+    try {
+      throwsHere();
+    } catch (error) {
+      thrown = error;
+    }
+    const facts = factsOf(thrown);
+    expect(facts.where?.[0]).toMatch(/^throwsHere [^\s]+:\d+:\d+$/u);
+    expect(JSON.stringify(facts)).not.toContain(SECRET);
+    expect(JSON.stringify(facts)).not.toContain("planted");
+
+    // A name changed after the error was made heads its stack too, since the
+    // runtime writes the stack when it is first read: still cut off, never copied.
+    const renamed = new Error(SECRET);
+    renamed.name = SECRET;
+    expect(JSON.stringify(factsOf(renamed))).not.toContain(SECRET);
+
+    // A stack that does not begin with the error's own first line gives no frames at all.
+    const rewritten = new Error("x");
+    rewritten.stack = `Something else: ${SECRET}\n    at planted (${SECRET}.js:1:1)`;
+    expect(factsOf(rewritten).where).toBeUndefined();
+  });
+
+  it("copies codes only of the shape libraries and SQLite give them", () => {
+    const coded = Object.assign(new Error(`D1_ERROR: database is locked: SQLITE_BUSY near '${SECRET}'`), {
+      code: "FAILED_TO_GET_SESSION",
+      status: "INTERNAL_SERVER_ERROR",
+      body: { code: "AKIAIOSFODNN7EXAMPLE" },
+    });
+    expect(factsOf(coded).codes).toEqual(["FAILED_TO_GET_SESSION", "INTERNAL_SERVER_ERROR", "D1_ERROR", "SQLITE_BUSY"]);
+    // Digits, lower case or no underscore: a key, a token or an identifier, never a code.
+    for (const code of ["AKIAIOSFODNN7EXAMPLE", "sk_live_secret", "SECRET", SECRET]) {
+      expect(factsOf(Object.assign(new Error("x"), { code })).codes, code).toBeUndefined();
+    }
+  });
+
+  it("names Better Auth's and better-call's errors, and only by a name on its list", () => {
+    class APIError extends Error {
+      override name = "APIError";
+    }
+    class Renamed extends Error {
+      override name = SECRET;
+    }
+    expect(factsOf(new APIError("x")).class).toBe("APIError");
+    expect(factsOf(new Renamed("x")).class).toBe("other");
   });
 });
 

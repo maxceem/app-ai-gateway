@@ -1,0 +1,70 @@
+/**
+ * Better Auth's own log messages that are written as fixed strings in its
+ * source, on the paths a session, a sign-in or an OAuth callback runs: the
+ * only ones `better_auth_log` copies. A message Better Auth builds from a
+ * template can quote request data, such as an `Origin` header, and is never
+ * logged; neither is any argument after the message.
+ *
+ * Taken from better-auth 1.6.9's `logger.warn|error|info("…")` calls whose
+ * first argument is a plain literal. A message Better Auth adds or rewords in
+ * a later version is simply not logged until it is added here.
+ */
+export const BETTER_AUTH_MESSAGES: ReadonlySet<string> = new Set([
+  "Active sessions list not found in secondary storage",
+  "Adapter does not correctly implement transaction function, patching it automatically. Please update your adapter implementation.",
+  "Blocked cross-site navigation login attempt (CSRF protection)",
+  "Change email attempt for existing email",
+  "Change email is disabled.",
+  "Code not found",
+  "Could not determine database type, defaulting to sqlite. Please provide a type in the database options to avoid this.",
+  "Credential account not found",
+  "Delete user is disabled. Enable it in the options",
+  "Email is the same",
+  "Error setting rate limit",
+  "Failed to clean up OAuth state",
+  "Failed to create session",
+  "Failed to create user or session",
+  "Failed to create user",
+  "Failed to create verification",
+  "Failed to decrypt OAuth proxy profile",
+  "Failed to decrypt OAuth proxy state cookie:",
+  "Failed to delete session from database",
+  "Failed to encrypt OAuth proxy state package:",
+  "Failed to get user info",
+  "Failed to parse OAuth proxy payload",
+  "Failed to parse state",
+  "Failed to run background task:",
+  "Failed to validate authorization code",
+  "INTERNAL_SERVER_ERROR",
+  "INVALID_CALLBACK_REQUEST",
+  "Invalid OAuth callback query",
+  "Invalid OAuth proxy state package",
+  "Invalid id token",
+  "Invalid password",
+  "No OAuth state cookie value found",
+  "No callback URL found",
+  "OAuth callback missing authorization code",
+  "OAuth provider not found",
+  "OAuth proxy callback missing profile data",
+  "OAuth proxy state binding mismatch",
+  "OAuth proxy: cross-origin callback reached after hook unexpectedly",
+  "Oauth provider with id",
+  "Password is too long",
+  "Password is too short",
+  "Password not found",
+  "Provider did not return email",
+  "Provider does not support id token verification",
+  "Provider not found. Make sure to add the provider in your auth config",
+  "Reset Password: User not found",
+  "Reset password isn't enabled.Please pass an emailAndPassword.sendResetPassword function in your auth config!",
+  "Session not found in secondary storage",
+  "State not found",
+  "Unable to get user info from provider",
+  "Unable to get user info",
+  "Unable to link account - untrusted provider",
+  "Unable to link account",
+  "User not found",
+  "Verification email isn't enabled.",
+  "[better-auth] Warning: the current secret appears low-entropy. Use a randomly generated secret for production.",
+  "[better-auth] Warning: your BETTER_AUTH_SECRET appears low-entropy. Use a randomly generated secret for production.",
+]);
