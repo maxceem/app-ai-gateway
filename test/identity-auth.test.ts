@@ -746,5 +746,43 @@ describe("better-auth's own logging", () => {
     const logged = output.join("\n");
     expect(logged).toContain('"message":"better_auth_log"');
     expect(logged).not.toContain("sk-planted-origin");
+    // A message better-auth builds from a template is never on the list.
+    expect(logged).not.toContain('"betterAuth"');
+  });
+
+  /**
+   * better-auth logs an unknown email at sign-in as `"User not found"` and the
+   * email beside it. The fixed message is copied, the email never is, and the
+   * line carries the request's id so it is found beside the gateway's own.
+   */
+  it("copies a message it writes as a fixed string, never what it passes beside it", async () => {
+    const email = "sk-planted-unknown@example.test";
+    const output: string[] = [];
+    for (const level of ["debug", "info", "log", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation((...values: unknown[]) => {
+        output.push(values.map(String).join(" "));
+      });
+    }
+
+    const response = await worker.request(`${ORIGIN}/v1/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: ORIGIN, "cf-ray": "8f1a2b3c4d5e6f70" },
+      body: JSON.stringify({ email, password: "not-the-password" }),
+    }, env);
+
+    expect(response.status).toBe(401);
+    const lines = output.flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+    expect(lines).toContainEqual(expect.objectContaining({
+      message: "better_auth_log",
+      betterAuth: "User not found",
+      ray: "8f1a2b3c4d5e6f70",
+    }));
+    expect(output.join("\n")).not.toContain("sk-planted-unknown");
   });
 });

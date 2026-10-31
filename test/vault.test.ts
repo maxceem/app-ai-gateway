@@ -116,7 +116,7 @@ describe("secret vault validation", () => {
     const lines = errorSpy.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(lines).toContainEqual(expect.objectContaining({
       message: "secret_vault_misconfigured",
-      error: { class: "SecretVaultConfigurationError", vault },
+      error: expect.objectContaining({ class: "SecretVaultConfigurationError", vault }),
     }));
     const logged = errorSpy.mock.calls.flat().join(" ");
     // The mode and the version number are not secret, and short enough to

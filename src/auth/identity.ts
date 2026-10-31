@@ -4,6 +4,8 @@ import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
+import { requestIdOf } from "../core/request-id";
+import { BETTER_AUTH_MESSAGES } from "./better-auth-messages";
 import {
   registrationAllowed,
   shouldProvisionDefaultOrganization,
@@ -199,22 +201,33 @@ function oauthOptions(deployment: Deployment, realm: string | null) {
  * query lists its bound values — so it is logged as facts. `scope` is
  * cf-auth's own constant.
  */
-function reportIdentityError(error: unknown, { scope }: { scope: string }): void {
-  log("error", "identity_internal_error", { scope, error: errorFacts(error) });
+function reportIdentityError(
+  requestId: string | null,
+  error: unknown,
+  { scope }: { scope: string },
+): void {
+  log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) });
 }
 
 /**
- * Where better-auth's own log calls go. Its message is not logged: some
- * interpolate request data, such as an `Origin` header. Only the level is,
- * and the facts of an error it passed.
+ * Where better-auth's own log calls go. Its message is logged only when it is
+ * one of the fixed strings in {@link BETTER_AUTH_MESSAGES}: others interpolate
+ * request data, such as an `Origin` header. Its other arguments never are,
+ * only the facts of an error among them. The request's id lets the line be
+ * found beside the gateway's own for the same request.
  */
 function reportBetterAuthLog(
+  requestId: string | null,
   level: "debug" | "info" | "warn" | "error",
-  _message: string,
+  message: string,
   ...args: unknown[]
 ): void {
   const error = args.find((arg) => arg instanceof Error);
-  log(level === "debug" ? "info" : level, "better_auth_log", error === undefined ? {} : { error: errorFacts(error) });
+  log(level === "debug" ? "info" : level, "better_auth_log", {
+    ray: requestId ?? undefined,
+    betterAuth: BETTER_AUTH_MESSAGES.has(message) ? message : undefined,
+    ...(error === undefined ? {} : { error: errorFacts(error) }),
+  });
 }
 
 export async function createIdentityAuth(
@@ -228,6 +241,8 @@ export async function createIdentityAuth(
     onRegistrationDenied,
   }: IdentityAuthOptions = {},
   notifyAccount: AccountNotifier | null = null,
+  /** Cloudflare's id for the request this instance serves, for its log lines. */
+  requestId: string | null = null,
 ): Promise<CfAuth> {
   const { createCfAuth } = await cfAuth();
   const origin = new URL(requestUrl).origin;
@@ -262,8 +277,8 @@ export async function createIdentityAuth(
     // hour after the response. Never on the application request path, which
     // does not run cf-auth at all.
     memberActivity: true,
-    onError: reportIdentityError,
-    logger: { log: reportBetterAuthLog },
+    onError: (error, context) => reportIdentityError(requestId, error, context),
+    logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
     // The CLI's operations: the engine, its table and the built-in `login`
     // are cf-auth's; the kinds and what completes them are this gateway's.
     operations: {
@@ -393,6 +408,7 @@ export function identityAuthFor(
   options: IdentityAuthOptions = {},
 ): Promise<CfAuth> {
   const deployment = c.get("deployment");
+  const requestId = requestIdOf(c.req.header("cf-ray"));
   const notifyAccount = accountNotifier(c.env, {
     cookieHeader: () => c.req.header("Cookie"),
     doNotTrackHeader: () => c.req.header("DNT"),
@@ -406,7 +422,7 @@ export function identityAuthFor(
     },
   });
   if (options.onRegistrationDenied) {
-    return createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount);
+    return createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount, requestId);
   }
   const key = JSON.stringify({
     suppressDefaultOrganization: options.suppressDefaultOrganization ?? false,
@@ -421,7 +437,7 @@ export function identityAuthFor(
   // kept, for the reason `cfAuth()` forgets its own: a pinned failed promise
   // would answer the rest of this request with a transient failure a second
   // attempt might not hit.
-  const built = createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount).catch(
+  const built = createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount, requestId).catch(
     (error: unknown) => {
       cache.delete(key);
       throw error;
