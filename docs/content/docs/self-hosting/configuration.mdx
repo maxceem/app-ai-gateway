@@ -134,7 +134,8 @@ adopting an existing Worker. Do not upload it as a secret.
 
 You normally do not need to set it. An explicit value in the build environment
 or Wrangler `vars` is supported for initial setup, but must match the existing
-identity on updates. Local setup stores its development value in ignored
+identity on updates, and must be 8 to 88 letters, digits, underscores or
+hyphens. Local setup stores its development value in ignored
 `.dev.vars`; `pnpm run deploy` uses that value only when no deployed or explicitly
 configured identity exists.
 

@@ -33,6 +33,7 @@ import { GatewayError } from "../core/errors";
 import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { asGatewayError } from "../core/platform-errors";
+import { ACCOUNT_ID_MAX_LENGTH } from "../policy/deployment";
 
 /**
  * How the call reached the gateway: the console, the management API, the CLI,
@@ -83,6 +84,12 @@ export type CallEnding = Pick<ManagementCall, "outcome" | "status" | "code" | "r
 
 /** One bounded token: what a client name, an operation, a code or a kind is made of. */
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
+/**
+ * An account id as this gateway creates them — a UUID, `account-` and a hex
+ * digest, or `private-` and a deployment id — at most the length the index
+ * holds. Never text a caller chose, so it is not a {@link TOKEN}.
+ */
+const ACCOUNT_ID = new RegExp(`^[A-Za-z0-9_-]{1,${ACCOUNT_ID_MAX_LENGTH}}$`, "u");
 /**
  * A version number, such as `1.4.0`, and whatever suffix follows it. Only the
  * digits are kept: a suffix such as `-beta.2` is free text and could spell
@@ -159,7 +166,7 @@ export function recordManagementCall(env: Env, call: ManagementCall): void {
   if (dataset === undefined) return;
   try {
     dataset.writeDataPoint({
-      indexes: [token(call.accountId) ?? ""],
+      indexes: [call.accountId !== null && ACCOUNT_ID.test(call.accountId) ? call.accountId : ""],
       blobs: [
         call.channel,
         token(call.operation),

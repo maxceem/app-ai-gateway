@@ -16,6 +16,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   createMissingGeneratedSecrets,
+  DEPLOYMENT_ID_MAX_LENGTH,
   deploymentIdFromVersion,
   deploymentVersionIds,
   missingRequiredSecrets,
@@ -63,6 +64,20 @@ test("keeps deployed identities, supports explicit initial values, and rejects c
   assert.throws(() => resolveDeploymentId(["deployed-identity", undefined]), /disagree/u);
   assert.throws(() => resolveDeploymentId(["deployed-identity", "other-identity"]), /disagree/u);
   assert.throws(() => resolveDeploymentId(["invalid!"]), /Invalid DEPLOYMENT_ID/u);
+});
+
+test("keeps a deployment id short enough for the self-host's account id to be recorded", () => {
+  // The Worker's own limit, read from its source: this script cannot import TypeScript.
+  const source = readFileSync(new URL("../src/policy/deployment.ts", import.meta.url), "utf8");
+  const accountIdMax = Number(/export const ACCOUNT_ID_MAX_LENGTH = (\d+);/u.exec(source)?.[1]);
+  assert.ok(accountIdMax > 0, "ACCOUNT_ID_MAX_LENGTH is declared in src/policy/deployment.ts");
+  assert.equal(DEPLOYMENT_ID_MAX_LENGTH, accountIdMax - "private-".length);
+
+  const longest = "d".repeat(DEPLOYMENT_ID_MAX_LENGTH);
+  assert.equal(resolveDeploymentId([], longest), longest);
+  assert.throws(() => resolveDeploymentId([], `${longest}d`), /Invalid DEPLOYMENT_ID/u);
+  // What the tools generate when nobody configures one.
+  assert.match(resolveDeploymentId([], undefined, undefined), /^[0-9a-f-]{36}$/u);
 });
 
 // An isolated checkout and persistent fake Cloudflare state exercise separate
