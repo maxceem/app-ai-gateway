@@ -221,16 +221,32 @@ export interface GatewayErrorDetails {
   /** Serialized into the response body as `error.data`. */
   data?: GatewayErrorData;
   /**
+   * The request field a validation refusal is about, for management analytics.
+   * Never serialized: the message already names it for the client.
+   */
+  field?: RequestFieldIssue;
+  /**
    * The failure this refusal stands for, which the error log describes. Never
    * serialized.
    */
   cause?: unknown;
 }
 
+/**
+ * Which field a schema refused, in constants only: the field's top-level name,
+ * which is the schema's own — null where it is not, such as an unknown key the
+ * caller sent — and the schema's issue code. Never the value.
+ */
+export interface RequestFieldIssue {
+  name: string | null;
+  issue: string;
+}
+
 export class GatewayError extends Error {
   readonly reason?: GatewayErrorReason;
   readonly userId?: string;
   readonly data?: GatewayErrorData;
+  readonly field?: RequestFieldIssue;
 
   constructor(
     readonly status: number,
@@ -244,6 +260,7 @@ export class GatewayError extends Error {
     this.reason = details.reason;
     this.userId = details.userId;
     this.data = details.data;
+    this.field = details.field;
   }
 }
 

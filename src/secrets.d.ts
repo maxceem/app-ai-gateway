@@ -46,6 +46,10 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
+  // An Analytics Engine dataset told about every management call: its channel,
+  // its operation and how it ended. Unbound means nothing is recorded. Only
+  // src/analytics/management.ts writes it; see there for every field.
+  MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
   // How the deployment sends email, if it does; see src/email/sender.ts. Any of
   // these set means it does, and then an account serves application traffic
   // only once its owner has verified their address. All deliberately absent
@@ -103,6 +107,7 @@ declare namespace Cloudflare {
     OAUTH_CIMD?: string;
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
+    MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
     EMAIL?: SendEmail;
     SMTP_HOST?: string;
     SMTP_PORT?: string;

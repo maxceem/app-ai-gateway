@@ -64,7 +64,8 @@
   ]
   // This file is the complete self-hosted configuration and what the Deploy to
   // Cloudflare button uses. Deployment-specific additions (a custom domain, a
-  // fixed D1 database, kms vault mode, a BILLING service binding) belong in a
+  // fixed D1 database, kms vault mode, a BILLING service binding, a
+  // MANAGEMENT_ANALYTICS Analytics Engine dataset) belong in a
   // gitignored `wrangler.<profile>.overlay.jsonc`; see the "Deployment
   // profiles" section of docs/content/docs/deployment.mdx. Never add account
   // identifiers or domains here.
