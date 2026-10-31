@@ -1,12 +1,16 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { clientOf, endingOf, recordManagementCall, refusalOf, type CallEnding } from "../analytics/management";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { ROUTE_NOT_FOUND } from "../core/errors";
 import { authenticateMcp } from "../mcp/auth";
 import { consoleHost, originDecision } from "../mcp/origin";
 import { jsonRpcRefusal } from "../mcp/refusal";
 import { serveMcp } from "../mcp/server";
+import { presentedCredential } from "../middleware/management-analytics";
 import { requestScope, type RequestVariables } from "../middleware/request-scope";
 import { managementScope } from "./admin/body";
+
+type McpEnv = { Bindings: Env; Variables: RequestVariables };
 
 /**
  * The MCP endpoint, `/mcp` on the console host, as an app the entry module
@@ -21,7 +25,7 @@ import { managementScope } from "./admin/body";
  * origin check, refusals included, so a browser client can read why it was
  * refused.
  */
-export const mcpRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
+export const mcpRoutes = new Hono<McpEnv>();
 
 // An app of its own with its own `Context`, like the management app, so the
 // request scope is opened again here.
@@ -34,8 +38,20 @@ mcpRoutes.all("/mcp", async (c) => {
   if (!origin.allowed) return jsonRpcRefusal(403, "This origin may not call the MCP endpoint");
   const answer = await (async () => {
     if (c.req.method === "OPTIONS") return new Response(null, { status: 204 });
-    const auth = await authenticateMcp(c);
-    if (auth instanceof Response) return auth;
+    const started = Date.now();
+    let auth: Awaited<ReturnType<typeof authenticateMcp>>;
+    try {
+      auth = await authenticateMcp(c);
+    } catch (error) {
+      // A gate that failed rather than refused — the database unreachable, say —
+      // is answered by the entry module, and counted here as what it answers.
+      recordGateRefusal(c, refusalOf(isCfAuthError(error) ? asGatewayAuthError(error) : error), started);
+      throw error;
+    }
+    if (auth instanceof Response) {
+      recordGateRefusal(c, { ...endingOf(auth.status), code: "auth_required" }, started);
+      return auth;
+    }
     return serveMcp(c.req.raw, { scope: managementScope(c), auth });
   })();
   if (origin.cors === null) return answer;
@@ -44,6 +60,29 @@ mcpRoutes.all("/mcp", async (c) => {
   for (const [name, value] of Object.entries(origin.cors)) response.headers.set(name, value);
   return response;
 });
+
+/**
+ * A call the bearer gate refused or failed on, for management analytics: no
+ * tool ran and no account is known, only the credential it presented. A tool
+ * call that got through is recorded by the server, per tool.
+ */
+function recordGateRefusal(c: Context<McpEnv>, ending: CallEnding, started: number): void {
+  if (c.env.MANAGEMENT_ANALYTICS === undefined) return;
+  const userAgent = c.req.header("user-agent");
+  recordManagementCall(c.env, {
+    accountId: null,
+    channel: "mcp",
+    credential: presentedCredential(c),
+    identity: null,
+    operation: null,
+    tool: null,
+    kind: null,
+    ...ending,
+    client: clientOf(userAgent),
+    clientVersion: null,
+    durationMs: Date.now() - started,
+  });
+}
 
 mcpRoutes.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 

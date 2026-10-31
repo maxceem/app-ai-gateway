@@ -1,5 +1,14 @@
 import type { CallToolResult, McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import type { z } from "zod";
+import {
+  clientOf,
+  endingOf,
+  knownClient,
+  recordManagementCall,
+  refusalOf,
+  versionOf,
+  type CallEnding,
+} from "../analytics/management";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { GatewayError } from "../core/errors";
 import { asGatewayError } from "../core/platform-errors";
@@ -64,7 +73,7 @@ export async function serveMcp(request: Request, caller: OperationCaller): Promi
       token: "",
       clientId: caller.auth?.actor.credentialId ?? "",
       scopes: caller.auth ? [caller.auth.actor.grant] : [],
-      extra: { caller },
+      extra: { caller, userAgent: request.headers.get("user-agent") ?? undefined },
     },
   });
 }
@@ -82,7 +91,7 @@ type McpHttpHandler = ReturnType<Sdk["createMcpHandler"]>;
  */
 const mcpHandler = (): Promise<McpHttpHandler> =>
   (handler ??= mcpSdk().then((sdk) =>
-    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra)), {
+    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra), userAgentOf(context.authInfo?.extra)), {
       legacy: "stateless",
       responseMode: "json",
       maxSubscriptions: 0,
@@ -103,7 +112,11 @@ function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   return caller;
 }
 
-function mcpServer(sdk: Sdk, caller: OperationCaller): McpServer {
+function userAgentOf(extra: Record<string, unknown> | undefined): string | undefined {
+  return typeof extra?.userAgent === "string" ? extra.userAgent : undefined;
+}
+
+function mcpServer(sdk: Sdk, caller: OperationCaller, userAgent: string | undefined): McpServer {
   const server = new sdk.McpServer(
     { name: "app-ai-gateway", version: SERVER_VERSION },
     {
@@ -127,7 +140,7 @@ function mcpServer(sdk: Sdk, caller: OperationCaller): McpServer {
         inputSchema: advertised(tool.input),
         annotations: tool.annotations,
       },
-      (input) => callTool(tool, input, caller),
+      (input, ctx) => callTool(tool, input, caller, toolClient(ctx.mcpReq.envelope, userAgent)),
     );
   }
   server.registerResource(
@@ -194,21 +207,26 @@ async function callTool(
   tool: McpTool,
   input: Record<string, unknown>,
   caller: OperationCaller,
+  client: ToolClient,
 ): Promise<CallToolResult> {
+  const started = Date.now();
   try {
     const body = tool.perform ? await tool.perform(input, caller) : await call(tool, input, caller);
     // Redacted before the summary is written from it: what a tool answers may
     // have been stored by any transport, and an app document stored through
     // the API may hold provider-native parameters of any name.
     const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt);
-    return {
+    const answer: CallToolResult = {
       content: [{ type: "text", text: tool.summary(result, redactSecrets(input)) }],
       structuredContent: result as Record<string, unknown>,
     };
+    recordToolCall(tool, caller, client, started, endingOf(200));
+    return answer;
   } catch (error) {
     // A platform failure is refused like any gateway error, so the caller is
     // told to retry rather than that the gateway broke.
     const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : asGatewayError(error) ?? error;
+    recordToolCall(tool, caller, client, started, refusalOf(refusal));
     if (refusal instanceof GatewayError) return refused(tool, caller, refusal);
     // Answered with nothing of it, and logged with nothing of it either: a
     // failure's message can carry what the call sent — a database error
@@ -232,6 +250,56 @@ async function callTool(
       },
     };
   }
+}
+
+/** Who is calling a tool, as the client names itself. */
+interface ToolClient {
+  name: string | null;
+  version: string | null;
+}
+
+/**
+ * The client's own name and version: what a 2026-07-28 client declares in each
+ * request's envelope, else the name its `user-agent` gives, since a 2025-era
+ * client declared one only in an `initialize` this stateless server never
+ * keeps. Either is labelled by `knownClient`, never copied.
+ */
+function toolClient(envelope: object | undefined, userAgent: string | undefined): ToolClient {
+  const info = (envelope as Record<string, unknown> | undefined)?.["io.modelcontextprotocol/clientInfo"];
+  const declared = info !== null && typeof info === "object" ? (info as Record<string, unknown>) : {};
+  const name = typeof declared.name === "string" ? knownClient(declared.name) : null;
+  return {
+    name: name ?? clientOf(userAgent),
+    // A version means something only beside a client this gateway knows.
+    version: name !== null && name !== "other" && typeof declared.version === "string"
+      ? versionOf(declared.version)
+      : null,
+  };
+}
+
+/** One tool call's data point, where the deployment records management calls. */
+function recordToolCall(
+  tool: McpTool,
+  caller: OperationCaller,
+  client: ToolClient,
+  started: number,
+  ending: CallEnding,
+): void {
+  const actor = caller.auth?.actor;
+  recordManagementCall(caller.scope.env, {
+    accountId: actor?.organizationId ?? null,
+    channel: "mcp",
+    credential: actor?.credentialType ?? "none",
+    identity: actor?.identityKind ?? null,
+    // A dual tool chooses between two by its arguments; its name says which.
+    operation: typeof tool.operation === "string" ? tool.operation : null,
+    tool: tool.name,
+    kind: tool.kind ?? null,
+    ...ending,
+    client: client.name,
+    clientVersion: client.version,
+    durationMs: Date.now() - started,
+  });
 }
 
 function call(tool: McpTool, input: Record<string, unknown>, caller: OperationCaller): Promise<unknown> {

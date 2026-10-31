@@ -47,6 +47,10 @@ The primary target is iOS applications, with secure measures for calling AI APIs
   submitted secret, only its `secretHint`.
 - Use Wrangler secret commands, stdin, hidden prompts, or ignored local files for
   secret values. Do not place secret values in command arguments.
+- Everything the optional `MANAGEMENT_ANALYTICS` dataset is written is declared
+  in `src/analytics/management.ts`, built field by field there: constants and
+  bounded tokens, never an error message, a request value or a credential.
+  Never write it from the application request path.
 
 ## Verification
 

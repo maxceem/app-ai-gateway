@@ -25,6 +25,13 @@ export interface RequestVariables {
    * `reason`. Set only on the routes `./deadline` guards.
    */
   deadline?: AbortSignal;
+  /**
+   * The catalog operation a management request was matched to, and the
+   * engine kind it opened, for `./management-analytics`. Set only where the
+   * deployment binds `MANAGEMENT_ANALYTICS`.
+   */
+  managementOperation?: string;
+  managementKind?: string;
 }
 
 /**

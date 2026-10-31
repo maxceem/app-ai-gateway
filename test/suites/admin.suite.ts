@@ -9,3 +9,4 @@ import "../app-check-snippet.test";
 import "../app-operations.test";
 import "../mcp.test";
 import "../mcp-mutations.test";
+import "../management-analytics.test";

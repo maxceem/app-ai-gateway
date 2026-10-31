@@ -397,6 +397,51 @@ Plain variables, unset by default. When both are set, the sign-up screen shows
 a consent line linking to them. With either missing, nothing is shown. Set
 them in a profile overlay or in the dashboard.
 
+## Management analytics
+
+### `MANAGEMENT_ANALYTICS`
+
+[Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/)
+dataset binding, unset by default. With it bound, the gateway writes one data
+point for every management call — from the console, the API, the CLI or an MCP
+client — so you can see which of those your accounts use, and how often each is
+refused or fails. Unbound, nothing is recorded and nothing extra runs.
+
+Each point carries the account id, the channel, the credential type, the
+operation or MCP tool, how the call ended (its HTTP status, error code and, for
+an invalid request, the top-level field the schema refused), which known client
+called, such as `agw`, `curl` or `claude-code` (`other` for any client not on
+the gateway's list), the client's version, and how long the call took. It never
+carries an error message, a request value, a credential or an email address,
+and a client's name is never copied as sent. Calls your apps make through the
+gateway are not recorded.
+
+Add the binding in your profile overlay:
+
+```jsonc
+{
+  "analytics_engine_datasets": [
+    { "binding": "MANAGEMENT_ANALYTICS", "dataset": "agw_management" }
+  ]
+}
+```
+
+Query it with the
+[SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/).
+The blobs are, in order: channel, operation, tool, kind, outcome, code, reason,
+field, issue, credential, identity, client, client version. The doubles are
+the HTTP status and the duration in milliseconds, and the index is the account
+id. For example, the refusal rate per channel over the last week:
+
+```sql
+SELECT blob1 AS channel,
+       SUM(_sample_interval) AS calls,
+       SUM(IF(blob5 = 'refused', _sample_interval, 0)) AS refused
+FROM agw_management
+WHERE timestamp > NOW() - INTERVAL '7' DAY
+GROUP BY channel
+```
+
 ## Console build variables
 
 The console is a static bundle, so anything it needs is read when it is built,
@@ -447,4 +492,5 @@ so changing either means deploying again.
 | `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
+| `MANAGEMENT_ANALYTICS` | Analytics Engine binding | Unset (nothing recorded) |
 | `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | Console build | Unset |

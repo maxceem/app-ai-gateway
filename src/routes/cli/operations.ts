@@ -30,6 +30,7 @@ import {
   operationStatus,
 } from "../../management/resource-operations";
 import { managementActor } from "../../middleware/admin";
+import { noteManagementCall } from "../../middleware/management-analytics";
 import { managementScope } from "../admin/body";
 import type { CliContext, CliEnv } from "./types";
 
@@ -72,6 +73,8 @@ export async function createOperation(
   { body: input, actor, state }: OperationInput<"createCliOperation">,
 ): Promise<CliOperation> {
   const kind = operationKind(input.kind);
+  // Every CLI write is this one operation, so the kind is what tells them apart.
+  noteManagementCall(c, "createCliOperation", input.kind);
   const scope = managementScope(c);
   const meta = deploymentMeta(scope.deployment);
   // A transport's check, so it stays here: a browser session may only send
