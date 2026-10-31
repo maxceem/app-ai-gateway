@@ -1,11 +1,20 @@
 [
   {
-    "provider": "gemini",
-    "model": "gemini-embedding-001",
-    "action": "skip",
-    "kind": "embedding",
-    "reason": "Unsupported public pricing: gemini-embedding-001: no input or output row",
-    "origin": "rules",
-    "reviewer": ""
+    "provider": "openai",
+    "model": "gpt-6-rosalind",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this current text model; the catalog has no matching ID.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "openai",
+    "model": "gpt-rosalind-discovery",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this current text model; the catalog has no matching ID.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
   }
 ]
