@@ -1,3 +1,4 @@
+import type { CredentialRefusalReason } from "../auth/credential-refusal";
 import type { IssuerRejectionReason } from "../client-auth/issuer";
 import type { PlatformFailureReason } from "./platform-errors";
 
@@ -197,7 +198,7 @@ export type GatewayErrorData = Record<string, string | number | boolean>;
  * The granular causes a refusal may carry: a closed set, so a `reason` is
  * always a constant this codebase spells, and logging one copies no text.
  */
-export type GatewayErrorReason = IssuerRejectionReason | PlatformFailureReason;
+export type GatewayErrorReason = IssuerRejectionReason | PlatformFailureReason | CredentialRefusalReason;
 
 /**
  * What a rejection knows about itself beyond the wire contract. `reason` and

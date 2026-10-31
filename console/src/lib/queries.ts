@@ -3,6 +3,7 @@ import type { BillingPlanSelection } from "@contracts/billing";
 import type { OperationParams, OperationQuery, OperationRequest } from "@contracts/catalog";
 import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
+import { plainlySignedOut } from "./auth";
 import { toAppWrite } from "./config-conversion";
 import {
   changePassword,
@@ -68,13 +69,15 @@ export function useCapabilities() {
 /**
  * The operator's identity, active organization and role.
  *
- * A 401 here is the normal unauthenticated case rather than an error worth
- * retrying, so the caller treats a failed query as "signed out".
+ * Better Auth is asked first, and a browser it says is signed out is answered
+ * `null` without a management call, which could only have been refused. A
+ * 401 from the management API is still the unauthenticated case rather than
+ * an error worth retrying, so the caller treats a failed query as "signed out".
  */
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await call("getAdminSession")).session,
+    queryFn: async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session,
     retry: false,
     staleTime: 60_000,
   });

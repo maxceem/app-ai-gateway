@@ -69,6 +69,8 @@ export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
 export const OAUTH_ACCESS_TOKEN_PREFIX = "agw_oat_";
 export const OAUTH_REFRESH_TOKEN_PREFIX = "agw_ort_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
+/** What the console's sign-in cookies are named after; cf-auth names Better Auth's session `<prefix>_auth.session_token`. */
+export const IDENTITY_COOKIE_PREFIX = "agw_identity";
 
 /**
  * Refuses a new person the deployment does not admit. A claim registers
@@ -278,7 +280,7 @@ export async function createIdentityAuth(
       limits: OPERATION_LIMITS,
     },
     ...oauthOptions(deployment, realm),
-    cookies: { prefix: "agw_identity" },
+    cookies: { prefix: IDENTITY_COOKIE_PREFIX },
     // A deployment that sends no email activates every account a person comes
     // to own, as it comes to own it, so that adding a sender later stops none
     // of them; see `account_activation`. cf-auth runs this after the commit
