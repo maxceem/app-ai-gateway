@@ -417,7 +417,13 @@ Cloudflare's request id. It never carries an error message, a request value, a
 credential or an email address, and a client's name is never copied as sent.
 Calls your apps make through the gateway are not recorded.
 
-A call refused before sign-in still names the operation it asked for. Every
+A call refused before sign-in still names the operation it asked for, and its
+reason says why: `credential_missing` (nothing sent), `credential_malformed`
+(something that cannot be a management key or token), `console_header_missing`
+(a console session cookie sent without the console), `credential_rejected` (a
+well-formed key or token that is expired or revoked) or `session_expired`.
+The first three are usually a client's mistake; the last two a credential that
+went stale. The client is answered `401 auth_required` whichever it is. Every
 refusal and failure is also logged in the Worker's logs with the same request
 id, as `ray`, so a refused call you find in the dataset leads to its log line.
 

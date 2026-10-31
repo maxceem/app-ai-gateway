@@ -229,6 +229,85 @@ describe("management analytics", () => {
     expect(points).toEqual([expect.objectContaining({ requestId: null })]);
   });
 
+  it("names why a credential was refused, by what the request sent", async () => {
+    const human = await seedHuman("analytics-refusal-reasons@example.test");
+    const sessionCookie = `${human.cookie.split("=")[0]}=not-a-live-session`;
+    const cases: [Record<string, string>, string][] = [
+      [{}, "credential_missing"],
+      [{ authorization: "Token agw_mgmt_anything" }, "credential_malformed"],
+      [{ authorization: "Bearer" }, "credential_malformed"],
+      [{ authorization: "Bearer sk-a-provider-key" }, "credential_malformed"],
+      [{ authorization: "Bearer agw_mgmt_revoked-or-unknown" }, "credential_rejected"],
+      [{ authorization: "Bearer agw_oat_expired-or-unknown" }, "credential_rejected"],
+      [{ cookie: sessionCookie, "x-console-request": "1" }, "session_expired"],
+      [{ cookie: sessionCookie }, "console_header_missing"],
+      [{ cookie: human.cookie }, "console_header_missing"],
+    ];
+    for (const [headers, reason] of cases) {
+      const { points, send } = recording();
+      const response = await send("/v1/admin/apps", { headers });
+      expect(response.status, reason).toBe(401);
+      expect(points, reason).toEqual([expect.objectContaining({ code: "auth_required", reason, operation: "listApps" })]);
+    }
+  });
+
+  it("answers the console's sign-in check for a signed-out browser without a refusal to record", async () => {
+    // The console asks this before the management API; see `plainlySignedOut`.
+    const { points, send } = recording();
+    const response = await send("/v1/auth/get-session", { headers: { "x-console-request": "1" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBeNull();
+    expect(points).toEqual([]);
+  });
+
+  it("answers every refused credential exactly as before, whatever its reason", async () => {
+    const { send } = recording();
+    const missing = await send("/v1/admin/apps");
+    const malformed = await send("/v1/admin/apps", { headers: { authorization: "Bearer sk-a-provider-key" } });
+    const rejected = await send("/v1/admin/apps", { headers: { authorization: "Bearer agw_mgmt_revoked-or-unknown" } });
+    for (const response of [missing, malformed, rejected]) {
+      const body = await response.json<{ error: Record<string, unknown> }>();
+      expect(Object.keys(body.error).sort()).toEqual(["code", "message"]);
+      expect(body.error.code).toBe("auth_required");
+      expect(JSON.stringify(body)).not.toMatch(/credential_|session_expired|console_header/u);
+    }
+    expect(missing.headers.get("www-authenticate")).not.toContain("invalid_token");
+    expect(malformed.headers.get("www-authenticate")).toContain("invalid_token");
+  });
+
+  it("logs a refused credential's reason beside its code", async () => {
+    const { send } = recording();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await send("/v1/admin/apps", { headers: { authorization: "Bearer sk-a-provider-key" } });
+      const line = warn.mock.calls.map(([entry]) => JSON.parse(String(entry))).find((entry) => entry.message === "gateway_error");
+      expect(line).toMatchObject({ code: "auth_required", reason: "credential_malformed" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names a refused credential on the CLI's surface and at the MCP endpoint too", async () => {
+    const cli = recording();
+    await cli.send("/v1/cli/account", { headers: { authorization: "Bearer agw_mgmt_revoked-or-unknown", "user-agent": "agw/1.4.0" } });
+    expect(cli.points).toEqual([expect.objectContaining({ channel: "cli", code: "auth_required", reason: "credential_rejected" })]);
+
+    const human = await seedHuman("analytics-mcp-cookie@example.test");
+    const cases: [Record<string, string>, string][] = [
+      [{}, "credential_missing"],
+      // A cookie is never a credential at the MCP endpoint.
+      [{ cookie: human.cookie }, "credential_missing"],
+      [{ authorization: "Bearer sk-a-provider-key" }, "credential_malformed"],
+      [{ authorization: "Bearer agw_mgmt_revoked-or-unknown" }, "credential_rejected"],
+    ];
+    for (const [headers, reason] of cases) {
+      const mcp = recording();
+      const response = await mcp.send("/mcp", toolCall("list_apps", {}, headers));
+      expect(response.status, reason).toBe(401);
+      expect(mcp.points, reason).toEqual([expect.objectContaining({ channel: "mcp", reason })]);
+    }
+  });
+
   it("records an unknown admin path as refused", async () => {
     const { points, send } = recording();
     const owner = await account("analytics-unknown-path@example.test");

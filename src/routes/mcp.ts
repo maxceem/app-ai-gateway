@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { clientOf, endingOf, recordManagementCall, refusalOf, type CallEnding } from "../analytics/management";
+import { credentialRefusalReason } from "../auth/credential-refusal";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { ROUTE_NOT_FOUND } from "../core/errors";
 import { requestIdOf } from "../core/request-id";
@@ -50,7 +51,12 @@ mcpRoutes.all("/mcp", async (c) => {
       throw error;
     }
     if (auth instanceof Response) {
-      recordGateRefusal(c, { ...endingOf(auth.status), code: "auth_required" }, started);
+      recordGateRefusal(c, {
+        ...endingOf(auth.status),
+        code: "auth_required",
+        // A cookie is never a credential here, so a browser's is no credential at all.
+        reason: credentialRefusalReason((name) => c.req.header(name), { cookies: false }),
+      }, started);
       return auth;
     }
     return serveMcp(c.req.raw, { scope: managementScope(c), auth });

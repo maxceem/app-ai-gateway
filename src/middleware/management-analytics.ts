@@ -10,6 +10,7 @@ import {
   type ManagementCredential,
 } from "../analytics/management";
 import { bearerToken } from "../auth/bearer";
+import { credentialRefusalReason } from "../auth/credential-refusal";
 import { CATALOG, type OperationSpec } from "../contracts/catalog";
 import { requestIdOf } from "../core/request-id";
 import {
@@ -81,7 +82,10 @@ function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): 
     outcome: ending.outcome,
     status: ending.status,
     code: ending.code,
-    reason: ending.reason,
+    // `adminAuth` names a refused credential's reason itself; the CLI's
+    // surface authenticates without it, so its refusals are named here.
+    reason: ending.reason
+      ?? (ending.code === "auth_required" ? credentialRefusalReason((name) => c.req.header(name)) : null),
     field: ending.field,
     issue: ending.issue,
     client: clientOf(userAgent),
