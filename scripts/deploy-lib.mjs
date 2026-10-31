@@ -39,11 +39,21 @@ export function resolveDeploymentId(existingIds, configured, local, generate = r
   }
   // A local development identity must never replace an established deployment.
   const id = existing || configured || local || generate();
-  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(id)) {
-    throw new Error("Invalid DEPLOYMENT_ID: expected 8–128 letters, digits, underscores or hyphens");
+  if (typeof id !== "string" || !DEPLOYMENT_ID.test(id)) {
+    throw new Error(
+      `Invalid DEPLOYMENT_ID: expected 8–${DEPLOYMENT_ID_MAX_LENGTH} letters, digits, underscores or hyphens`,
+    );
   }
   return id;
 }
+
+/**
+ * `DEPLOYMENT_ID_MAX_LENGTH` in src/policy/deployment.ts: a self-host's own
+ * account is `private-` and this id, and no account id may outgrow what the
+ * management analytics index records. The test checks the two agree.
+ */
+export const DEPLOYMENT_ID_MAX_LENGTH = 88;
+const DEPLOYMENT_ID = new RegExp(`^[A-Za-z0-9_-]{8,${DEPLOYMENT_ID_MAX_LENGTH}}$`, "u");
 
 export const REQUIRED_USER_SECRETS = ["SECRET_VAULT_LOCAL_KEK_V1"];
 

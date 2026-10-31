@@ -1,8 +1,32 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
-import { clientOf, cliVersionOf, knownClient, versionOf } from "../src/analytics/management";
+import {
+  clientOf,
+  cliVersionOf,
+  knownClient,
+  recordManagementCall,
+  versionOf,
+  type ManagementCall,
+} from "../src/analytics/management";
 import worker from "../src/index";
+import { digest } from "../src/management/digest";
+import {
+  ACCOUNT_ID_MAX_LENGTH,
+  bootstrapDecision,
+  DEPLOYMENT_ID_MAX_LENGTH,
+  type DeploymentPolicy,
+} from "../src/policy/deployment";
 import { seedHuman } from "./helpers";
+
+/** A successful API call, for tests that vary one field of it. */
+function call(): ManagementCall {
+  return {
+    accountId: null, channel: "api", credential: "apiKey", identity: "human",
+    operation: "listApps", tool: null, kind: null,
+    outcome: "ok", status: 200, code: null, reason: null, field: null, issue: null,
+    client: null, clientVersion: null, durationMs: 1,
+  };
+}
 
 /**
  * The optional `MANAGEMENT_ANALYTICS` dataset: one data point per management
@@ -268,6 +292,32 @@ describe("management analytics", () => {
     const owner = await account("analytics-unbound@example.test");
     const response = await worker.request(`${ORIGIN}/v1/admin/apps`, { headers: key(owner.key) }, env);
     expect(response.status).toBe(200);
+  });
+
+  it("records every kind of account id the gateway creates, at its longest", async () => {
+    const written: AnalyticsEngineDataPoint[] = [];
+    const runtime = { MANAGEMENT_ANALYTICS: { writeDataPoint: (point: AnalyticsEngineDataPoint) => written.push(point) } } as unknown as Env;
+    const policy = (accountId: "hashed" | "deployment") => ({
+      rules: { accountDeadlines: false, bootstrap: { accountId, admission: "open", rateLimited: false } },
+      registrationEmails: new Set<string>(),
+    }) as unknown as DeploymentPolicy;
+    const input = { deploymentId: "d".repeat(DEPLOYMENT_ID_MAX_LENGTH), requestHash: await digest("token"), nowMs: 0 };
+    const ids = [
+      crypto.randomUUID(),
+      bootstrapDecision(policy("hashed"), input).accountId,
+      bootstrapDecision(policy("deployment"), input).accountId,
+    ];
+    expect(ids.map((id) => id.length)).toEqual([36, 72, ACCOUNT_ID_MAX_LENGTH]);
+
+    for (const accountId of ids) recordManagementCall(runtime, { ...call(), accountId });
+    expect(written.map((point) => point.indexes?.[0])).toEqual(ids);
+
+    // Anything longer, or not shaped like an id at all, is recorded with no account.
+    written.length = 0;
+    for (const accountId of ["a".repeat(ACCOUNT_ID_MAX_LENGTH + 1), "alice@example.com"]) {
+      recordManagementCall(runtime, { ...call(), accountId });
+    }
+    expect(written.map((point) => point.indexes?.[0])).toEqual(["", ""]);
   });
 
   it("records a client's name only as a label of its own, never as sent", () => {
