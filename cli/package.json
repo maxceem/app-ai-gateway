@@ -1,6 +1,6 @@
 {
   "name": "@maxceem/agw",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "type": "module",
   "description": "Manage App AI Gateway from a terminal or coding agent: providers, iOS and server apps, usage, and self-hosted deployment on Cloudflare",
   "keywords": [
@@ -26,6 +26,7 @@
   },
   "bugs": "https://github.com/maxceem/app-ai-gateway/issues",
   "upgradeFrom": [
+    "0.10.6",
     "0.10.5",
     "0.10.4",
     "0.10.3",

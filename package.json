@@ -1,6 +1,6 @@
 {
   "name": "app-ai-gateway",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "private": true,
   "packageManager": "pnpm@12.16.1",
   "type": "module",
