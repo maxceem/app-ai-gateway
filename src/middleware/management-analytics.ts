@@ -10,6 +10,8 @@ import {
   type ManagementCredential,
 } from "../analytics/management";
 import { bearerToken } from "../auth/bearer";
+import { CATALOG, type OperationSpec } from "../contracts/catalog";
+import { requestIdOf } from "../core/request-id";
 import {
   asGatewayAuthError,
   CONSOLE_REQUEST_HEADER,
@@ -60,8 +62,11 @@ export function noteManagementCall(c: Context, operation: string, kind?: string)
 }
 
 function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): void {
-  const operation = c.get("managementOperation");
-  if (operation === undefined && !MANAGEMENT_PATH.test(c.req.path)) return;
+  const matched = c.get("managementOperation");
+  if (matched === undefined && !MANAGEMENT_PATH.test(c.req.path)) return;
+  // A call refused before the router reached it — by `adminAuth`, say — is
+  // still named by the operation its method and path ask for.
+  const operation = matched ?? catalogOperation(c.req.method, c.req.path);
   const actor = c.get("actor");
   const credential = actor?.credentialType ?? presentedCredential(c);
   const userAgent = c.req.header("user-agent");
@@ -81,8 +86,39 @@ function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): 
     issue: ending.issue,
     client: clientOf(userAgent),
     clientVersion: cliVersionOf(userAgent),
+    requestId: requestIdOf(c.req.header("cf-ray")),
     durationMs: Date.now() - started,
   });
+}
+
+interface CatalogRoute {
+  name: string;
+  method: string;
+  pattern: RegExp;
+  parameters: number;
+}
+
+let catalogRoutes: CatalogRoute[] | undefined;
+
+/**
+ * The catalog operation a method and path ask for, or null where none does.
+ * Only its name is recorded, never a path parameter. Where two templates
+ * match, the one with fewer parameters wins — `/apps/drafts` over
+ * `/apps/{app}` — as the router's static routes win over its parameters.
+ */
+function catalogOperation(method: string, path: string): string | null {
+  catalogRoutes ??= (Object.entries(CATALOG) as [string, OperationSpec][])
+    .map(([name, spec]) => ({
+      name,
+      method: spec.method,
+      pattern: new RegExp(
+        `^${spec.path.replace(/[.*+?^$()|[\]\\]/gu, "\\$&").replace(/\{\w+\}/gu, "[^/]+")}$`,
+        "u",
+      ),
+      parameters: spec.path.match(/\{\w+\}/gu)?.length ?? 0,
+    }))
+    .sort((a, b) => a.parameters - b.parameters);
+  return catalogRoutes.find((route) => route.method === method && route.pattern.test(path))?.name ?? null;
 }
 
 /**

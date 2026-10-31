@@ -412,10 +412,14 @@ Each point carries the account id, the channel, the credential type, the
 operation or MCP tool, how the call ended (its HTTP status, error code and, for
 an invalid request, the top-level field the schema refused), which known client
 called, such as `agw`, `curl` or `claude-code` (`other` for any client not on
-the gateway's list), the client's version, and how long the call took. It never
-carries an error message, a request value, a credential or an email address,
-and a client's name is never copied as sent. Calls your apps make through the
-gateway are not recorded.
+the gateway's list), the client's version, how long the call took, and
+Cloudflare's request id. It never carries an error message, a request value, a
+credential or an email address, and a client's name is never copied as sent.
+Calls your apps make through the gateway are not recorded.
+
+A call refused before sign-in still names the operation it asked for. Every
+refusal and failure is also logged in the Worker's logs with the same request
+id, as `ray`, so a refused call you find in the dataset leads to its log line.
 
 Add the binding in your profile overlay:
 
@@ -430,7 +434,7 @@ Add the binding in your profile overlay:
 Query it with the
 [SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/).
 The blobs are, in order: channel, operation, tool, kind, outcome, code, reason,
-field, issue, credential, identity, client, client version. The doubles are
+field, issue, credential, identity, client, client version, request id. The doubles are
 the HTTP status and the duration in milliseconds, and the index is the account
 id. For example, the refusal rate per channel over the last week:
 
