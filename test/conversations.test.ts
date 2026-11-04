@@ -163,6 +163,21 @@ describe("conversation records", () => {
     expect(line).toContain("agw-omitted:audio/wav;12");
   });
 
+  it("records left-out media by its exact size, and audio of no stated format as audio", async () => {
+    // `YQ==` is one byte; a chat reply's audio does not repeat its format.
+    const body = JSON.stringify({ choices: [{ message: { audio: { id: "audio_1", data: "YQ==" } } }] });
+    const reply = (audio: boolean) => conversationRecord(capture({
+      keep: { images: true, audio, files: true },
+      response: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length, aborted: false },
+    }));
+
+    expect((await reply(false)).line).toContain('"data":"agw-omitted:audio;1"');
+    const kept = await reply(true);
+    expect(kept.media).toHaveLength(1);
+    expect(kept.media[0]!.name).toMatch(/\/media\/[0-9a-f]{64}\.bin$/);
+    expect(kept.media[0]!.mime).toBe("application/octet-stream");
+  });
+
   it("keeps a transcription's fields and its recording, or the recording's size alone", async () => {
     const form = new FormData();
     form.set("file", new File([new Uint8Array(64)], "voice.wav", { type: "audio/wav" }));

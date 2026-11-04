@@ -23,7 +23,9 @@ It is off for every app until you turn it on.
 
 Each kind of media can be left out: `keep.images`, `keep.audio` and
 `keep.files`, all on unless you turn one off. Media left out is recorded as
-`agw-omitted:<type>;<bytes>`. Text is always kept.
+`agw-omitted:<type>;<bytes>`, its media type and size; the type is just `audio`
+for audio whose format the body does not say. An uploaded file keeps its
+name. Text is always kept.
 
 Anything over 8 MB, or a single string over 256 KB, is recorded by its size
 instead.

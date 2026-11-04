@@ -91,10 +91,19 @@ function isJson(type: string): boolean {
   return type === "application/json" || type.endsWith("+json");
 }
 
+/** Audio whose format the body does not say, such as a chat reply's `audio.data`. */
+const UNKNOWN_AUDIO = "audio";
+
 function mediaKind(mime: string): keyof KeptMedia {
   if (mime.startsWith("image/")) return "images";
-  if (mime.startsWith("audio/")) return "audio";
+  if (mime === UNKNOWN_AUDIO || mime.startsWith("audio/")) return "audio";
   return "files";
+}
+
+/** The bytes base64 text stands for, without decoding it: padding and whitespace carry none. */
+function base64Bytes(text: string): number {
+  const digits = text.replace(/[\s=]/g, "").length;
+  return Math.floor((digits * 3) / 4);
 }
 
 function decodeBase64(text: string): Uint8Array<ArrayBuffer> | null {
@@ -127,7 +136,8 @@ class MediaShelf {
     const name = mediaName(this.day, await sha256Hex(bytes), mime);
     if (!this.names.has(name)) {
       this.names.add(name);
-      this.media.push({ name, mime, bytes });
+      // Stored with a real media type: one the body did not say is just bytes.
+      this.media.push({ name, mime: mime.includes("/") ? mime : "application/octet-stream", bytes });
     }
     return `${MEDIA}${name}`;
   }
@@ -135,13 +145,12 @@ class MediaShelf {
   /** The same, for media in base64, which is decoded only where it is kept. */
   async placeBase64(text: string, mime: string): Promise<string> {
     const bytes = this.keep[mediaKind(mime)] ? decodeBase64(text) : null;
-    return bytes === null ? `${OMITTED}${mime};${Math.floor((text.length * 3) / 4)}` : this.place(bytes, mime);
+    return bytes === null ? `${OMITTED}${mime};${base64Bytes(text)}` : this.place(bytes, mime);
   }
 
-  /** A piece of a streamed recording: left as it came where audio is kept. */
-  piece(text: string): string {
-    if (!this.keep.audio) return `${OMITTED}audio;${Math.floor((text.length * 3) / 4)}`;
-    return text.length > MAX_STRING_CHARS ? `${OMITTED}text;${text.length}` : text;
+  /** A piece of a streamed recording, in base64: left as it came where audio is kept. */
+  piece(text: string, mime: string = UNKNOWN_AUDIO): string {
+    return this.keep.audio && text.length <= MAX_STRING_CHARS ? text : `${OMITTED}${mime};${base64Bytes(text)}`;
   }
 }
 
@@ -180,10 +189,11 @@ function bareMedia(value: Record<string, unknown>, key: string | undefined): { m
     const mime = declared.toLowerCase();
     return { mime, audio: mime.startsWith("audio/") };
   }
-  // OpenAI's `input_audio` and `audio`: a recording, typed by `format` where given.
+  // OpenAI's `input_audio` and `audio`: a recording, typed by `format` where
+  // given. A reply's `audio` does not repeat the format its request chose.
   if (key !== undefined && AUDIO_PARENTS.has(key)) {
-    const format = typeof value.format === "string" && /^[a-z0-9]+$/.test(value.format) ? value.format : "wav";
-    return { mime: `audio/${format === "mp3" ? "mpeg" : format}`, audio: true };
+    const format = typeof value.format === "string" && /^[a-z0-9]+$/.test(value.format) ? value.format : null;
+    return { mime: format === null ? UNKNOWN_AUDIO : `audio/${format === "mp3" ? "mpeg" : format}`, audio: true };
   }
   return null;
 }
@@ -204,7 +214,7 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
       if (media !== null && name === "data") {
         // In a stream, audio arrives a piece at a time; anything else whole.
         out[name] = walk.streamed && media.audio
-          ? walk.shelf.piece(item as string)
+          ? walk.shelf.piece(item as string, media.mime)
           : await walk.shelf.placeBase64(item as string, media.mime);
       } else if (audioEvent && name === "delta" && typeof item === "string") {
         out[name] = walk.shelf.piece(item);
