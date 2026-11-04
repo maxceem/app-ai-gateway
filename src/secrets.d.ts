@@ -53,6 +53,11 @@ interface Env {
   // A Worker of the deployment's own, told when an account is created; see
   // src/analytics/hook.ts for everything it is sent. Unset means nothing is.
   ANALYTICS?: import("./analytics/hook").AnalyticsHook;
+  // The R2 bucket conversation storage writes to; see src/conversations/. Unbound
+  // means no application can turn conversation storage on. Deliberately absent
+  // from wrangler.jsonc: R2 must be enabled on an account before a bucket can be
+  // created there, and the one-click deploy must not fail on an account without it.
+  CONVERSATIONS?: R2Bucket;
   // How the deployment sends email, if it does; see src/email/sender.ts. Any of
   // these set means it does, and then an account serves application traffic
   // only once its owner has verified their address. All deliberately absent

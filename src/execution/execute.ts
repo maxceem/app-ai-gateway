@@ -4,7 +4,9 @@ import { clientResponseHeaders, providerUpstream } from "./proxy-rules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import { observeUpstreamBody, type ObservedBody } from "../usage/body-observer";
 import { recordUsageEvent } from "../usage/usage-record";
-import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
+import { timeOrderedId } from "../core/ids";
+import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../conversations/capture";
+import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
 import {
   fetchWithTtfbTimeout,
@@ -20,6 +22,10 @@ export interface ExecutionContext {
   /** Read when the response is built, so they are the figures admission settled on. */
   timings: ServedTimings;
   waitUntil: (promise: Promise<unknown>) => void;
+  /** The client's `X-Client-Trace-Id`, recorded on the usage event. */
+  clientTraceId?: string | null;
+  /** Where the request body comes from when this request's conversation is stored; null when it is not. */
+  capture?: CaptureSource | null;
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -39,9 +45,36 @@ function record(
     contentType: string;
     status: "ok" | "provider_error";
     latencyMs: number;
+    /** The upstream's status, where it answered: what a stored conversation records. */
+    httpStatus?: number;
+    /** What was sent upstream, where it answered: the request a stored conversation records. */
+    sent?: ExecutionRequest;
   },
 ): void {
+  // One id for the usage row and the stored conversation, so each finds the other.
+  const eventId = timeOrderedId();
+  if (context.capture && input.observed && input.httpStatus !== undefined && input.sent) {
+    context.waitUntil(conversationCapture({
+      env: context.env,
+      source: context.capture,
+      sent: input.sent,
+      eventId,
+      appId: context.app.id,
+      identity: context.identity,
+      appVersion: context.appVersion,
+      clientTraceId: context.clientTraceId ?? null,
+      endpointSlug: plan.endpointSlug,
+      attribution: attemptAttribution(input.attempt),
+      status: input.status,
+      httpStatus: input.httpStatus,
+      latencyMs: input.latencyMs,
+      responseContentType: input.contentType,
+      observed: input.observed,
+    }));
+  }
   context.waitUntil(recordUsageEvent({
+    eventId,
+    clientTraceId: context.clientTraceId ?? null,
     organizationId: context.app.organizationId,
     env: context.env,
     observed: input.observed,
@@ -177,7 +210,10 @@ export async function execute(
     let clientStream = upstream.body;
     let observed: Promise<ObservedBody> | null = null;
     if (upstream.body) {
-      ({ stream: clientStream, observed } = observeUpstreamBody(upstream.body));
+      ({ stream: clientStream, observed } = observeUpstreamBody(
+        upstream.body,
+        context.capture ? { keepWholeUpTo: CAPTURE_MAX_BYTES } : {},
+      ));
     }
     record(plan, context, {
       attempt,
@@ -185,6 +221,8 @@ export async function execute(
       contentType: upstream.headers.get("content-type") ?? "",
       status: upstream.ok ? "ok" : "provider_error",
       latencyMs: Math.round(providerTtfb),
+      httpStatus: upstream.status,
+      sent: request,
     });
     return new Response(clientStream, {
       status: upstream.status,

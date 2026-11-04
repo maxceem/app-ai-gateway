@@ -84,6 +84,10 @@ An iOS app's \`authentication.app_attest.verify_on\` is \`every_request\` (the
 default) or \`token_exchange\`; switch an app to \`every_request\` only after the
 person confirms every build in use is on the AppAIGateway Swift package 1.4 or
 later, because older builds are refused from then on.
+\`conversations.store\` keeps a copy of an app's requests and responses, with
+the media \`conversations.keep\` allows (images, audio, files; all by default),
+for \`conversations.retention_days\` (default 180). Turn it on only when
+the person asks, and remind them to disclose it in their privacy policy.
 
 Changes come in three shapes.
 

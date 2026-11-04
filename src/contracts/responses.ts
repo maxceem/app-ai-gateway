@@ -98,6 +98,8 @@ export const ConsoleCapabilitiesResponseSchema = z.object({
    * an organization on a paid plan, and the gateway refuses anyone else.
    */
   supportEmail: z.email().optional(),
+  /** Whether this deployment can store conversations: an R2 bucket is bound for it. */
+  conversationStorage: z.boolean(),
 });
 
 /** The provider URL returned when a Google OAuth sign-in is initiated. */
@@ -199,8 +201,31 @@ export const UsageEventSchema = z.object({
     description: "1 when the client disconnected before the upstream finished streaming, which cancelled the provider call; null otherwise. Not a failure — the request was served as far as the caller wanted it — but an aborted stream often takes the provider's end-of-response usage with it, which is why such an event may carry cost_source unresolved.",
   }),
   latency_ms: z.number().int().nullable(),
+  client_trace_id: z.string().nullable().meta({
+    description: "The client's X-Client-Trace-Id for this request, or null where it sent none.",
+  }),
   created_at: z.string(),
 }).meta({ id: "UsageEvent" });
+
+/** One stored batch of conversation records. */
+export const ConversationFileSchema = z.object({
+  name: z.string().meta({
+    description: "The file's name within the app, `YYYY-MM-DD/HHMMSS-<batch>.jsonl.gz`; pass it to the download operation.",
+  }),
+  size: z.number().int().meta({ description: "Bytes, gzipped." }),
+  records: z.number().int().nullable().meta({ description: "Records in the file, where it says." }),
+  uploaded_at: z.string(),
+}).meta({ id: "ConversationFile" });
+
+export const ConversationFileListSchema = z.object({
+  app_id: z.string(),
+  files: z.array(ConversationFileSchema),
+  next_cursor: z.string().nullable().meta({
+    description: "Pass as cursor to continue the listing; null when it is complete.",
+  }),
+}).meta({ id: "ConversationFileList" });
+
+export type ConversationFileList = z.infer<typeof ConversationFileListSchema>;
 
 export const UsageEventListSchema = z.object({
   app_id: z.string(),

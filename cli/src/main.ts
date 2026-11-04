@@ -1,5 +1,6 @@
 import { Writable } from "node:stream";
 import { appCommand } from "./apps.ts";
+import { conversationsCommand } from "./conversations.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context, type ContextIo } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
@@ -37,6 +38,7 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
   const { command, flags, args } = parsed;
   if (command.startsWith("provider"))
     return resourceCommand(ctx, command, args, flags);
+  if (command === "app conversations") return conversationsCommand(ctx, args[0] ?? "", flags);
   if (command.startsWith("app ")) return appCommand(ctx, command, args, flags);
   if (command.startsWith("usage ")) return usageCommand(ctx, command, flags);
   if (command === "support send") return supportCommand(ctx, flags);

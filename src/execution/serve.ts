@@ -40,6 +40,7 @@ import type { ExecutionPlan } from "./plan";
 import { prepareEndpointPlan, prepareProxyPlan, type PrepareInput } from "./prepare";
 import type { ServedTimings } from "./timing";
 import { contained } from "../core/background";
+import { readConversationHeaders } from "../conversations/client-headers";
 
 export interface ServedVariables extends RequestVariables {
   /**
@@ -113,6 +114,10 @@ async function serve(
   const body = bodyOnce(c.req.raw);
   const { app, identity, credentialHeader, assertionCounter } =
     await authenticated(c, timings, providerSlug, body);
+  // Read after the credential, so an unauthenticated caller learns nothing
+  // from a refusal of its headers; before the plan, so a malformed one is
+  // refused before anything is spent on the request.
+  const conversation = readConversationHeaders(c.req.raw.headers);
   const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
   const appVersion = c.req.header("x-app-version") ?? null;
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(contained("served_request", promise));
@@ -132,7 +137,23 @@ async function serve(
       timings.limiterMs = durationMs;
     },
   );
-  return execute(plan, { env: c.env, app, identity, appVersion, timings, waitUntil });
+  // Conversation storage needs the app to have turned it on, the deployment to
+  // have somewhere to keep it, and the client not to have opted this request out.
+  const capture = app.config.conversations.store
+    && c.env.CONVERSATIONS !== undefined
+    && !conversation.optedOut
+    ? { contentType: c.req.header("content-type") ?? "", keep: app.config.conversations.keep, body }
+    : null;
+  return execute(plan, {
+    env: c.env,
+    app,
+    identity,
+    appVersion,
+    timings,
+    waitUntil,
+    clientTraceId: conversation.clientTraceId,
+    capture,
+  });
 }
 
 /** `/v1/apps/:app/proxy/:provider/*`: the client names the provider and its path. */

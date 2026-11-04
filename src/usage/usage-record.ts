@@ -77,6 +77,13 @@ interface UsageEventInput {
   appVersion: string | null;
   status: "ok" | "provider_error";
   latencyMs: number;
+  /**
+   * Minted by the caller when something else must name this same event — the
+   * stored conversation does — and generated here otherwise.
+   */
+  eventId?: string;
+  /** The client's `X-Client-Trace-Id`, or null where it sent none. */
+  clientTraceId?: string | null;
 }
 
 /**
@@ -202,7 +209,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const { attribution, identity } = input;
   // Minted before any work, so the observer read, the retries below and any
   // later replay of this same event all settle under one identity.
-  const eventId = timeOrderedId();
+  const eventId = input.eventId ?? timeOrderedId();
   const createdAt = new Date().toISOString();
   let observed: UsageObservation | null = null;
   let report: ProviderReport | null = null;
@@ -401,6 +408,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       status: input.status,
       clientAborted: aborted ? 1 : null,
       latencyMs: input.latencyMs,
+      clientTraceId: input.clientTraceId ?? null,
       createdAt,
     },
     audioSeconds: usage.audioSeconds,

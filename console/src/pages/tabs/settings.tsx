@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ExternalHint } from "@/components/external-hint";
 import { Field, SectionHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import type { AppDraft } from "@/hooks/use-app-draft";
@@ -15,6 +16,12 @@ import { clientApiOrigin } from "@/lib/client-api";
 import { authIssuer } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
+import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
+
+const MEDIA_KINDS = [["images", "Images"], ["audio", "Audio"], ["files", "Other files"]] as const;
+const CONVERSATIONS_GUIDE_URL = "https://docs.appaigateway.com/applications/conversations/";
+const CONVERSATION_STORAGE_SETUP_URL =
+  "https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage";
 
 /**
  * The app as a record: what it is called, its id and the URL clients reach it
@@ -129,6 +136,8 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
         </CardContent>
       </Card>
 
+      <ConversationStorage state={state} readOnly={readOnly} available={capabilities.conversationStorage} />
+
       <Card className="border-destructive/40">
         <CardHeader>
           <SectionHeader
@@ -168,5 +177,103 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
         onConfirm={() => void remove()}
       />
     </div>
+  );
+}
+
+/**
+ * Whether the gateway keeps a copy of this app's requests and responses, and
+ * for how long. Shown on every deployment, but only switchable where one has a
+ * bucket to keep them in, so an operator on another learns why it is off.
+ */
+function ConversationStorage({
+  state,
+  readOnly,
+  available,
+}: {
+  state: AppDraft;
+  readOnly: boolean;
+  available: boolean;
+}) {
+  const conversations = state.draft!.config.conversations ?? {};
+  const store = conversations.store ?? false;
+  const retention = conversations.retention_days ?? CONVERSATION_RETENTION_DAYS.default;
+  const keep = {
+    images: conversations.keep?.images ?? true,
+    audio: conversations.keep?.audio ?? true,
+    files: conversations.keep?.files ?? true,
+  };
+  const [days, setDays] = useState(String(retention));
+  const update = (next: { store?: boolean; retention_days?: number; keep?: typeof keep }) =>
+    state.updateConfig({ conversations: { store, retention_days: retention, keep, ...next } });
+
+  return (
+    <Card>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Conversation history</p>
+            <p className="text-xs text-muted-foreground">
+              {available ? (
+                <>
+                  Keeps a history of each request and response.{" "}
+                  <ExternalHint href={CONVERSATIONS_GUIDE_URL}>Learn more</ExternalHint>
+                </>
+              ) : (
+                <>
+                  Not set up on this deployment.{" "}
+                  <ExternalHint href={CONVERSATION_STORAGE_SETUP_URL}>Set up conversation storage</ExternalHint>
+                </>
+              )}
+            </p>
+          </div>
+          <Switch
+            aria-label="Conversation history"
+            checked={store}
+            disabled={readOnly || (!available && !store)}
+            onCheckedChange={(checked) => update({ store: checked })}
+          />
+        </div>
+        {store ? (
+          <Field label="Keep">
+            <div className="space-y-2">
+              {MEDIA_KINDS.map(([kind, label]) => (
+                <div key={kind} className="flex max-w-64 items-center justify-between gap-4">
+                  <span className="text-sm">{label}</span>
+                  <Switch
+                    aria-label={label}
+                    checked={keep[kind]}
+                    disabled={readOnly}
+                    onCheckedChange={(checked) => update({ keep: { ...keep, [kind]: checked } })}
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">Messages are always kept.</p>
+          </Field>
+        ) : null}
+        {store ? (
+          <Field label="Keep for (days)" htmlFor="conversation-retention">
+            <Input
+              id="conversation-retention"
+              type="number"
+              inputMode="numeric"
+              min={CONVERSATION_RETENTION_DAYS.min}
+              max={CONVERSATION_RETENTION_DAYS.max}
+              value={days}
+              disabled={readOnly}
+              className="max-w-32"
+              onChange={(event) => {
+                setDays(event.target.value);
+                const value = Number(event.target.value);
+                if (Number.isInteger(value)) update({ retention_days: value });
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Nightly maintenance deletes stored days older than this.
+            </p>
+          </Field>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }

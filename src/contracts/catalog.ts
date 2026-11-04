@@ -57,6 +57,7 @@ import {
   AppSnippetQuerySchema,
   AppUpdateSchema,
   AppWriteSchema,
+  CLIENT_TRACE_ID_PATTERN,
   GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
@@ -123,6 +124,7 @@ import {
   RevealedOperationResponseSchema,
   TimeseriesResponseSchema,
   UsageEventListSchema,
+  ConversationFileListSchema,
   UsageRepriceResponseSchema,
   UserBlockResponseSchema,
   UserListResponseSchema,
@@ -290,6 +292,14 @@ const GatewayClientHeadersSchema = z.object({
   }),
   "x-end-user-id": z.string().optional().meta({
     description: "Optional configured end-user identity for issuer-less API-key applications.",
+  }),
+  "x-client-trace-id": z.string().regex(CLIENT_TRACE_ID_PATTERN).optional().meta({
+    description:
+      "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+  }),
+  "x-conversation-storage": z.enum(["off"]).optional().meta({
+    description:
+      "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
   }),
 });
 
@@ -1018,10 +1028,53 @@ export const CATALOG = {
       user: z.string().optional(),
       install: z.string().optional().meta({ description: "Only events of this install: an App Attest key id." }),
       model: z.string().optional(),
+      trace: z.string().regex(CLIENT_TRACE_ID_PATTERN).optional().meta({
+        description: "Only the requests the client sent with this X-Client-Trace-Id.",
+      }),
       before_id: BeforeIdSchema,
     }),
     response: UsageEventListSchema,
     responseDescription: "Paginated application usage events.",
+  },
+
+  listAppConversations: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/conversations",
+    tags: ["Admin operations"],
+    summary: "List stored conversation files",
+    description:
+      "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Media the app keeps (conversations.keep) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>` and named in the records as `agw-media:<name>`.",
+    security: "management",
+    params: APP_PARAM,
+    policy: { role: "admin", access: "read", grant: "read" },
+    query: z.object({
+      from: DaySchema("from").optional().meta({
+        description: "First UTC day, YYYY-MM-DD; defaults to the oldest stored.",
+      }),
+      to: DaySchema("to").optional().meta({
+        description: "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+      }),
+      cursor: z.string().max(1024).optional(),
+    }),
+    response: ConversationFileListSchema,
+    responseDescription: "One page of stored conversation files.",
+  },
+
+  getAppConversationFile: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/conversations/file",
+    tags: ["Admin operations"],
+    summary: "Download a stored conversation file",
+    description:
+      "One file named by the listing, or an image a record names: a batch answers as application/gzip, an image as its own type.",
+    security: "management",
+    params: APP_PARAM,
+    policy: { role: "admin", access: "read", grant: "read" },
+    query: z.object({
+      name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
+    }),
+    response: z.unknown(),
+    responseDescription: "The file's bytes.",
   },
 
   getAppAuthEventSummary: {

@@ -37,6 +37,7 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
     auth_method: "api_key",
     status: "ok",
     latency_ms: 12,
+    client_trace_id: null,
     created_at: "2026-08-01T10:00:00.000Z",
     ...overrides,
   };

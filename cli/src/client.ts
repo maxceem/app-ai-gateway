@@ -142,6 +142,24 @@ export class GatewayClient {
   }
 
   /**
+   * One operation whose success is a file rather than JSON, with the
+   * connection's management credential: its bytes, as the deployment sent them.
+   */
+  async download<K extends OperationName>(
+    name: K,
+    { params, query }: Pick<CallOptions<K>, "params" | "query"> = {},
+  ): Promise<Uint8Array> {
+    const wire = await this.transport.request(
+      this.source.url(),
+      pathFor(name, params as Record<string, string> | undefined, query as object | undefined),
+      { method: CATALOG[name].method, key: this.credential(name), binary: true },
+    );
+    if (!(wire.data instanceof Uint8Array))
+      fail("invalid_response", `The deployment answered ${String(name)} with an unusable body.`, undefined, 3);
+    return wire.data;
+  }
+
+  /**
    * The current management credential, or the refusal that names the way back.
    * An admin operation is also reachable from a plain deployment connection,
    * which is why those get the wider instruction.

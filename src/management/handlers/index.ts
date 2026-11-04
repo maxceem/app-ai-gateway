@@ -9,6 +9,7 @@ import { providerGatewayHandlers } from "./provider-gateways";
 import { providerHandlers } from "./providers";
 import { supportHandlers } from "./support";
 import { usageHandlers } from "./usage";
+import { conversationHandlers } from "./conversations";
 import { userHandlers } from "./users";
 
 /**
@@ -26,6 +27,7 @@ const HANDLERS = {
   ...keyHandlers,
   ...userHandlers,
   ...usageHandlers,
+  ...conversationHandlers,
   ...authEventHandlers,
   ...providerHandlers,
   ...providerGatewayHandlers,

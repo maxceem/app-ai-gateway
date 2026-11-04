@@ -52,7 +52,8 @@
     "bindings": [
       { "name": "USER_LIMITER", "class_name": "UserLimiter" },
       { "name": "ORG_QUOTA", "class_name": "OrgQuota" },
-      { "name": "ENDPOINT_RATE_LIMITER", "class_name": "EndpointRateLimiter" }
+      { "name": "ENDPOINT_RATE_LIMITER", "class_name": "EndpointRateLimiter" },
+      { "name": "CONVERSATION_LOG", "class_name": "ConversationLog" }
     ]
   },
   // Append-only: every tag below has already been applied to deployed
@@ -60,12 +61,14 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
     { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] },
-    { "tag": "v3", "new_sqlite_classes": ["EndpointRateLimiter"] }
+    { "tag": "v3", "new_sqlite_classes": ["EndpointRateLimiter"] },
+    { "tag": "v4", "new_sqlite_classes": ["ConversationLog"] }
   ]
   // This file is the complete self-hosted configuration and what the Deploy to
   // Cloudflare button uses. Deployment-specific additions (a custom domain, a
   // fixed D1 database, kms vault mode, a BILLING service binding, a
-  // MANAGEMENT_ANALYTICS Analytics Engine dataset) belong in a
+  // MANAGEMENT_ANALYTICS Analytics Engine dataset, a CONVERSATIONS R2 bucket
+  // for conversation storage) belong in a
   // gitignored `wrangler.<profile>.overlay.jsonc`; see the "Deployment
   // profiles" section of docs/content/docs/deployment.mdx. Never add account
   // identifiers or domains here.

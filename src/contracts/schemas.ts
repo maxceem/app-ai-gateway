@@ -39,6 +39,12 @@ export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const HTTP_FIELD_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 /**
+ * A client's own identifier for one unit of work, sent as `X-Client-Trace-Id`.
+ * Bounded and plain so it can be stored, logged and used in a file listing
+ * without escaping.
+ */
+export const CLIENT_TRACE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+/**
  * A UTC calendar month as `YYYY-MM`, with a month that exists. Flag-free for
  * the same reason as the slug patterns: it is published as an OpenAPI
  * `pattern`.
@@ -226,6 +232,8 @@ const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "x-appattest-proof",
   ...PROVIDER_CREDENTIAL_HEADERS,
   "x-app-version",
+  "x-client-trace-id",
+  "x-conversation-storage",
   "content-type",
   "content-length",
   "host",
@@ -468,6 +476,47 @@ export const scopeHasLimits = (scope: LimitScopeConfig): boolean =>
   || scope.requests.per_day !== null
   || scope.spending.monthly_usd !== null;
 
+/** How long stored conversations are kept, in days: the default, and the bounds an app may set. */
+export const CONVERSATION_RETENTION_DAYS = { default: 180, min: 1, max: 400 } as const;
+
+/**
+ * Whether the gateway keeps a copy of this application's requests and
+ * responses, and for how long. Off unless an operator turns it on: what an
+ * app's users send is theirs, and keeping it is a decision the operator makes
+ * and discloses, never one the gateway makes for them.
+ */
+const keptMedia = (field: string, what: string) =>
+  z.boolean({ error: `conversations.keep.${field} must be true or false` }).default(true).meta({
+    description: `Keep ${what} beside the conversation. Off, each is recorded by its type and size alone.`,
+  });
+
+/**
+ * Which attachments a stored conversation keeps: all of them unless the
+ * operator leaves a kind out. The conversation itself — messages, instructions,
+ * tool calls — is always kept.
+ */
+const ConversationKeepSchema = z.object({
+  images: keptMedia("images", "images"),
+  audio: keptMedia("audio", "audio: recordings sent for transcription, audio in a request, spoken replies"),
+  files: keptMedia("files", "every other attached file, such as a PDF or a text document"),
+}).strict();
+
+const ConversationsSchema = z.object({
+  store: z.boolean({ error: "conversations.store must be true or false" }).default(false).meta({
+    description:
+      "Keep a copy of every request and response this app sends through the gateway, with the media `keep` allows.",
+  }),
+  keep: ConversationKeepSchema.prefault({}),
+  retention_days: z.number({ error: "conversations.retention_days must be a whole number of days" })
+    .int({ error: "conversations.retention_days must be a whole number of days" })
+    .min(CONVERSATION_RETENTION_DAYS.min, { error: `conversations.retention_days must be at least ${CONVERSATION_RETENTION_DAYS.min}` })
+    .max(CONVERSATION_RETENTION_DAYS.max, { error: `conversations.retention_days must be at most ${CONVERSATION_RETENTION_DAYS.max}` })
+    .default(CONVERSATION_RETENTION_DAYS.default)
+    .meta({ description: "Days a stored conversation is kept before nightly maintenance deletes it." }),
+}).strict();
+
+export type ConversationsConfig = z.output<typeof ConversationsSchema>;
+
 /**
  * An application's configuration: the one grammar, and the one shape.
  *
@@ -520,6 +569,7 @@ export const AppConfigSchema = z.object({
     EndpointSchema,
     { error: "is not a valid slug; use 1-64 characters from a-z, 0-9, and -" },
   ).prefault({}),
+  conversations: ConversationsSchema.prefault({}),
 }).strict().superRefine((config, context) => {
   /*
    * Per-user limits need somebody to apply to. An application that identifies

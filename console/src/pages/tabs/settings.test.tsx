@@ -16,7 +16,12 @@ const APP = {
 };
 
 /** Rendered through the page, so the tab is reached the way the sidebar reaches it. */
-function renderSettings(role: "owner" | "member", tab = "settings", apiBaseUrl?: string) {
+function renderSettings(
+  role: "owner" | "member",
+  tab = "settings",
+  apiBaseUrl?: string,
+  conversationStorage = true,
+) {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
     "/v1/admin/apps/my-app": { body: { app: APP } },
@@ -25,7 +30,7 @@ function renderSettings(role: "owner" | "member", tab = "settings", apiBaseUrl?:
     <Routes>
       <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
     </Routes>,
-    { session: { role }, route: `/apps/my-app/${tab}`, capabilities: { apiBaseUrl } },
+    { session: { role }, route: `/apps/my-app/${tab}`, capabilities: { apiBaseUrl, conversationStorage } },
   );
 }
 
@@ -68,6 +73,37 @@ describe("SettingsTab", () => {
     await waitFor(() =>
       expect(baseUrl()).toBe("https://api.example.com/v1/apps/my-app/proxy/{provider}/{provider_path}"));
     expect(baseUrl()).not.toContain(window.location.origin);
+  });
+
+  it("turns conversation storage on through the draft, with its retention", async () => {
+    renderSettings("owner");
+
+    const toggle = await screen.findByRole("switch", { name: /conversation history/i });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByLabelText(/keep for/i)).toBeNull();
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("switch", { name: /conversation history/i }).getAttribute("aria-checked"))
+      .toBe("true");
+    expect(screen.getByLabelText(/keep for/i)).toHaveProperty("value", "180");
+    expect(await screen.findByText(/unsaved changes to/i)).toBeTruthy();
+
+    // Every kind of media is kept until one is switched off.
+    for (const kind of [/^images$/i, /^audio$/i, /^other files$/i]) {
+      expect(screen.getByRole("switch", { name: kind }).getAttribute("aria-checked")).toBe("true");
+    }
+    await userEvent.click(screen.getByRole("switch", { name: /^audio$/i }));
+    expect(screen.getByRole("switch", { name: /^audio$/i }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("switch", { name: /^images$/i }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("links to the setup guide where the deployment has no conversation storage", async () => {
+    renderSettings("owner", "settings", undefined, false);
+
+    const toggle = await screen.findByRole("switch", { name: /conversation history/i });
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(screen.getByRole("link", { name: /set up conversation storage/i }).getAttribute("href"))
+      .toBe("https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage");
   });
 
   it("turns the app off through the draft, to be saved with everything else", async () => {

@@ -6,6 +6,8 @@ export interface RequestOptions {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Answer a success with its raw bytes rather than parsed JSON; a refusal is still JSON. */
+  binary?: true;
 }
 
 export interface WireResponse {
@@ -105,7 +107,7 @@ export class Transport {
   async request(
     url: string,
     path: string,
-    { key, method = "GET", body, headers = {} }: RequestOptions = {},
+    { key, method = "GET", body, headers = {}, binary }: RequestOptions = {},
   ): Promise<WireResponse> {
     const base = origin(url);
     if (!path.startsWith("/") || path.startsWith("//"))
@@ -117,7 +119,7 @@ export class Transport {
         redirect: "manual",
         signal: AbortSignal.timeout(30000),
         headers: {
-          accept: "application/json",
+          accept: binary ? "*/*" : "application/json",
           "user-agent": `agw/${VERSION}`,
           ...(body ? { "content-type": "application/json" } : {}),
           ...(key ? { authorization: `Bearer ${key}` } : {}),
@@ -140,6 +142,7 @@ export class Transport {
         "Connect explicitly to the intended deployment.",
         3,
       );
+    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()) };
     let data: unknown;
     try {
       data = await response.json();

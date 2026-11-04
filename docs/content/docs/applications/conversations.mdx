@@ -1,0 +1,104 @@
+---
+title: Conversation history
+description: Keep a copy of what an app's users send and what the model answers, so you can see how your AI feature is really used and improve it. Off by default, kept for as long as you choose, with the media you choose.
+---
+
+Usage shows what an app's requests cost. It cannot show whether the model
+understood the person: for that you need what was said and what came back.
+With **Conversation history** on, the gateway keeps a copy of every request an
+app sends and the response it got, and you can download them to review,
+analyse, or turn into test cases.
+
+It is off for every app until you turn it on.
+
+## What is kept
+
+- **Text and JSON**, as the provider received it and as it answered: messages,
+  instructions, tool definitions, tool calls and their results, errors.
+- **Attachments**, once each per day, beside the conversations: images, audio
+  (a recording sent for transcription, audio inside a request, a spoken reply)
+  and other files, such as a PDF or a plain-text document. A record names each as
+  `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` where its data was. A spoken
+  reply streamed in pieces keeps its pieces in the record as they came.
+
+Each kind of attachment can be left out: `keep.images`, `keep.audio` and
+`keep.files`, all on unless you turn one off. Media left out is recorded as
+`agw-omitted:<type>;<bytes>`, its media type and size; the type is just `audio`
+for audio whose format the body does not say. An uploaded file keeps its
+name. The conversation itself, its messages, instructions and tool calls, is
+always kept.
+
+Anything over 8 MB, or a single string over 256 KB, is recorded by its size
+instead.
+
+Each record also carries the request's `event_id` (the same as its usage
+event), the time, the user id, the install, the app version, the route, the
+model, the status and the latency.
+
+## Turn it on
+
+In the app's **Settings**, switch on **Conversation history**, choose which
+media to keep and how many days to keep everything, 180 unless you change it,
+at most 400. Save. Requests sent from then on are stored; nothing earlier is.
+
+Through the API, it is the `conversations` block of the app's configuration:
+
+```json
+"conversations": {
+  "store": true,
+  "retention_days": 180,
+  "keep": { "images": true, "audio": false, "files": true }
+}
+```
+
+Storing conversations means keeping what your users wrote. Say so in your
+app's privacy policy, and in its App Store privacy details.
+
+## Group requests and let users opt out
+
+Two request headers, both optional, both consumed by the gateway and never
+sent to the provider:
+
+| Header | Meaning |
+| --- | --- |
+| `X-Client-Trace-Id` | Your own id for one unit of work, such as one chat message that took several model rounds. Recorded on the usage event and on the stored conversation, so you can group them and join them with your app's own data. 1-128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`. |
+| `X-Conversation-Storage: off` | Leaves this request out of storage, for a user who opted out. |
+
+Any other value of either answers `400 invalid_request`.
+
+The **Usage** API filters by trace id: `GET /v1/admin/apps/{app}/events?trace=<id>`.
+
+## Download them
+
+Conversations are stored in batches: gzipped [JSON Lines](https://jsonlines.org)
+files, one record per line, written every few minutes under the UTC day they
+started on.
+
+With the CLI:
+
+```sh
+agw app conversations my-app --from 2026-08-01 --to 2026-10-31 --output ./conversations --media
+```
+
+It writes `./conversations/<day>/<batch>.jsonl.gz`, and with `--media` the
+media the records name, under `./conversations/<day>/media/`. Run it again to fetch
+only what is new.
+
+Through the API:
+
+- `GET /v1/admin/apps/{app}/conversations?from=YYYY-MM-DD&to=YYYY-MM-DD` lists
+  the batches, a page at a time; pass `next_cursor` back as `cursor`.
+- `GET /v1/admin/apps/{app}/conversations/file?name=<name>` downloads one batch,
+  or an image by the name a record gives it.
+
+Both need an admin of the account.
+
+## How long they are kept
+
+Nightly maintenance deletes every stored day older than the app's retention,
+with its images. Deleting the app deletes its stored
+conversations the night after.
+
+A request can be missing in rare cases, such as one served while the gateway is
+being redeployed. Storage is a record for review, not part of serving or
+billing the request.

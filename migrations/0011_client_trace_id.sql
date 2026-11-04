@@ -1,0 +1,2 @@
+ALTER TABLE `app_usage_event` ADD `client_trace_id` text;--> statement-breakpoint
+CREATE INDEX `idx_usage_trace` ON `app_usage_event` (`app_id`,`client_trace_id`) WHERE "app_usage_event"."client_trace_id" IS NOT NULL;
