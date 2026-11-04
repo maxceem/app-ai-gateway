@@ -89,12 +89,13 @@ describe("SettingsTab", () => {
     expect(await screen.findByText(/unsaved changes to/i)).toBeTruthy();
   });
 
-  it("explains why conversation storage is off where the deployment has none", async () => {
+  it("links to the setup guide where the deployment has no conversation storage", async () => {
     renderSettings("owner", "settings", undefined, false);
 
     const toggle = await screen.findByRole("switch", { name: /store conversations/i });
     expect(toggle).toHaveProperty("disabled", true);
-    expect(screen.getByText(/bind an r2 bucket as conversations/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /set up conversation storage/i }).getAttribute("href"))
+      .toBe("https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage");
   });
 
   it("turns the app off through the draft, to be saved with everything else", async () => {

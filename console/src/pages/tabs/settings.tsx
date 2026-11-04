@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ExternalHint } from "@/components/external-hint";
 import { Field, SectionHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import type { AppDraft } from "@/hooks/use-app-draft";
@@ -16,6 +17,9 @@ import { authIssuer } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
 import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
+
+const CONVERSATION_STORAGE_SETUP_URL =
+  "https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage";
 
 /**
  * The app as a record: what it is called, its id and the URL clients reach it
@@ -202,9 +206,14 @@ function ConversationStorage({
           <div className="space-y-1">
             <p className="text-sm font-medium">Store conversations</p>
             <p className="text-xs text-muted-foreground">
-              {available
-                ? "Keeps a copy of every request and response this app sends, so you can review and improve how it behaves. Images are kept; audio never is. A client can leave a request out with the X-Conversation-Storage: off header. Tell your users in your privacy policy."
-                : "This deployment has no storage for conversations. Bind an R2 bucket as CONVERSATIONS to turn this on."}
+              {available ? (
+                "Keeps a copy of every request and response this app sends, so you can review and improve how it behaves. Images are kept; audio never is. A client can leave a request out with the X-Conversation-Storage: off header. Tell your users in your privacy policy."
+              ) : (
+                <>
+                  Not set up on this deployment.{" "}
+                  <ExternalHint href={CONVERSATION_STORAGE_SETUP_URL}>Set up conversation storage</ExternalHint>
+                </>
+              )}
             </p>
           </div>
           <Switch

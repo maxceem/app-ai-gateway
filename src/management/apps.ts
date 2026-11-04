@@ -138,7 +138,7 @@ function validatedConfig(
     throw new GatewayError(
       400,
       "invalid_request",
-      "conversations.store needs conversation storage, which this deployment does not have: bind an R2 bucket as CONVERSATIONS",
+      "conversations.store needs conversation storage, which is not set up on this deployment: see https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage",
     );
   }
   try {
