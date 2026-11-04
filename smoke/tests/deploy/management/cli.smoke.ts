@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
 import { need } from "../../../src/env.ts";
@@ -11,6 +11,8 @@ import { env } from "../../support.ts";
 
 const run = promisify(execFile);
 const SMOKE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+/** Names the smoke checks after the CLI's own `user-agent`, whichever version runs. */
+const CLI_AGENT = pathToFileURL(resolve(SMOKE_ROOT, "src/cli-agent.ts")).href;
 
 /**
  * Where the CLI connects. The CLI accepts only HTTPS, or plain HTTP on a
@@ -63,7 +65,7 @@ for (const version of versions) {
     const cli = cliFor(version);
     const agw = async (...args: string[]) => {
       try {
-        const { stdout } = await run(process.execPath, [await cli, ...args], {
+        const { stdout } = await run(process.execPath, ["--import", CLI_AGENT, await cli, ...args], {
           timeout: 60_000,
           env: {
             PATH: process.env.PATH,

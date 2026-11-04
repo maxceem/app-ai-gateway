@@ -442,7 +442,10 @@ called, such as `agw`, `curl` or `claude-code` (`other` for any client not on
 the gateway's list), the client's version, how long the call took, and
 Cloudflare's request id. It never carries an error message, a request value, a
 credential or an email address, and a client's name is never copied as sent.
-Calls your apps make through the gateway are not recorded.
+Calls your apps make through the gateway are not recorded. The repository's
+[smoke checks](https://github.com/maxceem/app-ai-gateway/tree/main/smoke) name
+themselves `agw-smoke`, so their calls are recorded with the client `smoke`, on
+whichever channel they use: leave that client out to see only real use.
 
 A call refused before sign-in still names the operation it asked for, and its
 reason says why: `credential_missing` (nothing sent), `credential_malformed`

@@ -118,11 +118,25 @@ pnpm smoke -- --project monitor
 `setup` keeps the app ids and app keys it creates in `smoke/.state/`
 (gitignored, owner-only), one file per gateway.
 
+### Telling them apart from real use
+
+Every call the checks make names them: their own requests send the
+`user-agent` `agw-smoke/<release>`, their MCP client declares the name
+`agw-smoke`, and the CLI they run sends `agw-smoke/<release>` after its own
+`agw/<version>`. A deployment that records management analytics labels all of
+these with the client `smoke`, so filter that client out to see what real
+accounts do.
+
+Keep it that way when adding a check: send gateway requests through `call` or
+`admin` in `src/gateway.ts`, rather than calling `fetch` directly.
+
 ## Layout
 
 ```
 src/
   env.ts          configuration and the state file
+  client.ts       the name every call of the checks gives itself
+  cli-agent.ts    preloaded into the CLI under test, to add that name to its calls
   gateway.ts      HTTP helpers; failures name status and error code, never bodies
   fixtures.ts     what the test account holds
   setup.ts        brings the test account in line with fixtures.ts

@@ -41,7 +41,7 @@ import { ACCOUNT_ID_MAX_LENGTH } from "../policy/deployment";
  * How the call reached the gateway: the console, the management API, the CLI,
  * or the MCP endpoint. Decided by the gateway from the surface and the
  * credential, except that `cli` is the API called by a client naming itself
- * `agw`, which only the CLI does.
+ * `agw` first, which only the CLI does.
  */
 export type ManagementChannel = "console" | "api" | "cli" | "mcp";
 
@@ -89,6 +89,15 @@ export interface ManagementCall {
 /** What a call's ending contributes to its data point. */
 export type CallEnding = Pick<ManagementCall, "outcome" | "status" | "code" | "reason" | "field" | "issue">;
 
+/**
+ * The name the smoke checks in `smoke/` give themselves: the first product of
+ * their own requests' `user-agent`, their MCP client's declared name, and a
+ * product added after the CLI's own when they run the CLI. Wherever it
+ * appears, the call is labelled `smoke`, so a deployment's own checks can be
+ * told apart from its accounts' use.
+ */
+export const SMOKE_CLIENT = "agw-smoke";
+
 /** One bounded token: what a client name, an operation, a code or a kind is made of. */
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 /**
@@ -114,6 +123,8 @@ export const KNOWN_CLIENTS: Readonly<Record<string, string>> = {
   // The CLI, and the console's own browser.
   agw: "agw",
   mozilla: "browser",
+  // This repository's smoke checks, a deployment's own monitoring (`smoke/`).
+  [SMOKE_CLIENT]: "smoke",
   // HTTP tools and runtimes an agent or a script calls the API with.
   curl: "curl",
   wget: "wget",
@@ -239,9 +250,20 @@ export function knownClient(name: string | undefined): string | null {
   return Object.hasOwn(KNOWN_CLIENTS, normalized) ? KNOWN_CLIENTS[normalized]! : "other";
 }
 
-/** The client a `user-agent` names by its first product token, as {@link knownClient} labels it. */
+/**
+ * The client a `user-agent` names by its first product token, as
+ * {@link knownClient} labels it — or `smoke` where any of its products is
+ * {@link SMOKE_CLIENT}, as the CLI's is when the smoke checks run it.
+ */
 export function clientOf(userAgent: string | undefined): string | null {
-  return knownClient(userAgent?.trim().split(/[\s/]/u, 1)[0]);
+  const products = userAgent?.trim().split(/\s+/u) ?? [];
+  if (products.some((product) => product.split("/", 1)[0]!.toLowerCase() === SMOKE_CLIENT)) return "smoke";
+  return knownClient(products[0]?.split("/", 1)[0]);
+}
+
+/** Whether a `user-agent` is the CLI's: `agw` first, whatever product follows it. */
+export function isCliAgent(userAgent: string | undefined): boolean {
+  return knownClient(userAgent?.trim().split(/[\s/]/u, 1)[0]) === "agw";
 }
 
 /** The numeric part of a version, `1.4.0` from `1.4.0-beta.2`, or null where the value is not one. */
@@ -249,9 +271,12 @@ export function versionOf(value: string | undefined): string | null {
   return VERSION.exec(value ?? "")?.[1] ?? null;
 }
 
-/** The CLI's version, from its `user-agent`, `agw/<version>`, or null for any other client. */
+/**
+ * The CLI's version, from its `user-agent`, `agw/<version>` and whatever
+ * product follows it, or null for any other client.
+ */
 export function cliVersionOf(userAgent: string | undefined): string | null {
-  const [name, version, ...rest] = userAgent?.trim().split("/") ?? [];
+  const [name, version, ...rest] = userAgent?.trim().split(/\s+/u, 1)[0]?.split("/") ?? [];
   return name === "agw" && rest.length === 0 ? versionOf(version) : null;
 }
 

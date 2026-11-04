@@ -1,16 +1,19 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, expect, test } from "vitest";
+import { SMOKE_CLIENT, SMOKE_VERSION, USER_AGENT } from "../../../src/client.ts";
 import { need } from "../../../src/env.ts";
 import { APP_NAMES } from "../../../src/fixtures.ts";
 import { env } from "../../support.ts";
 
 // A real MCP client, connected the way an agent connects with a management key,
 // at the console's origin, where a deployment with a console host of its own serves it.
-const client = new Client({ name: "app-ai-gateway-smoke", version: "1.0.0" });
+const client = new Client({ name: SMOKE_CLIENT, version: SMOKE_VERSION });
 
 beforeAll(async () => {
   const transport = new StreamableHTTPClientTransport(new URL("/mcp", env.consoleUrl), {
-    requestInit: { headers: { authorization: `Bearer ${need(env, "managementKey", "SMOKE_MANAGEMENT_KEY")}` } },
+    requestInit: {
+      headers: { authorization: `Bearer ${need(env, "managementKey", "SMOKE_MANAGEMENT_KEY")}`, "user-agent": USER_AGENT },
+    },
   });
   await client.connect(transport);
 });

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { fail, isMain, option, writeEnvFile } from "./cli.ts";
+import { USER_AGENT } from "./client.ts";
 import { smokeEnv } from "./env.ts";
 import { gatewayError, GatewayFailure } from "./gateway.ts";
 
@@ -20,7 +21,7 @@ async function account(email: string, envFile: string): Promise<void> {
   const env = smokeEnv();
   const saved = process.env.SMOKE_ACCOUNT_PASSWORD?.trim();
   const password = saved || randomBytes(18).toString("base64url");
-  const headers = { "content-type": "application/json", origin: env.consoleUrl };
+  const headers = { "content-type": "application/json", origin: env.consoleUrl, "user-agent": USER_AGENT };
 
   let session = await fetch(`${env.consoleUrl}/v1/auth/sign-up/email`, {
     method: "POST",

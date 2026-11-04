@@ -150,6 +150,17 @@ describe("management analytics", () => {
     expect(points).toEqual([expect.objectContaining({ channel: "cli", client: "agw", clientVersion: "1.4.0" })]);
   });
 
+  it("labels the smoke checks as smoke, and still tells the CLI apart when they run it", async () => {
+    const { points, send } = recording();
+    const owner = await account("analytics-smoke@example.test");
+    await send("/v1/admin/apps", { headers: { ...key(owner.key), "user-agent": "agw-smoke/0.13.0" } });
+    await send("/v1/admin/apps", { headers: { ...key(owner.key), "user-agent": "agw/1.4.0 agw-smoke/0.13.0" } });
+    expect(points).toEqual([
+      expect.objectContaining({ channel: "api", client: "smoke", clientVersion: null }),
+      expect.objectContaining({ channel: "cli", client: "smoke", clientVersion: "1.4.0" }),
+    ]);
+  });
+
   it("records the console from a person's session", async () => {
     const { points, send } = recording();
     const human = await seedHuman("analytics-console@example.test");
@@ -447,6 +458,12 @@ describe("management analytics", () => {
     expect(cliVersionOf("agw/1.0-sk.secret123")).toBe("1.0");
     expect(cliVersionOf("agw/latest")).toBeNull();
     expect(cliVersionOf("curl/8.7.1")).toBeNull();
+    // The smoke checks, by their own name or after the CLI's.
+    expect(clientOf("agw-smoke/0.13.0")).toBe("smoke");
+    expect(clientOf("agw/1.4.0 agw-smoke/0.13.0")).toBe("smoke");
+    expect(knownClient("agw-smoke")).toBe("smoke");
+    expect(cliVersionOf("agw/1.4.0 agw-smoke/0.13.0")).toBe("1.4.0");
+    expect(cliVersionOf("agw-smoke/0.13.0")).toBeNull();
     expect(versionOf("1.0+jane.smith")).toBe("1.0");
     expect(versionOf("sk-example-secret")).toBeNull();
   });
