@@ -84,8 +84,9 @@ export const SOURCES = {
   },
   gemini: {
     official: {
-      url: "https://ai.google.dev/gemini-api/docs/pricing.md.txt",
-      type: MARKDOWN,
+      // Google serves its Markdoc source as plain text.
+      url: "https://aistudio.google.com/docs/pricing.md",
+      type: "text/plain",
       parse: parseGemini,
       // Deprecated models Google serves with their replacement. The pricing
       // page drops them; the deprecation table still lists them by their own id.
@@ -95,8 +96,8 @@ export const SOURCES = {
       },
     },
     deprecations: {
-      url: "https://ai.google.dev/gemini-api/docs/deprecations.md.txt",
-      type: MARKDOWN,
+      url: "https://aistudio.google.com/docs/deprecations.md",
+      type: "text/plain",
       parse: parseGeminiDeprecations,
     },
     modelsDev: "google",

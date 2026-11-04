@@ -1,18 +1,18 @@
-// https://ai.google.dev/gemini-api/docs/deprecations.md.txt
+// https://aistudio.google.com/docs/deprecations.md (Markdoc, served as text/plain)
 //
-// One table per model family, with a shutdown date or "No shutdown date
-// announced" for every model, or "N/A" for one whose endpoint is not shutting
-// down but routes to its replacement. Google calls these dates the earliest a
+// One `{% table %}` per model family and stage, with a shutdown date or "No
+// shutdown date announced" for every model, or "N/A" for one whose endpoint is
+// not shutting down but routes to its replacement. Google calls these dates the earliest a
 // model may be shut down, so a date here can move later, never earlier.
 
-import { ParseError, findTables, parseDate, put } from "../price.mjs";
+import { ParseError, findMarkdocTables, parseDate, put } from "../price.mjs";
 
-const HEADER = ["**Model**", "**Release date**", "**Shutdown date**", "**Recommended replacement**"];
+const HEADER = ["Model", "Release date", "Shutdown date", "Recommended replacement"];
 const MODEL = /^`([^`]+)`$/u;
 const NO_DATE = new Set(["No shutdown date announced", "N/A"]);
 
 export function parseGeminiDeprecations(text, { wanted }) {
-  const tables = findTables(text.split("\n"), "deprecations").filter((table) =>
+  const tables = findMarkdocTables(text.split("\n"), "deprecations").filter((table) =>
     table.header.every((cell, index) => cell === HEADER[index]) && table.header.length === HEADER.length,
   );
   if (tables.length === 0) throw new ParseError("no model tables");

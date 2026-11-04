@@ -1,15 +1,17 @@
-// https://ai.google.dev/gemini-api/docs/pricing.md.txt
+// https://aistudio.google.com/docs/pricing.md (Markdoc, served as text/plain)
 //
-// One "## " section per model family: a line of model ids in backticks, then
-// "### Standard" and a three-column table of which only "Paid Tier" is read.
-// A paid cell is one of a handful of exact shapes:
+// One "## " section per model family: a line of model ids in backticks, which
+// may wrap and sit inside layout tags, then a `{% tab title="Standard" %}` that
+// holds one three-column `{% table %}` of which only "Paid Tier" is read. A
+// paid cell's lines are joined with spaces, and the result is one of a handful
+// of exact shapes:
 //
 //   $1.50
 //   $0.45 ($0.00012 per image)                          the per-unit figure is dropped
 //   $0.30 (text / image / video) $1.00 (audio)          the text price is read
 //   $12.00 (text and thinking) $120.00 (images)         and an image-only price
 //   $20.00 (audio)                                      one price for everything
-//   $2.00, prompts \<= 200k tokens $4.00, prompts \> 200k tokens
+//   $2.00, prompts <= 200k tokens $4.00, prompts > 200k tokens
 //   $0.75 through December 31, 2026. $1.50 starting January 1, 2027.
 //   $0.50 (text) through December 31, 2026. $1.00 (text) starting January 1, 2027.
 //
@@ -26,9 +28,14 @@
 // modality instead; those become `input` and `image_input`, `audio_input` and
 // `video_input`, with `output` 0.
 
-import { ParseError, decimal, parseDate, put, readTable } from "../price.mjs";
+import { ParseError, decimal, parseDate, put, readMarkdocTable } from "../price.mjs";
 
-const HEADER = ["", "Free Tier", "Paid Tier, per 1M tokens in USD"];
+const HEADER = ["Feature", "Free Tier", "Paid Tier, per 1M tokens in USD"];
+const STANDARD_TAB = '{% tab title="Standard" %}';
+const TAB_END = "{% /tab %}";
+const TABLE = "{% table %}";
+// A line that is nothing but a Markdoc tag, such as a layout column or `{% hr /%}`.
+const TAG_LINE = /^\{%[^%]*%\}$/u;
 const ROWS = {
   "Input price": "input",
   "Input price (text, image, video)": "input",
@@ -73,7 +80,7 @@ const DATED = new RegExp(
   "u",
 );
 const LONG = new RegExp(
-  String.raw`^${MONEY}, prompts \\<= (\d+)k tokens ${MONEY}, prompts \\> (\d+)k(?: tokens)?$`,
+  String.raw`^${MONEY}, prompts <= (\d+)k tokens ${MONEY}, prompts > (\d+)k(?: tokens)?$`,
   "u",
 );
 
@@ -146,14 +153,26 @@ function withoutStorage(text, where) {
 }
 
 function readSection(lines, where, today) {
-  const standard = lines.findIndex((line) => line.trim() === "### Standard");
-  if (standard === -1) throw new ParseError(`${where}: no "### Standard" table`);
-  if (lines.slice(standard + 1).some((line) => line.trim() === "### Standard")) {
-    throw new ParseError(`${where}: "### Standard" appears more than once`);
+  const standard = lines.findIndex((line) => line.trim() === STANDARD_TAB);
+  if (standard === -1) throw new ParseError(`${where}: no "Standard" tab`);
+  if (lines.slice(standard + 1).some((line) => line.trim() === STANDARD_TAB)) {
+    throw new ParseError(`${where}: the "Standard" tab appears more than once`);
+  }
+  const tabEnd = lines.findIndex((line, index) => index > standard && line.trim() === TAB_END);
+  if (tabEnd === -1) throw new ParseError(`${where}: the "Standard" tab is not closed`);
+  const tables = lines
+    .slice(standard + 1, tabEnd)
+    .flatMap((line, offset) => (line.trim() === TABLE ? [standard + 1 + offset] : []));
+  if (tables.length !== 1) throw new ParseError(`${where}: the "Standard" tab holds ${tables.length} tables, not one`);
+  const table = readMarkdocTable(lines, tables[0], where);
+  if (table.header.length !== HEADER.length || table.header.some((cell, i) => cell !== HEADER[i])) {
+    throw new ParseError(
+      `${where}: the table header changed, expected "${HEADER.join(" | ")}", found "${table.header.join(" | ")}"`,
+    );
   }
   const cells = {};
   let embedding = false;
-  for (const row of readTable(lines, standard + 1, HEADER, where)) {
+  for (const row of table.rows) {
     if (row[0] === "Text input price") embedding = true;
     const field = ROWS[row[0]];
     if (field === undefined) continue;
@@ -197,6 +216,23 @@ function readSection(lines, where, today) {
   return price;
 }
 
+/**
+ * The section's first line of text past its heading and layout tags; one that
+ * opens a list of model ids runs on to the line that closes it with `*`.
+ */
+function readIdsLine(section) {
+  const first = section.findIndex((line, index) => index > 0 && line.trim() !== "" && !TAG_LINE.test(line.trim()));
+  if (first === -1) return "";
+  const parts = [section[first].trim()];
+  if (!parts[0].startsWith("*[`")) return parts[0];
+  for (let index = first + 1; !parts.at(-1).endsWith("*") && index < section.length; index += 1) {
+    const line = section[index].trim();
+    if (line === "") break;
+    parts.push(line);
+  }
+  return parts.join(" ");
+}
+
 export function parseGemini(text, { wanted, today }) {
   const lines = text.split("\n");
   const prices = new Map();
@@ -205,7 +241,7 @@ export function parseGemini(text, { wanted, today }) {
 
   for (const [position, start] of starts.entries()) {
     const section = lines.slice(start, starts[position + 1] ?? lines.length);
-    const idsLine = section.slice(1).find((line) => line.trim() !== "")?.trim() ?? "";
+    const idsLine = readIdsLine(section);
     // A section that does not open with its model ids is not a model section
     // (tools, grounding, notes), and nothing in it is read.
     if (!idsLine.startsWith("*[`")) continue;
