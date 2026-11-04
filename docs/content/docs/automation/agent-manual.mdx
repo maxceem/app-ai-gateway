@@ -473,8 +473,9 @@ Optional; omitted means off.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `store` | boolean, default `false` | Keep a copy of every request and response the app sends. Audio is never kept; images are kept beside the records. Refused with `400 invalid_request` on a deployment without conversation storage. Turn it on only when the person asks, and remind them to disclose it in their privacy policy |
+| `store` | boolean, default `false` | Keep a copy of every request and response the app sends, with the media `keep` allows. Refused with `400 invalid_request` on a deployment without conversation storage. Turn it on only when the person asks, and remind them to disclose it in their privacy policy |
 | `retention_days` | integer 1-400, default `180` | Days stored conversations are kept before nightly maintenance deletes them |
+| `keep` | object of `images`, `audio`, `files`, each boolean, default `true` | Which media is kept beside the records; media left out is recorded by its type and size. Text is always kept |
 
 Clients may send `X-Client-Trace-Id` to group the requests of one unit of work
 and `X-Conversation-Storage: off` to keep a request out of storage. Download

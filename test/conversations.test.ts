@@ -39,6 +39,7 @@ function capture(overrides: Partial<ConversationCapture> = {}): ConversationCapt
     status: "ok",
     httpStatus: 200,
     latencyMs: 12,
+    keep: { images: true, audio: true, files: true },
     request: { contentType: "application/json", bytes: encoder.encode('{"input":"hi"}'), totalBytes: 14 },
     response: {
       contentType: "application/json",
@@ -70,7 +71,7 @@ async function enableStorage(appId: string, retentionDays = 180): Promise<void> 
   const row = await database(env.DB).select().from(appTable).where(eq(appTable.id, appId)).get();
   await database(env.DB)
     .update(appTable)
-    .set({ config: { ...row!.config, conversations: { store: true, retention_days: retentionDays } } })
+    .set({ config: { ...row!.config, conversations: { store: true, retention_days: retentionDays, keep: { images: true, audio: true, files: true } } } })
     .where(eq(appTable.id, appId));
   clearIsolateCaches();
 }
@@ -112,48 +113,85 @@ function responsesRequest(appId: string, key: string, headers: Record<string, st
 }
 
 describe("conversation records", () => {
-  it("keeps text and images, and never a recording", async () => {
+  it("keeps every kind of media beside the record, once each", async () => {
     const body = JSON.stringify({
       input: [
         { type: "input_text", text: "lunch" },
         { type: "input_image", image_url: `data:image/png;base64,${PIXEL}` },
         { type: "input_image", image_url: `data:image/png;base64,${PIXEL}` },
         { type: "input_audio", input_audio: { data: "UklGRiQAAABXQVZF", format: "wav" } },
+        { type: "input_file", file_data: "data:application/pdf;base64,JVBERi0xLjQ=" },
       ],
+      contents: [{ parts: [{ inlineData: { mimeType: "audio/ogg", data: "T2dnUwACAAAA" } }] }],
     });
-    const { line, images } = await conversationRecord(capture({
+    const { line, media } = await conversationRecord(capture({
       request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
     }));
-    const record = JSON.parse(line) as { request: { kind: string; value: { input: Record<string, unknown>[] } } };
+    const record = JSON.parse(line) as {
+      request: { kind: string; value: { input: Record<string, unknown>[]; contents: { parts: { inlineData: { data: string } }[] }[] } };
+    };
     expect(record.request.kind).toBe("json");
-    expect(images).toHaveLength(1);
-    expect(images[0]!.name).toMatch(/^\d{4}-\d{2}-\d{2}\/images\/[0-9a-f]{64}\.png$/);
+    expect(media.map((item) => item.name.replace(/[0-9a-f]{64}/, "<sha>"))).toEqual([
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}\/media\/<sha>\.png$/),
+      expect.stringMatching(/\/media\/<sha>\.wav$/),
+      expect.stringMatching(/\/media\/<sha>\.pdf$/),
+      expect.stringMatching(/\/media\/<sha>\.ogg$/),
+    ]);
     const input = record.request.value.input;
     expect(input[0]).toEqual({ type: "input_text", text: "lunch" });
-    expect(input[1]!.image_url).toBe(`agw-image:${images[0]!.name}`);
-    expect(input[2]!.image_url).toBe(`agw-image:${images[0]!.name}`);
-    expect((input[3]!.input_audio as { data: string }).data).toMatch(/^agw-omitted:audio;\d+$/);
+    expect(input[1]!.image_url).toBe(`agw-media:${media[0]!.name}`);
+    expect(input[2]!.image_url).toBe(`agw-media:${media[0]!.name}`);
+    expect((input[3]!.input_audio as { data: string }).data).toBe(`agw-media:${media[1]!.name}`);
+    expect(input[4]!.file_data).toBe(`agw-media:${media[2]!.name}`);
+    expect(record.request.value.contents[0]!.parts[0]!.inlineData.data).toBe(`agw-media:${media[3]!.name}`);
   });
 
-  it("keeps a transcription's fields and drops its audio", async () => {
+  it("records the kinds of media an app leaves out by their type and size", async () => {
+    const body = JSON.stringify({
+      input: [
+        { type: "input_image", image_url: `data:image/png;base64,${PIXEL}` },
+        { type: "input_audio", input_audio: { data: "UklGRiQAAABXQVZF", format: "wav" } },
+      ],
+      contents: [{ parts: [{ inlineData: { mimeType: "audio/wav", data: "UklGRiQAAABXQVZF" } }] }],
+    });
+    const { line, media } = await conversationRecord(capture({
+      keep: { images: true, audio: false, files: true },
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }));
+    expect(media).toHaveLength(1);
+    expect(line).not.toContain("UklGRiQAAABXQVZF");
+    expect(line).toContain("agw-omitted:audio/wav;12");
+  });
+
+  it("keeps a transcription's fields and its recording, or the recording's size alone", async () => {
     const form = new FormData();
     form.set("file", new File([new Uint8Array(64)], "voice.wav", { type: "audio/wav" }));
     form.set("language", "en");
     const request = new Request("https://example.test", { method: "POST", body: form });
     const bytes = new Uint8Array(await request.arrayBuffer());
-    const { line, images } = await conversationRecord(capture({
+    const transcription = (keep: { images: boolean; audio: boolean; files: boolean }) => conversationRecord(capture({
+      keep,
       request: { contentType: request.headers.get("content-type")!, bytes, totalBytes: bytes.byteLength },
       response: { contentType: "application/json", bytes: encoder.encode('{"text":"two eggs"}'), totalBytes: 19, aborted: false },
     }));
-    const record = JSON.parse(line) as {
+
+    const kept = await transcription({ images: true, audio: true, files: true });
+    const record = JSON.parse(kept.line) as {
       request: { kind: string; fields: Record<string, unknown> };
       response: { value: { text: string } };
     };
-    expect(images).toHaveLength(0);
+    expect(kept.media).toHaveLength(1);
     expect(record.request.kind).toBe("form");
     expect(record.request.fields.language).toBe("en");
-    expect(record.request.fields.file).toEqual({ file: "voice.wav", type: "audio/wav", bytes: 64, omitted: "audio" });
+    expect(record.request.fields.file).toEqual({
+      file: "voice.wav", type: "audio/wav", bytes: 64, content: `agw-media:${kept.media[0]!.name}`,
+    });
     expect(record.response.value.text).toBe("two eggs");
+
+    const left = await transcription({ images: true, audio: false, files: true });
+    expect(left.media).toHaveLength(0);
+    expect((JSON.parse(left.line) as { request: { fields: { file: { content: string } } } }).request.fields.file.content)
+      .toBe("agw-omitted:audio/wav;64");
   });
 
   it("records a body it could not capture by its size", async () => {
@@ -168,7 +206,7 @@ describe("conversation records", () => {
     });
   });
 
-  it("drops the audio of a streamed answer and keeps its transcript", async () => {
+  it("keeps a streamed answer's pieces of audio as they came, or their size alone", async () => {
     const stream = [
       `data: ${JSON.stringify({ type: "response.output_audio.delta", delta: "UklGRiQAAABXQVZF" })}`,
       "",
@@ -179,14 +217,35 @@ describe("conversation records", () => {
       "data: [DONE]",
       "",
     ].join("\n");
-    const { line } = await conversationRecord(capture({
-      response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false },
+    const streamed = async (audio: boolean) => {
+      const { line, media } = await conversationRecord(capture({
+        keep: { images: true, audio, files: true },
+        response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false },
+      }));
+      expect(media).toHaveLength(0);
+      return (JSON.parse(line) as { response: { text: string } }).response.text;
+    };
+
+    const kept = await streamed(true);
+    expect(kept.match(/UklGRiQAAABXQVZF/g)).toHaveLength(2);
+    const left = await streamed(false);
+    expect(left).not.toContain("UklGRiQAAABXQVZF");
+    expect(left).toContain("agw-omitted:audio;");
+    for (const text of [kept, left]) {
+      expect(text).toContain("Two eggs");
+      expect(text).toContain("data: [DONE]");
+    }
+  });
+
+  it("keeps a spoken reply as media", async () => {
+    const speech = new Uint8Array([1, 2, 3, 4]);
+    const { line, media } = await conversationRecord(capture({
+      response: { contentType: "audio/mpeg", bytes: speech, totalBytes: 4, aborted: false },
     }));
-    const text = (JSON.parse(line) as { response: { text: string } }).response.text;
-    expect(text).not.toContain("UklGRiQAAABXQVZF");
-    expect(text).toContain("agw-omitted:audio;");
-    expect(text).toContain("Two eggs");
-    expect(text).toContain("data: [DONE]");
+    expect(media[0]!.name).toMatch(/\/media\/[0-9a-f]{64}\.mp3$/);
+    expect(JSON.parse(line).response).toEqual({
+      kind: "media", content_type: "audio/mpeg", bytes: 4, content: `agw-media:${media[0]!.name}`,
+    });
   });
 
   it("keeps a record within the log's row size counted in bytes, not characters", async () => {
@@ -255,7 +314,7 @@ describe("conversation storage through the gateway", () => {
     });
     const image = ((record!.request as { value: { input: { content: { image_url?: string }[] }[] } })
       .value.input[0]!.content[1]!.image_url)!;
-    expect(image).toMatch(/^agw-image:\d{4}-\d{2}-\d{2}\/images\/[0-9a-f]{64}\.png$/);
+    expect(image).toMatch(/^agw-media:\d{4}-\d{2}-\d{2}\/media\/[0-9a-f]{64}\.png$/);
 
     // The usage event carries the same trace id and the same event id.
     const events = await served(
@@ -286,12 +345,13 @@ describe("conversation storage through the gateway", () => {
     expect(download.headers.get("content-type")).toBe("application/gzip");
     expect(JSON.parse((await gunzip(await download.arrayBuffer())).trim()).trace_id).toBe("message-42");
     const imageDownload = await app.fetch(
-      new Request(`https://example.test/v1/admin/apps/conversation-e2e/conversations/file?name=${encodeURIComponent(image.slice("agw-image:".length))}`, { headers: OPERATOR }),
+      new Request(`https://example.test/v1/admin/apps/conversation-e2e/conversations/file?name=${encodeURIComponent(image.slice("agw-media:".length))}`, { headers: OPERATOR }),
       env,
       createExecutionContext(),
     );
     expect(imageDownload.status).toBe(200);
     expect(imageDownload.headers.get("content-type")).toBe("image/png");
+    expect(imageDownload.headers.get("content-disposition")).toBe("attachment");
     await imageDownload.arrayBuffer();
     await waitOnExecutionContext(context);
 
@@ -364,8 +424,8 @@ describe("conversation retention", () => {
     const today = new Date().toISOString().slice(0, 10);
     await store.put("conversations/conversation-retained/2020-01-01/000000-aaaaaaaa.jsonl.gz", "old");
     await store.put(`conversations/conversation-retained/${today}/000000-bbbbbbbb.jsonl.gz`, "new");
-    await store.put(`conversations/conversation-retained/2020-01-01/images/${"c".repeat(64)}.png`, "old image");
-    await store.put(`conversations/conversation-retained/${today}/images/${"c".repeat(64)}.png`, "image");
+    await store.put(`conversations/conversation-retained/2020-01-01/media/${"c".repeat(64)}.png`, "old image");
+    await store.put(`conversations/conversation-retained/${today}/media/${"c".repeat(64)}.png`, "image");
     await store.put("conversations/conversation-deleted-app/2020-01-01/000000-dddddddd.jsonl.gz", "orphan");
 
     // Other tests in this file may have left batches of their own behind, so
@@ -374,8 +434,8 @@ describe("conversation retention", () => {
     expect(result.deletedObjects).toBeGreaterThanOrEqual(2);
     expect(result.removedApps).toBeGreaterThanOrEqual(1);
     const left = (await store.list({ prefix: "conversations/" })).objects.map((object) => object.key);
-    expect(left).toContain(`conversations/conversation-retained/${today}/images/${"c".repeat(64)}.png`);
-    expect(left).not.toContain(`conversations/conversation-retained/2020-01-01/images/${"c".repeat(64)}.png`);
+    expect(left).toContain(`conversations/conversation-retained/${today}/media/${"c".repeat(64)}.png`);
+    expect(left).not.toContain(`conversations/conversation-retained/2020-01-01/media/${"c".repeat(64)}.png`);
     expect(left).toContain(`conversations/conversation-retained/${today}/000000-bbbbbbbb.jsonl.gz`);
     expect(left).not.toContain("conversations/conversation-retained/2020-01-01/000000-aaaaaaaa.jsonl.gz");
     expect(left.some((key) => key.startsWith("conversations/conversation-deleted-app/"))).toBe(false);

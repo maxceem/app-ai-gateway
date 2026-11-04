@@ -16,13 +16,13 @@ export interface ConversationsExportResult {
   files: number;
   /** Of those, the ones this run downloaded; the rest were already there. */
   downloaded: number;
-  /** Images the batches name that this run downloaded, with --images. */
-  images: number;
+  /** Media the batches name that this run downloaded, with --media. */
+  media: number;
   bytes: number;
 }
 
-/** An image a record names in place of its data. */
-const IMAGE_REFERENCE = /agw-image:(\d{4}-\d{2}-\d{2}\/images\/[0-9a-f]{64}\.(?:jpg|png|gif|webp))/g;
+/** Media a record names in place of its data. */
+const MEDIA_REFERENCE = /agw-media:(\d{4}-\d{2}-\d{2}\/media\/[0-9a-f]{64}\.[a-z0-9]{1,5})/g;
 
 async function sizeOf(path: string): Promise<number | null> {
   try {
@@ -39,8 +39,8 @@ async function save(path: string, bytes: Uint8Array): Promise<void> {
 
 /**
  * Downloads an app's stored conversations into a folder, laid out the way the
- * deployment stores them: `<day>/<batch>.jsonl.gz`, and with --images,
- * `<day>/images/<sha256>.<ext>`. A file already there at its listed size is skipped,
+ * deployment stores them: `<day>/<batch>.jsonl.gz`, and with --media,
+ * `<day>/media/<sha256>.<ext>`. A file already there at its listed size is skipped,
  * so running the same export again fetches only what is new.
  */
 export async function conversationsCommand(
@@ -55,7 +55,7 @@ export async function conversationsCommand(
   await mkdir(output, { recursive: true });
 
   const result: ConversationsExportResult = {
-    app_id: appId, output, from, to, files: 0, downloaded: 0, images: 0, bytes: 0,
+    app_id: appId, output, from, to, files: 0, downloaded: 0, media: 0, bytes: 0,
   };
   const batches: string[] = [];
   let cursor: string | undefined;
@@ -80,11 +80,11 @@ export async function conversationsCommand(
     cursor = page.next_cursor ?? undefined;
   } while (cursor !== undefined);
 
-  if (flags.images) {
+  if (flags.media) {
     const names = new Set<string>();
     for (const path of batches) {
       const text = gunzipSync(await readFile(path)).toString("utf8");
-      for (const match of text.matchAll(IMAGE_REFERENCE)) names.add(match[1]!);
+      for (const match of text.matchAll(MEDIA_REFERENCE)) names.add(match[1]!);
     }
     for (const name of names) {
       const path = join(output, name);
@@ -94,7 +94,7 @@ export async function conversationsCommand(
         query: { name },
       });
       await save(path, bytes);
-      result.images += 1;
+      result.media += 1;
       result.bytes += bytes.byteLength;
     }
   }

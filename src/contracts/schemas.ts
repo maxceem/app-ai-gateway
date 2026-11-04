@@ -485,11 +485,24 @@ export const CONVERSATION_RETENTION_DAYS = { default: 180, min: 1, max: 400 } as
  * app's users send is theirs, and keeping it is a decision the operator makes
  * and discloses, never one the gateway makes for them.
  */
+const keptMedia = (field: string, what: string) =>
+  z.boolean({ error: `conversations.keep.${field} must be true or false` }).default(true).meta({
+    description: `Keep ${what} beside the conversation. Off, each is recorded by its type and size alone.`,
+  });
+
+/** Which media a stored conversation keeps: all of it unless the operator leaves a kind out. */
+const ConversationKeepSchema = z.object({
+  images: keptMedia("images", "images"),
+  audio: keptMedia("audio", "audio: recordings sent for transcription, audio in a request, spoken replies"),
+  files: keptMedia("files", "every other file, such as a PDF"),
+}).strict();
+
 const ConversationsSchema = z.object({
   store: z.boolean({ error: "conversations.store must be true or false" }).default(false).meta({
     description:
-      "Keep a copy of every request and response this app sends through the gateway. Audio is never kept; images are kept beside the conversation.",
+      "Keep a copy of every request and response this app sends through the gateway, with the media `keep` allows.",
   }),
+  keep: ConversationKeepSchema.prefault({}),
   retention_days: z.number({ error: "conversations.retention_days must be a whole number of days" })
     .int({ error: "conversations.retention_days must be a whole number of days" })
     .min(CONVERSATION_RETENTION_DAYS.min, { error: `conversations.retention_days must be at least ${CONVERSATION_RETENTION_DAYS.min}` })

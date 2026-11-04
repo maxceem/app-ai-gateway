@@ -48,16 +48,16 @@ export class ConversationLog extends DurableObject<Env> {
   }
 
   /**
-   * Takes one served request. Its images are written first, so a record never
-   * names an image that is not there; the record itself waits for its batch.
+   * Takes one served request. Its media is written first, so a record never
+   * names media that is not there; the record itself waits for its batch.
    */
   async append(capture: ConversationCapture): Promise<void> {
     const bucket = this.env.CONVERSATIONS;
     if (bucket === undefined) return;
-    const { line, images } = await conversationRecord(capture);
-    for (const image of images) {
-      await bucket.put(`${appPrefix(capture.appId)}${image.name}`, image.bytes, {
-        httpMetadata: { contentType: image.mime },
+    const { line, media } = await conversationRecord(capture);
+    for (const item of media) {
+      await bucket.put(`${appPrefix(capture.appId)}${item.name}`, item.bytes, {
+        httpMetadata: { contentType: item.mime },
       });
     }
     this.ctx.storage.sql.exec(
@@ -127,7 +127,7 @@ export class ConversationLog extends DurableObject<Env> {
       const lastId = bounded?.id ?? first.id;
       // Named from its earliest record, not its first to arrive: a request that
       // started before midnight can finish after one that started later, and a
-      // batch must never sit under a day later than its records' images.
+      // batch must never sit under a day later than its records' media.
       const earliest = sql
         .exec<{ created_at: string }>("SELECT MIN(created_at) AS created_at FROM pending WHERE id <= ?", lastId)
         .toArray()[0]!;

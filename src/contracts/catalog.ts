@@ -1043,7 +1043,7 @@ export const CATALOG = {
     tags: ["Admin operations"],
     summary: "List stored conversation files",
     description:
-      "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Images are kept beside them as `<YYYY-MM-DD>/images/<sha256>.<ext>` and named in the records as `agw-image:<name>`.",
+      "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Media the app keeps (conversations.keep) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>` and named in the records as `agw-media:<name>`.",
     security: "management",
     params: APP_PARAM,
     policy: { role: "admin", access: "read", grant: "read" },
@@ -1071,7 +1071,7 @@ export const CATALOG = {
     params: APP_PARAM,
     policy: { role: "admin", access: "read", grant: "read" },
     query: z.object({
-      name: z.string().meta({ description: "A file name from the listing, or an image name a record gives, `<YYYY-MM-DD>/images/<sha256>.<ext>`." }),
+      name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
     }),
     response: z.unknown(),
     responseDescription: "The file's bytes.",

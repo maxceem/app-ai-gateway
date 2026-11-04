@@ -142,7 +142,7 @@ async function serve(
   const capture = app.config.conversations.store
     && c.env.CONVERSATIONS !== undefined
     && !conversation.optedOut
-    ? { contentType: c.req.header("content-type") ?? "", body }
+    ? { contentType: c.req.header("content-type") ?? "", keep: app.config.conversations.keep, body }
     : null;
   return execute(plan, {
     env: c.env,

@@ -10,10 +10,13 @@ const routes = adminRouter(conversationRoutes);
 routes.handle("listAppConversations");
 
 /**
- * A stored file, streamed from R2 as it is: a gzipped batch or an image. The
- * Worker only passes the bytes through, so a large export costs it next to no
- * CPU. The name is checked against the two shapes the store writes, so nothing
- * outside the app's own folder can be named.
+ * A stored file, streamed from R2 as it is: a gzipped batch, or media a record
+ * names. The Worker only passes the bytes through, so a large export costs it
+ * next to no CPU. The name is checked against the two shapes the store writes,
+ * so nothing outside the app's own folder can be named.
+ *
+ * Always a download, never a page: media is whatever an app's users sent, and
+ * a stored HTML file opened in a browser must not run on the gateway's origin.
  */
 routes.relay("getAppConversationFile", async (c) => {
   const name = c.req.query("name") ?? "";
@@ -21,7 +24,7 @@ routes.relay("getAppConversationFile", async (c) => {
     throw new GatewayError(
       400,
       "invalid_request",
-      "name must be a file name from the listing, or an image name a record gives",
+      "name must be a file name from the listing, or a media name a record gives",
     );
   }
   const bucket = c.env.CONVERSATIONS;
@@ -32,6 +35,8 @@ routes.relay("getAppConversationFile", async (c) => {
       "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
       "content-length": String(object.size),
       "cache-control": "no-store",
+      "content-disposition": "attachment",
+      "x-content-type-options": "nosniff",
     },
   });
 });

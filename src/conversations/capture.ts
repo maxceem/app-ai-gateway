@@ -14,7 +14,7 @@ import { log } from "../core/log";
 import { errorFacts } from "../core/error-facts";
 import type { ObservedBody } from "../usage/body-observer";
 import type { AttemptAttribution } from "../usage/usage-record";
-import type { ConversationCapture } from "./record";
+import type { ConversationCapture, KeptMedia } from "./record";
 
 /** A request or response body larger than this is recorded by its size alone. */
 export const CAPTURE_MAX_BYTES = 8 * 1024 * 1024;
@@ -22,6 +22,8 @@ export const CAPTURE_MAX_BYTES = 8 * 1024 * 1024;
 /** What the serving path keeps for a request whose conversation is stored. */
 export interface CaptureSource {
   contentType: string;
+  /** The app's `conversations.keep`. */
+  keep: KeptMedia;
   /** The request body, read once and shared; see `PrepareInput.body`. */
   body: () => Promise<Uint8Array<ArrayBuffer>>;
 }
@@ -62,6 +64,7 @@ export async function conversationCapture(input: CaptureInput): Promise<void> {
       status: input.status,
       httpStatus: input.httpStatus,
       latencyMs: input.latencyMs,
+      keep: input.source.keep,
       request: {
         contentType: input.source.contentType,
         bytes: requestBytes.byteLength > CAPTURE_MAX_BYTES ? null : requestBytes,

@@ -7,12 +7,12 @@ import { gzipSync } from "node:zlib";
 import { conversationsCommand } from "../src/conversations.ts";
 import { stubContext, hasCode } from "./helpers.ts";
 
-const IMAGE = `2026-11-01/images/${"a".repeat(64)}.png`;
+const IMAGE = `2026-11-01/media/${"a".repeat(64)}.png`;
 
 test("app conversations downloads each listed batch once, and the images they name", async () => {
   const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
   try {
-    const batch = gzipSync(`${JSON.stringify({ request: { value: { image_url: `agw-image:${IMAGE}` } } })}\n`);
+    const batch = gzipSync(`${JSON.stringify({ request: { value: { image_url: `agw-media:${IMAGE}` } } })}\n`);
     const downloads: string[] = [];
     const ctx = stubContext({
       call: async (name: string, options: { query: { cursor?: string } }) => {
@@ -29,17 +29,17 @@ test("app conversations downloads each listed batch once, and the images they na
       },
     });
 
-    const first = await conversationsCommand(ctx, "app-1", { from: "2026-11-01", to: "2026-11-02", output, images: true });
+    const first = await conversationsCommand(ctx, "app-1", { from: "2026-11-01", to: "2026-11-02", output, media: true });
     assert.equal(first.files, 2);
     assert.equal(first.downloaded, 2);
-    assert.equal(first.images, 1);
+    assert.equal(first.media, 1);
     assert.deepEqual(downloads, ["2026-11-01/090000-aaaaaaaa.jsonl.gz", "2026-11-02/101500-bbbbbbbb.jsonl.gz", IMAGE]);
     assert.deepEqual([...await readFile(join(output, IMAGE))], [1, 2, 3]);
 
     // A second run finds everything in place and fetches nothing.
-    const again = await conversationsCommand(ctx, "app-1", { from: "2026-11-01", to: "2026-11-02", output, images: true });
+    const again = await conversationsCommand(ctx, "app-1", { from: "2026-11-01", to: "2026-11-02", output, media: true });
     assert.equal(again.downloaded, 0);
-    assert.equal(again.images, 0);
+    assert.equal(again.media, 0);
     assert.equal(downloads.length, 3);
   } finally {
     await rm(output, { recursive: true, force: true });

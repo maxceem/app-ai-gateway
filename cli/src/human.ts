@@ -190,7 +190,7 @@ function conversations(result: RenderedResult, style: Style): string[] {
     ),
     ...kv([
       ["Folder", result.output],
-      ["Downloaded", `${result.downloaded} files${result.images ? `, ${result.images} images` : ""}`],
+      ["Downloaded", `${result.downloaded} files${result.media ? `, ${result.media} media` : ""}`],
       ["Range", `${result.from ?? "oldest"} to ${result.to}`],
     ], style),
   ];

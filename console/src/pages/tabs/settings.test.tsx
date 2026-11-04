@@ -87,6 +87,14 @@ describe("SettingsTab", () => {
       .toBe("true");
     expect(screen.getByLabelText(/keep for/i)).toHaveProperty("value", "180");
     expect(await screen.findByText(/unsaved changes to/i)).toBeTruthy();
+
+    // Every kind of media is kept until one is switched off.
+    for (const kind of [/^images$/i, /^audio$/i, /^other files$/i]) {
+      expect(screen.getByRole("switch", { name: kind }).getAttribute("aria-checked")).toBe("true");
+    }
+    await userEvent.click(screen.getByRole("switch", { name: /^audio$/i }));
+    expect(screen.getByRole("switch", { name: /^audio$/i }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("switch", { name: /^images$/i }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("links to the setup guide where the deployment has no conversation storage", async () => {

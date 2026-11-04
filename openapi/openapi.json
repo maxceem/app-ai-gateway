@@ -980,7 +980,29 @@
               "store": {
                 "type": "boolean",
                 "default": false,
-                "description": "Keep a copy of every request and response this app sends through the gateway. Audio is never kept; images are kept beside the conversation."
+                "description": "Keep a copy of every request and response this app sends through the gateway, with the media `keep` allows."
+              },
+              "keep": {
+                "type": "object",
+                "properties": {
+                  "images": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep images beside the conversation. Off, each is recorded by its type and size alone."
+                  },
+                  "audio": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep audio: recordings sent for transcription, audio in a request, spoken replies beside the conversation. Off, each is recorded by its type and size alone."
+                  },
+                  "files": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep every other file, such as a PDF beside the conversation. Off, each is recorded by its type and size alone."
+                  }
+                },
+                "default": {},
+                "additionalProperties": false
               },
               "retention_days": {
                 "type": "integer",
@@ -9378,7 +9400,7 @@
         ],
         "operationId": "listAppConversations",
         "summary": "List stored conversation files",
-        "description": "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Images are kept beside them as `<YYYY-MM-DD>/images/<sha256>.<ext>` and named in the records as `agw-image:<name>`.",
+        "description": "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Media the app keeps (conversations.keep) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>` and named in the records as `agw-media:<name>`.",
         "security": [
           {
             "ConsoleSession": []
@@ -9512,10 +9534,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "A file name from the listing, or an image name a record gives, `<YYYY-MM-DD>/images/<sha256>.<ext>`."
+              "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`."
             },
             "required": true,
-            "description": "A file name from the listing, or an image name a record gives, `<YYYY-MM-DD>/images/<sha256>.<ext>`.",
+            "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`.",
             "name": "name",
             "in": "query"
           }

@@ -18,6 +18,7 @@ import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
 import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
 
+const MEDIA_KINDS = [["images", "Images"], ["audio", "Audio"], ["files", "Other files"]] as const;
 const CONVERSATIONS_GUIDE_URL = "https://docs.appaigateway.com/applications/conversations/";
 const CONVERSATION_STORAGE_SETUP_URL =
   "https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage";
@@ -196,9 +197,14 @@ function ConversationStorage({
   const conversations = state.draft!.config.conversations ?? {};
   const store = conversations.store ?? false;
   const retention = conversations.retention_days ?? CONVERSATION_RETENTION_DAYS.default;
+  const keep = {
+    images: conversations.keep?.images ?? true,
+    audio: conversations.keep?.audio ?? true,
+    files: conversations.keep?.files ?? true,
+  };
   const [days, setDays] = useState(String(retention));
-  const update = (next: { store?: boolean; retention_days?: number }) =>
-    state.updateConfig({ conversations: { store, retention_days: retention, ...next } });
+  const update = (next: { store?: boolean; retention_days?: number; keep?: typeof keep }) =>
+    state.updateConfig({ conversations: { store, retention_days: retention, keep, ...next } });
 
   return (
     <Card>
@@ -227,6 +233,24 @@ function ConversationStorage({
             onCheckedChange={(checked) => update({ store: checked })}
           />
         </div>
+        {store ? (
+          <Field label="Keep">
+            <div className="space-y-2">
+              {MEDIA_KINDS.map(([kind, label]) => (
+                <div key={kind} className="flex max-w-64 items-center justify-between gap-4">
+                  <span className="text-sm">{label}</span>
+                  <Switch
+                    aria-label={label}
+                    checked={keep[kind]}
+                    disabled={readOnly}
+                    onCheckedChange={(checked) => update({ keep: { ...keep, [kind]: checked } })}
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">Text is always kept.</p>
+          </Field>
+        ) : null}
         {store ? (
           <Field label="Keep for (days)" htmlFor="conversation-retention">
             <Input

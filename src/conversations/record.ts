@@ -1,18 +1,27 @@
 /**
  * One served request as one stored record: a single line of JSON, plus the
- * images it carried, which are kept as objects of their own.
+ * media it carried — images, recordings, other files — kept as objects of
+ * their own, once each by content and day. A body names them by
+ * `agw-media:<name>` where their data was.
  *
- * What is kept is what was said: text, JSON, form fields. What is not is any
- * recording — an audio upload, base64 audio in a JSON body, synthesized speech
- * — which leaves only its type and size behind. Images are kept, once each by
- * content and day, and a body names them by `agw-image:<name>` where the data was.
+ * Which media is kept is the app's `conversations.keep`; a kind it leaves out
+ * is recorded as `agw-omitted:<type>;<bytes>` instead. A streamed spoken reply
+ * arrives as many small pieces of audio, which stay in the record as they came,
+ * or are each recorded by their size where audio is not kept.
  *
  * Built inside `ConversationLog`, never on the request path: parsing a body,
- * decoding its images and hashing them is work the served request must not
- * spend its CPU on.
+ * decoding its media and hashing it is work the served request must not spend
+ * its CPU on.
  */
 
-import { imageName, IMAGE_EXTENSIONS, recordDay } from "./storage";
+import { mediaName, recordDay, typeForExtension } from "./storage";
+
+/** Which kinds of media a record keeps; see `conversations.keep`. */
+export interface KeptMedia {
+  images: boolean;
+  audio: boolean;
+  files: boolean;
+}
 
 /** What the gateway hands the log about one served request. */
 export interface ConversationCapture {
@@ -31,6 +40,7 @@ export interface ConversationCapture {
   status: "ok" | "provider_error";
   httpStatus: number;
   latencyMs: number;
+  keep: KeptMedia;
   request: CapturedBytes;
   response: CapturedBytes & { aborted: boolean };
 }
@@ -42,8 +52,8 @@ export interface CapturedBytes {
   totalBytes: number;
 }
 
-export interface StoredImage {
-  /** Relative to the app's folder: `<YYYY-MM-DD>/images/<sha256>.<ext>`. */
+export interface StoredMedia {
+  /** Relative to the app's folder: `<YYYY-MM-DD>/media/<sha256>.<ext>`. */
   name: string;
   mime: string;
   bytes: Uint8Array<ArrayBuffer>;
@@ -58,18 +68,19 @@ export const MAX_RECORD_BYTES = 1_500_000;
 const MAX_STRING_CHARS = 256 * 1024;
 /** Prefix of a value that was not kept: `agw-omitted:<what>;<bytes>`. */
 const OMITTED = "agw-omitted:";
-/** Prefix of an image kept beside the record: `agw-image:<name>`. */
-const IMAGE = "agw-image:";
+/** Prefix of media kept beside the record: `agw-media:<name>`. */
+const MEDIA = "agw-media:";
 
 type StoredBody =
   | { kind: "json"; content_type: string; value: unknown }
   | { kind: "form"; content_type: string; fields: Record<string, unknown> }
   | { kind: "text"; content_type: string; text: string }
+  | { kind: "media"; content_type: string; bytes: number; content: string }
   | { kind: "omitted"; content_type: string; reason: OmittedReason; bytes: number };
 
-type OmittedReason = "empty" | "binary" | "audio" | "too_large" | "unreadable";
+type OmittedReason = "empty" | "too_large" | "unreadable";
 
-/** Keys whose value is a recording, wherever they appear under these parents. */
+/** Objects holding a recording in bare base64 under `data`: OpenAI's `input_audio` and `audio`. */
 const AUDIO_PARENTS = new Set(["input_audio", "audio"]);
 
 function mediaType(contentType: string): string {
@@ -78,6 +89,12 @@ function mediaType(contentType: string): string {
 
 function isJson(type: string): boolean {
   return type === "application/json" || type.endsWith("+json");
+}
+
+function mediaKind(mime: string): keyof KeptMedia {
+  if (mime.startsWith("image/")) return "images";
+  if (mime.startsWith("audio/")) return "audio";
+  return "files";
 }
 
 function decodeBase64(text: string): Uint8Array<ArrayBuffer> | null {
@@ -96,53 +113,52 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Collects a record's images, each once, whatever number of places name it. */
-class ImageShelf {
-  readonly images: StoredImage[] = [];
+/** Collects a record's media, each once, whatever number of places name it. */
+class MediaShelf {
+  readonly media: StoredMedia[] = [];
   private readonly names = new Set<string>();
 
-  /** The UTC day of the record, whose folder the images are kept in. */
-  constructor(private readonly day: string) {}
+  /** `day` is the record's UTC day, whose folder its media is kept in. */
+  constructor(private readonly day: string, private readonly keep: KeptMedia) {}
 
-  /** Keeps an image and answers the reference that replaces it, or null if it is no image this keeps. */
-  async keep(bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string | null> {
-    const type = mime.toLowerCase();
-    if (IMAGE_EXTENSIONS[type] === undefined) return null;
-    const name = imageName(this.day, await sha256Hex(bytes), type);
-    if (name === null) return null;
+  /** What replaces media in the record: its reference where it is kept, else its type and size. */
+  async place(bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string> {
+    if (!this.keep[mediaKind(mime)]) return `${OMITTED}${mime};${bytes.byteLength}`;
+    const name = mediaName(this.day, await sha256Hex(bytes), mime);
     if (!this.names.has(name)) {
       this.names.add(name);
-      this.images.push({ name, mime: type, bytes });
+      this.media.push({ name, mime, bytes });
     }
-    return `${IMAGE}${name}`;
+    return `${MEDIA}${name}`;
   }
+
+  /** The same, for media in base64, which is decoded only where it is kept. */
+  async placeBase64(text: string, mime: string): Promise<string> {
+    const bytes = this.keep[mediaKind(mime)] ? decodeBase64(text) : null;
+    return bytes === null ? `${OMITTED}${mime};${Math.floor((text.length * 3) / 4)}` : this.place(bytes, mime);
+  }
+
+  /** A piece of a streamed recording: left as it came where audio is kept. */
+  piece(text: string): string {
+    if (!this.keep.audio) return `${OMITTED}audio;${Math.floor((text.length * 3) / 4)}`;
+    return text.length > MAX_STRING_CHARS ? `${OMITTED}text;${text.length}` : text;
+  }
+}
+
+/** How a JSON body is walked: where its media goes, and whether it is one event of a stream. */
+interface Walk {
+  shelf: MediaShelf;
+  streamed: boolean;
 }
 
 const DATA_URL = /^data:([^;,]+)(?:;[^,]*)?;base64,/i;
 
-/** One string of a JSON body: an image becomes a reference, a recording or an oversized string a note. */
-async function keptString(value: string, parent: string | undefined, key: string | undefined, shelf: ImageShelf): Promise<string> {
+/** One string of a JSON body: media becomes a reference or a note, an oversized string a note. */
+async function keptString(value: string, key: string | undefined, walk: Walk): Promise<string> {
   const dataUrl = DATA_URL.exec(value);
-  if (dataUrl) {
-    const mime = dataUrl[1]!.toLowerCase();
-    const payload = value.slice(dataUrl[0].length);
-    if (mime.startsWith("image/")) {
-      const bytes = decodeBase64(payload);
-      const reference = bytes ? await shelf.keep(bytes, mime) : null;
-      if (reference) return reference;
-    }
-    return `${OMITTED}${mime};${Math.floor((payload.length * 3) / 4)}`;
-  }
+  if (dataUrl) return walk.shelf.placeBase64(value.slice(dataUrl[0].length), dataUrl[1]!.toLowerCase());
   // Generated images arrive as bare base64 under `b64_json`.
-  if (key === "b64_json") {
-    const bytes = decodeBase64(value);
-    const reference = bytes ? await shelf.keep(bytes, "image/png") : null;
-    if (reference) return reference;
-  }
-  // `input_audio.data` and `audio.data` are recordings in bare base64.
-  if (key === "data" && parent !== undefined && AUDIO_PARENTS.has(parent)) {
-    return `${OMITTED}audio;${Math.floor((value.length * 3) / 4)}`;
-  }
+  if (key === "b64_json") return walk.shelf.placeBase64(value, "image/png");
   if (value.length > MAX_STRING_CHARS) return `${OMITTED}text;${value.length}`;
   return value;
 }
@@ -155,20 +171,46 @@ function isAudioEvent(value: Record<string, unknown>): boolean {
   return typeof value.type === "string" && value.type.includes("audio") && !value.type.includes("transcript");
 }
 
-async function keptJson(value: unknown, shelf: ImageShelf, parent?: string, key?: string): Promise<unknown> {
-  if (typeof value === "string") return keptString(value, parent, key, shelf);
+/** The bare base64 `data` of one object, and its media type, where the object says it is media. */
+function bareMedia(value: Record<string, unknown>, key: string | undefined): { mime: string; audio: boolean } | null {
+  if (typeof value.data !== "string") return null;
+  // Gemini's `inlineData` / `inline_data`: any media, typed.
+  const declared = typeof value.mimeType === "string" ? value.mimeType : value.mime_type;
+  if (typeof declared === "string") {
+    const mime = declared.toLowerCase();
+    return { mime, audio: mime.startsWith("audio/") };
+  }
+  // OpenAI's `input_audio` and `audio`: a recording, typed by `format` where given.
+  if (key !== undefined && AUDIO_PARENTS.has(key)) {
+    const format = typeof value.format === "string" && /^[a-z0-9]+$/.test(value.format) ? value.format : "wav";
+    return { mime: `audio/${format === "mp3" ? "mpeg" : format}`, audio: true };
+  }
+  return null;
+}
+
+async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unknown> {
+  if (typeof value === "string") return keptString(value, key, walk);
   if (Array.isArray(value)) {
     const out: unknown[] = [];
-    for (const item of value) out.push(await keptJson(item, shelf, parent, key));
+    for (const item of value) out.push(await keptJson(item, walk, key));
     return out;
   }
   if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
-    const audioEvent = isAudioEvent(value as Record<string, unknown>);
-    for (const [name, item] of Object.entries(value)) {
-      out[name] = audioEvent && name === "delta" && typeof item === "string"
-        ? `${OMITTED}audio;${Math.floor((item.length * 3) / 4)}`
-        : await keptJson(item, shelf, key, name);
+    const media = bareMedia(object, key);
+    const audioEvent = isAudioEvent(object);
+    for (const [name, item] of Object.entries(object)) {
+      if (media !== null && name === "data") {
+        // In a stream, audio arrives a piece at a time; anything else whole.
+        out[name] = walk.streamed && media.audio
+          ? walk.shelf.piece(item as string)
+          : await walk.shelf.placeBase64(item as string, media.mime);
+      } else if (audioEvent && name === "delta" && typeof item === "string") {
+        out[name] = walk.shelf.piece(item);
+      } else {
+        out[name] = await keptJson(item, walk, name);
+      }
     }
     return out;
   }
@@ -176,10 +218,11 @@ async function keptJson(value: unknown, shelf: ImageShelf, parent?: string, key?
 }
 
 /**
- * A streamed answer, each event's JSON kept the way a JSON body is, so streamed
- * audio and images are treated as they are in one whole response.
+ * A streamed answer, each event's JSON kept the way a JSON body is, so media
+ * in a stream is treated as it is in one whole response.
  */
-async function keptEventStream(text: string, shelf: ImageShelf): Promise<string> {
+async function keptEventStream(text: string, shelf: MediaShelf): Promise<string> {
+  const walk: Walk = { shelf, streamed: true };
   const lines: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     const data = /^data: ?(.*)$/s.exec(line);
@@ -189,12 +232,19 @@ async function keptEventStream(text: string, shelf: ImageShelf): Promise<string>
     } catch {
       // `[DONE]` and other plain text.
     }
-    lines.push(value === undefined ? line : `data: ${JSON.stringify(await keptJson(value, shelf))}`);
+    lines.push(value === undefined ? line : `data: ${JSON.stringify(await keptJson(value, walk))}`);
   }
   return lines.join("\n");
 }
 
-async function storedBody(body: CapturedBytes, shelf: ImageShelf): Promise<StoredBody> {
+/** An uploaded file's type, from its name where the upload did not say. */
+function fileType(file: File): string {
+  const declared = file.type.toLowerCase();
+  if (declared !== "" && declared !== "application/octet-stream") return declared;
+  return typeForExtension(file.name) ?? "application/octet-stream";
+}
+
+async function storedBody(body: CapturedBytes, shelf: MediaShelf): Promise<StoredBody> {
   const contentType = body.contentType;
   const type = mediaType(contentType);
   if (body.bytes === null) {
@@ -213,15 +263,12 @@ async function storedBody(body: CapturedBytes, shelf: ImageShelf): Promise<Store
           kept = entry.length > MAX_STRING_CHARS ? `${OMITTED}text;${entry.length}` : entry;
         } else {
           const file = entry as File;
-          const fileType = file.type.toLowerCase();
-          const reference = fileType.startsWith("image/")
-            ? await shelf.keep(new Uint8Array(await file.arrayBuffer()), fileType)
-            : null;
-          kept = reference ?? {
+          const mime = fileType(file);
+          kept = {
             file: file.name,
-            type: file.type,
+            type: mime,
             bytes: file.size,
-            omitted: fileType.startsWith("audio/") || fileType === "" ? "audio" : "binary",
+            content: await shelf.place(new Uint8Array(await file.arrayBuffer()), mime),
           };
         }
         // A repeated field keeps every value, in order.
@@ -237,41 +284,36 @@ async function storedBody(body: CapturedBytes, shelf: ImageShelf): Promise<Store
       return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
     }
   }
-  if (type.startsWith("audio/")) {
-    return { kind: "omitted", content_type: contentType, reason: "audio", bytes: body.totalBytes };
-  }
-  if (type.startsWith("image/")) {
-    const reference = await shelf.keep(body.bytes, type);
-    return reference
-      ? { kind: "text", content_type: contentType, text: reference }
-      : { kind: "omitted", content_type: contentType, reason: "binary", bytes: body.totalBytes };
+  if (type !== "" && !type.startsWith("text/") && !isJson(type)) {
+    return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }
   let text = new TextDecoder().decode(body.bytes);
   if (type === "text/event-stream") text = await keptEventStream(text, shelf);
   if (isJson(type) || type === "") {
     try {
-      return { kind: "json", content_type: contentType, value: await keptJson(JSON.parse(text), shelf) };
+      return {
+        kind: "json",
+        content_type: contentType,
+        value: await keptJson(JSON.parse(text), { shelf, streamed: false }),
+      };
     } catch {
       if (type !== "") return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
     }
   }
-  if (type === "" || type.startsWith("text/")) {
-    return text.length > MAX_RECORD_BYTES
-      ? { kind: "omitted", content_type: contentType, reason: "too_large", bytes: body.totalBytes }
-      : { kind: "text", content_type: contentType, text };
-  }
-  return { kind: "omitted", content_type: contentType, reason: "binary", bytes: body.totalBytes };
+  return text.length > MAX_RECORD_BYTES
+    ? { kind: "omitted", content_type: contentType, reason: "too_large", bytes: body.totalBytes }
+    : { kind: "text", content_type: contentType, text };
 }
 
 function tooLarge(body: StoredBody, totalBytes: number): StoredBody {
   return { kind: "omitted", content_type: body.content_type, reason: "too_large", bytes: totalBytes };
 }
 
-/** Builds the record line for one capture, and the images it keeps beside it. */
+/** Builds the record line for one capture, and the media it keeps beside it. */
 export async function conversationRecord(
   capture: ConversationCapture,
-): Promise<{ line: string; images: StoredImage[] }> {
-  const shelf = new ImageShelf(recordDay(capture.createdAt));
+): Promise<{ line: string; media: StoredMedia[] }> {
+  const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
   let request = await storedBody(capture.request, shelf);
   let response = await storedBody(capture.response, shelf);
   const render = () => JSON.stringify({
@@ -311,5 +353,5 @@ export async function conversationRecord(
       line = render();
     }
   }
-  return { line, images: shelf.images };
+  return { line, media: shelf.media };
 }
