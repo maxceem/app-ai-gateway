@@ -260,3 +260,86 @@ export function findNextLine(lines, text, where, from) {
   }
   throw new ParseError(`${where}: "${text}" is missing`);
 }
+
+const MARKDOC_TABLE = "{% table %}";
+const MARKDOC_TABLE_END = "{% /table %}";
+const MARKDOC_ROW_BREAK = "---";
+const MARKDOC_CELL = /^\*(?: |$)/u;
+
+/**
+ * A Markdoc cell's text as a pipe table would have carried it: an empty
+ * `{% sup /%}` dropped, a footnote mark `{% sup %}*{% /sup %}` kept as `^*^`.
+ * Any other tag stays, so a reader that does not expect it fails.
+ */
+function markdocCell(parts) {
+  return parts
+    .join(" ")
+    .replaceAll("{% sup /%}", "")
+    .replace(/\{% sup %\}([^{}]*)\{% \/sup %\}/gu, "^$1^")
+    .trim();
+}
+
+/**
+ * Reads the Markdoc table whose `{% table %}` tag is the line at `start`, as
+ * `{ header, rows, end }`, `end` being the line of its `{% /table %}`. Rows are
+ * separated by `---`; each cell is a `* ` item at the table's indentation, and
+ * the lines under it are joined to it with a space. The first row is the
+ * header, and every row must have its width.
+ */
+export function readMarkdocTable(lines, start, where) {
+  if (lines[start]?.trim() !== MARKDOC_TABLE) throw new ParseError(`${where}: the table is missing`);
+  const rows = [];
+  let row = [];
+  let cell;
+  let indent;
+  const endRow = () => {
+    if (cell) row.push(markdocCell(cell));
+    if (row.length === 0) throw new ParseError(`${where}: the table has an empty row`);
+    rows.push(row);
+    row = [];
+    cell = undefined;
+  };
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (trimmed === MARKDOC_TABLE_END) {
+      endRow();
+      const [header, ...body] = rows;
+      if (body.length === 0) throw new ParseError(`${where}: the table has no rows`);
+      for (const found of body) {
+        if (found.length !== header.length) {
+          throw new ParseError(`${where}: a row has ${found.length} cells, the header has ${header.length}`);
+        }
+      }
+      return { header, rows: body, end: index };
+    }
+    if (trimmed === MARKDOC_TABLE) throw new ParseError(`${where}: a table inside a table`);
+    if (trimmed === "") continue;
+    if (trimmed === MARKDOC_ROW_BREAK) {
+      endRow();
+      continue;
+    }
+    const lineIndent = line.length - line.trimStart().length;
+    if (MARKDOC_CELL.test(trimmed) && (indent === undefined || lineIndent === indent)) {
+      indent ??= lineIndent;
+      if (cell) row.push(markdocCell(cell));
+      cell = [trimmed.slice(1).trim()];
+      continue;
+    }
+    if (!cell) throw new ParseError(`${where}: "${trimmed.slice(0, 80)}" is outside any table cell`);
+    cell.push(trimmed);
+  }
+  throw new ParseError(`${where}: the table is not closed`);
+}
+
+/** Every Markdoc table on the page, as `{ line, header, rows }`, like `findTables`. */
+export function findMarkdocTables(lines, where) {
+  const tables = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== MARKDOC_TABLE) continue;
+    const { header, rows, end } = readMarkdocTable(lines, index, where);
+    tables.push({ line: index, header, rows });
+    index = end;
+  }
+  return tables;
+}

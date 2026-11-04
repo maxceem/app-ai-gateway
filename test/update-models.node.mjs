@@ -18,7 +18,7 @@ import { parsePerplexity } from "../scripts/models/parsers/perplexity.mjs";
 import { parseTogether } from "../scripts/models/parsers/together.mjs";
 import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/models/parsers/xai.mjs";
-import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/models/price.mjs";
+import { ParseError, effectivePrice, parseDate, readMarkdocTable, samePrice } from "../scripts/models/price.mjs";
 import { renderReport, renderTitle } from "../scripts/models/report.mjs";
 import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
@@ -241,7 +241,7 @@ test("gemini: reads an embedding model's per-modality input rows", () => {
     audio_input: 6.5,
     video_input: 12,
   });
-  assertFails(parseGemini, replaceOnce(text, "| Text input price |", "| Text price |"), ["gemini-embedding-2"], /no input or output row/);
+  assertFails(parseGemini, replaceOnce(text, "* Text input price", "* Text price"), ["gemini-embedding-2"], /no input or output row/);
   assertFails(parseGemini, replaceOnce(text, "$0.45 ($0.00012 per image)", "$0.45 (or $0.00012 per image)"), ["gemini-embedding-2"], /unknown price format/);
 });
 
@@ -266,11 +266,11 @@ test("gemini: fails on an unknown cell, a changed header or a dated gap", () => 
   );
   assertFails(
     parseGemini,
-    replaceOnce(text, "and $0.24 per 4K image^\\*\\*^ |", "and $0.24 per 4K image through December 31, 2026. |"),
+    replaceOnce(text, "and $0.24 per 4K image{% sup %}**{% /sup %}\n", "and $0.24 per 4K image through December 31, 2026.\n"),
     ["gemini-3-pro-image"],
     /unknown price format/,
   );
-  assertFails(parseGemini, replaceOnce(text, "| $1.50 |", "| $1.50 per million |"), ["gemini-3.5-flash"], /unknown price format/);
+  assertFails(parseGemini, replaceOnce(text, "* $1.50\n", "* $1.50 per million\n"), ["gemini-3.5-flash"], /unknown price format/);
   assertFails(
     parseGemini,
     text.replaceAll("Paid Tier, per 1M tokens in USD", "Paid Tier (USD)"),
@@ -279,11 +279,48 @@ test("gemini: fails on an unknown cell, a changed header or a dated gap", () => 
   );
   assertFails(
     parseGemini,
-    replaceOnce(text, "$0.75 through December 31, 2026. $1.50 starting January 1, 2027.", "$0.75 through December 30, 2026. $1.50 starting January 1, 2027."),
+    replaceOnce(text, "* $0.75 through December 31, 2026.", "* $0.75 through December 30, 2026."),
     ["gemini-3.6-flash"],
     /gap/,
   );
-  assertFails(parseGemini, replaceOnce(text, "$0.15 $1.00 / 1,000,000", "$0.15 $1.00 / 1M"), ["gemini-3.5-flash"], /storage/);
+  assertFails(parseGemini, replaceOnce(text, "$0.15   \n  $1.00 / 1,000,000", "$0.15   \n  $1.00 / 1M"), ["gemini-3.5-flash"], /storage/);
+});
+
+test("gemini: reads only the Standard tab's one Markdoc table", () => {
+  const text = fixture("gemini.md");
+  // The Batch tab after it holds half of every price.
+  assert.deepEqual(parse(parseGemini, text, ["gemini-3.5-flash"]).get("gemini-3.5-flash"), { input: 1.5, output: 9, cached_input: 0.15 });
+  const wanted = ["gemini-3.5-flash"];
+  assertFails(parseGemini, text.replaceAll('{% tab title="Standard" %}', '{% tab title="Paid" %}'), wanted, /no "Standard" tab/);
+  const standard = '{% tab title="Standard" %}\n  {% table %}';
+  assertFails(parseGemini, text.replaceAll(standard, `${standard.slice(0, -11)}{% table %}\n  * a\n  {% /table %}\n  {% table %}`), wanted, /holds 2 tables/);
+  assertFails(parseGemini, replaceOnce(text, "  * Free of charge\n  * $1.50\n", "  * $1.50\n"), wanted, /a row has 2 cells/);
+  // A table left open runs into the next one.
+  assertFails(parseGemini, text.replaceAll("  {% /table %}\n\n  {% /tab %}", "\n  {% /tab %}"), wanted, /a table inside a table/);
+});
+
+test("markdoc tables: cells join their lines; anything outside a cell fails", () => {
+  const read = (text) => readMarkdocTable(text.split("\n"), 0, "t");
+  const table = "{% table %}\n  * A\n  * B\n  ---\n  * $1.00 through May 1, 2026.   \n  $2.00 starting May 2, 2026.\n  * \n{% /table %}";
+  assert.deepEqual(read(table), {
+    header: ["A", "B"],
+    rows: [["$1.00 through May 1, 2026. $2.00 starting May 2, 2026.", ""]],
+    end: 7,
+  });
+  const fails = (text, pattern) => assert.throws(() => read(text), (error) => error instanceof ParseError && pattern.test(error.message));
+  fails(table.replace("\n{% /table %}", ""), /not closed/);
+  fails(table.replace("{% table %}\n", "{% table %}\n  stray\n"), /outside any table cell/);
+  fails(table.replace("  ---\n", "  ---\n  ---\n"), /empty row/);
+  fails("{% table %}\n  * A\n{% /table %}", /no rows/);
+});
+
+test("gemini: a footnote or an unknown tag on a price fails the page", () => {
+  const text = fixture("gemini.md");
+  const wanted = ["gemini-3.5-flash"];
+  assertFails(parseGemini, replaceOnce(text, "* $1.50\n", "* $1.50{% sup %}*{% /sup %}\n"), wanted, /unknown price format "\$1\.50\^\*\^"/);
+  assertFails(parseGemini, replaceOnce(text, "* $1.50\n", "* $1.50 {% badge %}promo{% /badge %}\n"), wanted, /unknown price format/);
+  // An empty superscript, as on the per-unit restatements, says nothing.
+  assert.equal(parse(parseGemini, replaceOnce(text, "* $1.50\n", "* $1.50{% sup /%}\n"), wanted).get("gemini-3.5-flash").input, 1.5);
 });
 
 test("gemini: a model with implicit caching only has no storage price", () => {
@@ -487,8 +524,9 @@ test("gemini deprecations: a shutdown date, none announced or N/A", () => {
   assert.deepEqual(dates.get("gemini-3.1-flash-lite"), { date: "2027-05-07" });
   assert.deepEqual(dates.get("gemini-2.5-flash-image"), { date: "2026-10-02" });
   assert.deepEqual(dates.get("gemini-3-pro-preview"), { date: "2026-03-09" });
-  assertFails(parseGeminiDeprecations, text.replaceAll("**Shutdown date**", "**Retirement date**"), ["gemini-3.6-flash"], /no model tables/);
-  assertFails(parseGeminiDeprecations, replaceOnce(text, "| May 7, 2027 |", "| Mid 2027 |"), ["gemini-3.1-flash-lite"], /not a date/);
+  assertFails(parseGeminiDeprecations, text.replaceAll("* Shutdown date", "* Retirement date"), ["gemini-3.6-flash"], /no model tables/);
+  assertFails(parseGeminiDeprecations, replaceOnce(text, "* May 7, 2027\n", "* Mid 2027\n"), ["gemini-3.1-flash-lite"], /not a date/);
+  assertFails(parseGeminiDeprecations, replaceOnce(text, "  * May 7, 2027\n", ""), ["gemini-3.1-flash-lite"], /a row has 3 cells/);
 });
 
 test("groq deprecations: month-first dates, newest announcement first", () => {
