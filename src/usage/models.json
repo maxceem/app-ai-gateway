@@ -183,12 +183,41 @@
       "output": 10.0,
       "retirement_date": "2027-04-01"
     },
-    "gpt-5": { "kind": "text", "input": 1.25, "cached_input": 0.125, "output": 10.0 },
-    "gpt-5-pro": { "kind": "text", "input": 15.0, "output": 120.0 },
-    "gpt-5-mini": { "kind": "text", "input": 0.25, "cached_input": 0.025, "output": 2.0 },
-    "gpt-5-nano": { "kind": "text", "input": 0.05, "cached_input": 0.005, "output": 0.4 },
-    "o3": { "kind": "text", "input": 2.0, "cached_input": 0.5, "output": 8.0 },
-    "o3-pro": { "kind": "text", "input": 20.0, "output": 80.0 },
+    "gpt-5": {
+      "kind": "text",
+      "input": 1.25,
+      "cached_input": 0.125,
+      "output": 10.0,
+      "retirement_date": "2026-12-11"
+    },
+    "gpt-5-pro": {
+      "kind": "text",
+      "input": 15.0,
+      "output": 120.0,
+      "retirement_date": "2026-12-11"
+    },
+    "gpt-5-mini": {
+      "kind": "text",
+      "input": 0.25,
+      "cached_input": 0.025,
+      "output": 2.0,
+      "retirement_date": "2026-12-11"
+    },
+    "gpt-5-nano": {
+      "kind": "text",
+      "input": 0.05,
+      "cached_input": 0.005,
+      "output": 0.4,
+      "retirement_date": "2026-12-11"
+    },
+    "o3": {
+      "kind": "text",
+      "input": 2.0,
+      "cached_input": 0.5,
+      "output": 8.0,
+      "retirement_date": "2026-12-11"
+    },
+    "o3-pro": { "kind": "text", "input": 20.0, "output": 80.0, "retirement_date": "2026-12-11" },
     "gpt-4.1": { "kind": "text", "input": 2.0, "cached_input": 0.5, "output": 8.0 },
     "gpt-4.1-mini": { "kind": "text", "input": 0.4, "cached_input": 0.1, "output": 1.6 },
     "gpt-4o-mini": { "kind": "text", "input": 0.15, "cached_input": 0.075, "output": 0.6 },
@@ -502,7 +531,7 @@
     },
     "gemini-3.8-flash": { "kind": "text", "input": 0.75, "cached_input": 0.075, "output": 3.75 },
     "gemini-3.6-flash": { "kind": "text", "input": 0.75, "cached_input": 0.075, "output": 3.75 },
-    "gemini-3.5-flash": { "kind": "text", "input": 0.75, "cached_input": 0.075, "output": 3.75 },
+    "gemini-3.5-flash": { "kind": "text", "input": 1.5, "cached_input": 0.15, "output": 9.0 },
     "gemini-3.5-flash-lite": { "kind": "text", "input": 0.3, "cached_input": 0.03, "output": 2.5 },
     "gemini-3.1-pro-preview": {
       "kind": "text",
@@ -637,7 +666,8 @@
       "input": 1.0,
       "cached_input": 0.17,
       "output": 4.05,
-      "author": "Thinking Machines"
+      "author": "Thinking Machines",
+      "retirement_date": "2026-11-06"
     },
     "Qwen/Qwen3.8-Flash": { "kind": "text", "input": 0.15, "output": 0.47, "author": "Alibaba" },
     "Qwen/Qwen3.7-Plus": { "kind": "text", "input": 0.32, "output": 1.28, "author": "Alibaba" },
@@ -669,14 +699,16 @@
       "input": 2.0,
       "cached_input": 0.5,
       "output": 6.0,
-      "author": "Alibaba"
+      "author": "Alibaba",
+      "retirement_date": "2026-11-04"
     },
     "MiniMaxAI/MiniMax-M3": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.06,
       "output": 1.2,
-      "author": "Minimax"
+      "author": "Minimax",
+      "retirement_date": "2026-11-06"
     },
     "moonshotai/Kimi-K3": {
       "kind": "text",
