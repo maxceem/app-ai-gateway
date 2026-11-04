@@ -189,6 +189,32 @@ describe("conversation records", () => {
     expect(left.line).toContain("agw-omitted:text/plain;6");
   });
 
+  it("keeps Anthropic custom-content documents as attachments, and tool calls whatever their shape", async () => {
+    const body = JSON.stringify({
+      messages: [
+        { role: "user", content: [
+          { type: "document", title: "Menu", source: { type: "content", content: [{ type: "text", text: "soup 200 g" }] } },
+        ] },
+        { role: "assistant", content: [
+          { type: "tool_use", id: "t1", name: "save", input: { type: "text", media_type: "text/plain", data: "two eggs" } },
+        ] },
+      ],
+    });
+    const record = async (files: boolean) => (await conversationRecord(capture({
+      keep: { images: true, audio: true, files },
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }))).line;
+
+    const kept = await record(true);
+    expect(kept).toContain('"text":"soup 200 g"');
+    const left = await record(false);
+    expect(left).not.toContain("soup 200 g");
+    expect(left).toContain('"title":"Menu"');
+    expect(left).toContain('"text":"agw-omitted:text/plain;10"');
+    // A tool call is the conversation, whatever its arguments look like.
+    for (const line of [kept, left]) expect(line).toContain('"data":"two eggs"');
+  });
+
   it("records left-out media by its exact size, and audio of no stated format as audio", async () => {
     // `YQ==` is one byte; a chat reply's audio does not repeat its format.
     const body = JSON.stringify({ choices: [{ message: { audio: { id: "audio_1", data: "YQ==" } } }] });

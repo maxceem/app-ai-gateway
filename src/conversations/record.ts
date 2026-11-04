@@ -148,6 +148,11 @@ class MediaShelf {
     return bytes === null ? `${OMITTED}${mime};${base64Bytes(text)}` : this.place(bytes, mime);
   }
 
+  /** The text of an attached document written out inline: left as it is where files are kept. */
+  attachedText(text: string): string {
+    return this.keep.files ? text : `${OMITTED}text/plain;${new TextEncoder().encode(text).byteLength}`;
+  }
+
   /** A piece of a streamed recording, in base64: left as it came where audio is kept. */
   piece(text: string, mime: string = UNKNOWN_AUDIO): string {
     return this.keep.audio && text.length <= MAX_STRING_CHARS ? text : `${OMITTED}${mime};${base64Bytes(text)}`;
@@ -190,8 +195,10 @@ function bareMedia(
   key: string | undefined,
 ): { mime: string; audio: boolean; text?: true } | null {
   if (typeof value.data !== "string") return null;
-  // Anthropic's `source`: base64, or a plain-text document.
-  if ((value.type === "base64" || value.type === "text") && typeof value.media_type === "string") {
+  // Anthropic's `source` of an image or document: base64, or a plain-text
+  // document. Only under `source`, so a tool call's arguments that happen to
+  // share the shape stay part of the conversation.
+  if (key === "source" && (value.type === "base64" || value.type === "text") && typeof value.media_type === "string") {
     const mime = value.media_type.toLowerCase();
     return value.type === "text" ? { mime, audio: false, text: true } : { mime, audio: mime.startsWith("audio/") };
   }
@@ -222,8 +229,19 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
     const out: Record<string, unknown> = {};
     const media = bareMedia(object, key);
     const audioEvent = isAudioEvent(object);
+    // Anthropic's custom-content document: an attachment written out as blocks.
+    const attachedBlocks = key === "source" && object.type === "content" && Array.isArray(object.content);
     for (const [name, item] of Object.entries(object)) {
-      if (media !== null && name === "data") {
+      if (attachedBlocks && name === "content") {
+        const blocks: unknown[] = [];
+        for (const block of item as unknown[]) {
+          const text = block !== null && typeof block === "object" ? (block as Record<string, unknown>).text : undefined;
+          blocks.push(typeof text === "string"
+            ? { ...(block as Record<string, unknown>), text: walk.shelf.attachedText(text) }
+            : await keptJson(block, walk, name));
+        }
+        out[name] = blocks;
+      } else if (media !== null && name === "data") {
         // In a stream, audio arrives a piece at a time; anything else whole.
         out[name] = media.text
           ? await walk.shelf.place(new TextEncoder().encode(item as string), media.mime)
