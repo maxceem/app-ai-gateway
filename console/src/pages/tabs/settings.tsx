@@ -18,6 +18,7 @@ import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
 import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
 
+const CONVERSATIONS_GUIDE_URL = "https://docs.appaigateway.com/applications/conversations/";
 const CONVERSATION_STORAGE_SETUP_URL =
   "https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage";
 
@@ -207,7 +208,10 @@ function ConversationStorage({
             <p className="text-sm font-medium">Store conversations</p>
             <p className="text-xs text-muted-foreground">
               {available ? (
-                "Keeps a copy of every request and response this app sends, so you can review and improve how it behaves. Images are kept; audio never is. A client can leave a request out with the X-Conversation-Storage: off header. Tell your users in your privacy policy."
+                <>
+                  Keeps each request and response for review.{" "}
+                  <ExternalHint href={CONVERSATIONS_GUIDE_URL}>Learn more</ExternalHint>
+                </>
               ) : (
                 <>
                   Not set up on this deployment.{" "}
