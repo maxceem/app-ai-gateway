@@ -163,7 +163,7 @@ describe("conversation records", () => {
     expect(line).toContain("agw-omitted:audio/wav;12");
   });
 
-  it("treats Anthropic's base64 sources as media, and its text sources as text", async () => {
+  it("treats Anthropic's sources as attachments, plain-text documents included", async () => {
     const body = JSON.stringify({
       messages: [{ role: "user", content: [
         { type: "image", source: { type: "base64", media_type: "image/png", data: PIXEL } },
@@ -177,13 +177,16 @@ describe("conversation records", () => {
     }));
 
     const kept = await anthropic({ images: true, audio: true, files: true });
-    expect(kept.media.map((item) => item.mime)).toEqual(["image/png", "application/pdf"]);
-    expect(kept.line).toContain('"data":"a menu"');
+    expect(kept.media.map((item) => item.mime)).toEqual(["image/png", "application/pdf", "text/plain"]);
+    expect(kept.media[2]!.name).toMatch(/\.txt$/);
+    expect(new TextDecoder().decode(kept.media[2]!.bytes)).toBe("a menu");
     const left = await anthropic({ images: false, audio: true, files: false });
     expect(left.media).toHaveLength(0);
     expect(left.line).not.toContain(PIXEL);
+    expect(left.line).not.toContain("a menu");
     expect(left.line).toContain("agw-omitted:image/png;");
     expect(left.line).toContain("agw-omitted:application/pdf;8");
+    expect(left.line).toContain("agw-omitted:text/plain;6");
   });
 
   it("records left-out media by its exact size, and audio of no stated format as audio", async () => {

@@ -490,11 +490,15 @@ const keptMedia = (field: string, what: string) =>
     description: `Keep ${what} beside the conversation. Off, each is recorded by its type and size alone.`,
   });
 
-/** Which media a stored conversation keeps: all of it unless the operator leaves a kind out. */
+/**
+ * Which attachments a stored conversation keeps: all of them unless the
+ * operator leaves a kind out. The conversation itself — messages, instructions,
+ * tool calls — is always kept.
+ */
 const ConversationKeepSchema = z.object({
   images: keptMedia("images", "images"),
   audio: keptMedia("audio", "audio: recordings sent for transcription, audio in a request, spoken replies"),
-  files: keptMedia("files", "every other file, such as a PDF"),
+  files: keptMedia("files", "every other attached file, such as a PDF or a text document"),
 }).strict();
 
 const ConversationsSchema = z.object({

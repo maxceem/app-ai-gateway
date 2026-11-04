@@ -180,14 +180,23 @@ function isAudioEvent(value: Record<string, unknown>): boolean {
   return typeof value.type === "string" && value.type.includes("audio") && !value.type.includes("transcript");
 }
 
-/** The bare base64 `data` of one object, and its media type, where the object says it is media. */
-function bareMedia(value: Record<string, unknown>, key: string | undefined): { mime: string; audio: boolean } | null {
+/**
+ * The `data` of one object, its media type and how it is written, where the
+ * object says it is media. `text` is an attached document written out as plain
+ * text: an attachment like any other file, not part of the conversation.
+ */
+function bareMedia(
+  value: Record<string, unknown>,
+  key: string | undefined,
+): { mime: string; audio: boolean; text?: true } | null {
   if (typeof value.data !== "string") return null;
-  // Gemini's `inlineData` / `inline_data`, and Anthropic's base64 `source`:
-  // any media, typed. (An Anthropic `text` source holds plain text, not media.)
-  const declared = typeof value.mimeType === "string" ? value.mimeType
-    : typeof value.mime_type === "string" ? value.mime_type
-    : value.type === "base64" ? value.media_type : undefined;
+  // Anthropic's `source`: base64, or a plain-text document.
+  if ((value.type === "base64" || value.type === "text") && typeof value.media_type === "string") {
+    const mime = value.media_type.toLowerCase();
+    return value.type === "text" ? { mime, audio: false, text: true } : { mime, audio: mime.startsWith("audio/") };
+  }
+  // Gemini's `inlineData` / `inline_data`: any media, typed.
+  const declared = typeof value.mimeType === "string" ? value.mimeType : value.mime_type;
   if (typeof declared === "string") {
     const mime = declared.toLowerCase();
     return { mime, audio: mime.startsWith("audio/") };
@@ -216,9 +225,11 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
     for (const [name, item] of Object.entries(object)) {
       if (media !== null && name === "data") {
         // In a stream, audio arrives a piece at a time; anything else whole.
-        out[name] = walk.streamed && media.audio
-          ? walk.shelf.piece(item as string, media.mime)
-          : await walk.shelf.placeBase64(item as string, media.mime);
+        out[name] = media.text
+          ? await walk.shelf.place(new TextEncoder().encode(item as string), media.mime)
+          : walk.streamed && media.audio
+            ? walk.shelf.piece(item as string, media.mime)
+            : await walk.shelf.placeBase64(item as string, media.mime);
       } else if (audioEvent && name === "delta" && typeof item === "string") {
         out[name] = walk.shelf.piece(item);
       } else {

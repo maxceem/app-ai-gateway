@@ -15,17 +15,18 @@ It is off for every app until you turn it on.
 
 - **Text and JSON**, as the provider received it and as it answered: messages,
   instructions, tool definitions, tool calls and their results, errors.
-- **Media**, once each per day, beside the conversations: images, audio (a
-  recording sent for transcription, audio inside a request, a spoken reply) and
-  other files, such as a PDF. A record names each as
+- **Attachments**, once each per day, beside the conversations: images, audio
+  (a recording sent for transcription, audio inside a request, a spoken reply)
+  and other files, such as a PDF or a plain-text document. A record names each as
   `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` where its data was. A spoken
   reply streamed in pieces keeps its pieces in the record as they came.
 
-Each kind of media can be left out: `keep.images`, `keep.audio` and
+Each kind of attachment can be left out: `keep.images`, `keep.audio` and
 `keep.files`, all on unless you turn one off. Media left out is recorded as
 `agw-omitted:<type>;<bytes>`, its media type and size; the type is just `audio`
 for audio whose format the body does not say. An uploaded file keeps its
-name. Text is always kept.
+name. The conversation itself, its messages, instructions and tool calls, is
+always kept.
 
 Anything over 8 MB, or a single string over 256 KB, is recorded by its size
 instead.

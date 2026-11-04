@@ -248,7 +248,7 @@ function ConversationStorage({
                 </div>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">Text is always kept.</p>
+            <p className="text-xs text-muted-foreground">Messages are always kept.</p>
           </Field>
         ) : null}
         {store ? (

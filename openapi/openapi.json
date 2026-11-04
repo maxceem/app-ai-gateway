@@ -998,7 +998,7 @@
                   "files": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Keep every other file, such as a PDF beside the conversation. Off, each is recorded by its type and size alone."
+                    "description": "Keep every other attached file, such as a PDF or a text document beside the conversation. Off, each is recorded by its type and size alone."
                   }
                 },
                 "default": {},

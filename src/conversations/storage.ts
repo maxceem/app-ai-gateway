@@ -65,6 +65,9 @@ const MEDIA_EXTENSIONS: Readonly<Record<string, string>> = {
   "audio/flac": "flac",
   "audio/pcm": "pcm",
   "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
 };
 
 /** A media type for a file extension, for an upload that did not say its type. */
