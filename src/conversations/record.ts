@@ -183,8 +183,11 @@ function isAudioEvent(value: Record<string, unknown>): boolean {
 /** The bare base64 `data` of one object, and its media type, where the object says it is media. */
 function bareMedia(value: Record<string, unknown>, key: string | undefined): { mime: string; audio: boolean } | null {
   if (typeof value.data !== "string") return null;
-  // Gemini's `inlineData` / `inline_data`: any media, typed.
-  const declared = typeof value.mimeType === "string" ? value.mimeType : value.mime_type;
+  // Gemini's `inlineData` / `inline_data`, and Anthropic's base64 `source`:
+  // any media, typed. (An Anthropic `text` source holds plain text, not media.)
+  const declared = typeof value.mimeType === "string" ? value.mimeType
+    : typeof value.mime_type === "string" ? value.mime_type
+    : value.type === "base64" ? value.media_type : undefined;
   if (typeof declared === "string") {
     const mime = declared.toLowerCase();
     return { mime, audio: mime.startsWith("audio/") };

@@ -6,7 +6,7 @@ import { observeUpstreamBody, type ObservedBody } from "../usage/body-observer";
 import { recordUsageEvent } from "../usage/usage-record";
 import { timeOrderedId } from "../core/ids";
 import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../conversations/capture";
-import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
+import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
 import {
   fetchWithTtfbTimeout,
@@ -47,14 +47,17 @@ function record(
     latencyMs: number;
     /** The upstream's status, where it answered: what a stored conversation records. */
     httpStatus?: number;
+    /** What was sent upstream, where it answered: the request a stored conversation records. */
+    sent?: ExecutionRequest;
   },
 ): void {
   // One id for the usage row and the stored conversation, so each finds the other.
   const eventId = timeOrderedId();
-  if (context.capture && input.observed && input.httpStatus !== undefined) {
+  if (context.capture && input.observed && input.httpStatus !== undefined && input.sent) {
     context.waitUntil(conversationCapture({
       env: context.env,
       source: context.capture,
+      sent: input.sent,
       eventId,
       appId: context.app.id,
       identity: context.identity,
@@ -219,6 +222,7 @@ export async function execute(
       status: upstream.ok ? "ok" : "provider_error",
       latencyMs: Math.round(providerTtfb),
       httpStatus: upstream.status,
+      sent: request,
     });
     return new Response(clientStream, {
       status: upstream.status,

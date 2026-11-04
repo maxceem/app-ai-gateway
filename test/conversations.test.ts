@@ -163,6 +163,29 @@ describe("conversation records", () => {
     expect(line).toContain("agw-omitted:audio/wav;12");
   });
 
+  it("treats Anthropic's base64 sources as media, and its text sources as text", async () => {
+    const body = JSON.stringify({
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: PIXEL } },
+        { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" } },
+        { type: "document", source: { type: "text", media_type: "text/plain", data: "a menu" } },
+      ] }],
+    });
+    const anthropic = (keep: { images: boolean; audio: boolean; files: boolean }) => conversationRecord(capture({
+      keep,
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }));
+
+    const kept = await anthropic({ images: true, audio: true, files: true });
+    expect(kept.media.map((item) => item.mime)).toEqual(["image/png", "application/pdf"]);
+    expect(kept.line).toContain('"data":"a menu"');
+    const left = await anthropic({ images: false, audio: true, files: false });
+    expect(left.media).toHaveLength(0);
+    expect(left.line).not.toContain(PIXEL);
+    expect(left.line).toContain("agw-omitted:image/png;");
+    expect(left.line).toContain("agw-omitted:application/pdf;8");
+  });
+
   it("records left-out media by its exact size, and audio of no stated format as audio", async () => {
     // `YQ==` is one byte; a chat reply's audio does not repeat its format.
     const body = JSON.stringify({ choices: [{ message: { audio: { id: "audio_1", data: "YQ==" } } }] });
@@ -376,6 +399,31 @@ describe("conversation storage through the gateway", () => {
       { headers: OPERATOR },
     );
     expect(traversal.status).toBe(400);
+  });
+
+  it("stores the request as the provider received it, after an endpoint's settings", async () => {
+    const appId = "conversation-endpoint";
+    const key = await seedServerApp(appId, {
+      endpoints: {
+        chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-luna", params: { reasoning: { effort: "low" } } },
+      },
+    });
+    await enableStorage(appId);
+    providerAnswers();
+    const response = await served(`https://example.test/v1/apps/${appId}/endpoints/chat`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "user-1" },
+      body: JSON.stringify({ model: "client-picked", input: "two eggs", reasoning: { effort: "high" } }),
+    });
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+
+    const [record] = await storedRecords(appId);
+    expect((record!.request as { value: unknown }).value).toMatchObject({
+      model: "gpt-5.6-luna",
+      input: "two eggs",
+      reasoning: { effort: "low" },
+    });
   });
 
   it("stores nothing for an opted-out request, or for an app that does not store", async () => {

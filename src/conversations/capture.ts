@@ -14,6 +14,7 @@ import { log } from "../core/log";
 import { errorFacts } from "../core/error-facts";
 import type { ObservedBody } from "../usage/body-observer";
 import type { AttemptAttribution } from "../usage/usage-record";
+import type { ExecutionRequest } from "../execution/plan";
 import type { ConversationCapture, KeptMedia } from "./record";
 
 /** A request or response body larger than this is recorded by its size alone. */
@@ -31,6 +32,8 @@ export interface CaptureSource {
 export interface CaptureInput {
   env: Env;
   source: CaptureSource;
+  /** The request as it went upstream, after an endpoint's params, model and clamps. */
+  sent: ExecutionRequest;
   eventId: string;
   appId: string;
   identity: GatewayIdentity;
@@ -45,10 +48,27 @@ export interface CaptureInput {
   observed: Promise<ObservedBody>;
 }
 
+/**
+ * The body the provider received. An endpoint builds its own, as JSON text or a
+ * form; a body passed through as the client sent it is the client's, read once.
+ */
+async function sentBody(input: CaptureInput): Promise<{ contentType: string; bytes: Uint8Array<ArrayBuffer> }> {
+  const body = input.sent.body;
+  if (typeof body === "string") {
+    return { contentType: input.sent.headers.get("content-type") ?? input.source.contentType, bytes: new TextEncoder().encode(body) };
+  }
+  if (body instanceof FormData) {
+    const encoded = new Response(body);
+    return { contentType: encoded.headers.get("content-type") ?? "", bytes: new Uint8Array(await encoded.arrayBuffer()) };
+  }
+  return { contentType: input.source.contentType, bytes: await input.source.body() };
+}
+
 export async function conversationCapture(input: CaptureInput): Promise<void> {
   try {
     const createdAt = new Date().toISOString();
-    const [requestBytes, observed] = await Promise.all([input.source.body(), input.observed]);
+    const [sent, observed] = await Promise.all([sentBody(input), input.observed]);
+    const requestBytes = sent.bytes;
     const capture: ConversationCapture = {
       eventId: input.eventId,
       createdAt,
@@ -66,7 +86,7 @@ export async function conversationCapture(input: CaptureInput): Promise<void> {
       latencyMs: input.latencyMs,
       keep: input.source.keep,
       request: {
-        contentType: input.source.contentType,
+        contentType: sent.contentType,
         bytes: requestBytes.byteLength > CAPTURE_MAX_BYTES ? null : requestBytes,
         totalBytes: requestBytes.byteLength,
       },
