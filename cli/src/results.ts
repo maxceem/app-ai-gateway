@@ -5,6 +5,7 @@ import type {
   CliOperation,
 } from "../../src/contracts/cli.ts";
 import type { AppResult } from "./apps.ts";
+import type { ConversationsExportResult } from "./conversations.ts";
 import type { Onboarding } from "./context.ts";
 import type { DeploymentResult } from "./deployment.ts";
 import type { ResourceResult } from "./resources.ts";
@@ -22,6 +23,7 @@ export type DeploymentStatusResult = CliCapabilitiesResponse & {
 export type CommandResult =
   | ResourceResult
   | AppResult
+  | ConversationsExportResult
   | UsageResult
   | SupportResult
   | DeploymentResult

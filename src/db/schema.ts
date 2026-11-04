@@ -459,9 +459,20 @@ export const appUsageEvent = sqliteTable(
      * which have no install.
      */
     installId: text("install_id"),
+    /**
+     * The client's own `X-Client-Trace-Id`, which groups the requests of one
+     * unit of its work — a chat message that takes several model rounds — and
+     * joins them with the app's own records and its stored conversations.
+     * Null where the client sent none.
+     */
+    clientTraceId: text("client_trace_id"),
   },
   (table) => [
     index("idx_usage_event_account_created").on(table.organizationId, table.createdAt),
+    // Partial, so traffic that sends no trace id pays no extra index write.
+    index("idx_usage_trace")
+      .on(table.appId, table.clientTraceId)
+      .where(sql`${table.clientTraceId} IS NOT NULL`),
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
     index("idx_usage_install_month").on(table.appId, table.installId, table.createdAt),
     index("idx_usage_app_month").on(table.appId, table.createdAt),

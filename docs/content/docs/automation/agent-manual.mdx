@@ -350,7 +350,7 @@ read, which an update requires.
 
 ## Application configuration reference
 
-`config` is one JSON object with four top-level keys. Unknown keys are
+`config` is one JSON object with five top-level keys. Unknown keys are
 rejected.
 
 ```json
@@ -358,7 +358,8 @@ rejected.
   "authentication": { … },
   "routing": { … },
   "limits": { … },
-  "endpoints": { … }
+  "endpoints": { … },
+  "conversations": { … }
 }
 ```
 
@@ -465,6 +466,22 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 `listModelPrices` gives every catalog model's `kind`: `text`, `image`,
 `speech`, `transcription`, `embedding` or `realtime`. Pick an endpoint's
 models by it; a `realtime` model serves no endpoint.
+
+### `conversations`
+
+Optional; omitted means off.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `store` | boolean, default `false` | Keep a copy of every request and response the app sends. Audio is never kept; images are kept beside the records. Refused with `400 invalid_request` on a deployment without conversation storage. Turn it on only when the person asks, and remind them to disclose it in their privacy policy |
+| `retention_days` | integer 1-400, default `180` | Days stored conversations are kept before nightly maintenance deletes them |
+
+Clients may send `X-Client-Trace-Id` to group the requests of one unit of work
+and `X-Conversation-Storage: off` to keep a request out of storage. Download
+with `agw app conversations <app-id>`, or list with
+`GET /v1/admin/apps/{app}/conversations` and fetch each file with
+`GET /v1/admin/apps/{app}/conversations/file?name=<name>`. See
+[Stored conversations](/applications/conversations).
 
 ### Complete examples
 

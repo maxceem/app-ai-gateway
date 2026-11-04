@@ -1511,6 +1511,8 @@ describe("provider-native proxy", () => {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
           "x-app-version": "1.2.3",
+          "x-client-trace-id": "message-1",
+          "x-conversation-storage": "off",
           // Nothing below is the provider's business: the first group would
           // disclose the end user, the second would redirect the operator's
           // spend, the third is the gateway's own protocol.
@@ -1555,6 +1557,8 @@ describe("provider-native proxy", () => {
       "x-goog-user-project",
       "accept-encoding",
       "x-app-version",
+      "x-client-trace-id",
+      "x-conversation-storage",
     ]) {
       expect(upstreamHeaders.get(name)).toBeNull();
     }

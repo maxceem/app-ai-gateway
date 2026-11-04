@@ -23,6 +23,9 @@ export default defineConfig({
             SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             TEST_MIGRATIONS: migrations,
           },
+          // Conversation storage's bucket is optional and absent from
+          // wrangler.jsonc, so the tests bind one of their own.
+          r2Buckets: ["CONVERSATIONS"],
         },
       };
     }),

@@ -127,10 +127,20 @@ function generatedAppId(name: string): string {
 const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();
 
 function validatedConfig(
+  env: Env,
   next: AppConfig,
   providers: OrganizationProviders,
   grandfathered: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
 ): AppConfig {
+  // Refused rather than accepted and ignored: an operator who turned storage
+  // on would otherwise believe conversations were being kept.
+  if (next.conversations.store && env.CONVERSATIONS === undefined) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "conversations.store needs conversation storage, which this deployment does not have: bind an R2 bucket as CONVERSATIONS",
+    );
+  }
   try {
     validateConfigurationReferences(next, { instances: providers, grandfathered });
     return next;
@@ -290,6 +300,7 @@ export async function createApp(
   const { name } = body;
   const organizationId = actor.organizationId;
   const config = validatedConfig(
+    env,
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
   );
@@ -370,6 +381,7 @@ export async function validateApp(
 ): Promise<AppValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
   validatedConfig(
+    scope.env,
     body.config,
     await authoritativeOrganizationProviders(scope.env, actor.organizationId),
     referencedProviderSlugs(appRecordFromRow(existing).config),
@@ -384,7 +396,7 @@ export async function validateAppDraft(
   body: AppWrite,
 ): Promise<AppDraftValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  validatedConfig(body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
+  validatedConfig(scope.env, body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
   return { valid: true };
 }
 
@@ -409,6 +421,7 @@ export async function updateApp(
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
   const config = validatedConfig(
+    env,
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
     referencedProviderSlugs(appRecordFromRow(existing).config),

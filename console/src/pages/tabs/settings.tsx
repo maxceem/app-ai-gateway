@@ -15,6 +15,7 @@ import { clientApiOrigin } from "@/lib/client-api";
 import { authIssuer } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
+import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
 
 /**
  * The app as a record: what it is called, its id and the URL clients reach it
@@ -129,6 +130,8 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
         </CardContent>
       </Card>
 
+      <ConversationStorage state={state} readOnly={readOnly} available={capabilities.conversationStorage} />
+
       <Card className="border-destructive/40">
         <CardHeader>
           <SectionHeader
@@ -168,5 +171,72 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
         onConfirm={() => void remove()}
       />
     </div>
+  );
+}
+
+/**
+ * Whether the gateway keeps a copy of this app's requests and responses, and
+ * for how long. Shown on every deployment, but only switchable where one has a
+ * bucket to keep them in, so an operator on another learns why it is off.
+ */
+function ConversationStorage({
+  state,
+  readOnly,
+  available,
+}: {
+  state: AppDraft;
+  readOnly: boolean;
+  available: boolean;
+}) {
+  const conversations = state.draft!.config.conversations ?? {};
+  const store = conversations.store ?? false;
+  const retention = conversations.retention_days ?? CONVERSATION_RETENTION_DAYS.default;
+  const [days, setDays] = useState(String(retention));
+  const update = (next: { store?: boolean; retention_days?: number }) =>
+    state.updateConfig({ conversations: { store, retention_days: retention, ...next } });
+
+  return (
+    <Card>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Store conversations</p>
+            <p className="text-xs text-muted-foreground">
+              {available
+                ? "Keeps a copy of every request and response this app sends, so you can review and improve how it behaves. Images are kept; audio never is. A client can leave a request out with the X-Conversation-Storage: off header. Tell your users in your privacy policy."
+                : "This deployment has no storage for conversations. Bind an R2 bucket as CONVERSATIONS to turn this on."}
+            </p>
+          </div>
+          <Switch
+            aria-label="Store conversations"
+            checked={store}
+            disabled={readOnly || (!available && !store)}
+            onCheckedChange={(checked) => update({ store: checked })}
+          />
+        </div>
+        {store ? (
+          <Field label="Keep for (days)" htmlFor="conversation-retention">
+            <Input
+              id="conversation-retention"
+              type="number"
+              inputMode="numeric"
+              min={CONVERSATION_RETENTION_DAYS.min}
+              max={CONVERSATION_RETENTION_DAYS.max}
+              value={days}
+              disabled={readOnly}
+              className="max-w-32"
+              onChange={(event) => {
+                setDays(event.target.value);
+                const value = Number(event.target.value);
+                if (Number.isInteger(value)) update({ retention_days: value });
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Nightly maintenance deletes stored days older than this.
+            </p>
+          </Field>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }

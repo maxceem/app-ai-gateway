@@ -973,6 +973,25 @@
               "additionalProperties": false
             },
             "default": {}
+          },
+          "conversations": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "boolean",
+                "default": false,
+                "description": "Keep a copy of every request and response this app sends through the gateway. Audio is never kept; images are kept beside the conversation."
+              },
+              "retention_days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 400,
+                "default": 180,
+                "description": "Days a stored conversation is kept before nightly maintenance deletes it."
+              }
+            },
+            "default": {},
+            "additionalProperties": false
           }
         },
         "required": [
@@ -2344,6 +2363,13 @@
               "null"
             ]
           },
+          "client_trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's X-Client-Trace-Id for this request, or null where it sent none."
+          },
           "created_at": {
             "type": "string"
           }
@@ -2376,7 +2402,63 @@
           "status",
           "client_aborted",
           "latency_ms",
+          "client_trace_id",
           "created_at"
+        ]
+      },
+      "ConversationFileList": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationFile"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as cursor to continue the listing; null when it is complete."
+          }
+        },
+        "required": [
+          "app_id",
+          "files",
+          "next_cursor"
+        ]
+      },
+      "ConversationFile": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file's name within the app, `YYYY-MM-DD/HHMMSS-<batch>.jsonl.gz`; pass it to the download operation."
+          },
+          "size": {
+            "type": "integer",
+            "description": "Bytes, gzipped."
+          },
+          "records": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Records in the file, where it says."
+          },
+          "uploaded_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "records",
+          "uploaded_at"
         ]
       },
       "AuthEventSummary": {
@@ -3160,13 +3242,17 @@
                     "supportEmail": {
                       "type": "string",
                       "format": "email"
+                    },
+                    "conversationStorage": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "billing",
                     "registrationOpen",
                     "googleAuth",
-                    "emailVerification"
+                    "emailVerification",
+                    "conversationStorage"
                   ]
                 }
               }
@@ -4019,6 +4105,30 @@
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
+            "in": "header"
           }
         ],
         "responses": {
@@ -4244,6 +4354,30 @@
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -4425,6 +4559,30 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
             "in": "header"
           }
         ],
@@ -9112,6 +9270,17 @@
           },
           {
             "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Only the requests the client sent with this X-Client-Trace-Id."
+            },
+            "required": false,
+            "description": "Only the requests the client sent with this X-Client-Trace-Id.",
+            "name": "trace",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "integer",
               "exclusiveMinimum": 0,
               "description": "Page backwards: only events older than this id."
@@ -9156,6 +9325,207 @@
                     "events"
                   ]
                 }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/conversations": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "listAppConversations",
+        "summary": "List stored conversation files",
+        "description": "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Images are kept beside them as `<YYYY-MM-DD>/images/<sha256>.<ext>` and named in the records as `agw-image:<name>`.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of stored conversation files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationFileList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/conversations/file": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "getAppConversationFile",
+        "summary": "Download a stored conversation file",
+        "description": "One file named by the listing, or an image a record names: a batch answers as application/gzip, an image as its own type.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "A file name from the listing, or an image name a record gives, `<YYYY-MM-DD>/images/<sha256>.<ext>`."
+            },
+            "required": true,
+            "description": "A file name from the listing, or an image name a record gives, `<YYYY-MM-DD>/images/<sha256>.<ext>`.",
+            "name": "name",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's bytes.",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },

@@ -24,6 +24,7 @@ import { storedAppVersion } from "./core/app-version";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
+import { ConversationLog } from "./do/ConversationLog";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { billingEntitlementGate } from "./middleware/billing";
 import { clientCallDeadline } from "./middleware/deadline";
@@ -39,8 +40,9 @@ import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
 import { errorFacts } from "./core/error-facts";
 import { contained } from "./core/background";
+import { runConversationRetention } from "./conversations/retention";
 
-export { EndpointRateLimiter, OrgQuota, UserLimiter };
+export { ConversationLog, EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
@@ -334,6 +336,18 @@ async function prune(env: Env): Promise<void> {
       if (deleted > 0) log("info", "expired_accounts_pruned", { deleted });
     } catch (error) {
       sweepFailed("expired_accounts", "expired_accounts_prune_failed", error);
+    }
+  }
+  // Stored conversations, where the deployment keeps them. Offered half of
+  // what is left, like account cleanup, so usage compaction is never starved;
+  // R2 calls are subrequests too, and are charged to the same allowance.
+  if (env.CONVERSATIONS !== undefined) {
+    const share = budget.limited(Math.floor(budget.remaining / 2));
+    try {
+      const result = await runConversationRetention(env.CONVERSATIONS, share.database(db), Date.now(), share);
+      log("info", "conversations_pruned", { ...result });
+    } catch (error) {
+      sweepFailed("conversations", "conversations_prune_failed", error);
     }
   }
   // Reports under its own codes, and swallows its own failures for the same

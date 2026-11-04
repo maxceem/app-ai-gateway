@@ -16,7 +16,12 @@ const APP = {
 };
 
 /** Rendered through the page, so the tab is reached the way the sidebar reaches it. */
-function renderSettings(role: "owner" | "member", tab = "settings", apiBaseUrl?: string) {
+function renderSettings(
+  role: "owner" | "member",
+  tab = "settings",
+  apiBaseUrl?: string,
+  conversationStorage = true,
+) {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
     "/v1/admin/apps/my-app": { body: { app: APP } },
@@ -25,7 +30,7 @@ function renderSettings(role: "owner" | "member", tab = "settings", apiBaseUrl?:
     <Routes>
       <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
     </Routes>,
-    { session: { role }, route: `/apps/my-app/${tab}`, capabilities: { apiBaseUrl } },
+    { session: { role }, route: `/apps/my-app/${tab}`, capabilities: { apiBaseUrl, conversationStorage } },
   );
 }
 
@@ -68,6 +73,28 @@ describe("SettingsTab", () => {
     await waitFor(() =>
       expect(baseUrl()).toBe("https://api.example.com/v1/apps/my-app/proxy/{provider}/{provider_path}"));
     expect(baseUrl()).not.toContain(window.location.origin);
+  });
+
+  it("turns conversation storage on through the draft, with its retention", async () => {
+    renderSettings("owner");
+
+    const toggle = await screen.findByRole("switch", { name: /store conversations/i });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByLabelText(/keep for/i)).toBeNull();
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("switch", { name: /store conversations/i }).getAttribute("aria-checked"))
+      .toBe("true");
+    expect(screen.getByLabelText(/keep for/i)).toHaveProperty("value", "180");
+    expect(await screen.findByText(/unsaved changes to/i)).toBeTruthy();
+  });
+
+  it("explains why conversation storage is off where the deployment has none", async () => {
+    renderSettings("owner", "settings", undefined, false);
+
+    const toggle = await screen.findByRole("switch", { name: /store conversations/i });
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(screen.getByText(/bind an r2 bucket as conversations/i)).toBeTruthy();
   });
 
   it("turns the app off through the draft, to be saved with everything else", async () => {

@@ -145,6 +145,8 @@ describe("billing gateway", () => {
       registrationOpen: false,
       googleAuth: false,
       emailVerification: false,
+      // The tests bind a conversation bucket; see vitest.config.ts.
+      conversationStorage: true,
     });
   });
 

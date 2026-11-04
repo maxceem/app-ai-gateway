@@ -154,6 +154,7 @@ export const CAPABILITIES: Capabilities = {
   registrationOpen: true,
   googleAuth: false,
   emailVerification: false,
+  conversationStorage: true,
 };
 
 /** Renders a tree inside an authenticated console session. */

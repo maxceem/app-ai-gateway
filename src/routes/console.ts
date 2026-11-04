@@ -40,6 +40,7 @@ consoleRoutes.get("/capabilities", async (c) => c.json({
   apiBaseUrl: publicApiOrigin(c.env),
   emailVerification: c.get("deployment").emailVerification === "required",
   supportEmail: supportInbox(c.env, c.get("deployment")) ?? undefined,
+  conversationStorage: c.env.CONVERSATIONS !== undefined,
 } satisfies ConsoleCapabilitiesResponse));
 
 /**

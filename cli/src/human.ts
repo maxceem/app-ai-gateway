@@ -174,7 +174,26 @@ function render(
       return deployment(result, style);
     case "support send":
       return support(result, style);
+    case "app conversations":
+      return conversations(result, style);
   }
+}
+
+/** `app conversations`: where the export went, and how much of it was new. */
+function conversations(result: RenderedResult, style: Style): string[] {
+  if (!("downloaded" in result)) return [];
+  return [
+    style.headline(
+      result.files === 0
+        ? `No stored conversations for ${result.app_id} in that range.`
+        : `Exported ${result.files} conversation files for ${result.app_id}.`,
+    ),
+    ...kv([
+      ["Folder", result.output],
+      ["Downloaded", `${result.downloaded} files${result.images ? `, ${result.images} images` : ""}`],
+      ["Range", `${result.from ?? "oldest"} to ${result.to}`],
+    ], style),
+  ];
 }
 
 /** `support send`: the reference to quote, and where the reply goes. */

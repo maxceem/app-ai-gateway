@@ -398,6 +398,33 @@ Plain variables, unset by default. When both are set, the sign-up screen shows
 a consent line linking to them. With either missing, nothing is shown. Set
 them in a profile overlay or in the dashboard.
 
+## Conversation storage
+
+### `CONVERSATIONS`
+
+[R2](https://developers.cloudflare.com/r2/) bucket binding, unset by default.
+With it bound, an app can turn on
+[stored conversations](/applications/conversations): the gateway keeps a copy of
+its requests and responses in this bucket, under `conversations/<app>/`.
+Unbound, the setting is refused and nothing is stored.
+
+It is not in `wrangler.jsonc` because R2 has to be enabled on a Cloudflare
+account before a bucket can be created there, and a deployment must not fail on
+an account without it. Enable R2 in the dashboard, then add the binding in your
+profile overlay; Wrangler creates the bucket on the next deploy:
+
+```jsonc
+{
+  "r2_buckets": [{ "binding": "CONVERSATIONS" }]
+}
+```
+
+Records reach the bucket through a Durable Object per app, which batches them
+every few minutes, so each app writes a few files an hour rather than one per
+request. Nightly maintenance applies each app's retention; see
+[Operations](/self-hosting/operations#retention). R2 storage, writes and
+downloads are billed to your Cloudflare account at R2's rates.
+
 ## Management analytics
 
 ### `MANAGEMENT_ANALYTICS`
@@ -518,4 +545,5 @@ is only logged, so the bound Worker cannot slow down or change a sign-up.
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
 | `MANAGEMENT_ANALYTICS` | Analytics Engine binding | Unset (nothing recorded) |
+| `CONVERSATIONS` | R2 bucket binding | Unset (conversation storage unavailable) |
 | `ANALYTICS` | Service binding | Unset |

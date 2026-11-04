@@ -48,6 +48,12 @@ is consumed by the gateway and never reaches the provider, and a server app's
 requests do not need it. The Swift package computes it: see
 [Per-request proof](/integrate/ios#per-request-proof).
 
+Two optional headers concern [stored conversations](/applications/conversations).
+`X-Client-Trace-Id` names your own unit of work, such as one chat message that
+takes several requests, and is recorded on each request's usage event and
+stored conversation. `X-Conversation-Storage: off` keeps a request out of
+storage. Neither reaches the provider.
+
 The credential may also be sent in the provider's own key header, such as
 `x-api-key` for Anthropic or `x-goog-api-key` for Gemini. That is what lets a
 provider SDK work with the gateway token in place of the provider key. The

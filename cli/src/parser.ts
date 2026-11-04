@@ -74,6 +74,7 @@ export const commands = {
   "app validate": { args: 0, flags: "file" },
   "app check": { args: 1, flags: "" },
   "app snippet": { args: 1, flags: "language provider endpoint output" },
+  "app conversations": { args: 1, flags: "from to output images!" },
   "app remove": { args: 1, flags: "yes!" },
   "app key list": { args: 1, flags: "" },
   "app key add": { args: 1, flags: "name key-output" },
@@ -112,6 +113,7 @@ export interface Flags {
   "clear-route"?: true;
   "all-providers"?: true;
   "message-stdin"?: true;
+  images?: true;
   message?: string;
   context?: string | string[];
   name?: string;
