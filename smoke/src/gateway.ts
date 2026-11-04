@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { USER_AGENT } from "./client.ts";
 import { need, type SmokeEnv } from "./env.ts";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -15,9 +16,12 @@ export interface CallOptions {
   console?: boolean;
 }
 
-/** One request to the gateway, bounded by a timeout so a hung deployment fails rather than stalls. */
+/**
+ * One request to the gateway, bounded by a timeout so a hung deployment fails
+ * rather than stalls, and naming the smoke checks as its `user-agent`.
+ */
 export async function call(env: SmokeEnv, path: string, options: CallOptions = {}): Promise<Response> {
-  const headers: Record<string, string> = { ...options.headers };
+  const headers: Record<string, string> = { "user-agent": USER_AGENT, ...options.headers };
   if (options.key !== undefined) headers.authorization = `Bearer ${options.key}`;
   let body: string | undefined;
   if (options.body !== undefined) {

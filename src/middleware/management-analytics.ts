@@ -3,6 +3,7 @@ import {
   clientOf,
   cliVersionOf,
   endingOf,
+  isCliAgent,
   recordManagementCall,
   refusalOf,
   type CallEnding,
@@ -138,7 +139,7 @@ export function presentedCredential(c: { req: { header(name: string): string | u
 
 /**
  * The console for a person's session or the console's own request; the CLI
- * for a client naming itself `agw`, which only the CLI does; the API for
+ * for a client naming itself `agw` first, which only the CLI does; the API for
  * everything else. A label for analytics, never a decision.
  */
 function httpChannel(
@@ -147,5 +148,5 @@ function httpChannel(
   userAgent: string | undefined,
 ): ManagementChannel {
   if (credential === "session" || consoleRequest) return "console";
-  return clientOf(userAgent) === "agw" ? "cli" : "api";
+  return isCliAgent(userAgent) ? "cli" : "api";
 }
