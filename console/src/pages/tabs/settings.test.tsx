@@ -78,12 +78,12 @@ describe("SettingsTab", () => {
   it("turns conversation storage on through the draft, with its retention", async () => {
     renderSettings("owner");
 
-    const toggle = await screen.findByRole("switch", { name: /store conversations/i });
+    const toggle = await screen.findByRole("switch", { name: /conversation history/i });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     expect(screen.queryByLabelText(/keep for/i)).toBeNull();
     await userEvent.click(toggle);
 
-    expect(screen.getByRole("switch", { name: /store conversations/i }).getAttribute("aria-checked"))
+    expect(screen.getByRole("switch", { name: /conversation history/i }).getAttribute("aria-checked"))
       .toBe("true");
     expect(screen.getByLabelText(/keep for/i)).toHaveProperty("value", "180");
     expect(await screen.findByText(/unsaved changes to/i)).toBeTruthy();
@@ -92,7 +92,7 @@ describe("SettingsTab", () => {
   it("links to the setup guide where the deployment has no conversation storage", async () => {
     renderSettings("owner", "settings", undefined, false);
 
-    const toggle = await screen.findByRole("switch", { name: /store conversations/i });
+    const toggle = await screen.findByRole("switch", { name: /conversation history/i });
     expect(toggle).toHaveProperty("disabled", true);
     expect(screen.getByRole("link", { name: /set up conversation storage/i }).getAttribute("href"))
       .toBe("https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage");

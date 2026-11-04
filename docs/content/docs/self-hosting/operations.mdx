@@ -92,7 +92,7 @@ database bounded:
 | App Attest challenges | Deleted once their five-minute window has passed. An expired challenge cannot be redeemed, so nothing a client sees changes. |
 | Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
 | CLI authorizations | A finished browser handoff is deleted, and the short-lived copy of a one-time CLI response is cleared once its recovery window has passed. |
-| Stored conversations | Where `CONVERSATIONS` is bound: each app's stored days older than its `conversations.retention_days` are deleted with their images, and everything of an app that no longer exists. A run that reaches its budget continues the next night, starting after the last app it finished. |
+| Conversation history | Where `CONVERSATIONS` is bound: each app's stored days older than its `conversations.retention_days` are deleted with their images, and everything of an app that no longer exists. A run that reaches its budget continues the next night, starting after the last app it finished. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.

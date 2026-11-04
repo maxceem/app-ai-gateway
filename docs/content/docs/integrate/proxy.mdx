@@ -48,7 +48,7 @@ is consumed by the gateway and never reaches the provider, and a server app's
 requests do not need it. The Swift package computes it: see
 [Per-request proof](/integrate/ios#per-request-proof).
 
-Two optional headers concern [stored conversations](/applications/conversations).
+Two optional headers concern [conversation history](/applications/conversations).
 `X-Client-Trace-Id` names your own unit of work, such as one chat message that
 takes several requests, and is recorded on each request's usage event and
 stored conversation. `X-Conversation-Storage: off` keeps a request out of

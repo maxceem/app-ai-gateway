@@ -205,11 +205,11 @@ function ConversationStorage({
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-1">
-            <p className="text-sm font-medium">Store conversations</p>
+            <p className="text-sm font-medium">Conversation history</p>
             <p className="text-xs text-muted-foreground">
               {available ? (
                 <>
-                  Keeps each request and response for review.{" "}
+                  Keeps a history of each request and response.{" "}
                   <ExternalHint href={CONVERSATIONS_GUIDE_URL}>Learn more</ExternalHint>
                 </>
               ) : (
@@ -221,7 +221,7 @@ function ConversationStorage({
             </p>
           </div>
           <Switch
-            aria-label="Store conversations"
+            aria-label="Conversation history"
             checked={store}
             disabled={readOnly || (!available && !store)}
             onCheckedChange={(checked) => update({ store: checked })}
