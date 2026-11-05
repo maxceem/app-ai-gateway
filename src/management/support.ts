@@ -1,5 +1,5 @@
 import type { AuthState } from "@maxceem/cf-auth";
-import { getBillingAccess } from "../billing/gateway";
+import { requirePlanFeature } from "../billing/features";
 import type { SupportMessageRequest } from "../contracts/schemas";
 import type { SupportMessageResponse } from "../contracts/responses";
 import { enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
@@ -15,8 +15,9 @@ import type { ManagementScope } from "./scope";
  * Messages to human support, from the console's Human Support menu,
  * `agw support send` and the MCP `contact_support` tool alike.
  *
- * Support is part of a paid plan, so it exists only where there are plans and
- * a help desk bound as `HELPDESK`, and only for an organization holding one.
+ * Support is a plan feature (`humanSupport`), so it exists only where there
+ * are plans and a help desk bound as `HELPDESK`, and only for an organization
+ * whose plan includes it.
  * The help desk keeps the ticket, refuses a pasted credential, recognises a
  * repeated message, and emails the support inbox with the person's address as
  * the reply-to, so the conversation carries on in email rather than in the
@@ -40,7 +41,7 @@ const CHANNELS: Record<string, HelpdeskChannel> = {
 /**
  * The inbox the Human Support menu names, or null where the deployment offers
  * no support: no `HELPDESK` binding, no `SUPPORT_EMAIL` to show, or no billing
- * to tell a paid plan from a free one. The address is only shown, for people
+ * whose plans could include it. The address is only shown, for people
  * who prefer their own mail app; the help desk decides where tickets go.
  * Reads the environment only, so the public capabilities answer can ask it on
  * every request.
@@ -66,20 +67,14 @@ export async function sendSupportMessage(input: {
   }
 
   /*
-   * A paid plan is one that is not the service's default. An outage is not a
-   * statement about the organization, and it is exactly when a paying customer
-   * most needs to write in, so a message is still sent while billing cannot be
-   * reached; the ticket says the plan could not be read.
+   * Whether a plan includes support is its plan data's `includes`. An outage
+   * is not a statement about the organization, and it is exactly when a paying
+   * customer most needs to write in, so the feature's policy still sends a
+   * message while billing cannot be reached; the ticket says the plan could
+   * not be read.
    */
-  const access = await getBillingAccess(deployment, actor.organizationId, scope.billingCache);
+  const access = await requirePlanFeature(scope, actor.organizationId, "humanSupport");
   const plan = access.state === "billed" ? access.plan : null;
-  if (access.state !== "unavailable" && (plan === null || plan.isDefault)) {
-    throw new GatewayError(
-      403,
-      "support_plan_required",
-      "Human support is included with paid plans. An account owner can choose one on the Billing page of the console.",
-    );
-  }
   const email = state.user?.email;
   if (!email) throw new GatewayError(409, "conflict", "This credential's owner has no email address to reply to");
 

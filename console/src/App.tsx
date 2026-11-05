@@ -74,6 +74,7 @@ function AuthenticatedConsole() {
       billing={billing.data?.access}
       quota={billing.data?.quota}
       planLimits={billing.data?.limits}
+      planFeatures={billing.data?.features}
       unclaimedAccessEndsAt={billing.data?.unclaimedAccessEndsAt}
     >
       <UnsavedDraftProvider>

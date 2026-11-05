@@ -71,6 +71,13 @@ export type ErrorCode =
    * role: no role changes this, and an agent has to tell the person why.
    */
   | "support_plan_required"
+  /**
+   * The account's plan does not include the feature this call uses; the
+   * message names it. No role changes this and retrying never helps: an
+   * account owner has to choose a plan that includes it. Human support keeps
+   * its own `support_plan_required`.
+   */
+  | "billing_feature_not_included"
   | "billing_unavailable"
   | "billing_not_found"
   | "billing_action_forbidden"

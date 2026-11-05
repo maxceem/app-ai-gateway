@@ -10,8 +10,12 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const ORIGIN = "https://example.test";
 
-function plan(planName: string, isDefault: boolean): BillingAccess {
-  return { plan: { planKey: planName.toLowerCase(), planName, isDefault }, subscription: null };
+/** A plan, with the features its plan data says it includes; without a list, every one. */
+function plan(planName: string, isDefault: boolean, includes?: string[]): BillingAccess {
+  return {
+    plan: { planKey: planName.toLowerCase(), planName, isDefault, ...(includes ? { limits: { includes } } : {}) },
+    subscription: null,
+  };
 }
 
 /** A deployment as a test needs it: with or without billing, a help desk and an inbox. */
@@ -185,13 +189,20 @@ describe("support", () => {
     expect(await listedTools(runtime({ helpdesk: false }).env, key)).not.toContain("contact_support");
   });
 
-  it("refuses the free default plan with its own code, and a deployment that offers no support", async () => {
+  it("refuses a plan that does not include support with its own code, and a deployment that offers no support", async () => {
     const human = await seedHuman();
-    const free = runtime({ access: plan("Free", true) });
-    const refused = await send(free.env, human, MESSAGE);
-    expect(refused.status).toBe(403);
-    expect(await errorCode(refused)).toBe("support_plan_required");
-    expect(free.tickets).toHaveLength(0);
+    // Paid or not makes no difference: the plan's data says what it includes.
+    for (const access of [plan("Free", true, []), plan("Starter", false, ["conversationStorage"])]) {
+      clearIsolateCaches();
+      const without = runtime({ access });
+      const refused = await send(without.env, human, MESSAGE);
+      expect(refused.status).toBe(403);
+      expect(await errorCode(refused)).toBe("support_plan_required");
+      expect(without.tickets).toHaveLength(0);
+    }
+    clearIsolateCaches();
+    expect((await send(runtime({ access: plan("Growth", false, ["humanSupport"]) }).env, human, MESSAGE)).status)
+      .toBe(200);
 
     for (const options of [{ access: null }, { helpdesk: false }] as const) {
       const unsupported = runtime(options);

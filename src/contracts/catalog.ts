@@ -210,6 +210,9 @@ export interface OperationSpec {
 // ---------------------------------------------------------------------------
 
 const NO_PLAN = "No billing plan resolves for the account.";
+/** A configuration that turns on a feature the account's plan does not include. */
+const CONVERSATIONS_NOT_INCLUDED =
+  "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.";
 const APP_AUTH_RATE_LIMITED =
   "Too many application authentication requests from this network address for this application. Carries Retry-After.";
 const NO_END_USERS =
@@ -570,6 +573,7 @@ export const CATALOG = {
     response: CreatedAppResponseSchema,
     responseDescription: "Application created. `app.id` is the assigned id and the segment every gateway URL for this app uses. `api_key` is the one-time plaintext initial key for an API-key application, and null for any other.",
     errors: {
+      403: CONVERSATIONS_NOT_INCLUDED,
       409: "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
     },
   },
@@ -720,7 +724,7 @@ export const CATALOG = {
     request: AppUpdateSchema,
     response: AppResponseSchema,
     responseDescription: "Application state.",
-    errors: { 409: "The application changed since it was read." },
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED, 409: "The application changed since it was read." },
   },
 
   validateApp: {
@@ -737,6 +741,7 @@ export const CATALOG = {
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
     responseDescription: "Resolved valid configuration.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED },
   },
 
   validateAppDraft: {
@@ -750,6 +755,7 @@ export const CATALOG = {
     request: AppWriteSchema,
     response: AppDraftValidateResponseSchema,
     responseDescription: "The configuration would be accepted.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED },
   },
 
   checkApp: {

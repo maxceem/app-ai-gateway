@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { flushSync } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import { clientApiOrigin } from "@/lib/client-api";
 import { authIssuer } from "@/lib/config-types";
-import { useConsoleSession } from "@/lib/console-session";
+import { useConsoleSession, usePlanIncludes } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
 import { CONVERSATION_RETENTION_DAYS } from "@shared/app-config";
 
@@ -182,8 +182,11 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
 
 /**
  * Whether the gateway keeps a copy of this app's requests and responses, and
- * for how long. Shown on every deployment, but only switchable where one has a
- * bucket to keep them in, so an operator on another learns why it is off.
+ * for how long. Shown on every deployment, but only switchable on where one
+ * has a bucket to keep them in and the plan includes it, so an operator on
+ * another learns why it is off. An app that stores conversations under a plan
+ * that no longer includes them keeps the setting and stores nothing new, and
+ * says so; it can still be switched off.
  */
 function ConversationStorage({
   state,
@@ -194,6 +197,8 @@ function ConversationStorage({
   readOnly: boolean;
   available: boolean;
 }) {
+  // Unknown until the billing status loads, which is not the same as left out.
+  const excluded = usePlanIncludes("conversationStorage") === false;
   const conversations = state.draft!.config.conversations ?? {};
   const store = conversations.store ?? false;
   const retention = conversations.retention_days ?? CONVERSATION_RETENTION_DAYS.default;
@@ -213,7 +218,19 @@ function ConversationStorage({
           <div className="space-y-1">
             <p className="text-sm font-medium">Conversation history</p>
             <p className="text-xs text-muted-foreground">
-              {available ? (
+              {available && excluded ? (
+                <>
+                  {store
+                    ? "Paused: your plan doesn’t include conversation history, so nothing new is stored. "
+                    : "Not included in your plan. "}
+                  <Link
+                    to="/billing"
+                    className="underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
+                  >
+                    View plans
+                  </Link>
+                </>
+              ) : available ? (
                 <>
                   Keeps a history of each request and response.{" "}
                   <ExternalHint href={CONVERSATIONS_GUIDE_URL}>Learn more</ExternalHint>
@@ -229,7 +246,7 @@ function ConversationStorage({
           <Switch
             aria-label="Conversation history"
             checked={store}
-            disabled={readOnly || (!available && !store)}
+            disabled={readOnly || ((!available || excluded) && !store)}
             onCheckedChange={(checked) => update({ store: checked })}
           />
         </div>

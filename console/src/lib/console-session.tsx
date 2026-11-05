@@ -7,6 +7,8 @@ import type {
   OrganizationRole,
   OrganizationQuota,
   OrganizationSummary,
+  PlanFeature,
+  PlanFeatureAccess,
   PlanLimits,
   Session,
 } from "./types";
@@ -38,6 +40,11 @@ export interface ConsoleSessionValue {
   quota: OrganizationQuota | null | undefined;
   /** The ceilings the gateway enforces for the current plan, as it parsed them. */
   planLimits: PlanLimits | undefined;
+  /**
+   * Whether the current plan includes each gated feature, as the gateway
+   * decided it. Absent without billing, or until the status has loaded.
+   */
+  planFeatures: PlanFeatureAccess | undefined;
   /** When the account's unclaimed free access ends; null once a person owns it. */
   unclaimedAccessEndsAt: string | null | undefined;
 }
@@ -50,6 +57,7 @@ export function ConsoleSessionProvider({
   billing,
   quota,
   planLimits,
+  planFeatures,
   unclaimedAccessEndsAt,
   children,
 }: {
@@ -58,6 +66,7 @@ export function ConsoleSessionProvider({
   billing: BillingAccess | undefined;
   quota: OrganizationQuota | null | undefined;
   planLimits?: PlanLimits | undefined;
+  planFeatures?: PlanFeatureAccess | undefined;
   unclaimedAccessEndsAt?: string | null | undefined;
   children: ReactNode;
 }) {
@@ -73,6 +82,7 @@ export function ConsoleSessionProvider({
     billing,
     quota,
     planLimits,
+    planFeatures,
     unclaimedAccessEndsAt,
   };
 
@@ -85,4 +95,15 @@ export function useConsoleSession(): ConsoleSessionValue {
     throw new Error("useConsoleSession must be used inside the authenticated console shell");
   }
   return value;
+}
+
+/**
+ * Whether the plan includes a feature, for deciding what the console offers:
+ * always without billing, and with it what the billing status says, or `null`
+ * until it has loaded. The gateway refuses what the plan leaves out regardless.
+ */
+export function usePlanIncludes(feature: PlanFeature): boolean | null {
+  const { capabilities, planFeatures } = useConsoleSession();
+  if (!capabilities.billing) return true;
+  return planFeatures?.[feature] ?? null;
 }

@@ -11,6 +11,7 @@ import type {
   OrganizationMembership,
   OrganizationQuota,
   OrganizationRole,
+  PlanFeatureAccess,
   Session,
 } from "@/lib/types";
 
@@ -165,6 +166,7 @@ export function renderAuthenticated(
     capabilities?: Partial<Capabilities>;
     billing?: BillingAccess;
     quota?: OrganizationQuota | null;
+    planFeatures?: PlanFeatureAccess;
     unclaimedAccessEndsAt?: string | null;
     route?: string;
   } = {},
@@ -189,6 +191,7 @@ export function renderAuthenticated(
                   capabilities={{ ...CAPABILITIES, ...options.capabilities }}
                   billing={options.billing}
                   quota={options.quota}
+                  planFeatures={options.planFeatures}
                   unclaimedAccessEndsAt={options.unclaimedAccessEndsAt}
                 >
                   {ui}
