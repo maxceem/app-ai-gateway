@@ -398,7 +398,9 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
         continue;
       }
       for (const edit of result.edits) changes.push({ provider, model, ...edit, source: label });
-      for (const next of price.upcoming ?? []) upcoming.push({ provider, model, ...next });
+      // `from` is the rate the page bills today, which is the catalog's once
+      // this update is merged.
+      for (const next of price.upcoming ?? []) upcoming.push({ provider, model, from: price[next.field], ...next });
     }
   }
 

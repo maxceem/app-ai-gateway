@@ -3,7 +3,8 @@
 // tokens (or per minute / per hour of audio), plus two things the catalog never
 // stores:
 //
-//   upcoming  [{ date, field, value }] — a dated change a page announces
+//   upcoming  [{ date, field, value }] — a dated change a page announces; the
+//             same field's own value is the rate billed until then
 //   unpriced  a reason the page lists the model without a public price
 //
 // Nothing here fetches anything; a parser gets the page as a string.

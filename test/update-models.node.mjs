@@ -19,7 +19,7 @@ import { parseTogether } from "../scripts/models/parsers/together.mjs";
 import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/models/parsers/xai.mjs";
 import { ParseError, effectivePrice, parseDate, readMarkdocTable, samePrice } from "../scripts/models/price.mjs";
-import { renderReport, renderTitle } from "../scripts/models/report.mjs";
+import { priceBar, renderReport, renderTitle } from "../scripts/models/report.mjs";
 import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
 
@@ -782,13 +782,18 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   const before = run("2026-12-31");
   assert.deepEqual(before.changes, []);
   assert.deepEqual(catalogEdits(before), [], "a future announcement must not trigger a catalog update");
-  assert.deepEqual(before.upcoming.map((item) => [item.field, item.value, item.date]), [
-    ["input", 1.5, "2027-01-01"],
-    ["output", 7.5, "2027-01-01"],
-    ["cached_input", 0.15, "2027-01-01"],
+  assert.deepEqual(before.upcoming.map((item) => [item.field, item.from, item.value, item.date]), [
+    ["input", 0.75, 1.5, "2027-01-01"],
+    ["output", 3.75, 7.5, "2027-01-01"],
+    ["cached_input", 0.075, 0.15, "2027-01-01"],
   ]);
   assert.equal(needsHuman(before), false);
-  assert.match(renderReport(before), /### Upcoming price changes[\s\S]*2027-01-01/u);
+  const report = renderReport(before);
+  assert.match(report, /### Upcoming price changes\n\n\*\*From 2027-01-01\*\*\n\n\| Model \| Field \| Today → new \| Change \|/u);
+  const rows = report.split("\n").filter((line) => line.includes("🟥"));
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0], "| `gemini/gemini-3.6-flash` | input | $0.75\u00a0→\u00a0**$1.5** | 🟥\u2060🟥\u2060🟥\u2060🟥\u2060🟥\u00a0**+100%** |");
+  assert.match(rows[1], /^\| {2}\| output \|/u, "a model is named on its first row only");
   const after = run("2027-01-01");
   assert.deepEqual(after.changes.map((change) => [change.field, change.to]), [["input", 1.5], ["cached_input", 0.15], ["output", 7.5]]);
   assert.equal(catalogEdits(after).length, 3);
@@ -1030,6 +1035,34 @@ for (const changed of [false, true]) {
     }
   });
 }
+
+test("report: a price change is five boxes of 20% against today's price", () => {
+  assert.equal(priceBar(1, 1.8), "🟥🟥🟥🟥⬜");
+  assert.equal(priceBar(1, 2), "🟥🟥🟥🟥🟥");
+  assert.equal(priceBar(1, 2.4), "🟥🟥🟥🟥🟥🟥🟥");
+  assert.equal(priceBar(1, 5), "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥➕");
+  assert.equal(priceBar(1, 1.01), "🟥⬜⬜⬜⬜", "a small rise still shows");
+  assert.equal(priceBar(1, 0.6), "🟩🟩🟩⬜⬜");
+  assert.equal(priceBar(1, 0.99), "🟩🟩🟩🟩⬜", "a small drop still shows");
+  assert.equal(priceBar(1, 0.01), "🟩⬜⬜⬜⬜");
+  assert.equal(priceBar(1, 1), "⬜⬜⬜⬜⬜");
+});
+
+test("report: upcoming prices are grouped by date, earliest first", () => {
+  const report = renderReport({
+    changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], noSource: [], newModels: [], sources: [],
+    upcoming: [
+      { provider: "p", model: "late", field: "input", from: 2, value: 1, date: "2027-02-01" },
+      { provider: "p", model: "early", field: "output", from: 4, value: 5, date: "2027-01-01" },
+      { provider: "p", model: "unknown", field: "input", value: 3, date: "2027-01-01" },
+    ],
+  });
+  const section = report.slice(report.indexOf("### Upcoming price changes"));
+  assert.ok(section.indexOf("**From 2027-01-01**") < section.indexOf("**From 2027-02-01**"));
+  assert.match(section, /\| `p\/late` \| input \| \$2\u00a0→\u00a0\*\*\$1\*\* \| 🟩\u2060🟩\u2060🟩\u2060⬜\u2060⬜\u00a0\*\*−50%\*\* \|/u);
+  assert.match(section, /\| `p\/early` \| output \| \$4\u00a0→\u00a0\*\*\$5\*\* \| 🟥\u2060⬜\u2060⬜\u2060⬜\u2060⬜\u00a0\*\*\+25%\*\* \|/u);
+  assert.match(section, /\| `p\/unknown` \| input \| \*\*\$3\*\* \| new price \|/u);
+});
 
 test("title: counts what the pull request holds, with a short date", () => {
   const empty = { changes: [], newModels: [], attention: [] };
