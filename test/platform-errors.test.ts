@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { contained } from "../src/core/background";
 import { errorFacts, type ErrorFacts } from "../src/core/error-facts";
 import { GatewayError, type GatewayErrorReason } from "../src/core/errors";
-import { platformFailure } from "../src/core/platform-errors";
+import { platformFailure, recognisedFailure } from "../src/core/platform-errors";
 import app from "../src/index";
 import { CLIENT_CALL_DEADLINE_MS } from "../src/middleware/deadline";
 import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
@@ -172,6 +172,17 @@ describe("platform failure classification", () => {
     expect(platformFailure(new Error("Network connection lost."))).toBe("platform_unavailable");
     expect(platformFailure(new Error("internal error; reference = c26r4312qjkuaef6181kt8en")))
       .toBe("platform_unavailable");
+  });
+
+  it("recognises a Durable Object whose storage was reset while it started, which carries no flag", () => {
+    const reset = new Error(
+      "Internal error while starting up Durable Object storage caused object to be reset; reference = 8hbc9khnm56v4ik8u5cskmg4",
+    );
+    expect(platformFailure(reset)).toBe("platform_unavailable");
+    expect(recognisedFailure(reset)).toEqual({
+      reason: "platform_unavailable",
+      message: "Internal error while starting up Durable Object storage caused object to be reset",
+    });
   });
 
   it("looks through Drizzle's wrapper to the D1 error it holds", () => {
