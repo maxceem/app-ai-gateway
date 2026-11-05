@@ -1390,7 +1390,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     },
     available: (scope) => supportInbox(scope.env, scope.deployment) !== null,
     next: {
-      support_plan_required: "Tell the person that human support is included with paid plans, and that an account owner can choose one on the Billing page of the console. Do not retry.",
+      support_plan_required: "Tell the person that their plan does not include human support, and that an account owner can choose one that does on the Billing page of the console. Do not retry.",
       invalid_request: "Remove whatever looks like a credential, show the person the corrected message, and send it only once they agree.",
       not_found: "This deployment does not offer human support. Tell the person.",
       conflict: "The credential's owner has no email address for support to reply to. Ask the person to contact support from the console instead.",
@@ -1444,6 +1444,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   app_revision_conflict: "Call get_app for the current document and revision, reapply your change and call update_app again.",
   app_revision_required: "Send the revision get_app returned.",
   billing_plan_limit_reached: "The account cannot hold more of these. Remove one it no longer needs, or ask the person.",
+  billing_feature_not_included: "The account's plan does not include the feature the message names. Tell the person; an account owner can choose a plan that includes it on the Billing page of the console. Do not retry.",
   slug_taken: "Choose another slug; list_providers shows the ones in use.",
   gateway_in_use: "Move or remove the providers that route through it first; list_providers shows them.",
 };

@@ -106,6 +106,41 @@ describe("SettingsTab", () => {
       .toBe("https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage");
   });
 
+  it("offers conversation history only on a plan that includes it, and says when it is paused", async () => {
+    const renderOnPlan = (store: boolean) => {
+      const app = { ...APP, config: { ...APP.config, conversations: { store } } };
+      stubApi({
+        "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
+        "/v1/admin/apps/my-app": { body: { app } },
+      });
+      return renderAuthenticated(
+        <Routes>
+          <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+        </Routes>,
+        {
+          route: "/apps/my-app/settings",
+          capabilities: { billing: true, conversationStorage: true },
+          planFeatures: { conversationStorage: false, humanSupport: false },
+        },
+      );
+    };
+
+    const off = renderOnPlan(false);
+    const toggle = await screen.findByRole("switch", { name: /conversation history/i });
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(screen.getByText(/not included in your plan/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /view plans/i }).getAttribute("href")).toBe("/billing");
+    off.unmount();
+    vi.unstubAllGlobals();
+
+    // Turned on under an earlier plan: it stays on, says nothing new is kept, and can be turned off.
+    renderOnPlan(true);
+    const kept = await screen.findByRole("switch", { name: /conversation history/i });
+    expect(kept.getAttribute("aria-checked")).toBe("true");
+    expect(kept).toHaveProperty("disabled", false);
+    expect(screen.getByText(/paused: your plan doesn’t include conversation history/i)).toBeTruthy();
+  });
+
   it("turns the app off through the draft, to be saved with everything else", async () => {
     renderSettings("owner");
 

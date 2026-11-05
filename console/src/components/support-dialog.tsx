@@ -6,8 +6,7 @@ import { Field } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { entitledPlan } from "@/lib/billing";
-import { useConsoleSession } from "@/lib/console-session";
+import { useConsoleSession, usePlanIncludes } from "@/lib/console-session";
 import { useSendSupportMessage } from "@/lib/queries";
 
 /** What each Support menu item opens: its own heading, prompt and examples. */
@@ -54,17 +53,15 @@ export const SUPPORT_MESSAGE_ID = "support-message";
 
 /**
  * Whether the Support menu is offered: the deployment names a support inbox,
- * and the organization holds a plan that is not the free default, or billing
- * cannot be reached just now, when the gateway still accepts a message. The
- * gateway refuses everyone else the same way, so this only keeps the menu
- * from offering what would be refused.
+ * and the plan includes human support — which the gateway also reports while
+ * billing cannot be reached, when it still accepts a message. The gateway
+ * refuses everyone else the same way, so this only keeps the menu from
+ * offering what would be refused.
  */
 export function useSupportAvailable(): boolean {
-  const { capabilities, billing } = useConsoleSession();
-  if (!capabilities.supportEmail) return false;
-  if (billing?.state === "unavailable") return true;
-  const plan = entitledPlan(billing);
-  return plan !== null && !plan.isDefault;
+  const { capabilities } = useConsoleSession();
+  const included = usePlanIncludes("humanSupport");
+  return Boolean(capabilities.supportEmail) && included === true;
 }
 
 /**

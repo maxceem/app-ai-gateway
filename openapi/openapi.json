@@ -5099,7 +5099,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5259,9 +5259,36 @@
                         "maxActiveKeysPerApp": {
                           "type": "integer",
                           "description": "Active API keys each of the account's applications may hold."
+                        },
+                        "includes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "conversationStorage",
+                              "humanSupport"
+                            ]
+                          },
+                          "description": "The features the plan includes. Absent means every feature; an empty list means none."
                         }
                       },
-                      "description": "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached."
+                      "description": "The plan's ceilings and included features, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings that includes every feature. A write that would exceed a ceiling is refused with billing_plan_limit_reached."
+                    },
+                    "features": {
+                      "type": "object",
+                      "properties": {
+                        "conversationStorage": {
+                          "type": "boolean"
+                        },
+                        "humanSupport": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "conversationStorage",
+                        "humanSupport"
+                      ],
+                      "description": "Whether the plan includes each gated feature, as the gateway enforces it."
                     },
                     "quota": {
                       "type": [
@@ -5337,6 +5364,7 @@
                   "required": [
                     "access",
                     "limits",
+                    "features",
                     "quota",
                     "actions",
                     "unclaimedAccessEndsAt"
@@ -6225,7 +6253,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6453,7 +6481,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6544,7 +6572,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {

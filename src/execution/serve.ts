@@ -41,6 +41,8 @@ import { prepareEndpointPlan, prepareProxyPlan, type PrepareInput } from "./prep
 import type { ServedTimings } from "./timing";
 import { contained } from "../core/background";
 import { readConversationHeaders } from "../conversations/client-headers";
+import { planIncludes } from "../billing/features";
+import { getBillingAccess } from "../billing/gateway";
 
 export interface ServedVariables extends RequestVariables {
   /**
@@ -138,10 +140,18 @@ async function serve(
     },
   );
   // Conversation storage needs the app to have turned it on, the deployment to
-  // have somewhere to keep it, and the client not to have opted this request out.
+  // have somewhere to keep it, the client not to have opted this request out,
+  // and the account's plan to include it: an app that turned it on under a plan
+  // that did keeps its setting, and stores nothing while its plan does not.
+  // Admission has just read the plan into the request's cache, so asking
+  // again reads nothing.
   const capture = app.config.conversations.store
     && c.env.CONVERSATIONS !== undefined
     && !conversation.optedOut
+    && planIncludes(
+      await getBillingAccess(c.get("deployment"), app.organizationId, c.get("billingRequestCache")),
+      "conversationStorage",
+    )
     ? { contentType: c.req.header("content-type") ?? "", keep: app.config.conversations.keep, body }
     : null;
   return execute(plan, {

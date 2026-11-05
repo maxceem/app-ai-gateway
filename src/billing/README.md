@@ -132,6 +132,47 @@ billing caches. The console reads the free window from the account summary it
 already holds — `createdAt` plus a non-null `expiresAt` — rather than from
 billing data.
 
+### Plan features
+
+Some features are part of a plan rather than of the product: a plan includes
+them or leaves them out. Which plan includes which is plan data too, in the
+same `limits` JSON, as a list of feature names:
+
+```json
+{ "maxRequestsPerMonth": 100000, "includes": ["conversationStorage", "humanSupport"] }
+```
+
+`includes` follows the rule every other key does: absent means unlimited, so
+a plan with no `includes` — and a self-hosted deployment, which reads no plan
+at all — has every feature. A plan that lists any feature has only those, and
+an empty list has none. A name the gateway does not know is dropped, so a plan
+may list a feature before the release that gates it is deployed; anything but
+a list of strings is a misconfiguration and answers `502`, as a malformed
+ceiling does.
+
+The names are `PLAN_FEATURES` in `src/contracts/billing.ts`. Each one's policy
+— its name in a refusal, its error code, and whether it waits for billing — is
+in `src/billing/features.ts`, which is the only place that answers "does this
+plan include it". Gating a new feature is one name there, one policy entry, and
+one call where the feature is used; no plan is named in gateway code.
+
+| Feature | Refused with | While billing is unreachable |
+| --- | --- | --- |
+| `conversationStorage` | `403 billing_feature_not_included` | refused, `503 billing_unavailable` |
+| `humanSupport` | `403 support_plan_required` | allowed: an outage is when a paying customer most needs to write in |
+
+A feature is checked where it is turned on, never by removing what an account
+already has. An app that stores conversations keeps its setting when its
+account moves to a plan without them, stays editable, and stores nothing new
+until its plan includes them again; what it stored stays readable until
+retention removes it.
+
+When a new feature is gated, a plan that already has a list does not get it
+until the name is added, and a plan without a list gets it straight away. So
+before deploying a release that gates a feature, give every plan that should
+not have it a list. The billing status reports the gateway's decision as `features`, one
+boolean per name, so the console never restates this rule.
+
 ## Failure and enforcement policy
 
 Both failure modes fail closed, under codes that mean different things to a

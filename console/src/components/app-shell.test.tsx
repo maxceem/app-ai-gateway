@@ -288,6 +288,7 @@ describe("AppShell navigation", () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true, supportEmail: "support@example.test" },
       billing: GROWTH_ACCESS,
+      planFeatures: { conversationStorage: true, humanSupport: true },
     });
 
     await openAccountMenu();
@@ -313,6 +314,8 @@ describe("AppShell navigation", () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true, supportEmail: "support@example.test" },
       billing: { state: "unavailable" },
+      // As the gateway reports it: support is the feature that does not wait for billing.
+      planFeatures: { conversationStorage: false, humanSupport: true },
     });
     await openAccountMenu();
     await userEvent.click(screen.getByRole("menuitem", { name: "Human Support" }));
@@ -320,10 +323,11 @@ describe("AppShell navigation", () => {
     expect(screen.queryByText(/Included with your/u)).toBeNull();
   });
 
-  it("offers no support on the free plan, or where the deployment names no inbox", async () => {
+  it("offers no support on a plan without it, or where the deployment names no inbox", async () => {
     const free = renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true, supportEmail: "support@example.test" },
       billing: FREE_ACCESS,
+      planFeatures: { conversationStorage: false, humanSupport: false },
     });
     await openAccountMenu();
     expect(screen.queryByRole("menuitem", { name: /support/i })).toBeNull();
@@ -332,6 +336,7 @@ describe("AppShell navigation", () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true },
       billing: GROWTH_ACCESS,
+      planFeatures: { conversationStorage: true, humanSupport: true },
     });
     await openAccountMenu();
     expect(screen.queryByRole("menuitem", { name: /support/i })).toBeNull();

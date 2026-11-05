@@ -1,4 +1,5 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
+import { requirePlanFeature } from "../billing/features";
 import { getBillingAccess, requireActiveBilling } from "../billing/gateway";
 import type { AppUpdate, AppWrite } from "../contracts/schemas";
 import type {
@@ -215,6 +216,22 @@ async function requireEntitlement(
   );
 }
 
+/**
+ * Turning conversation history on needs a plan that includes it. Keeping it on
+ * does not: an app that stored conversations before its account moved to a
+ * plan without them stays editable as it is, and stores nothing new until the
+ * plan includes them again; see `../execution/serve.ts`.
+ */
+async function requireConversationStorage(
+  scope: ManagementScope,
+  organizationId: string,
+  next: AppConfig,
+  current?: AppConfig,
+): Promise<void> {
+  if (!next.conversations.store || current?.conversations.store) return;
+  await requirePlanFeature(scope, organizationId, "conversationStorage");
+}
+
 export async function listApps(
   scope: ManagementScope,
   actor: Actor,
@@ -304,6 +321,7 @@ export async function createApp(
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
   );
+  await requireConversationStorage(scope, organizationId, config);
   const cap = await planCap(scope, "app", organizationId);
   for (let attempt = 0; attempt < APP_ID_ATTEMPTS; attempt += 1) {
     const appId = generatedAppId(name);
@@ -380,12 +398,14 @@ export async function validateApp(
   body: AppWrite,
 ): Promise<AppValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  validatedConfig(
+  const current = appRecordFromRow(existing).config;
+  const config = validatedConfig(
     scope.env,
     body.config,
     await authoritativeOrganizationProviders(scope.env, actor.organizationId),
-    referencedProviderSlugs(appRecordFromRow(existing).config),
+    referencedProviderSlugs(current),
   );
+  await requireConversationStorage(scope, actor.organizationId, config, current);
   return { valid: true, app_id: existing.id };
 }
 
@@ -396,7 +416,12 @@ export async function validateAppDraft(
   body: AppWrite,
 ): Promise<AppDraftValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  validatedConfig(scope.env, body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
+  const config = validatedConfig(
+    scope.env,
+    body.config,
+    await authoritativeOrganizationProviders(scope.env, actor.organizationId),
+  );
+  await requireConversationStorage(scope, actor.organizationId, config);
   return { valid: true };
 }
 
@@ -420,12 +445,14 @@ export async function updateApp(
   }
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
+  const current = appRecordFromRow(existing).config;
   const config = validatedConfig(
     env,
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
-    referencedProviderSlugs(appRecordFromRow(existing).config),
+    referencedProviderSlugs(current),
   );
+  await requireConversationStorage(scope, organizationId, config, current);
   // Conditional on the row still being this organization's, so an app deleted
   // or handed over between the read above and this write is not resurrected
   // under the caller's name.
