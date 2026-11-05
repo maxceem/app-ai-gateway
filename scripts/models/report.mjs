@@ -41,6 +41,58 @@ function details(summary, body) {
   return `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
 }
 
+// A table cell GitHub must not wrap: word joiners between the boxes, which it
+// would otherwise break between, and no-break spaces.
+const NO_BREAK = "\u00a0";
+const glue = (text) => [...text].join("\u2060");
+
+/**
+ * A price change as five boxes of 20% each, sized against today's price. A
+ * rise fills 🟥 with what it adds, and past double keeps adding them, up to
+ * triple; a drop fills 🟩 with what is still paid. Any change fills at least
+ * one box, and leaves at least one empty, so it never looks like none.
+ */
+export function priceBar(from, to) {
+  if (to < from) {
+    const kept = Math.min(4, Math.max(1, Math.round((to / from) * 5)));
+    return "🟩".repeat(kept) + "⬜".repeat(5 - kept);
+  }
+  if (to === from) return "⬜".repeat(5);
+  const added = Math.max(1, Math.round((to / from - 1) * 5));
+  if (added > 10) return "🟥".repeat(10) + "➕";
+  return "🟥".repeat(added) + "⬜".repeat(Math.max(0, 5 - added));
+}
+
+function priceChange(from, to) {
+  if (!(from > 0)) return "new price";
+  const percent = Math.round(Math.abs(to / from - 1) * 100);
+  const sign = to > from ? "+" : to < from ? "−" : "";
+  return `${glue(priceBar(from, to))}${NO_BREAK}**${sign}${percent}%**`;
+}
+
+/**
+ * One table per date, earliest first, so no date has to fit in a column. A
+ * model's name is given on its first row only.
+ */
+function upcomingTables(upcoming) {
+  const dates = [...new Set(upcoming.map((item) => item.date))].sort();
+  return dates
+    .map((date) => {
+      let previous;
+      const rows = upcoming
+        .filter((item) => item.date === date)
+        .map((item) => {
+          const name = `${item.provider}/${item.model}`;
+          const model = name === previous ? "" : code(name);
+          previous = name;
+          const prices = item.from === undefined ? `**$${item.value}**` : `$${item.from}${NO_BREAK}→${NO_BREAK}**$${item.value}**`;
+          return `| ${model} | ${escape(item.field)} | ${prices} | ${priceChange(item.from, item.value)} |`;
+        });
+      return `**From ${escape(date)}**\n\n| Model | Field | Today → new | Change |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
+    })
+    .join("\n\n");
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function count(n, one, many) {
@@ -99,8 +151,6 @@ export function renderReport(decision) {
     );
     sections.push(
       "### Retirement dates\n\n" +
-        "When each provider stops serving the model. The entry stays in the catalog and stays priced.\n\n" +
-        "These updates are included in the catalog only alongside current price changes.\n\n" +
         `| Model | Retires on | Source |\n| --- | --- | --- |\n${rows.join("\n")}`,
     );
   }
@@ -114,14 +164,7 @@ export function renderReport(decision) {
   }
 
   if (decision.upcoming.length > 0) {
-    sections.push(
-      "### Upcoming price changes\n\n" +
-        "Advance notice only. Future rates are not stored or applied by this update.\n\n" +
-        list(
-          decision.upcoming,
-          (item) => `${code(`${item.provider}/${item.model}`)} ${item.field} becomes $${item.value} on ${item.date}`,
-        ),
-    );
+    sections.push(`### Upcoming price changes\n\n${upcomingTables(decision.upcoming)}`);
   }
 
   if (decision.retired.length > 0) {
