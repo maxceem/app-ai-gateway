@@ -36,6 +36,16 @@ const D1_ERROR_PREFIX = "D1_ERROR: ";
 const RUNTIME_INTERNAL_PREFIX = "internal error; reference = ";
 
 /**
+ * A Durable Object whose storage failed while the object started, the
+ * counterpart of D1's startup reset above. It reaches the caller without the
+ * `retryable` flag the stub sets on its other transient failures, followed by
+ * "; reference = …", so it is matched by its start. Nothing the call did
+ * caused it: the object had not run yet.
+ */
+const DURABLE_OBJECT_STARTUP_RESET_PREFIX =
+  "Internal error while starting up Durable Object storage caused object to be reset";
+
+/**
  * The platform messages the gateway recognises, as the gateway itself spells
  * them. A recognised error is described by one of these strings, never by its
  * own message: the error's text only selects which constant applies.
@@ -43,6 +53,7 @@ const RUNTIME_INTERNAL_PREFIX = "internal error; reference = ";
 export type KnownPlatformMessage =
   | (typeof D1_TRANSIENT_MESSAGES)[number]
   | typeof D1_OVERLOADED_PREFIX
+  | typeof DURABLE_OBJECT_STARTUP_RESET_PREFIX
   | "internal error";
 
 const MAX_CAUSE_DEPTH = 4;
@@ -85,6 +96,9 @@ function recognise(error: unknown): RecognisedFailure | null {
   }
   const transient = D1_TRANSIENT_MESSAGES.find((known) => known === message);
   if (transient !== undefined) return { reason: "platform_unavailable", message: transient };
+  if (message.startsWith(DURABLE_OBJECT_STARTUP_RESET_PREFIX)) {
+    return { reason: "platform_unavailable", message: DURABLE_OBJECT_STARTUP_RESET_PREFIX };
+  }
   if (message.startsWith(RUNTIME_INTERNAL_PREFIX)) {
     return { reason: "platform_unavailable", message: "internal error" };
   }
