@@ -1,19 +1,28 @@
 [
   {
     "provider": "openai",
-    "model": "gpt-6-rosalind",
+    "model": "gpt-image-2.6-sunburst",
     "action": "add",
-    "kind": "text",
-    "reason": "Add this current text model; the catalog has no matching ID.",
+    "kind": "image",
+    "reason": "Add this current image-generation model; the catalog’s earlier image generations do not make it redundant.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   },
   {
     "provider": "openai",
-    "model": "gpt-rosalind-discovery",
+    "model": "gpt-image-2.6-flare",
+    "action": "add",
+    "kind": "image",
+    "reason": "Add this current image-generation model; the catalog’s earlier image generations do not make it redundant.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "together",
+    "model": "moonshotai/Kimi-K3.1-Pro",
     "action": "add",
     "kind": "text",
-    "reason": "Add this current text model; the catalog has no matching ID.",
+    "reason": "Add this current text model; the catalog’s Kimi K3 generation does not make a later pinned version redundant.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }

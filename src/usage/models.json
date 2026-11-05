@@ -1,5 +1,19 @@
 {
   "openai": {
+    "gpt-image-2.6-flare": {
+      "kind": "image",
+      "input": 5.0,
+      "cached_input": 2.0,
+      "output": 30.0,
+      "image_input": 8.0
+    },
+    "gpt-image-2.6-sunburst": {
+      "kind": "image",
+      "input": 5.0,
+      "cached_input": 2.0,
+      "output": 30.0,
+      "image_input": 8.0
+    },
     "gpt-rosalind-discovery": { "kind": "text", "input": 5.0, "cached_input": 0.5, "output": 25.0 },
     "gpt-6-rosalind": {
       "kind": "text",
@@ -604,6 +618,13 @@
     "mistral-small-latest": { "kind": "text", "input": 0.15, "cached_input": 0.015, "output": 0.6 }
   },
   "together": {
+    "moonshotai/Kimi-K3.1-Pro": {
+      "kind": "text",
+      "input": 2.0,
+      "cached_input": 0.2,
+      "output": 10.0,
+      "author": "Moonshot AI"
+    },
     "MiniMaxAI/MiniMax-M3.1-Flash": {
       "kind": "text",
       "input": 0.15,
