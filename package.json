@@ -56,14 +56,14 @@
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
-    "@better-auth/drizzle-adapter": "1.6.9",
+    "@better-auth/drizzle-adapter": "1.7.16",
     "@hono/zod-openapi": "^1.5.1",
-    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.10.0/maxceem-cf-auth-0.10.0.tgz",
+    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.11.0/maxceem-cf-auth-0.11.0.tgz",
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "@maxceem/worker-mailer": "https://github.com/maxceem/worker-mailer/releases/download/v1.4.3/maxceem-worker-mailer-1.4.3.tgz",
     "@modelcontextprotocol/server": "2.2.0",
     "asn1js": "^3.0.7",
-    "better-auth": "1.6.9",
+    "better-auth": "1.7.16",
     "cbor-x": "^1.6.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.9.0",
