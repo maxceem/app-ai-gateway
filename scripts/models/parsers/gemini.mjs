@@ -1,4 +1,4 @@
-// https://aistudio.google.com/docs/pricing.md (Markdoc, served as text/plain)
+// https://aistudio.google.com/docs/pricing.md (Markdoc, served as text/markdown)
 //
 // One "## " section per model family: a line of model ids in backticks, which
 // may wrap and sit inside layout tags, then a `{% tab title="Standard" %}` that

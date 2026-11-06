@@ -19,6 +19,7 @@ import { parseTogether } from "../scripts/models/parsers/together.mjs";
 import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/models/parsers/xai.mjs";
 import { ParseError, effectivePrice, parseDate, readMarkdocTable, samePrice } from "../scripts/models/price.mjs";
+import { fetchText } from "../scripts/models/read-source.mjs";
 import { priceBar, renderReport, renderTitle } from "../scripts/models/report.mjs";
 import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
@@ -815,6 +816,17 @@ test("rules: a provider no source covers is reported as such, not as a disagreem
 test("sources: every catalog provider has an entry", () => {
   for (const provider of Object.keys(JSON.parse(liveCatalogText))) {
     assert.ok(SOURCES[provider], `scripts/models/sources.mjs has no entry for ${provider}`);
+  }
+});
+
+test("sources: Google's Markdoc pages are fetched as text/markdown, and any other type fails", async (t) => {
+  let served;
+  t.mock.method(globalThis, "fetch", async () => new Response("body", { headers: { "content-type": served } }));
+  for (const source of [SOURCES.gemini.official, SOURCES.gemini.deprecations]) {
+    served = "text/markdown; charset=utf-8";
+    assert.equal(await fetchText(source.url, source.type), "body");
+    served = "text/plain; charset=utf-8";
+    await assert.rejects(fetchText(source.url, source.type), /content type "text\/plain; charset=utf-8", expected text\/markdown/);
   }
 });
 

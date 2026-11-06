@@ -1,3 +1,10 @@
+> ## AI Agent Context
+> Get the complete documentation index at: https://aistudio.google.com/llms.txt
+> Use this file to discover all available pages.
+> For the full documentation in a single file, fetch: https://aistudio.google.com/llms-full.txt
+
+# Gemini Developer API pricing
+
 ## Gemini 4 Argon  {% id="gemini-4-argon" %}
 
 {% two-column-layout %}

@@ -1,3 +1,8 @@
+> ## AI Agent Context
+> Get the complete documentation index at: https://aistudio.google.com/llms.txt
+> Use this file to discover all available pages.
+> For the full documentation in a single file, fetch: https://aistudio.google.com/llms-full.txt
+
 # Gemini deprecations
 
 ## Gemini 3 models  {% id="gemini-3-models" %}
