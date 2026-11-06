@@ -875,6 +875,49 @@ describe("billing gateway", () => {
   });
 
   /**
+   * A ceiling nobody can read is not the absence of one. Rows created over a
+   * ceiling stay after billing recovers, so a capped create waits for an
+   * answer: retryably while billing is unreachable, as unpaid when no plan
+   * resolves.
+   */
+  it("refuses capped creates while the plan cannot be resolved", async () => {
+    const appId = "billing-cap-unresolved";
+    await seedServerApp(appId);
+    const creates = [
+      ["/v1/admin/providers", {
+        type: "openai", slug: "billing-cap-unresolved", name: "Unresolved",
+        secret: "sk-unresolved-value",
+      }],
+      ["/v1/admin/provider-gateways", {
+        type: "cf_aig", name: "Unresolved gateway", accountId: "acct-1", gatewayId: "gw-1",
+        token: "cf-aig-token-value",
+      }],
+      [`/v1/admin/apps/${appId}/keys`, { name: "Unresolved" }],
+    ] as const;
+    const cases = [
+      [() => { throw new Error("billing service unreachable"); }, 503, "billing_unavailable"],
+      [async () => NO_PLAN, 402, "billing_payment_required"],
+    ] as const;
+    for (const [getTenantAccess, status, code] of cases) {
+      clearIsolateCaches();
+      const billingEnv = withBilling(stub({ getTenantAccess }));
+      for (const [path, body] of creates) {
+        const response = await worker.request(
+          `${ORIGIN}${path}`,
+          {
+            method: "POST",
+            headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+          billingEnv,
+        );
+        expect({ path, status: response.status }).toEqual({ path, status });
+        await expect(response.json()).resolves.toMatchObject({ error: { code } });
+      }
+    }
+  });
+
+  /**
    * The account's own deadline is answered before anything else a served
    * request would do.
    *
