@@ -1,4 +1,4 @@
-// https://aistudio.google.com/docs/deprecations.md (Markdoc, served as text/plain)
+// https://aistudio.google.com/docs/deprecations.md (Markdoc, served as text/markdown)
 //
 // One `{% table %}` per model family and stage, with a shutdown date or "No
 // shutdown date announced" for every model, or "N/A" for one whose endpoint is
