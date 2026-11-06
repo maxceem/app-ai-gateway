@@ -7,9 +7,13 @@ import {
   monthlyBudgetMicrousd,
 } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
+import { log } from "../core/log";
+import { platformFailure } from "../core/platform-errors";
 import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
+import type { QuotaAdmission } from "../do/OrgQuota";
 import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
 import type { SpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
@@ -274,11 +278,26 @@ export async function admitRequest(
   if (quota.kind === "unmetered") return finish();
 
   const { period } = quota;
-  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
-    periodId: period.periodId,
-    periodEnd: period.periodEnd,
-    limit: quota.limit,
-  });
+  let admission: QuotaAdmission;
+  try {
+    admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
+      periodId: period.periodId,
+      periodEnd: period.periodEnd,
+      limit: quota.limit,
+    });
+  } catch (error) {
+    /*
+     * The counter is billing, and billing errs towards the customer: a request
+     * the platform failed to count is served uncounted rather than refused.
+     * Retrying instead could count it twice, because the call may fail after
+     * the object has already counted it. An overloaded object stays a refusal,
+     * so heavy traffic cannot ride the overload past its allowance, and
+     * anything that is not the platform is still a fault in the gateway.
+     */
+    if (platformFailure(error) !== "platform_unavailable") throw error;
+    log("warn", "allowance_uncounted", { error: errorFacts(error) });
+    return finish();
+  }
   const durationMs = finish();
   if (!admission.allowed) {
     blockedEvent("blocked_billing", "account", durationMs);
