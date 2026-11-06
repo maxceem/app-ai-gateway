@@ -366,5 +366,9 @@
   {
     "key": "gemini/gemini-embedding-001: not added",
     "reason": "Unsupported public pricing: gemini-embedding-001: no input or output row"
+  },
+  {
+    "key": "gemini/gemini-omni-1.2-flash: not added",
+    "reason": "Unsupported public pricing: gemini-omni-1.2-flash, Output price (including thinking tokens): unknown price format \"$9.00 (text) $12.00 (video)^*^\""
   }
 ]
