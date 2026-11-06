@@ -95,8 +95,8 @@ schedule, or apply the previous plan's limit, for as long as it lives: up to 30
 seconds normally, and up to an hour while the billing service is unreachable
 and the last known answer is served instead. That includes a stale unlimited
 plan, which counts nothing while it is served. It is an availability trade
-taken on purpose — the alternative is refusing every request during a billing
-outage — and a change is enforced everywhere once each isolate's cache has
+taken on purpose — the alternative is counting nothing and refusing every
+management call during a billing outage — and a change is enforced everywhere once each isolate's cache has
 turned over.
 
 A plan with no monthly limit counts nothing and touches no quota object, so
@@ -158,7 +158,7 @@ one call where the feature is used; no plan is named in gateway code.
 
 | Feature | Refused with | While billing is unreachable |
 | --- | --- | --- |
-| `conversationStorage` | `403 billing_feature_not_included` | refused, `503 billing_unavailable` |
+| `conversationStorage` | `403 billing_feature_not_included` | refused, `503 billing_unavailable`; a served request stores nothing |
 | `humanSupport` | `403 support_plan_required` | allowed: an outage is when a paying customer most needs to write in |
 
 A feature is checked where it is turned on, never by removing what an account
@@ -175,14 +175,25 @@ boolean per name, so the console never restates this rule.
 
 ## Failure and enforcement policy
 
-Both failure modes fail closed, under codes that mean different things to a
-client. No resolved plan answers `402 billing_payment_required`, which the
+No resolved plan answers `402 billing_payment_required` everywhere, which the
 customer has to act on; with a default plan configured this is rare, since a
-lapsed subscription drops to the free tier rather than to a paywall. An
-unreachable billing service says nothing about the subscription, so it answers
-`503 billing_unavailable` with a short `Retry-After` and is worth retrying.
-Neither deletes or disables application records, so access resumes when billing
-becomes readable again.
+lapsed subscription drops to the free tier rather than to a paywall.
+
+An unreachable billing service says nothing about the subscription, and is
+answered by who is asking. Traffic from an organization's applications and
+their end users — served requests, the application token exchange and `/me` —
+is admitted through `admitAppTraffic`: served, counted against nothing, and
+logged as `billing_unavailable_admitted`, as admission treats a platform
+failure of the allowance counter. An outage of ours must not take every
+customer's apps down with it, and an organization this isolate has read in the
+last hour is still counted against its last known plan. The management API
+fails closed instead, with `503 billing_unavailable` and a short `Retry-After`,
+because a write against an unknown plan would be a guess. Plan features keep
+their own policy above, so an app that stores conversations is served and
+stores nothing.
+
+Neither failure deletes or disables application records, so access resumes
+when billing becomes readable again.
 
 Configuration ceilings count stored rows rather than traffic, so nothing resets
 them on a schedule. Each is enforced inside the statement that inserts the row,

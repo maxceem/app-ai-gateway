@@ -343,12 +343,11 @@ describe("organization monthly request quota", () => {
 
   /**
    * The distinction the data plane turns on: an organization with no plan at
-   * all has to go and pay, and one whose billing service is down has to
-   * wait. Answering the second with the first tells every paying customer they
-   * are unsubscribed for the length of an outage, and clients are built to treat
-   * `402` as final.
+   * all has to go and pay, and one whose billing service is down is served.
+   * The allowance is unknown, so the request is not counted — billing errs
+   * towards the customer, as it does when the counter itself fails.
    */
-  it("refuses a billing outage as retryable, and recovers on the next request", async () => {
+  it("serves a billing outage uncounted, and counts again once billing answers", async () => {
     const organizationId = "quota-billing-down-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("quota-billing-down", { organizationId });
@@ -367,18 +366,16 @@ describe("organization monthly request quota", () => {
     const start = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(start);
 
-    const refused = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
-    expect(refused.status).toBe(503);
-    await expect(refused.json()).resolves.toMatchObject({
-      error: { code: "billing_unavailable" },
-    });
-    expect(refused.headers.get("retry-after")).toBe("5");
-    expect(upstream).not.toHaveBeenCalled();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const served = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
+    expect(served.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
     expect(await used(organizationId)).toBe(0);
 
-    // The failed lookup is held for exactly the interval the client was told to
-    // wait — not the full cache TTL — so the advertised retry reaches billing
-    // again rather than replaying the same failure.
+    // The failed lookup is held only for the retry interval — not the full
+    // cache TTL — so billing is asked again within seconds and counting resumes.
     clock.mockReturnValue(start + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
     const admitted = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
     expect(admitted.status).toBe(200);
@@ -558,8 +555,8 @@ describe("organization monthly request quota", () => {
 
   /**
    * The same pair when billing cannot be reached at all. The allowance then
-   * resolves as `unmetered`, and it is admission's own `requireActiveBilling`
-   * that refuses — still only after the block has been answered.
+   * resolves as `unmetered` and everyone else is served uncounted, but the
+   * block is still answered.
    */
   it("answers a blocked user as blocked even when billing is unreachable", async () => {
     const organizationId = "quota-blocked-outage-org";
@@ -586,17 +583,17 @@ describe("organization monthly request quota", () => {
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
 
-    const unavailable = await proxyRequest({
+    expect(upstream).not.toHaveBeenCalled();
+
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const served = await proxyRequest({
       appId: "quota-blocked-outage",
       key,
       env: billing,
       userId: "allowed-user",
     });
-    expect(unavailable.status).toBe(503);
-    await expect(unavailable.json()).resolves.toMatchObject({
-      error: { code: "billing_unavailable" },
-    });
-    expect(upstream).not.toHaveBeenCalled();
+    expect(served.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
     expect(await used(organizationId)).toBe(0);
   });
 
