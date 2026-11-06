@@ -697,6 +697,40 @@ describe("password sign-in throttling", () => {
     );
   });
 
+  it("counts an attempt against its account however its media type is spelled", async () => {
+    anchorSignInWindows();
+    const email = `spelling-${crypto.randomUUID()}@example.test`;
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.sign_in_email.limit; spent++) {
+      const allowed = await signInAttempt(email, crypto.randomUUID());
+      expect(allowed.status, `attempt ${spent}`).toBe(400);
+    }
+
+    // Each of these is read by Better Auth as an attempt at the spent account,
+    // so each has to be refused by that account's counter too.
+    const variants: Array<{ contentType: string; body: string }> = [
+      {
+        contentType: "Application/X-WWW-Form-Urlencoded",
+        body: new URLSearchParams({ email }).toString(),
+      },
+      {
+        contentType: "application/json; x=application/x-www-form-urlencoded",
+        body: JSON.stringify({ email }),
+      },
+      {
+        contentType: "application/x-www-form-urlencoded",
+        body: new URLSearchParams([["email", `decoy-${crypto.randomUUID()}@example.test`], ["email", email]]).toString(),
+      },
+    ];
+    for (const { contentType, body } of variants) {
+      const response = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-in/email`, {
+        method: "POST",
+        headers: { "content-type": contentType, origin: ORIGIN, "cf-connecting-ip": crypto.randomUUID() },
+        body,
+      });
+      await expectRateLimited(response, "sign_in_email", "590");
+    }
+  });
+
   it("counts an unreadable body against the address it came from", async () => {
     anchorSignInWindows();
     const address = crypto.randomUUID();

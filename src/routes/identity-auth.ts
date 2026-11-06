@@ -43,12 +43,25 @@ async function submittedEmail(request: Request): Promise<string | null> {
   return named.trim().toLowerCase() || null;
 }
 
-/** One field of a JSON or form-encoded body, read from a clone. */
+/**
+ * One field of a JSON or form-encoded body, read from a clone.
+ *
+ * Read exactly as Better Auth will read it, or a counter keyed on this field
+ * would count a different account than the one Better Auth signs in: the
+ * format comes from the media type alone, lowercased and without parameters,
+ * and a form that repeats the field means its last value.
+ */
 async function submittedField(request: Request, field: string): Promise<unknown> {
   const clone = request.clone();
-  return request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")
-    ? (await clone.formData().catch(() => undefined))?.get(field)
-    : ((await clone.json().catch(() => undefined)) as Record<string, unknown> | undefined)?.[field];
+  const mediaType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (mediaType === "application/x-www-form-urlencoded") {
+    return (await clone.formData().catch(() => undefined))?.getAll(field).at(-1);
+  }
+  if (mediaType === "application/json") {
+    return ((await clone.json().catch(() => undefined)) as Record<string, unknown> | undefined)?.[field];
+  }
+  // Better Auth refuses any other media type on the routes that read this.
+  return undefined;
 }
 
 /**
