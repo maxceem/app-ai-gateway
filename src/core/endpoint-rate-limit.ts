@@ -201,6 +201,9 @@ function ipv6Network(address: string): string | null {
   if (tail === undefined ? missing !== 0 : missing < 1) return null;
   const groups = [...left, ...Array<string>(missing).fill("0"), ...right];
   if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  const hex = groups.map((group) => group.padStart(4, "0")).join("");
+  if (hex.startsWith("00000000000000000000ffff"))
+    return [24, 26, 28, 30].map((at) => parseInt(hex.slice(at, at + 2), 16)).join(".");
   return `${groups.slice(0, 4).map((group) => parseInt(group, 16).toString(16)).join(":")}::/64`;
 }
 

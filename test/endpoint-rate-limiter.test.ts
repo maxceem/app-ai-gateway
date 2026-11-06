@@ -297,6 +297,8 @@ describe("clientAddress", () => {
   it("keeps IPv4 whole, reads an IPv4-mapped address as IPv4, and leaves the rest as written", () => {
     expect(counted("203.0.113.7")).toBe("203.0.113.7");
     expect(counted("::ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(counted("0:0:0:0:0:FFFF:cb00:7107")).toBe("203.0.113.7");
+    expect(counted("::ffff:cb00:7108")).toBe("203.0.113.8");
     expect(counted("2001:db8::1::2")).toBe("2001:db8::1::2");
     expect(counted()).toBe("local");
   });
