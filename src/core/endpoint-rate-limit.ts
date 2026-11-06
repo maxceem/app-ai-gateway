@@ -173,9 +173,35 @@ export type EndpointRateLimitName = keyof typeof ENDPOINT_RATE_LIMITS;
  * client spend a different address's allowance, or spread its own attempts over
  * as many counters as it cares to invent. Direct `workerd` runs have no edge in
  * front of them and share the one `local` counter.
+ *
+ * An IPv6 address is counted as its /64. One client is routinely handed a
+ * whole /64 and may send from any address in it, so counting each address
+ * alone would multiply every per-address limit by as many as it cares to use.
  */
 export function clientAddress(request: Request): string {
-  return request.headers.get("cf-connecting-ip") ?? "local";
+  const address = request.headers.get("cf-connecting-ip");
+  if (address === null) return "local";
+  return address.includes(":") ? (ipv6Network(address) ?? address) : address;
+}
+
+/**
+ * The /64 an IPv6 address belongs to, in one spelling whichever form it came
+ * in — `2001:db8:a:b::/64` — and an IPv4-mapped address as its IPv4 address.
+ * Anything it cannot read is null, and is then counted as it is written.
+ */
+function ipv6Network(address: string): string | null {
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
+  if (mapped?.[1]) return mapped[1];
+  const [head = "", tail, ...rest] = address.toLowerCase().split("::");
+  if (rest.length > 0) return null;
+  const left = head === "" ? [] : head.split(":");
+  const right = !tail ? [] : tail.split(":");
+  // Only a `::` stands for zero groups, and it stands for at least one.
+  const missing = 8 - left.length - right.length;
+  if (tail === undefined ? missing !== 0 : missing < 1) return null;
+  const groups = [...left, ...Array<string>(missing).fill("0"), ...right];
+  if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  return `${groups.slice(0, 4).map((group) => parseInt(group, 16).toString(16)).join(":")}::/64`;
 }
 
 const UNITS = [
