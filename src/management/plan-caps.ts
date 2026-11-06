@@ -2,6 +2,7 @@ import { sql, type SQL } from "drizzle-orm";
 import {
   billingPlanLimits,
   getBillingAccess,
+  requireActiveBilling,
   type PlanLimits,
 } from "../billing/gateway";
 import { GatewayError } from "../core/errors";
@@ -78,6 +79,11 @@ const UNCAPPED: PlanCap = {
  * leaves every resource unlimited. Nothing here depends on which plan an
  * organization holds or on how it came by it.
  *
+ * A hosted deployment that cannot say which plan applies refuses the capped
+ * create (`503` while billing is unreachable, `402` when no plan resolves)
+ * rather than reading the unknown as "no ceiling": rows created over a
+ * ceiling are never removed once billing answers again.
+ *
  * `scopeId` is what the count is taken over — the organization for everything
  * it owns directly, the application for `appKey` — and defaults to the
  * organization whose plan is being read.
@@ -89,9 +95,9 @@ export async function planCap(
   scopeId: string = organizationId,
 ): Promise<PlanCap> {
   const capped = CAPPED_RESOURCES[resource];
-  const limit = billingPlanLimits(
+  const limit = billingPlanLimits(requireActiveBilling(
     await getBillingAccess(scope.deployment, organizationId, scope.billingCache),
-  )[capped.limit];
+  ))[capped.limit];
   if (limit === undefined) return UNCAPPED;
   return {
     condition: sql`(${capped.count(scopeId)}) < ${limit}`,

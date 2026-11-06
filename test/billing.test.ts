@@ -482,16 +482,17 @@ describe("billing gateway", () => {
 
   /**
    * `402` says the customer must pay; a billing service that cannot be reached
-   * has not said anything about the customer. Answering the outage as `503`
-   * is what keeps a client from showing a paying customer an upsell.
+   * has not said anything about the customer, and an outage of ours must not
+   * take every customer's apps down with it.
    *
    * This isolate has never read this organization, so there is no last known
-   * plan to fall back on and the request waits rather than being admitted on an
-   * allowance nobody knows.
+   * plan to fall back on. The app is served anyway — the proxy through
+   * admission, `/me` through the entitlement gate that also guards the token
+   * exchange — while an organization with no plan is still refused at both.
    */
-  it("separates an unreachable billing service from an unpaid one", async () => {
+  it("serves apps through a billing outage, but not an unpaid organization", async () => {
     const appId = "billing-service-down";
-    const key = await seedServerApp(appId, { endUser: "none" });
+    const key = await seedServerApp(appId);
     const down = withBilling(
       stub({
         getTenantAccess: async () => {
@@ -499,20 +500,49 @@ describe("billing gateway", () => {
         },
       }),
     );
-    const response = await worker.request(
-      `${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-5.6-terra" }),
-      },
-      down,
+    const unpaid = withBilling(stub());
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }),
     );
-    expect(response.status).toBe(503);
-    expect(response.headers.get("retry-after")).toBe("5");
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "billing_unavailable" },
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const contexts: ExecutionContext[] = [];
+    const send = async (path: string, billingEnv: Env, init: RequestInit = {}): Promise<Response> => {
+      const executionCtx = createExecutionContext();
+      contexts.push(executionCtx);
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v1/apps/${appId}/${path}`, {
+          ...init,
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "outage-user", "content-type": "application/json" },
+        }),
+        billingEnv,
+        executionCtx,
+      );
+      return new Response(await response.arrayBuffer(), response);
+    };
+    const proxy = (billingEnv: Env) => send("proxy/openai/v1/responses", billingEnv, {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-5.6-terra", input: "hello" }),
     });
+
+    expect((await proxy(down)).status).toBe(200);
+    expect((await send("me", down)).status).toBe(200);
+    expect(
+      warn.mock.calls
+        .flat()
+        .filter((line) => typeof line === "string" && line.includes("billing_unavailable_admitted")),
+    ).toHaveLength(2);
+
+    clearIsolateCaches();
+    for (const refused of [await proxy(unpaid), await send("me", unpaid)]) {
+      expect(refused.status).toBe(402);
+      await expect(refused.json()).resolves.toMatchObject({
+        error: { code: "billing_payment_required" },
+      });
+    }
+
+    await Promise.all(contexts.map((ctx) => waitOnExecutionContext(ctx)));
   });
 
   /**
@@ -872,6 +902,49 @@ describe("billing gateway", () => {
       error: { code: "billing_plan_limit_reached", data: { limit: providers, used: providers } },
     });
 
+  });
+
+  /**
+   * A ceiling nobody can read is not the absence of one. Rows created over a
+   * ceiling stay after billing recovers, so a capped create waits for an
+   * answer: retryably while billing is unreachable, as unpaid when no plan
+   * resolves.
+   */
+  it("refuses capped creates while the plan cannot be resolved", async () => {
+    const appId = "billing-cap-unresolved";
+    await seedServerApp(appId);
+    const creates = [
+      ["/v1/admin/providers", {
+        type: "openai", slug: "billing-cap-unresolved", name: "Unresolved",
+        secret: "sk-unresolved-value",
+      }],
+      ["/v1/admin/provider-gateways", {
+        type: "cf_aig", name: "Unresolved gateway", accountId: "acct-1", gatewayId: "gw-1",
+        token: "cf-aig-token-value",
+      }],
+      [`/v1/admin/apps/${appId}/keys`, { name: "Unresolved" }],
+    ] as const;
+    const cases = [
+      [() => { throw new Error("billing service unreachable"); }, 503, "billing_unavailable"],
+      [async () => NO_PLAN, 402, "billing_payment_required"],
+    ] as const;
+    for (const [getTenantAccess, status, code] of cases) {
+      clearIsolateCaches();
+      const billingEnv = withBilling(stub({ getTenantAccess }));
+      for (const [path, body] of creates) {
+        const response = await worker.request(
+          `${ORIGIN}${path}`,
+          {
+            method: "POST",
+            headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+          billingEnv,
+        );
+        expect({ path, status: response.status }).toEqual({ path, status });
+        await expect(response.json()).resolves.toMatchObject({ error: { code } });
+      }
+    }
   });
 
   /**

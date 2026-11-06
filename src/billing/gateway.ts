@@ -24,9 +24,10 @@ export const BILLING_ACCESS_CACHE_TTL_MS = 30_000;
 /**
  * How long a successful reading stays usable once billing stops answering.
  *
- * Refusing traffic on an *unknown* allowance is right; refusing it on a plan
- * that was known a minute ago turns a billing-service deploy into an outage for
- * every customer. An hour is long enough to ride out a deploy, a D1 blip or a
+ * An *unknown* allowance serves applications uncounted and refuses the
+ * management API; a plan that was known a minute ago is the better answer for
+ * both, and keeps a billing-service deploy from being an outage of either. An
+ * hour is long enough to ride out a deploy, a D1 blip or a
  * service-binding hiccup, and short enough that a genuinely cancelled
  * subscription is not served for a working day.
  */
@@ -153,9 +154,10 @@ async function loadBillingAccess(
       error: errorFacts(error),
     }));
     /*
-     * Fail closed on an unknown allowance, not on a known one. An organization
-     * this isolate has read before keeps the plan it had; one it has never
-     * seen still waits, because admitting it would mean guessing an allowance.
+     * An organization this isolate has read before keeps the plan it had. One
+     * it has never seen is unavailable: its applications are served uncounted
+     * and its management calls wait, because either way the allowance is
+     * unknown.
      * Still fresh here means still inside the stale window, which is exactly
      * what that cache's TTL is.
      */
@@ -243,9 +245,10 @@ export function getBillingAccess(
 export function requireActiveBilling(access: GatewayBillingAccess): GatewayBillingAccess {
   /*
    * Not being able to reach billing is not a statement about this
-   * organization's subscription. Refusing is still correct — the allowance is
-   * unknown, and admitting traffic on an unknown allowance is how a plan gets
-   * overspent — but it has to be refused as our fault and as temporary.
+   * organization's subscription. The management API still refuses — a write
+   * against an unknown plan would be a guess — but as our fault and as
+   * temporary. Traffic from applications goes through `admitAppTraffic`
+   * instead, which serves it.
    *
    * The distinction is the whole point: `402` tells a client its customer has
    * to go and pay, which a mobile app surfaces as an upsell and does not
@@ -268,6 +271,25 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
     );
   }
   return access;
+}
+
+/**
+ * {@link requireActiveBilling} for traffic from an organization's applications
+ * and their end users, which a billing outage never refuses. Billing that
+ * cannot be read admits the request, uncounted, as admission does when the
+ * allowance counter itself fails: billing errs towards the customer, and an
+ * outage of ours must not take every customer's apps down with it. No plan
+ * resolving is still `402`.
+ */
+export function admitAppTraffic(access: GatewayBillingAccess, organizationId: string): void {
+  if (access.state === "unavailable") {
+    log("warn", "billing_unavailable_admitted", {
+      organizationId,
+      ...(access.billingErrorCode ? { billingErrorCode: access.billingErrorCode } : {}),
+    });
+    return;
+  }
+  requireActiveBilling(access);
 }
 
 /**

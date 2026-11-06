@@ -23,8 +23,9 @@ import {
  * `unmetered` means nothing is counted, not that traffic is admissible: a
  * self-hosted deployment and a plan with no monthly limit answer it, but so do
  * billing being unavailable and no plan resolving. A caller that admits traffic
- * must still call `requireActiveBilling(quota.access)`. `metered` is a limit
- * and the period it is counted over.
+ * must still call `admitAppTraffic` (or, outside the application path,
+ * `requireActiveBilling`) on `quota.access`. `metered` is a limit and the
+ * period it is counted over.
  */
 export type BillingQuota =
   | { kind: "unmetered"; access: GatewayBillingAccess }

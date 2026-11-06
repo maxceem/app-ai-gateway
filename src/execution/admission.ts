@@ -1,4 +1,4 @@
-import { requireActiveBilling, type BillingRequestCache } from "../billing/gateway";
+import { admitAppTraffic, type BillingRequestCache } from "../billing/gateway";
 import { billingQuota } from "../billing/quota";
 import {
   budgetScope,
@@ -270,9 +270,10 @@ export async function admitRequest(
   if (allowanceResult.status === "rejected") throw allowanceResult.reason;
 
   const quota = allowanceResult.value;
-  // Billing that cannot be read, or an organization no plan resolves for, is
-  // refused here rather than served uncounted.
-  requireActiveBilling(quota.access);
+  // An organization no plan resolves for is refused here. Billing that cannot
+  // be read is not: it resolves as `unmetered`, so the request is served
+  // uncounted rather than refused for an outage that is ours.
+  admitAppTraffic(quota.access, app.organizationId);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
   if (quota.kind === "unmetered") return finish();
