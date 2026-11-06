@@ -1,29 +1,20 @@
 [
   {
     "provider": "openai",
-    "model": "gpt-image-2.6-sunburst",
-    "action": "add",
-    "kind": "image",
-    "reason": "Add this current image-generation model; the catalog’s earlier image generations do not make it redundant.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "openai",
-    "model": "gpt-image-2.6-flare",
-    "action": "add",
-    "kind": "image",
-    "reason": "Add this current image-generation model; the catalog’s earlier image generations do not make it redundant.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "together",
-    "model": "moonshotai/Kimi-K3.1-Pro",
+    "model": "gpt-6-cyber",
     "action": "add",
     "kind": "text",
-    "reason": "Add this current text model; the catalog’s Kimi K3 generation does not make a later pinned version redundant.",
+    "reason": "Add this current text model as a distinct catalog generation; the supplied information gives no exclusion rule.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "gemini",
+    "model": "gemini-omni-1.2-flash",
+    "action": "skip",
+    "kind": "text",
+    "reason": "Unsupported public pricing: gemini-omni-1.2-flash, Output price (including thinking tokens): unknown price format \"$9.00 (text) $12.00 (video)^*^\"",
+    "origin": "rules",
+    "reviewer": ""
   }
 ]

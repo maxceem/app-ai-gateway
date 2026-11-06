@@ -1,5 +1,12 @@
 {
   "openai": {
+    "gpt-6-cyber": {
+      "kind": "text",
+      "input": 20.0,
+      "cached_input": 2.0,
+      "cache_write": 25.0,
+      "output": 100.0
+    },
     "gpt-image-2.6-flare": {
       "kind": "image",
       "input": 5.0,
