@@ -387,6 +387,65 @@ describe("organization monthly request quota", () => {
   });
 
   /**
+   * Billing errs towards the customer. A counter the platform lost mid-call
+   * may or may not have counted the request, so retrying could count it twice;
+   * serving it uncounted can only ever undercount.
+   */
+  describe("when the allowance counter itself fails", () => {
+    function failingCounter(flags: { retryable?: boolean; overloaded?: boolean }): Env {
+      const base = hosted({ maxRequestsPerMonth: 5 });
+      const counter = {
+        getByName: () => ({
+          admit: async () => {
+            throw Object.assign(
+              new Error("Connection closed: this Durable Object instance is no longer active."),
+              flags,
+            );
+          },
+        }),
+      };
+      return new Proxy(base, {
+        get: (target, property, receiver) =>
+          property === "ORG_QUOTA" ? counter : Reflect.get(target, property, receiver),
+      }) as Env;
+    }
+
+    it("serves a request the platform failed to count, without counting it", async () => {
+      const organizationId = "quota-counter-lost-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-lost", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+
+      const response = await proxyRequest({
+        appId: "quota-counter-lost",
+        key,
+        env: failingCounter({ retryable: true }),
+      });
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(await used(organizationId)).toBe(0);
+    });
+
+    it("still refuses while the counter is overloaded", async () => {
+      const organizationId = "quota-counter-overloaded-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-overloaded", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+
+      const response = await proxyRequest({
+        appId: "quota-counter-overloaded",
+        key,
+        env: failingCounter({ retryable: true, overloaded: true }),
+      });
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "service_unavailable" } });
+      expect(upstream).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
    * A plan the organization has outgrown mid-month — downgraded, or shrunk on
    * the billing side — is not a state the counter can undo. It reports what was
    * spent, which is more than is now allowed, and admits nothing further.
