@@ -52,3 +52,18 @@ test("app conversations refuses a range that ends before it starts", async () =>
     hasCode("invalid_input"),
   );
 });
+
+test("app conversations refuses a listed name that leads outside the export folder", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "agw-conversations-"));
+  const output = join(parent, "exports", "app-1");
+  try {
+    const ctx = stubContext({
+      call: async () => ({ data: { app_id: "app-1", files: [{ name: "../../escaped", size: 1, records: 1, uploaded_at: "" }], next_cursor: null } }),
+      client: { download: async () => new Uint8Array([1, 2, 3]) },
+    });
+    await assert.rejects(conversationsCommand(ctx, "app-1", { to: "2026-11-02", output }), hasCode("invalid_response"));
+    await assert.rejects(readFile(join(parent, "escaped")), { code: "ENOENT" });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

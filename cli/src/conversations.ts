@@ -1,5 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { fail } from "./common.ts";
 import type { Context } from "./context.ts";
@@ -30,6 +30,16 @@ async function sizeOf(path: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/** Where a file the deployment names goes, refusing any name that would land outside `output`. */
+function inside(output: string, name: string): string {
+  const path = resolve(output, name);
+  const rel = relative(output, path);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    fail("invalid_response", "The deployment named a conversation file outside the export folder.", undefined, 3);
+  }
+  return path;
 }
 
 async function save(path: string, bytes: Uint8Array): Promise<void> {
@@ -66,7 +76,7 @@ export async function conversationsCommand(
     })).data;
     for (const file of page.files) {
       result.files += 1;
-      const path = join(output, file.name);
+      const path = inside(output, file.name);
       batches.push(path);
       if ((await sizeOf(path)) === file.size) continue;
       const bytes = await ctx.client.download("getAppConversationFile", {
@@ -87,7 +97,7 @@ export async function conversationsCommand(
       for (const match of text.matchAll(MEDIA_REFERENCE)) names.add(match[1]!);
     }
     for (const name of names) {
-      const path = join(output, name);
+      const path = inside(output, name);
       if ((await sizeOf(path)) !== null) continue;
       const bytes = await ctx.client.download("getAppConversationFile", {
         params: { app: appId },
