@@ -39,8 +39,6 @@ export async function openLogin(
   // how many logins it asks for an hour, and how many of them may wait at
   // once — so it is always set: a request with no edge in front of it shares
   // the one `local` counter rather than escaping either.
-  // The same address is stored for the approval page to show, where it is
-  // only ever displayed.
   const ip = clientAddress(c.req.raw);
   const engine = await operationEngine(c);
   // Sent again: answered with where it stands, without the engine handing a
@@ -65,7 +63,9 @@ export async function openLogin(
       label: body.client.label,
       meta: {
         ...(body.client.os === undefined ? {} : { os: body.client.os }),
-        ip,
+        // The approval page shows the address itself, not the /64 it is
+        // counted under, so a person can recognise their own machine.
+        ip: c.req.header("cf-connecting-ip") ?? ip,
         ...(userAgent === undefined ? {} : { userAgent }),
       },
       loopbackRedirect: body.loopbackRedirect ?? null,
