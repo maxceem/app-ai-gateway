@@ -1314,6 +1314,42 @@ describe("custom endpoints of every kind", () => {
     expect(row.cost_usd).toBeGreaterThan(0);
   });
 
+  it("asks a streamed Chat Completions endpoint for its usage and bills it", async () => {
+    const appId = "endpoint-chat-stream-usage";
+    await seedApp(appId, {
+      endpoints: { chat: { api_style: "chat_completions", provider: "groq", model: "openai/gpt-oss-20b" } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() => new Response(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}`,
+        `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n"),
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+        stream_options: { include_usage: false },
+      }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(captured[0]!.body).stream_options).toEqual({ include_usage: true });
+    const row = await billed(appId);
+    expect(row.cost_source).toBe("computed");
+    expect(row.cost_usd).toBeGreaterThan(0);
+  });
+
   it("streams a Gemini endpoint through the streaming method when the client asks with alt=sse", async () => {
     const appId = "endpoint-gemini-stream";
     await seedApp(appId, {

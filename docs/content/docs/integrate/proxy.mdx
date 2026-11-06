@@ -110,6 +110,15 @@ provider documents it. The gateway forwards it unbuffered and reads usage out
 of it as it passes. If your client disconnects mid-stream, the provider call
 is cancelled.
 
+A streamed Chat Completions answer carries usage only when the request asks for
+it, and an answer without usage could not count toward your apps' budgets. So
+on every Chat Completions request with `"stream": true`, the gateway sets
+`stream_options.include_usage` to `true`, even if your client sent `false`,
+and keeps your other stream options. The stream then ends with one extra chunk
+before `[DONE]`: its `choices` is empty and it carries `usage`. The OpenAI SDKs
+handle that chunk. If you parse the stream yourself, don't assume `choices[0]`
+exists.
+
 ## What reaches the provider
 
 The gateway adds your provider key and forwards a fixed set of request

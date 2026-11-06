@@ -9,7 +9,7 @@ const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyl
   clampStyleFor(PROTOCOLS[style], provider);
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
 import { defaultInferencePaths } from "../src/shared/app-config";
-import { costReportBodyMutation } from "../src/providers/request-body";
+import { costReportBodyMutation, requestStreamUsage } from "../src/providers/request-body";
 import { examplePath } from "../src/shared/first-request";
 import {
   API_STYLE_PATHS,
@@ -2568,6 +2568,130 @@ describe("cost report body mutation", () => {
     const after: Record<string, unknown> = { model: "m" };
     expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);
     expect(after).toEqual({ model: "m" });
+  });
+});
+
+/**
+ * An OpenAI-format stream reports usage only when asked to, and an answer with
+ * no usage is recorded at $0, outside every budget. So the gateway asks for it
+ * on every streamed Chat Completions request, whatever the client sent.
+ */
+describe("streamed chat completions usage", () => {
+  it("asks only a streamed Chat Completions body for its usage", () => {
+    for (const style of API_STYLES) {
+      const body: Record<string, unknown> = { model: "m", stream: true };
+      const changed = requestStreamUsage(style, body);
+      if (style === "chat_completions") {
+        expect(changed).toBe(true);
+        expect(body).toEqual({ model: "m", stream: true, stream_options: { include_usage: true } });
+      } else {
+        expect([style, changed, body]).toEqual([style, false, { model: "m", stream: true }]);
+      }
+    }
+  });
+
+  it.each([
+    { name: "a body that does not stream", body: { model: "m" } },
+    { name: "an explicit non-streamed body", body: { model: "m", stream: false } },
+    { name: "a stream flag that is not literally true", body: { model: "m", stream: "true" } },
+    {
+      name: "a body that already asks for usage",
+      body: { model: "m", stream: true, stream_options: { include_usage: true, include_obfuscation: false } },
+    },
+  ])("leaves $name alone", ({ body }) => {
+    const copy = structuredClone(body) as Record<string, unknown>;
+    expect(requestStreamUsage("chat_completions", copy)).toBe(false);
+    expect(copy).toEqual(body);
+  });
+
+  it.each([
+    {
+      name: "overrides an explicit false and keeps the client's other options",
+      options: { include_usage: false, include_obfuscation: false },
+      expected: { include_usage: true, include_obfuscation: false },
+    },
+    {
+      name: "replaces stream options that are not an object",
+      options: ["include_usage"],
+      expected: { include_usage: true },
+    },
+    { name: "replaces null stream options", options: null, expected: { include_usage: true } },
+  ])("$name", ({ options, expected }) => {
+    const body: Record<string, unknown> = { model: "m", stream: true, stream_options: options };
+    expect(requestStreamUsage("chat_completions", body)).toBe(true);
+    expect(body.stream_options).toEqual(expected);
+  });
+
+  it.each([
+    { name: "omits stream_options", extra: {} },
+    { name: "sets include_usage to false", extra: { stream_options: { include_usage: false } } },
+  ])("meters a proxied stream whose client $name", async ({ name, extra }) => {
+    const appId = `proxy-stream-usage-${name.includes("false") ? "false" : "omitted"}`;
+    await seedApp(appId);
+    const token = await gatewayToken(appId);
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const options = upstreamBody.stream_options as { include_usage?: unknown } | undefined;
+      // What an OpenAI-format upstream does: the usage chunk only on request.
+      const chunks = [
+        { choices: [{ delta: { content: "hello" } }] },
+        ...(options?.include_usage === true
+          ? [{ choices: [], usage: { prompt_tokens: 11, completion_tokens: 4 } }]
+          : []),
+      ];
+      const sse = [...chunks.map((chunk) => `data: ${JSON.stringify(chunk)}`), "data: [DONE]", ""]
+        .join("\n\n");
+      return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+    });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/openai/chat/completions",
+      body: {
+        model: "gemini-3.5-flash",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 100,
+        stream: true,
+        ...extra,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstreamBody.stream_options).toEqual({ include_usage: true });
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    )
+      .bind(appId)
+      .first<{ cost_usd: number; cost_source: string }>();
+    expect(row?.cost_source).toBe("computed");
+    expect(row?.cost_usd).toBeGreaterThan(0);
+  });
+
+  it("adds no stream options to a proxied request that does not stream", async () => {
+    await seedApp("proxy-stream-usage-unary");
+    const token = await gatewayToken("proxy-stream-usage-unary");
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        choices: [{ message: { role: "assistant", content: "hello" } }],
+        usage: { prompt_tokens: 11, completion_tokens: 4 },
+      });
+    });
+
+    const response = await proxyRequest({
+      appId: "proxy-stream-usage-unary",
+      token,
+      path: "gemini/v1beta/openai/chat/completions",
+      body: { model: "gemini-3.5-flash", messages: [{ role: "user", content: "hello" }], max_tokens: 100 },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(upstreamBody).not.toHaveProperty("stream_options");
   });
 });
 
