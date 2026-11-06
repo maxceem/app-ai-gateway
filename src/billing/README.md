@@ -201,7 +201,9 @@ as an extra condition on its `WHERE`, alongside whatever CLI operation
 already guards that write — count and write are one statement, so two concurrent
 creates cannot both read a count below the ceiling and then both succeed. A
 refused write answers `409 billing_plan_limit_reached` and never succeeds on
-retry. No ceiling ever removes or disables an existing row: an account that
+retry. While no plan can be resolved, a capped create is refused like the rest
+of the management API (`503` during an outage, `402` with no plan) rather than
+written without a ceiling. No ceiling ever removes or disables an existing row: an account that
 drops to a lower plan keeps what it has and simply cannot add more.
 
 The allowance is not a per-user limit and never caps what an account grants its
