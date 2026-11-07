@@ -17,19 +17,66 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A D1 binding that fails its first `failures` statements, then behaves normally. */
-function flakyDatabase(failures: number): { database: D1Database; attempts: () => number } {
+/**
+ * A D1 binding that fails its first `failures` statements, then behaves
+ * normally. The default error is one no classifier recognises; `fault` makes
+ * it one the platform documents instead, and `onAttempt` runs as each
+ * statement is prepared, which is where a test can make an attempt take time.
+ */
+function flakyDatabase(
+  failures: number,
+  options: { fault?: () => Error; onAttempt?: () => void } = {},
+): { database: D1Database; attempts: () => number } {
   let attempts = 0;
   const database = {
     prepare(query: string) {
       attempts += 1;
-      if (attempts <= failures) throw new Error("D1 is unavailable");
+      options.onAttempt?.();
+      if (attempts <= failures) throw options.fault?.() ?? new Error("D1 is unavailable");
       return env.DB.prepare(query);
     },
     batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
     exec: (query: string) => env.DB.exec(query),
   } as unknown as D1Database;
   return { database, attempts: () => attempts };
+}
+
+/** What D1 says when too many requests are queued for one database. */
+function overloaded(): Error {
+  return new Error("D1_ERROR: D1 DB is overloaded. Too many requests queued.");
+}
+
+/**
+ * Runs `work` with the backoff timers faked: each timer fires as soon as it is
+ * set, and the fake clock moves by its delay, so a twenty-second backoff costs
+ * the test nothing and `waitedMs` is the time the work would have spent. The
+ * runtime still gets a real turn between timers, which D1's own I/O needs.
+ */
+async function withoutWaiting<T>(work: () => Promise<T>): Promise<{ result: T; waitedMs: number }> {
+  const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+  const realTurn = () => new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+  try {
+    const started = Date.now();
+    let settled = false;
+    const pending = work().finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await realTurn();
+      vi.advanceTimersToNextTimer();
+    }
+    const result = await pending;
+    return { result, waitedMs: Date.now() - started };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+function errorEntries(spy: { mock: { calls: unknown[][] } }, message: string): Record<string, unknown>[] {
+  return spy.mock.calls
+    .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    .filter((entry) => entry.message === message);
 }
 
 /** What the observer sees of a body the client read to the end, through the real pipe. */
@@ -152,6 +199,106 @@ describe("usage recording idempotency", () => {
     expect(await rowCount(appId)).toBe(1);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(20);
     expect(errorCodes(errors)).not.toContain("usage_record_failed");
+  });
+
+  it("outlasts a platform outage longer than the short retries, recording the event once", async () => {
+    const appId = "usage-record-outage";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Five overloaded answers: the short retries give up after three, inside
+    // about 75 ms, so only the long window can see this one through.
+    const flaky = flakyDatabase(5, { fault: overloaded });
+
+    const { waitedMs } = await withoutWaiting(() =>
+      persistUsageEvent(withDatabase(flaky.database), usageEvent({ appId, costUsd: 0.00003 })));
+
+    expect(flaky.attempts()).toBe(6);
+    expect(waitedMs).toBeGreaterThan(75);
+    expect(await rowCount(appId)).toBe(1);
+    expect(await monthlyCost(appId)).toBe(30);
+    expect(await monthlyCost(`${appId}:user-1`)).toBe(30);
+    expect(errorCodes(errors)).not.toContain("usage_record_failed");
+  });
+
+  it("gives up on a refusal that no wait would change after the short retries", async () => {
+    const appId = "usage-record-refused";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const counted = flakyDatabase(0);
+    // The owner guard trigger refuses an organization that does not exist,
+    // and it will refuse it just the same twenty seconds from now.
+    const event = usageEvent({ appId, costUsd: 0.00004 });
+    event.row.organizationId = "usage-record-no-such-organization";
+
+    const { waitedMs } = await withoutWaiting(() => persistUsageEvent(withDatabase(counted.database), event));
+
+    expect(counted.attempts()).toBe(3);
+    expect(waitedMs).toBeLessThanOrEqual(75);
+    expect(await rowCount(appId)).toBe(0);
+    expect(errorEntries(errors, "usage_record_failed")).toEqual([
+      expect.objectContaining({ step: "usage_insert", attempts: 3 }),
+    ]);
+  });
+
+  it("logs everything needed to rebuild the spend when the platform never recovers", async () => {
+    const appId = "usage-record-lost";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const event = usageEvent({ appId, costUsd: 0.00007 });
+    const down = flakyDatabase(Number.MAX_SAFE_INTEGER, { fault: overloaded });
+
+    await withoutWaiting(() => persistUsageEvent(withDatabase(down.database), event));
+
+    expect(await rowCount(appId)).toBe(0);
+    const failures = errorEntries(errors, "usage_record_failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      level: "error",
+      step: "usage_insert",
+      attempts: down.attempts(),
+      eventId: event.eventId,
+      organizationId: TEST_ORGANIZATION_ID,
+      appId,
+      userId: "user-1",
+      createdAt: event.row.createdAt,
+      provider: "openai",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      status: "ok",
+      inputTokens: 6,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 4,
+      costUsd: 0.00007,
+      error: { platform: "platform_overloaded", platformMessage: "D1 DB is overloaded." },
+    });
+  });
+
+  it("stops retrying within the twenty-second window, however slow each attempt is", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The longest delays jitter can draw, so the bound holds at its worst.
+    vi.spyOn(Math, "random").mockReturnValue(0.999_999);
+
+    const quick = flakyDatabase(Number.MAX_SAFE_INTEGER, { fault: overloaded });
+    const fast = await withoutWaiting(() =>
+      persistUsageEvent(withDatabase(quick.database), usageEvent({ appId: "usage-record-window", costUsd: 0.00001 })));
+    expect(fast.waitedMs).toBeLessThanOrEqual(20_000);
+    expect(fast.waitedMs).toBeGreaterThan(15_000);
+    expect(quick.attempts()).toBeGreaterThan(3);
+
+    // Every attempt now takes three seconds of its own. The window counts
+    // them too, so the last attempt still starts inside it.
+    const startedAt: number[] = [];
+    const slow = flakyDatabase(Number.MAX_SAFE_INTEGER, {
+      fault: overloaded,
+      onAttempt: () => {
+        startedAt.push(Date.now());
+        vi.setSystemTime(Date.now() + 3_000);
+      },
+    });
+    const sluggish = await withoutWaiting(() =>
+      persistUsageEvent(withDatabase(slow.database), usageEvent({ appId: "usage-record-window-slow", costUsd: 0.00001 })));
+    expect(startedAt.at(-1)! - startedAt[0]!).toBeLessThanOrEqual(20_000);
+    expect(sluggish.waitedMs).toBeLessThanOrEqual(23_000);
+    expect(slow.attempts()).toBeLessThan(quick.attempts());
+    expect(errorEntries(errors, "usage_record_failed")).toHaveLength(2);
   });
 
   /**
