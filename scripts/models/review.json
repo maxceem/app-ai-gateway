@@ -1,20 +1,11 @@
 [
   {
-    "provider": "openai",
-    "model": "gpt-6-cyber",
+    "provider": "together",
+    "model": "ricursive-ai/Ripple-65B-Preview",
     "action": "add",
     "kind": "text",
-    "reason": "Add this current text model as a distinct catalog generation; the supplied information gives no exclusion rule.",
+    "reason": "Add this text model; no supplied information indicates it meets an exclusion rule.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "gemini",
-    "model": "gemini-omni-1.2-flash",
-    "action": "skip",
-    "kind": "text",
-    "reason": "Unsupported public pricing: gemini-omni-1.2-flash, Output price (including thinking tokens): unknown price format \"$9.00 (text) $12.00 (video)^*^\"",
-    "origin": "rules",
-    "reviewer": ""
   }
 ]
