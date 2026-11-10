@@ -19,12 +19,21 @@
 #   4. the documentation site, then the pages it changed submitted to IndexNow,
 #      and Context7 asked to re-read it
 #
-# Repository secrets required:
-#   CLOUDFLARE_API_TOKEN         Workers Scripts: Edit, D1: Edit, and Workers Routes: Edit on the zone
+# The publish job runs in the `production` environment, and every secret below
+# belongs to that environment, never to the repository. A repository secret is
+# handed to any workflow on any branch a writer pushes; an environment secret
+# only to a job the environment admits. The environment admits `v*` tags only,
+# and it holds each run until the project owner approves it, with no admin
+# bypass. Without that approval nothing reaches Cloudflare or npm, however the
+# run started.
+#
+# Environment secrets required:
+#   CLOUDFLARE_API_TOKEN         D1: Edit, Workers Scripts: Edit and Workers R2 Storage: Edit
+#                                on the account, and Workers Routes: Edit on the zone
 #   CLOUDFLARE_ACCOUNT_ID        the account both Workers live in
 #   WRANGLER_CLOUD_OVERLAY       contents of wrangler.cloud.overlay.jsonc
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
-# Repository secrets, optional:
+# Environment secrets, optional:
 #   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
 #                                refresh the documentation
 #   POST_DEPLOY_CHECK_TOKEN      bearer token for POST_DEPLOY_CHECK_URL
@@ -94,6 +103,7 @@ jobs:
     needs: verify
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: write # create the GitHub release and upload the gateway archive
       id-token: write # npm trusted publishing
