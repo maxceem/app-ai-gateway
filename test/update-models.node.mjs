@@ -53,7 +53,7 @@ function replaceOnce(text, from, to) {
 
 test("openai: reads every standard, the specialized and the transcription tables", () => {
   const text = fixture("openai.md");
-  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-6-cyber", "gpt-6-rosalind", "gpt-6-astra-law", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "gpt-live-transcribe", "Whisper"];
+  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-5.5-cyber-preview", "gpt-6-cyber", "gpt-6-rosalind", "gpt-6-astra-law", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "gpt-live-transcribe", "Whisper"];
   const prices = parse(parseOpenai, text, wanted);
   // Both write lifetimes: 30 minutes by default, and 12 hours.
   assert.deepEqual(prices.get("gpt-5.6-sol"), {
@@ -84,6 +84,9 @@ test("openai: reads every standard, the specialized and the transcription tables
   // A specialized short/long pair whose long row is all "-" has one price,
   // with the 30-minute cache write.
   assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625, cache_write_12h: 31.25 });
+  // The catalog's gpt-5.5-cyber is priced from the page's preview id.
+  assert.equal(sourceId(SOURCES.openai.official, "gpt-5.5-cyber"), "gpt-5.5-cyber-preview");
+  assert.deepEqual(prices.get("gpt-5.5-cyber-preview"), { input: 12.5, output: 75, cached_input: 1.25 });
   // A priced long row adds the long-context prices at the page's threshold,
   // and a "-" long write stays unset.
   assert.deepEqual(prices.get("gpt-6-cyber"), {
@@ -541,7 +544,7 @@ test("dates: every written form the deprecation pages use", () => {
 
 test("openai deprecations: every id in a model cell, and the newest date for one named twice", () => {
   const text = fixture("openai-deprecations.md");
-  const dates = parse(parseOpenaiDeprecations, text, ["whisper-1", "gpt-4o-transcribe", "gpt-5", "gpt-4-1106-preview", "gpt-4-0314"]);
+  const dates = parse(parseOpenaiDeprecations, text, ["whisper-1", "gpt-4o-transcribe", "gpt-5", "gpt-4-1106-preview", "gpt-4-0314", "gpt-5.5-cyber-preview"]);
   assert.deepEqual(dates.get("whisper-1"), { date: "2027-02-26" });
   assert.deepEqual(dates.get("gpt-4o-transcribe"), { date: "2027-02-26" });
   // A snapshot shutting down says nothing about its alias.
@@ -549,6 +552,8 @@ test("openai deprecations: every id in a model cell, and the newest date for one
   // Moved from 2026-03-26 to October 23, announced again above the first.
   assert.deepEqual(dates.get("gpt-4-1106-preview"), { date: "2026-10-23" });
   assert.deepEqual(dates.get("gpt-4-0314"), { date: "2026-03-26" });
+  // The catalog's gpt-5.5-cyber retires under the page's preview id.
+  assert.deepEqual(dates.get(sourceId(SOURCES.openai.deprecations, "gpt-5.5-cyber")), { date: "2027-02-01" });
   assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Shutdown date | Model / system              |", "| Shutdown date | Model name                  |"), ["whisper-1"], /unknown model column/);
   assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Feb 26, 2027  | `whisper-1`", "| Early 2027    | `whisper-1`"), ["whisper-1"], /not a date/);
 });

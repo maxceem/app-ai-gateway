@@ -51,12 +51,15 @@ export const SOURCES = {
       url: "https://developers.openai.com/api/docs/pricing.md",
       type: MARKDOWN,
       parse: parseOpenai,
-      aliases: { "whisper-1": "Whisper" },
+      // OpenAI's pages now name gpt-5.5-cyber by its preview id, at the
+      // same prices; the catalog keeps the id it was added under.
+      aliases: { "whisper-1": "Whisper", "gpt-5.5-cyber": "gpt-5.5-cyber-preview" },
     },
     deprecations: {
       url: "https://developers.openai.com/api/docs/deprecations.md",
       type: MARKDOWN,
       parse: parseOpenaiDeprecations,
+      aliases: { "gpt-5.5-cyber": "gpt-5.5-cyber-preview" },
     },
     modelsDev: "openai",
     litellm: (id) => id,

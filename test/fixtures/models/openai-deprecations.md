@@ -2,6 +2,14 @@
 
 ## Upcoming deprecations
 
+### 2026-11-05: GPT-5.5-Cyber
+
+The `gpt-5.5-cyber-preview` model is deprecated and will be removed from the API on February 1, 2027. Migrate to the most capable cyber model available to you before the shutdown date.
+
+| Shutdown date    | Model / system          | Recommended replacement                        |
+| ---------------- | ----------------------- | ---------------------------------------------- |
+| February 1, 2027 | `gpt-5.5-cyber-preview` | The most capable cyber model available to you. |
+
 ### 2026-08-26: Transcription models
 
 On August 26, 2026, we notified developers using `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe-diarize` of their deprecation and removal from the API on February 26, 2027.
