@@ -1,0 +1,15 @@
+# Workflow actions are pinned to full commit SHAs, because a tag can be moved
+# to different code and the release job runs with production secrets. This
+# keeps those pins current: one weekly pull request for all actions, each
+# release adopted only once it is a week old.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
