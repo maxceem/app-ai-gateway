@@ -6,9 +6,9 @@
 // of the specialized models, where the Cyber, Life Sciences, Codex and
 // embedding models live, the transcription models, and the Standard table of
 // the image models. An embedding model generates nothing, so its missing
-// output price is 0. Cache writes are priced for a 30-minute and a 12-hour
-// lifetime; the catalog prices the default 30-minute write, so the 12-hour
-// columns are not read.
+// output price is 0. Cache writes are priced for the default 30-minute
+// lifetime, `cache_write`, and a 12-hour one, `cache_write_12h`, which bills
+// the share of a write the response reports as kept for 12 hours.
 //
 // The specialized table prices a model with a long-context rate in two rows,
 // "id (short context)" and then "id (long context)". The long row is all "-"
@@ -57,6 +57,19 @@ function cell(text, where) {
   return decimal(text.slice(1), where);
 }
 
+/**
+ * The 30-minute and 12-hour write prices as catalog fields, with `prefix`
+ * (`long_`) for long context. A 12-hour price alone would leave the default
+ * write unpriced, which is not a layout this reader knows.
+ */
+function cacheWrites(price, prefix, write30m, write12h, where) {
+  if (write12h !== undefined && write30m === undefined) {
+    throw new ParseError(`${where}: a 12-hour cache write without the 30-minute one`);
+  }
+  if (write30m !== undefined) price[`${prefix}cache_write`] = write30m;
+  if (write12h !== undefined) price[`${prefix}cache_write_12h`] = write12h;
+}
+
 /** The index of the first line after the table that starts at or after `start`. */
 function tableEnd(lines, start) {
   let index = start;
@@ -100,15 +113,15 @@ export function parseOpenai(text, { wanted }) {
         continue;
       }
       const where = `standard pricing, ${id}`;
-      const [input, output, cachedInput, cacheWrite, , longInput, longOutput, longCached, longWrite] =
+      const [input, output, cachedInput, cacheWrite, cacheWrite12h, longInput, longOutput, longCached, longWrite, longWrite12h] =
         row.slice(1).map((value) => cell(value, where));
       if (input === undefined || output === undefined) {
         throw new ParseError(`${where}: no input or output price`);
       }
       const price = { input, output };
       if (cachedInput !== undefined) price.cached_input = cachedInput;
-      if (cacheWrite !== undefined) price.cache_write = cacheWrite;
-      const long = [longInput, longCached, longWrite, longOutput];
+      cacheWrites(price, "", cacheWrite, cacheWrite12h, where);
+      const long = [longInput, longCached, longWrite, longWrite12h, longOutput];
       if (long.some((value) => value !== undefined)) {
         if (longInput === undefined || longOutput === undefined) {
           throw new ParseError(`${where}: a long-context price without its input or output`);
@@ -116,7 +129,7 @@ export function parseOpenai(text, { wanted }) {
         price.long_context_threshold = threshold;
         price.long_input = longInput;
         if (longCached !== undefined) price.long_cached_input = longCached;
-        if (longWrite !== undefined) price.long_cache_write = longWrite;
+        cacheWrites(price, "long_", longWrite, longWrite12h, where);
         price.long_output = longOutput;
       } else if (model[2] !== undefined) {
         throw new ParseError(`${where}: a context note without long-context prices`);
@@ -174,9 +187,10 @@ export function parseOpenai(text, { wanted }) {
       continue;
     }
     const where = `specialized models, ${id}`;
-    const [input, listedOutput, cachedInput, cacheWrite] = row.slice(2).map((value) => cell(value, where));
+    const [input, listedOutput, cachedInput, cacheWrite, cacheWrite12h] = row.slice(2).map((value) => cell(value, where));
     const embedding = category === "Embedding";
-    if (embedding && (cachedInput !== undefined || listedOutput !== undefined || cacheWrite !== undefined || long)) {
+    const writes = cacheWrite !== undefined || cacheWrite12h !== undefined;
+    if (embedding && (cachedInput !== undefined || listedOutput !== undefined || writes || long)) {
       throw new ParseError(`${where}: an embedding model with a cached, output or long-context price`);
     }
     const output = embedding ? 0 : listedOutput;
@@ -185,17 +199,17 @@ export function parseOpenai(text, { wanted }) {
     }
     const price = { input, output };
     if (cachedInput !== undefined) price.cached_input = cachedInput;
-    if (cacheWrite !== undefined) price.cache_write = cacheWrite;
+    cacheWrites(price, "", cacheWrite, cacheWrite12h, where);
     if (long) {
-      const [longInput, longOutput, longCached, longWrite] = long.slice(2).map((value) => cell(value, where));
-      if ([longInput, longOutput, longCached, longWrite].some((value) => value !== undefined)) {
+      const [longInput, longOutput, longCached, longWrite, longWrite12h] = long.slice(2).map((value) => cell(value, where));
+      if ([longInput, longOutput, longCached, longWrite, longWrite12h].some((value) => value !== undefined)) {
         if (longInput === undefined || longOutput === undefined) {
           throw new ParseError(`${where}: a long-context price without its input or output`);
         }
         price.long_context_threshold = threshold;
         price.long_input = longInput;
         if (longCached !== undefined) price.long_cached_input = longCached;
-        if (longWrite !== undefined) price.long_cache_write = longWrite;
+        cacheWrites(price, "long_", longWrite, longWrite12h, where);
         price.long_output = longOutput;
       }
     }

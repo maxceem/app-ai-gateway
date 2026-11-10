@@ -18,6 +18,7 @@ import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
 import { MODEL_KINDS } from "../shared/model-kinds.ts";
+import { TOKEN_RATE_FIELDS, type TokenRateField, rateDescription } from "../shared/token-rates.ts";
 import {
   GATEWAY_DESCRIPTORS,
   GATEWAY_TYPES,
@@ -1002,41 +1003,26 @@ export const UsageRepriceResponseSchema = z.object({
   delta_usd: z.number(),
 });
 
+/** Every per-token rate, optional, from the one list the cost arithmetic reads. */
+const CATALOG_TOKEN_RATES = Object.fromEntries(
+  TOKEN_RATE_FIELDS.map((field) => {
+    const description = rateDescription(field);
+    return [field, description ? z.number().optional().meta({ description }) : z.number().optional()];
+  }),
+) as Record<TokenRateField, z.ZodOptional<z.ZodNumber>>;
+
 export const ModelPriceSchema = z.object({
   kind: z.enum(MODEL_KINDS).meta({
     description:
       "What the model does: text, image (generation), speech (text to speech), transcription (speech to text), embedding, or realtime (served only over a realtime session). A custom endpoint serves models of its own kind only.",
   }),
-  input: z.number().optional(),
-  output: z.number().optional(),
-  image_input: z.number().optional().meta({
-    description: "USD per 1M image input tokens, where they are priced apart from text input.",
-  }),
-  audio_input: z.number().optional().meta({
-    description: "USD per 1M audio input tokens, where they are priced apart from text input.",
-  }),
-  video_input: z.number().optional().meta({
-    description: "USD per 1M video input tokens, where they are priced apart from text input.",
-  }),
-  image_output: z.number().optional().meta({
-    description: "USD per 1M generated image tokens, where they cost more than text output.",
-  }),
-  cached_input: z.number().optional(),
-  cache_write: z.number().optional(),
-  cache_write_1h: z.number().optional().meta({
-    description: "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write.",
-  }),
+  ...CATALOG_TOKEN_RATES,
   per_minute: z.number().optional(),
   per_hour: z.number().optional(),
   per_image: z.number().optional().meta({
     description: "USD per generated image, for a model billed per image rather than per token.",
   }),
   long_context_threshold: z.number().optional(),
-  long_input: z.number().optional(),
-  long_output: z.number().optional(),
-  long_cached_input: z.number().optional(),
-  long_cache_write: z.number().optional(),
-  long_cache_write_1h: z.number().optional(),
   retirement_date: z.string().optional().meta({
     description:
       "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",

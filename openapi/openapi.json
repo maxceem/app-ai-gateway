@@ -1654,6 +1654,10 @@
               "type": "number",
               "minimum": 0
             },
+            "cache_write_12h": {
+              "type": "number",
+              "minimum": 0
+            },
             "image_input": {
               "type": "number",
               "minimum": 0
@@ -1674,10 +1678,6 @@
               "type": "number",
               "minimum": 0
             },
-            "long_output": {
-              "type": "number",
-              "minimum": 0
-            },
             "long_cached_input": {
               "type": "number",
               "minimum": 0
@@ -1687,6 +1687,14 @@
               "minimum": 0
             },
             "long_cache_write_1h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_cache_write_12h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_output": {
               "type": "number",
               "minimum": 0
             },
@@ -11809,6 +11817,20 @@
                             "input": {
                               "type": "number"
                             },
+                            "cached_input": {
+                              "type": "number"
+                            },
+                            "cache_write": {
+                              "type": "number"
+                            },
+                            "cache_write_1h": {
+                              "type": "number",
+                              "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                            },
+                            "cache_write_12h": {
+                              "type": "number",
+                              "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                            },
                             "output": {
                               "type": "number"
                             },
@@ -11828,15 +11850,23 @@
                               "type": "number",
                               "description": "USD per 1M generated image tokens, where they cost more than text output."
                             },
-                            "cached_input": {
+                            "long_input": {
                               "type": "number"
                             },
-                            "cache_write": {
+                            "long_cached_input": {
                               "type": "number"
                             },
-                            "cache_write_1h": {
-                              "type": "number",
-                              "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                            "long_cache_write": {
+                              "type": "number"
+                            },
+                            "long_cache_write_1h": {
+                              "type": "number"
+                            },
+                            "long_cache_write_12h": {
+                              "type": "number"
+                            },
+                            "long_output": {
+                              "type": "number"
                             },
                             "per_minute": {
                               "type": "number"
@@ -11849,21 +11879,6 @@
                               "description": "USD per generated image, for a model billed per image rather than per token."
                             },
                             "long_context_threshold": {
-                              "type": "number"
-                            },
-                            "long_input": {
-                              "type": "number"
-                            },
-                            "long_output": {
-                              "type": "number"
-                            },
-                            "long_cached_input": {
-                              "type": "number"
-                            },
-                            "long_cache_write": {
-                              "type": "number"
-                            },
-                            "long_cache_write_1h": {
                               "type": "number"
                             },
                             "retirement_date": {

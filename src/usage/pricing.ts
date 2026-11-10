@@ -17,37 +17,23 @@ import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 import {
   TOKEN_RATE_FIELDS,
-  TOKEN_VARIANTS,
+  VARIANTS,
+  bucketRates,
+  type SplitBucket,
+  type TokenPrice,
+  type TokenRateField,
   type TokenVariants,
-  type VariantBucket,
-  type VariantRateField,
+  variantRate,
 } from "../shared/token-rates";
 
-interface Price {
+/**
+ * A catalog entry. Its per-token rates are the ones `src/shared/token-rates.ts`
+ * names: a modality rate absent means that modality bills at `input` or
+ * `output`, and every other absent rate falls back as `bucketRates` says.
+ */
+interface Price extends Partial<Record<TokenRateField, number>> {
   /** What the model does, which decides the custom endpoints it may serve. */
   kind: ModelKind;
-  input?: number;
-  output?: number;
-  /**
-   * What an input token of one modality costs, where it is priced apart from
-   * text, as an embedding model's are. Absent means it bills at `input`.
-   */
-  image_input?: number;
-  audio_input?: number;
-  video_input?: number;
-  /**
-   * What a generated image token costs, where the model's text output costs
-   * less. Absent means every output token bills at `output`.
-   */
-  image_output?: number;
-  cached_input?: number;
-  cache_write?: number;
-  /**
-   * What a cache write kept for an hour costs, where the provider charges it
-   * apart from the default write — Anthropic bills 2x input against 1.25x.
-   * A variant of `cache_write`; see `TOKEN_VARIANTS`.
-   */
-  cache_write_1h?: number;
   per_minute?: number;
   per_hour?: number;
   /**
@@ -58,11 +44,6 @@ interface Price {
    */
   per_image?: number;
   long_context_threshold?: number;
-  long_input?: number;
-  long_output?: number;
-  long_cached_input?: number;
-  long_cache_write?: number;
-  long_cache_write_1h?: number;
   /**
    * Who made the model, where the catalog knows better than the provider type
    * does — a Llama model served by Groq is Meta's. Curated per entry alongside
@@ -331,19 +312,12 @@ export function computeCost(
   const promptTokens = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens;
   const longContext =
     price.long_context_threshold !== undefined && promptTokens > price.long_context_threshold;
-  const inputPrice = longContext ? (price.long_input ?? price.input) : price.input;
-  const outputPrice = longContext ? (price.long_output ?? price.output) : price.output;
-  const cachedPrice = longContext
-    ? (price.long_cached_input ?? price.cached_input ?? inputPrice)
-    : (price.cached_input ?? inputPrice);
-  const cacheWritePrice = longContext
-    ? (price.long_cache_write ?? price.cache_write ?? inputPrice)
-    : (price.cache_write ?? inputPrice);
+  const rates = bucketRates(price as Price & TokenPrice, longContext);
   return (
-    sideCost(usage.inputTokens, inputPrice, modalityRates(price, INPUT_RATES), usage.modalityTokens?.input) +
-    usage.cachedInputTokens * cachedPrice +
-    variantCost("cache_write", usage.cacheWriteTokens, cacheWritePrice, price, longContext, usage.tokenVariants) +
-    sideCost(usage.outputTokens, outputPrice, modalityRates(price, OUTPUT_RATES), usage.modalityTokens?.output)
+    sideCost(usage.inputTokens, rates.input, modalityRates(price, INPUT_RATES), usage.modalityTokens?.input) +
+    variantCost("cached_input", usage.cachedInputTokens, rates.cached_input, price, longContext, usage.tokenVariants) +
+    variantCost("cache_write", usage.cacheWriteTokens, rates.cache_write, price, longContext, usage.tokenVariants) +
+    sideCost(usage.outputTokens, rates.output, modalityRates(price, OUTPUT_RATES), usage.modalityTokens?.output)
   ) / 1_000_000;
 }
 
@@ -357,34 +331,29 @@ function variantCount(value: unknown): number {
 
 /**
  * What one bucket's tokens cost when the response split some of them out as
- * variants billed at their own rate. The variants are taken out of the bucket
- * in a fixed order and never past it, so together they can claim no more than
- * the bucket holds and no token bills twice; the rest bills at `base`, the
- * bucket's own rate.
- *
- * A variant's rate falls back like every other rate here: the long-context
- * variant to the variant, and an unpriced variant to the bucket's rate. That
- * is the same figure the request would have cost before the variant was read,
- * so a catalog that has not priced a variant yet bills as it always did.
+ * variants billed at their own rate (see `TOKEN_VARIANTS`). The variants are
+ * taken out of the bucket in a fixed order and never past it, so together they
+ * can claim no more than the bucket holds and no token bills twice; the rest
+ * bills at `base`, the bucket's own rate. A response that split nothing costs
+ * one multiplication, as it did before variants existed.
  */
 function variantCost(
-  bucket: VariantBucket,
+  bucket: SplitBucket,
   tokens: number,
   base: number,
   price: Price,
   longContext: boolean,
   variants: TokenVariants | undefined,
 ): number {
-  const counts: Partial<Record<string, unknown>> | undefined = variants?.[bucket];
+  const counts: Partial<Record<string, unknown>> | undefined = variants?.[bucket as keyof TokenVariants];
   if (!counts) return tokens * base;
   let rest = tokens;
   let cost = 0;
-  for (const name of TOKEN_VARIANTS[bucket]) {
-    const billed = Math.min(rest, variantCount(counts[name]));
+  for (const variant of VARIANTS) {
+    if (variant.bucket !== bucket) continue;
+    const billed = Math.min(rest, variantCount(counts[variant.name]));
     if (billed === 0) continue;
-    const field: VariantRateField = `${bucket}_${name}`;
-    const rate = (longContext ? price[`long_${field}`] : undefined) ?? price[field] ?? base;
-    cost += billed * rate;
+    cost += billed * variantRate(price, variant, longContext, base);
     rest -= billed;
   }
   return cost + rest * base;

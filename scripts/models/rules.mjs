@@ -12,6 +12,7 @@
 // reason, and the item stops failing the run.
 
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
+import { RATE_LABELS } from "../../src/shared/token-rates.ts";
 import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6 } from "./price.mjs";
 import { SOURCES, sourceId } from "./sources.mjs";
 import { notAddedKey } from "./new-models.mjs";
@@ -33,22 +34,7 @@ const PROBLEMS = {
 };
 const LISTS = "models.dev + litellm";
 
-const LABELS = {
-  input: "input",
-  cached_input: "cached",
-  cache_write: "cache write",
-  cache_write_1h: "1h cache write",
-  output: "output",
-  image_input: "image input",
-  audio_input: "audio input",
-  video_input: "video input",
-  image_output: "image output",
-  long_input: "long input",
-  long_cached_input: "long cached",
-  long_cache_write: "long cache write",
-  long_cache_write_1h: "long 1h cache write",
-  long_output: "long output",
-};
+const LABELS = RATE_LABELS;
 
 /**
  * Every price a source states, and only those: "input $3, output $15, no

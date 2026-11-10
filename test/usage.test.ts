@@ -19,6 +19,7 @@ import {
 import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
 import { API_STYLES, type ApiStyle } from "../src/shared/capabilities";
 import { MODEL_KINDS, type ModelKind } from "../src/shared/model-kinds";
+import { TOKEN_RATE_FIELDS } from "../src/shared/token-rates";
 import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 import { shippedRates } from "./shipped-rates";
 
@@ -1645,6 +1646,13 @@ describe("large response bodies", () => {
  */
 describe("the shipped price catalog", () => {
   const catalog = models as Record<string, Record<string, Record<string, unknown>>>;
+  const PRICED_FIELDS = new Set<string>([
+    ...TOKEN_RATE_FIELDS,
+    "per_minute",
+    "per_hour",
+    "per_image",
+    "long_context_threshold",
+  ]);
 
   it("prices every catalogued model in dollars per million tokens", () => {
     for (const [provider, models] of Object.entries(catalog)) {
@@ -1667,6 +1675,8 @@ describe("the shipped price catalog", () => {
               .toEqual([where, true, true]);
             continue;
           }
+          // A field the rate config does not name would be silently unbilled.
+          expect([where, field, PRICED_FIELDS.has(field)]).toEqual([where, field, true]);
           expect([where, field, typeof value]).toEqual([where, field, "number"]);
           expect([where, field, (value as number) >= 0]).toEqual([where, field, true]);
         }
@@ -1679,7 +1689,7 @@ describe("the shipped price catalog", () => {
         }
         // Per-1M units: a $3/1M model is `3`, not `0.000003` and not `300`.
         // Nothing real sits outside this band, and both mistakes leave it.
-        for (const field of ["input", "output", "image_input", "audio_input", "video_input", "image_output", "cached_input", "cache_write"]) {
+        for (const field of TOKEN_RATE_FIELDS) {
           const value = entry[field] as number | undefined;
           if (value === undefined || value === 0) continue;
           expect([where, field, value > 0.001 && value < 1000])

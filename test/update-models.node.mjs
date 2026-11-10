@@ -55,15 +55,18 @@ test("openai: reads every standard, the specialized and the transcription tables
   const text = fixture("openai.md");
   const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-6-cyber", "gpt-6-rosalind", "gpt-6-astra-law", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "gpt-live-transcribe", "Whisper"];
   const prices = parse(parseOpenai, text, wanted);
+  // Both write lifetimes: 30 minutes by default, and 12 hours.
   assert.deepEqual(prices.get("gpt-5.6-sol"), {
     input: 4,
     output: 20,
     cached_input: 0.4,
     cache_write: 5,
+    cache_write_12h: 10,
     long_context_threshold: 272000,
     long_input: 8,
     long_cached_input: 0.8,
     long_cache_write: 10,
+    long_cache_write_12h: 20,
     long_output: 30,
   });
   assert.deepEqual(prices.get("gpt-5.5"), {
@@ -80,7 +83,7 @@ test("openai: reads every standard, the specialized and the transcription tables
   assert.deepEqual(prices.get("gpt-5.2-pro"), { input: 21, output: 168 });
   // A specialized short/long pair whose long row is all "-" has one price,
   // with the 30-minute cache write.
-  assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625 });
+  assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625, cache_write_12h: 31.25 });
   // A priced long row adds the long-context prices at the page's threshold,
   // and a "-" long write stays unset.
   assert.deepEqual(prices.get("gpt-6-cyber"), {
@@ -88,6 +91,7 @@ test("openai: reads every standard, the specialized and the transcription tables
     output: 100,
     cached_input: 2,
     cache_write: 25,
+    cache_write_12h: 50,
     long_context_threshold: 272000,
     long_input: 40,
     long_cached_input: 4,
@@ -98,10 +102,12 @@ test("openai: reads every standard, the specialized and the transcription tables
     output: 75,
     cached_input: 1.5,
     cache_write: 18.75,
+    cache_write_12h: 37.5,
     long_context_threshold: 272000,
     long_input: 30,
     long_cached_input: 3,
     long_cache_write: 37.5,
+    long_cache_write_12h: 75,
     long_output: 112.5,
   });
   // A category's first row opens with a link anchor.
@@ -134,6 +140,8 @@ test("openai: fails on a renamed header, an added column, an unknown cell or a d
   assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 |", "| gpt-5.6-sol | 4.00 USD |"), wanted, /not a price/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 |", "| gpt-5.6-sol | $4 00 |"), wanted, /plain decimal/);
   assertFails(parseOpenai, replaceOnce(text, "Short context: ≤272K", "Short context: ≤256K"), wanted, /threshold/);
+  // A 12-hour write with no default one is not a layout the reader knows.
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 |", "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | - |"), wanted, /12-hour cache write without the 30-minute one/);
   assertFails(
     parseOpenai,
     replaceOnce(text, "| gpt-5.4-mini |", "| gpt-5.6-sol | $5.00 | $30.00 | $0.50 |\n| gpt-5.4-mini |"),
@@ -160,6 +168,7 @@ test("openai: fails on a specialized table it was not written against", () => {
   assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (short context) |", "| gpt-6-cyber |"), wanted, /without its short-context row/);
   assertFails(parseOpenai, replaceOnce(text, `| ${cyber} | gpt-6-cyber (long context) |`, "| Codex | gpt-6-cyber (long context) |"), wanted, /different categories/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (long context) | $40.00 | $150.00 |", "| gpt-6-cyber (long context) | $40.00 | - |"), wanted, /long-context price without its input or output/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (short context) | $20.00 | $100.00 | $2.00 | $25.00 |", "| gpt-6-cyber (short context) | $20.00 | $100.00 | $2.00 | - |"), wanted, /12-hour cache write without the 30-minute one/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (long context) | $40.00 |", "| gpt-6-cyber (long context) | 40.00 USD |"), wanted, /not a price/);
   assertFails(parseOpenai, replaceOnce(text, "| Embedding | text-embedding-3-small | $0.02 | - | - | - | - |", "| Embedding | text-embedding-3-small | $0.02 | - | - | $0.03 | - |"), ["text-embedding-3-small"], /embedding model/);
 });
@@ -612,6 +621,7 @@ test("effective prices follow computeCost's fallbacks", () => {
       cached_input: 0.1,
       cache_write: 1,
       cache_write_1h: 1,
+      cache_write_12h: 1,
       image_input: 1,
       audio_input: 1,
       video_input: 1,
@@ -621,6 +631,7 @@ test("effective prices follow computeCost's fallbacks", () => {
       long_cached_input: 0.1,
       long_cache_write: 2,
       long_cache_write_1h: 2,
+      long_cache_write_12h: 2,
     },
   );
   assert.ok(!samePrice({ input: 1, output: 2 }, { input: 1, output: 2, long_context_threshold: 1000 }));

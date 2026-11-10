@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { ProviderPricingSchema } from "../src/contracts/schemas";
 import { computeCost, type UsageObservation } from "../src/usage/pricing";
 import { extractUsageText } from "../src/usage/usage-readers";
+import {
+  LONG_RATE_FIELDS,
+  RATE_LABELS,
+  TOKEN_RATE_FIELDS,
+  VARIANTS,
+  bucketRates,
+  variantRate,
+} from "../src/shared/token-rates";
 import { shippedRates } from "./shipped-rates";
 
 const SONNET = "claude-sonnet-5";
@@ -115,6 +123,124 @@ describe("Anthropic cache-write TTL split", () => {
   });
 });
 
+describe("OpenAI cache-write TTL split", () => {
+  const SOL = "gpt-5.6-sol";
+
+  function responsesUsage(cacheWrites: { ttl_30m_tokens: number; ttl_12h_tokens: number }, inputTokens = 12_000) {
+    const written = cacheWrites.ttl_30m_tokens + cacheWrites.ttl_12h_tokens;
+    return extractUsageText(
+      JSON.stringify({
+        object: "response",
+        usage: {
+          input_tokens: inputTokens,
+          input_tokens_details: {
+            cached_tokens: 4000,
+            cache_write_tokens: written,
+            cache_write_tokens_details: cacheWrites,
+          },
+          output_tokens: 10,
+        },
+      }),
+      "application/json",
+      "responses",
+    );
+  }
+
+  it("bills the 12-hour share at its own rate and the rest at the 30-minute rate", () => {
+    // OpenAI's own worked example: 1,000 ordinary, 4,000 cached, 3,000 + 4,000 written.
+    const usage = responsesUsage({ ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 });
+    expect(usage).toEqual({
+      inputTokens: 1000,
+      cachedInputTokens: 4000,
+      cacheWriteTokens: 7000,
+      outputTokens: 10,
+      tokenVariants: { cache_write: { "12h": 4000 } },
+    });
+    const rates = shippedRates("openai", SOL);
+    expect(computeCost("openai", SOL, usage!)).toBeCloseTo(
+      (1000 * rates.input + 4000 * rates.cached_input + 3000 * rates.cache_write + 4000 * rates.cache_write_12h
+        + 10 * rates.output) / 1e6,
+      12,
+    );
+  });
+
+  it("stores no split when nothing was kept for 12 hours", () => {
+    // OpenAI reports both lifetimes even when one is zero.
+    const usage = responsesUsage({ ttl_30m_tokens: 7000, ttl_12h_tokens: 0 });
+    expect(usage?.tokenVariants).toBeUndefined();
+    const rates = shippedRates("openai", SOL);
+    expect(computeCost("openai", SOL, usage!)).toBeCloseTo(
+      (1000 * rates.input + 4000 * rates.cached_input + 7000 * rates.cache_write + 10 * rates.output) / 1e6,
+      12,
+    );
+  });
+
+  it("uses the long-context 12-hour rate above the threshold", () => {
+    const rates = shippedRates("openai", SOL);
+    const usage = responsesUsage({ ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 }, rates.long_context_threshold + 12_000);
+    expect(computeCost("openai", SOL, usage!)).toBeCloseTo(
+      ((rates.long_context_threshold + 1000) * rates.long_input + 4000 * rates.long_cached_input
+        + 3000 * rates.long_cache_write + 4000 * rates.long_cache_write_12h + 10 * rates.long_output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills a 12-hour share at the default write rate where the model has no 12-hour price", () => {
+    const usage = responsesUsage({ ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 });
+    const pricing = { [SOL]: { input: 1, output: 4, cached_input: 0.1, cache_write: 1.25 } };
+    expect(computeCost("openai", SOL, usage!, pricing)).toBeCloseTo(
+      (1000 * 1 + 4000 * 0.1 + 7000 * 1.25 + 10 * 4) / 1e6,
+      12,
+    );
+  });
+});
+
+describe("the rate config", () => {
+  it("lists each variant's rate after its bucket's, and every short rate again for long context", () => {
+    expect(TOKEN_RATE_FIELDS).toEqual([
+      "input",
+      "cached_input",
+      "cache_write",
+      "cache_write_1h",
+      "cache_write_12h",
+      "output",
+      "image_input",
+      "audio_input",
+      "video_input",
+      "image_output",
+      "long_input",
+      "long_cached_input",
+      "long_cache_write",
+      "long_cache_write_1h",
+      "long_cache_write_12h",
+      "long_output",
+    ]);
+    expect(LONG_RATE_FIELDS).toEqual(TOKEN_RATE_FIELDS.filter((field) => field.startsWith("long_")));
+  });
+
+  it("gives every variant a readable path and every rate a label", () => {
+    for (const variant of VARIANTS) {
+      expect(variant.reportedAt.length).toBeGreaterThan(0);
+      expect(TOKEN_RATE_FIELDS).toContain(variant.field);
+      expect(TOKEN_RATE_FIELDS).toContain(`long_${variant.field}`);
+    }
+    expect(RATE_LABELS.cached_input).toBe("cached");
+    expect(RATE_LABELS.long_cache_write_12h).toBe("long 12h cache write");
+  });
+
+  it("falls back from a variant to its bucket, and from long context to short", () => {
+    const price = { input: 1, output: 2, cache_write: 1.25, long_context_threshold: 10, long_input: 2 };
+    expect(bucketRates(price, false)).toEqual({ input: 1, cached_input: 1, cache_write: 1.25, output: 2 });
+    // Long cache reads and writes fall back to their short rate, then to long input.
+    expect(bucketRates(price, true)).toEqual({ input: 2, cached_input: 2, cache_write: 1.25, output: 2 });
+    const twelve = VARIANTS.find((variant) => variant.field === "cache_write_12h")!;
+    expect(variantRate(price, twelve, true, 1.25)).toBe(1.25);
+    expect(variantRate({ ...price, cache_write_12h: 2.5 }, twelve, true, 1.25)).toBe(2.5);
+    expect(variantRate({ ...price, cache_write_12h: 2.5, long_cache_write_12h: 5 }, twelve, true, 1.25)).toBe(5);
+    expect(variantRate({ ...price, cache_write_12h: 2.5, long_cache_write_12h: 5 }, twelve, false, 1.25)).toBe(2.5);
+  });
+});
+
 describe("custom prices", () => {
   const usage: UsageObservation = {
     inputTokens: 100,
@@ -156,6 +282,11 @@ describe("custom prices", () => {
 });
 
 describe("the custom price schema", () => {
+  it("accepts every rate the config names", () => {
+    const price = Object.fromEntries(TOKEN_RATE_FIELDS.map((field) => [field, 1]));
+    expect(ProviderPricingSchema.safeParse({ m: { ...price, long_context_threshold: 1000 } }).success).toBe(true);
+  });
+
   it("accepts every per-token rate", () => {
     const parsed = ProviderPricingSchema.safeParse({
       m: {

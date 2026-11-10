@@ -8,24 +8,15 @@
 //   unpriced  a reason the page lists the model without a public price
 //
 // Nothing here fetches anything; a parser gets the page as a string.
+//
+// The rate names and their fallbacks are the gateway's own, from
+// src/shared/token-rates.ts, so the sync can never compare prices by rules the
+// billing does not use.
 
-/** Every price field the catalog may carry, in the order they are reported. */
-export const PRICE_FIELDS = [
-  "input",
-  "cached_input",
-  "cache_write",
-  "cache_write_1h",
-  "output",
-  "image_input",
-  "audio_input",
-  "video_input",
-  "image_output",
-  "long_input",
-  "long_cached_input",
-  "long_cache_write",
-  "long_cache_write_1h",
-  "long_output",
-];
+import { TOKEN_RATE_FIELDS, VARIANTS, bucketRates, variantRate } from "../../src/shared/token-rates.ts";
+
+/** Every per-token price field the catalog may carry, in the order they are reported. */
+export const PRICE_FIELDS = TOKEN_RATE_FIELDS;
 
 export const AUDIO_FIELDS = ["per_minute", "per_hour"];
 
@@ -96,30 +87,24 @@ export function parseDate(raw, where) {
 /**
  * What `computeCost` in `src/usage/pricing.ts` would actually charge for each
  * token kind, so two sources are compared on what they bill rather than on
- * which fields they happen to spell out. Keep the fallbacks in step with it.
+ * which fields they happen to spell out. The bucket and variant fallbacks are
+ * the ones it bills with.
  */
 export function effectivePrice(price) {
-  const effective = {
-    input: round6(price.input),
-    output: round6(price.output),
-    cached_input: round6(price.cached_input ?? price.input),
-    cache_write: round6(price.cache_write ?? price.input),
-    // A variant of the cache write: unpriced, it bills as the write does.
-    cache_write_1h: round6(price.cache_write_1h ?? price.cache_write ?? price.input),
-    image_input: round6(price.image_input ?? price.input),
-    audio_input: round6(price.audio_input ?? price.input),
-    video_input: round6(price.video_input ?? price.input),
-    image_output: round6(price.image_output ?? price.output),
+  const effective = {};
+  const add = (prefix, rates, longContext) => {
+    for (const [bucket, rate] of Object.entries(rates)) effective[prefix + bucket] = round6(rate);
+    for (const variant of VARIANTS) {
+      effective[prefix + variant.field] = round6(variantRate(price, variant, longContext, rates[variant.bucket]));
+    }
   };
-  if (price.long_context_threshold !== undefined) {
-    const longInput = price.long_input ?? price.input;
-    effective.long_input = round6(longInput);
-    effective.long_output = round6(price.long_output ?? price.output);
-    effective.long_cached_input = round6(price.long_cached_input ?? price.cached_input ?? longInput);
-    const longCacheWrite = price.long_cache_write ?? price.cache_write ?? longInput;
-    effective.long_cache_write = round6(longCacheWrite);
-    effective.long_cache_write_1h = round6(price.long_cache_write_1h ?? price.cache_write_1h ?? longCacheWrite);
-  }
+  add("", bucketRates(price, false), false);
+  // A modality priced apart bills at its own rate, any other at text's.
+  effective.image_input = round6(price.image_input ?? price.input);
+  effective.audio_input = round6(price.audio_input ?? price.input);
+  effective.video_input = round6(price.video_input ?? price.input);
+  effective.image_output = round6(price.image_output ?? price.output);
+  if (price.long_context_threshold !== undefined) add("long_", bucketRates(price, true), true);
   return effective;
 }
 
