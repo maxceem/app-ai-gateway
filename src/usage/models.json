@@ -1,5 +1,6 @@
 {
   "openai": {
+    "gpt-6-astra-law": { "kind": "text", "input": 10.0, "cached_input": 1.0, "output": 50.0 },
     "gpt-6-cyber": {
       "kind": "text",
       "input": 20.0,
@@ -304,6 +305,22 @@
     }
   },
   "anthropic": {
+    "claude-mythos-5-2": {
+      "kind": "text",
+      "input": 8.0,
+      "cached_input": 0.2,
+      "cache_write": 10.0,
+      "cache_write_1h": 16.0,
+      "output": 40.0
+    },
+    "claude-fable-5-2": {
+      "kind": "text",
+      "input": 8.0,
+      "cached_input": 0.2,
+      "cache_write": 10.0,
+      "cache_write_1h": 16.0,
+      "output": 40.0
+    },
     "claude-mythos-5-1": {
       "kind": "text",
       "input": 10.0,
