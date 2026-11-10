@@ -150,6 +150,8 @@ Standard
 | Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/) | gpt-6-cyber (long context) | $40.00 | $150.00 | $4.00 | - | - |
 | Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/) | gpt-5.6-cyber (short context) | $12.50 | $75.00 | $1.25 | $15.625 | $31.25 |
 | Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/) | gpt-5.6-cyber (long context) | - | - | - | - | - |
+| Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/) | gpt-5.5-cyber-preview (short context) | $12.50 | $75.00 | $1.25 | - | - |
+| Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/) | gpt-5.5-cyber-preview (long context) | - | - | - | - | - |
 | <a id="life-sciences-models"></a>Life Sciences — Trusted Access: [Rosalind](https://help.openai.com/en/articles/20001193-gpt-rosalind-for-life-sciences-research) | gpt-6-rosalind (short context) | $15.00 | $75.00 | $1.50 | $18.75 | $37.50 |
 | Life Sciences — Trusted Access: [Rosalind](https://help.openai.com/en/articles/20001193-gpt-rosalind-for-life-sciences-research) | gpt-6-rosalind (long context) | $30.00 | $112.50 | $3.00 | $37.50 | $75.00 |
 | Life Sciences — Trusted Access: [Rosalind](https://help.openai.com/en/articles/20001193-gpt-rosalind-for-life-sciences-research) | gpt-rosalind-research (short context) | $5.00 | $25.00 | $0.50 | - | - |

@@ -55,7 +55,13 @@
       "long_output": 7.5,
       "long_context_threshold": 272000
     },
-    "gpt-5.5-cyber": { "kind": "text", "input": 12.5, "cached_input": 1.25, "output": 75.0 },
+    "gpt-5.5-cyber": {
+      "kind": "text",
+      "input": 12.5,
+      "cached_input": 1.25,
+      "output": 75.0,
+      "retirement_date": "2027-02-01"
+    },
     "gpt-5.6-cyber": {
       "kind": "text",
       "input": 12.5,
