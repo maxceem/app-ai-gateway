@@ -53,17 +53,20 @@ function replaceOnce(text, from, to) {
 
 test("openai: reads every standard, the specialized and the transcription tables", () => {
   const text = fixture("openai.md");
-  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "Whisper"];
+  const wanted = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini", "gpt-5.2-pro", "gpt-5.6-cyber", "gpt-6-cyber", "gpt-6-rosalind", "gpt-6-astra-law", "gpt-5.3-codex", "text-embedding-3-small", "gpt-4o-transcribe", "gpt-live-transcribe", "Whisper"];
   const prices = parse(parseOpenai, text, wanted);
+  // Both write lifetimes: 30 minutes by default, and 12 hours.
   assert.deepEqual(prices.get("gpt-5.6-sol"), {
     input: 4,
     output: 20,
     cached_input: 0.4,
     cache_write: 5,
+    cache_write_12h: 10,
     long_context_threshold: 272000,
     long_input: 8,
     long_cached_input: 0.8,
     long_cache_write: 10,
+    long_cache_write_12h: 20,
     long_output: 30,
   });
   assert.deepEqual(prices.get("gpt-5.5"), {
@@ -78,19 +81,50 @@ test("openai: reads every standard, the specialized and the transcription tables
   // The plain table under the first standard one, with no heading of its own.
   assert.deepEqual(prices.get("gpt-5.4-mini"), { input: 0.75, output: 4.5, cached_input: 0.075 });
   assert.deepEqual(prices.get("gpt-5.2-pro"), { input: 21, output: 168 });
-  // The Cyber family's standard table, with the 30-minute cache write.
-  assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625 });
+  // A specialized short/long pair whose long row is all "-" has one price,
+  // with the 30-minute cache write.
+  assert.deepEqual(prices.get("gpt-5.6-cyber"), { input: 12.5, output: 75, cached_input: 1.25, cache_write: 15.625, cache_write_12h: 31.25 });
+  // A priced long row adds the long-context prices at the page's threshold,
+  // and a "-" long write stays unset.
+  assert.deepEqual(prices.get("gpt-6-cyber"), {
+    input: 20,
+    output: 100,
+    cached_input: 2,
+    cache_write: 25,
+    cache_write_12h: 50,
+    long_context_threshold: 272000,
+    long_input: 40,
+    long_cached_input: 4,
+    long_output: 150,
+  });
+  assert.deepEqual(prices.get("gpt-6-rosalind"), {
+    input: 15,
+    output: 75,
+    cached_input: 1.5,
+    cache_write: 18.75,
+    cache_write_12h: 37.5,
+    long_context_threshold: 272000,
+    long_input: 30,
+    long_cached_input: 3,
+    long_cache_write: 37.5,
+    long_cache_write_12h: 75,
+    long_output: 112.5,
+  });
+  // A category's first row opens with a link anchor.
+  assert.deepEqual(prices.get("gpt-6-astra-law"), { input: 10, output: 50, cached_input: 1 });
   // The standard specialized table, not the Fast one below it.
   assert.deepEqual(prices.get("gpt-5.3-codex"), { input: 1.75, output: 14, cached_input: 0.175 });
   // An embedding generates nothing, so its missing output price is 0.
   assert.deepEqual(prices.get("text-embedding-3-small"), { input: 0.02, output: 0 });
   assert.deepEqual(prices.get("gpt-4o-transcribe"), { input: 2.5, output: 10 });
+  assert.deepEqual(prices.get("gpt-live-transcribe"), { per_minute: 0.017 });
   assert.deepEqual(prices.get("Whisper"), { per_minute: 0.006 });
   // Listed but not read, so unknown cells such as "Free" do not matter.
   assert.equal(prices.get("gpt-6-astra"), null);
   assert.equal(prices.get("omni-moderation-latest"), null);
-  // A grouped table under its own heading is not a standard one.
-  assert.equal(prices.has("gpt-rosalind-research"), false);
+  assert.equal(prices.get("gpt-rosalind-research"), null);
+  // The realtime table is not read.
+  assert.equal(prices.has("gpt-realtime-2"), false);
 });
 
 test("openai: fails on a renamed header, an added column, an unknown cell or a duplicate", () => {
@@ -106,17 +140,37 @@ test("openai: fails on a renamed header, an added column, an unknown cell or a d
   assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 |", "| gpt-5.6-sol | 4.00 USD |"), wanted, /not a price/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 |", "| gpt-5.6-sol | $4 00 |"), wanted, /plain decimal/);
   assertFails(parseOpenai, replaceOnce(text, "Short context: ≤272K", "Short context: ≤256K"), wanted, /threshold/);
+  // A 12-hour write with no default one is not a layout the reader knows.
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 |", "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | - |"), wanted, /12-hour cache write without the 30-minute one/);
   assertFails(
     parseOpenai,
     replaceOnce(text, "| gpt-5.4-mini |", "| gpt-5.6-sol | $5.00 | $30.00 | $0.50 |\n| gpt-5.4-mini |"),
     wanted,
     /twice/,
   );
-  // The same model in two families' tables must carry the same price.
-  assertFails(parseOpenai, replaceOnce(text, "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 | $10.00 | $8.00 | $30.00 | $0.80 | $10.00 | $20.00 |\n| gpt-5.6-cyber", "| gpt-5.6-sol | $4.00 | $20.00 | $0.40 | $5.00 | $10.00 | $8.00 | $31.00 | $0.80 | $10.00 | $20.00 |\n| gpt-5.6-cyber"), wanted, /twice/);
+  // The same model in the standard and the specialized table must carry the same price.
+  assertFails(parseOpenai, replaceOnce(text, "| ChatGPT | chat-latest |", "| Codex | gpt-5.6-sol | $5.00 | $20.00 | $0.40 | - | - |\n| ChatGPT | chat-latest |"), wanted, /twice/);
   assertFails(parseOpenai, replaceOnce(text, "| Model | Input | Output | Cached input |", "| Model | Input | Cached input | Output |"), wanted, /header changed/);
   assertFails(parseOpenai, text.replaceAll("### Standard pricing data", "### Standard pricing"), wanted, /missing/);
-  assertFails(parseOpenai, replaceOnce(text, "Transcription models", "Speech models"), wanted, /missing/);
+  assertFails(parseOpenai, replaceOnce(text, "\nTranscription\n", "\nSpeech\n"), wanted, /missing/);
+});
+
+test("openai: fails on a specialized table it was not written against", () => {
+  const text = fixture("openai.md");
+  const wanted = ["gpt-6-cyber"];
+  const cyber = "Cyber — Trusted Access: [Daybreak](https://openai.com/daybreak/)";
+  assertFails(parseOpenai, replaceOnce(text, "| Cached input | 30m write | 12h write |", "| Cached input | 5m write | 12h write |"), wanted, /header changed/);
+  assertFails(parseOpenai, replaceOnce(text, "| Cached input | 30m write | 12h write |\n| --- | --- | --- | --- | --- | --- | --- |", "| Cached input |\n| --- | --- | --- | --- | --- |"), wanted, /header changed/);
+  // Each short-context row needs its long-context row right below it, and the reverse.
+  assertFails(parseOpenai, replaceOnce(text, `| ${cyber} | gpt-6-cyber (long context) | $40.00 | $150.00 | $4.00 | - | - |\n`, ""), wanted, /without its long-context row/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (short context) |", "| gpt-6-cyber (medium context) |"), wanted, /unexpected model cell/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (long context) |", "| gpt-6-cyber |"), wanted, /without its long-context row/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (short context) |", "| gpt-6-cyber |"), wanted, /without its short-context row/);
+  assertFails(parseOpenai, replaceOnce(text, `| ${cyber} | gpt-6-cyber (long context) |`, "| Codex | gpt-6-cyber (long context) |"), wanted, /different categories/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (long context) | $40.00 | $150.00 |", "| gpt-6-cyber (long context) | $40.00 | - |"), wanted, /long-context price without its input or output/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (short context) | $20.00 | $100.00 | $2.00 | $25.00 |", "| gpt-6-cyber (short context) | $20.00 | $100.00 | $2.00 | - |"), wanted, /12-hour cache write without the 30-minute one/);
+  assertFails(parseOpenai, replaceOnce(text, "| gpt-6-cyber (long context) | $40.00 |", "| gpt-6-cyber (long context) | 40.00 USD |"), wanted, /not a price/);
+  assertFails(parseOpenai, replaceOnce(text, "| Embedding | text-embedding-3-small | $0.02 | - | - | - | - |", "| Embedding | text-embedding-3-small | $0.02 | - | - | $0.03 | - |"), ["text-embedding-3-small"], /embedding model/);
 });
 
 test("openai: reads the Standard image generation table, one price from two modality rows", () => {
@@ -136,9 +190,10 @@ test("openai: reads the Standard image generation table, one price from two moda
 test("openai: fails on an image table it was not written against", () => {
   const text = fixture("openai.md");
   const wanted = ["gpt-image-2"];
-  assertFails(parseOpenai, replaceOnce(text, "Image generation models", "Image models"), wanted, /missing/);
-  assertFails(parseOpenai, replaceOnce(text, "Image generation models\n\nPrices per 1M tokens.", "Image generation models\n\nPrices per image."), wanted, /Standard per-1M-token/);
-  assertFails(parseOpenai, replaceOnce(text, "\nStandard\n\n      For image", "\nBatch\n\n      For image"), wanted, /Standard per-1M-token/);
+  assertFails(parseOpenai, replaceOnce(text, "\nImages\n", "\nImage models\n"), wanted, /missing/);
+  assertFails(parseOpenai, replaceOnce(text, "Multimodal models", "Media models"), wanted, /missing/);
+  assertFails(parseOpenai, replaceOnce(text, "Prices per 1M tokens unless noted.", "Prices per image."), wanted, /Standard per-1M-token/);
+  assertFails(parseOpenai, replaceOnce(text, "Speed\n\nStandard\n", "Speed\n\nBatch\n"), wanted, /Standard per-1M-token/);
   assertFails(parseOpenai, replaceOnce(text, "| Model | Modality | Input | Output | Cached input |", "| Model | Modality | Input | Output / image | Cached input |"), wanted, /header changed/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Audio | $5.00 |"), wanted, /unexpected modality "Audio"/);
   assertFails(parseOpenai, replaceOnce(text, "| gpt-image-2 | Text | $5.00 |", "| gpt-image-2 | Image | $5.00 |"), wanted, /two Image rows/);
@@ -566,6 +621,7 @@ test("effective prices follow computeCost's fallbacks", () => {
       cached_input: 0.1,
       cache_write: 1,
       cache_write_1h: 1,
+      cache_write_12h: 1,
       image_input: 1,
       audio_input: 1,
       video_input: 1,
@@ -575,6 +631,7 @@ test("effective prices follow computeCost's fallbacks", () => {
       long_cached_input: 0.1,
       long_cache_write: 2,
       long_cache_write_1h: 2,
+      long_cache_write_12h: 2,
     },
   );
   assert.ok(!samePrice({ input: 1, output: 2 }, { input: 1, output: 2, long_context_threshold: 1000 }));

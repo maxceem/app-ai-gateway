@@ -42,11 +42,19 @@ pick. Their models proxy once you price them, and not before.
 
 ### Prompt cache writes
 
-Anthropic charges more for a cache write kept for an hour than for one kept
-the default five minutes: 2x the input price against 1.25x. Its responses say
-how many written tokens were kept for each, and the gateway bills each share
-at its own rate (`cache_write_1h` and `cache_write` in the catalog). If a
-response gives no split, every written token bills at the five-minute rate.
+Some providers charge more for a cache write that is kept longer:
+
+- **Anthropic** charges 2x the input price for a write kept for an hour,
+  against 1.25x for the default five minutes (`cache_write_1h` and
+  `cache_write` in the catalog).
+- **OpenAI** charges 2.5x the input price for a write kept for 12 hours,
+  against 1.25x for the default 30 minutes (`cache_write_12h` and
+  `cache_write`). OpenAI offers the 12-hour lifetime through the Responses
+  API.
+
+Their responses say how many written tokens were kept for each lifetime, and
+the gateway bills each share at its own rate. If a response gives no split,
+every written token bills at the default rate.
 
 ### Image generation models
 
@@ -147,7 +155,7 @@ PUT /v1/admin/providers/{id}
 
 Through the API, a custom price accepts every per-token rate the catalog
 uses, under the same names as in `GET /v1/admin/prices`: `cached_input`,
-`cache_write`, `cache_write_1h`, the image, audio and video rates, and the
+`cache_write`, `cache_write_1h`, `cache_write_12h`, the image, audio and video rates, and the
 `long_*` rates. The `long_*` rates also need `long_context_threshold`, the
 prompt size in tokens above which they apply. The dialog shows the cache
 rates and keeps the others as they are when you save.

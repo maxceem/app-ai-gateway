@@ -1,4 +1,5 @@
 import models from "../src/usage/models.json";
+import type { TokenRateField } from "../src/shared/token-rates";
 
 /**
  * A test asserts the cost arithmetic — which rate each kind of token is billed
@@ -7,26 +8,10 @@ import models from "../src/usage/models.json";
  * from the model's catalog entry instead of repeating them, and keeps only the
  * formula in its own words.
  */
-export interface ShippedRates {
-  input: number;
-  output: number;
-  image_input: number;
-  audio_input: number;
-  video_input: number;
-  image_output: number;
-  cached_input: number;
-  cache_write: number;
-  cache_write_1h: number;
-  per_minute: number;
-  per_hour: number;
-  per_image: number;
-  long_context_threshold: number;
-  long_input: number;
-  long_output: number;
-  long_cached_input: number;
-  long_cache_write: number;
-  long_cache_write_1h: number;
-}
+export type ShippedRates = Record<
+  TokenRateField | "per_minute" | "per_hour" | "per_image" | "long_context_threshold",
+  number
+>;
 
 /**
  * The shipped rates of one model. Reading a rate the entry does not have

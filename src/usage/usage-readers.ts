@@ -15,7 +15,7 @@ import { type ObservedText, wholeBody } from "./body-observer";
 import { EMPTY_USAGE, type UsageObservation } from "./pricing";
 import { asRecord } from "../shared/records";
 import type { Modality, ModalityCounts } from "../core/types";
-import type { TokenVariants } from "../shared/token-rates";
+import { type TokenVariants, VARIANTS } from "../shared/token-rates";
 import { type ProviderType, routeCostReport } from "../shared/providers";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 
@@ -95,6 +95,7 @@ function openAiUsage(value: unknown): UsageObservation | null {
     asRecord(usage.output_tokens_details) ?? asRecord(usage.completion_tokens_details),
     outputTotal,
   );
+  const tokenVariants = readTokenVariants(usage);
   return {
     inputTokens: Math.max(0, inputTotal - cached - cacheWrite),
     cachedInputTokens: cached,
@@ -107,20 +108,62 @@ function openAiUsage(value: unknown): UsageObservation | null {
     ...((input || output) && {
       modalityTokens: { ...(input && { input }), ...(output && { output }) },
     }),
+    ...(tokenVariants && { tokenVariants }),
   };
 }
 
+/** The count at `path` under `usage`, read as `numberAt` reads one: 0 where it is absent or not a count. */
+function countAt(usage: Record<string, unknown>, path: readonly string[]): number {
+  let value: unknown = usage;
+  for (const key of path) {
+    const record = asRecord(value);
+    if (!record) return 0;
+    value = record[key];
+  }
+  const count = finiteNumber(value);
+  return count === null ? 0 : Math.max(0, Math.trunc(count));
+}
+
+/** Variant counts while they are being gathered, before they are typed. */
+type VariantCounts = Partial<Record<string, Partial<Record<string, number>>>>;
+
 /**
- * The one-hour share of an Anthropic cache write, which bills at 2x input
- * against 1.25x for the default five minutes. `usage.cache_creation` splits
- * `cache_creation_input_tokens` by TTL; where it is absent, as on an older API
- * version or a route that strips it, the whole write bills at the default rate,
- * exactly as it did before the split was read.
+ * The bucket shares a `usage` object reports, each read from where its entry in
+ * `TOKEN_VARIANTS` says a response puts it — Anthropic's one-hour cache write,
+ * OpenAI's 12-hour one. Read positionally from every usage object, like the
+ * cache hits above: each path is a field name only its own provider spells.
+ *
+ * A path that is absent, as on an older API version or a route that strips it,
+ * leaves its bucket to bill at the bucket's own rate, exactly as it did before
+ * the split was read. A zero count is left out too: it bills the same way, and
+ * a response that kept nothing in a longer-lived cache stores the row it did
+ * before.
  */
-function anthropicCacheWriteVariants(usage: Record<string, unknown>): TokenVariants | undefined {
-  const creation = asRecord(usage.cache_creation);
-  if (!creation || finiteNumber(creation.ephemeral_1h_input_tokens) === null) return undefined;
-  return { cache_write: { "1h": numberAt(creation, "ephemeral_1h_input_tokens") } };
+function readTokenVariants(usage: Record<string, unknown>): TokenVariants | undefined {
+  let found: VariantCounts | undefined;
+  for (const variant of VARIANTS) {
+    const count = countAt(usage, variant.reportedAt);
+    if (count === 0) continue;
+    found ??= {};
+    (found[variant.bucket] ??= {})[variant.name] = count;
+  }
+  return found as TokenVariants | undefined;
+}
+
+/**
+ * Two events' bucket shares as one, merged the way `mergeAnthropicUsage`
+ * merges the counters they split: field-wise `max`, so an event that does not
+ * name a share never erases one that did.
+ */
+function mergeTokenVariants(left?: TokenVariants, right?: TokenVariants): TokenVariants | undefined {
+  if (!left || !right) return left ?? right;
+  const [a, b] = [left as VariantCounts, right as VariantCounts];
+  const merged: VariantCounts = {};
+  for (const { bucket, name } of VARIANTS) {
+    const counts = [a[bucket]?.[name], b[bucket]?.[name]].filter((count): count is number => count !== undefined);
+    if (counts.length > 0) (merged[bucket] ??= {})[name] = Math.max(...counts);
+  }
+  return merged as TokenVariants;
 }
 
 function anthropicUsage(value: unknown): UsageObservation | null {
@@ -139,7 +182,7 @@ function anthropicUsage(value: unknown): UsageObservation | null {
   ) {
     return null;
   }
-  const tokenVariants = anthropicCacheWriteVariants(usage);
+  const tokenVariants = readTokenVariants(usage);
   return {
     inputTokens: numberAt(usage, "input_tokens"),
     cachedInputTokens: numberAt(usage, "cache_read_input_tokens"),
@@ -318,17 +361,13 @@ function sseEvents(text: string): {
  * output tokens, and neither may pull the other's counter back down.
  */
 function mergeAnthropicUsage(left: UsageObservation, right: UsageObservation): UsageObservation {
-  // The cache-write split is merged the same way as the counter it splits: an
-  // event that does not name it must not erase the one that did.
-  const oneHour = [left, right]
-    .map((usage) => usage.tokenVariants?.cache_write?.["1h"])
-    .filter((count): count is number => count !== undefined);
+  const tokenVariants = mergeTokenVariants(left.tokenVariants, right.tokenVariants);
   return {
     inputTokens: Math.max(left.inputTokens, right.inputTokens),
     cachedInputTokens: Math.max(left.cachedInputTokens, right.cachedInputTokens),
     cacheWriteTokens: Math.max(left.cacheWriteTokens, right.cacheWriteTokens),
     outputTokens: Math.max(left.outputTokens, right.outputTokens),
-    ...(oneHour.length > 0 && { tokenVariants: { cache_write: { "1h": Math.max(...oneHour) } } }),
+    ...(tokenVariants && { tokenVariants }),
   };
 }
 

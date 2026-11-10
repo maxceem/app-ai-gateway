@@ -406,7 +406,7 @@ export const appUsageEvent = sqliteTable(
     modalityTokens: text("modality_tokens", { mode: "json" }).$type<ModalityTokens>(),
     /**
      * The parts of a token bucket the response split out to bill at a rate of
-     * their own, as JSON `{ cache_write?: { "1h"?: n } }` — see `TOKEN_VARIANTS`
+     * their own, as JSON such as `{ cache_write?: { "12h"?: n } }` — see `TOKEN_VARIANTS`
      * in `src/shared/token-rates.ts`. Every such split shares this one column,
      * so a new one never adds another. `{}` where the response split nothing;
      * null only on rows recorded before the column existed.
