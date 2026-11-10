@@ -1,10 +1,28 @@
 [
   {
-    "provider": "together",
-    "model": "ricursive-ai/Ripple-65B-Preview",
+    "provider": "openai",
+    "model": "gpt-6-astra-law",
     "action": "add",
     "kind": "text",
-    "reason": "Add this text model; no supplied information indicates it meets an exclusion rule.",
+    "reason": "Add as a text model; it is a distinct current model and no exclusion rule applies.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "anthropic",
+    "model": "claude-fable-5-2",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this current text model; the supplied information does not mark it retired or otherwise excluded.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "anthropic",
+    "model": "claude-mythos-5-2",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this current model; sparse metadata is not a reason to skip it.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }
