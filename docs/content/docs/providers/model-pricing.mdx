@@ -35,10 +35,63 @@ offers and accepts only models of its own kind. A model you price yourself
 with the **Pricing** action counts as a text model; a catalog model you
 re-price keeps its kind.
 
+Each entry also carries what the catalog knows about the model's future:
+`retirement_date`, the day the provider stops serving it, and
+`price_changes`, the price changes the provider has announced. Both are
+checked every day against the provider's own pricing and deprecation pages.
+A retired model stays priced, so an app that still names it keeps billing
+exactly. An announced change is not billed early: the entry's own rates are
+the ones billed, and the daily check moves a change into them on its day, so
+it reaches your gateway with the update after that.
+
 Two provider types ship with no catalog at all, because no static list could
 be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might
 pick. Their models proxy once you price them, and not before.
+
+### The catalog as a file
+
+Every gateway publishes its catalog as a static file at `/models.json` on its
+own domain: for the hosted service,
+[`https://api.appaigateway.com/models.json`](https://api.appaigateway.com/models.json).
+It is exactly the catalog that deployment bills with, so it changes when the
+gateway is updated, and any web page may read it (it is served with
+`Access-Control-Allow-Origin: *`). The same file is
+[`src/usage/models.json`](https://github.com/maxceem/app-ai-gateway/blob/main/src/usage/models.json)
+in the repository, where its history shows every change and
+[a feed](https://github.com/maxceem/app-ai-gateway/commits/main/src/usage/models.json.atom)
+announces each one. You may use it under the Apache License 2.0 or
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), at your choice.
+
+The file is keyed by provider type, then model ID. Prices are in US dollars
+per million tokens unless the field says otherwise:
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `text`, `image`, `speech`, `transcription`, `embedding` or `realtime`. |
+| `input`, `output` | Price per million input and output tokens. |
+| `cached_input` | Input served from the provider's prompt cache. Absent: billed as `input`. |
+| `cache_write`, `cache_write_1h`, `cache_write_12h` | Input written to the prompt cache, for the default lifetime, one hour or 12 hours. Absent: billed as `input` (the longer lifetimes as `cache_write`). |
+| `image_input`, `audio_input`, `video_input`, `image_output` | Tokens of that kind, where the provider prices them apart from text. |
+| `long_context_threshold`, `long_*` | A prompt longer than the threshold, in tokens, bills all its tokens at the `long_` rates, where the model has them. |
+| `per_minute`, `per_hour`, `per_image` | Price per minute or hour of audio, or per generated image, for models billed that way. |
+| `author` | Who made the model, where that is not the provider: a Llama model served by Groq is Meta's. |
+| `retirement_date` | The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model. |
+| `price_changes` | Announced price changes, earliest first. Each has `from`, the day it takes effect (from 00:00 UTC), and only the rates that change then; the others keep their value. |
+
+For example, a model whose price doubles on 1 January:
+
+```json
+"gemini-3.8-flash": {
+  "kind": "text",
+  "input": 0.75,
+  "cached_input": 0.075,
+  "output": 3.75,
+  "price_changes": [
+    { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
+  ]
+}
+```
 
 ### Prompt cache writes
 

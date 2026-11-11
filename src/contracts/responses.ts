@@ -1032,6 +1032,17 @@ export const ModelPriceSchema = z.object({
     description:
       "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",
   }),
+  price_changes: z.array(z.object({
+    from: z.string().meta({ description: "The day (YYYY-MM-DD) the change takes effect, from 00:00 UTC." }),
+    ...CATALOG_TOKEN_RATES,
+    per_minute: z.number().optional(),
+    per_hour: z.number().optional(),
+    per_image: z.number().optional(),
+    long_context_threshold: z.number().optional(),
+  })).optional().meta({
+    description:
+      "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today.",
+  }),
 });
 
 export const PricesResponseSchema = z.object({

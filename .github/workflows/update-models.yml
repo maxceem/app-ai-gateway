@@ -1,11 +1,11 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# when a current price changed or new models need review. AI proposes add/skip
-# choices; prices are parsed and validated in code. Comments override choices
-# on the same PR, and merging applies them. No review issue is created.
-# Retirement dates accompany current price changes.
-# Retirement-only changes and upcoming prices stay in the run summary.
-# The rules — official page
+# when anything the catalog says changed — a current price, a scheduled price
+# change, a retirement date — or new models need review. The file is published
+# for others to read, so each of those is worth a pull request on its own. AI
+# proposes add/skip choices; prices are parsed and validated in code. Comments
+# override choices on the same PR, and merging applies them. No review issue
+# is created. The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
 # in scripts/update-models.mjs.
 #

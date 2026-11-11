@@ -56,6 +56,24 @@ interface Price extends Partial<Record<TokenRateField, number>> {
    * stays priced, so an app that still names it keeps billing exactly.
    */
   retirement_date?: string;
+  /**
+   * Price changes a provider has announced, earliest first, kept current by
+   * the daily model sync. Each names the day it takes effect (`from`,
+   * `YYYY-MM-DD`, from 00:00 UTC) and only the rates that change then, under
+   * the same names as the entry's own; a rate it leaves out keeps its value.
+   * The entry's own rates are the ones in force today. Billing does not read
+   * this yet: the sync folds a change into those rates on its day.
+   */
+  price_changes?: PriceChange[];
+}
+
+/** One announced change to a catalog entry's rates; see `Price.price_changes`. */
+export interface PriceChange extends Partial<Record<TokenRateField, number>> {
+  from: string;
+  per_minute?: number;
+  per_hour?: number;
+  per_image?: number;
+  long_context_threshold?: number;
 }
 
 export interface UsageObservation extends UsageCounts {

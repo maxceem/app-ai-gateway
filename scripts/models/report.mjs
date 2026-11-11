@@ -108,8 +108,12 @@ export function renderTitle(decision, today) {
   const [, month, day] = today.split("-").map(Number);
   const changed = new Set(decision.changes.map(({ provider, model }) => `${provider}/${model}`)).size;
   const discovered = decision.newModels.reduce((sum, { ids }) => sum + ids.length, 0);
+  const retirements = decision.retirements?.length ?? 0;
+  const scheduled = decision.schedules?.length ?? 0;
   const parts = [
     changed && count(changed, "price change", "price changes"),
+    scheduled && count(scheduled, "scheduled price change", "scheduled price changes"),
+    retirements && count(retirements, "retirement date", "retirement dates"),
     discovered && count(discovered, "new model", "new models"),
     decision.attention.length && count(decision.attention.length, "needs attention", "need attention"),
   ].filter(Boolean);
@@ -144,13 +148,29 @@ export function renderReport(decision) {
     );
   }
 
+  const rescheduled = new Set((decision.schedules ?? []).map(({ provider, model }) => `${provider}/${model}`));
+  if (rescheduled.size > 0) {
+    const announced = decision.upcoming.filter(({ provider, model }) => rescheduled.has(`${provider}/${model}`));
+    const withdrawn = decision.schedules.filter((item) => item.to === undefined);
+    ready.push(
+      "## ✅ Scheduled price changes\n\n" +
+        "Merging writes these to each model's `price_changes`: the rates that change, from 00:00 UTC on the day given. Billing keeps today's rates; this sync applies a change on its day.\n\n" +
+        [
+          announced.length > 0 ? upcomingTables(announced) : "",
+          withdrawn.length > 0
+            ? `No longer announced, so removed:\n\n${list(withdrawn, (item) => code(`${item.provider}/${item.model}`))}`
+            : "",
+        ].filter(Boolean).join("\n\n"),
+    );
+  }
+
   if (decision.retirements.length > 0) {
     const rows = decision.retirements.map(
       (item) =>
         `| ${code(`${item.provider}/${item.model}`)} | ${item.from === undefined ? "" : `${item.from} → `}**${item.to}** | ${item.source} |`,
     );
-    sections.push(
-      "### Retirement dates\n\n" +
+    ready.push(
+      "## ✅ Retirement dates\n\n" +
         `| Model | Retires on | Source |\n| --- | --- | --- |\n${rows.join("\n")}`,
     );
   }
@@ -163,8 +183,9 @@ export function renderReport(decision) {
       "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
 
-  if (decision.upcoming.length > 0) {
-    sections.push(`### Upcoming price changes\n\n${upcomingTables(decision.upcoming)}`);
+  const unchanged = decision.upcoming.filter(({ provider, model }) => !rescheduled.has(`${provider}/${model}`));
+  if (unchanged.length > 0) {
+    sections.push(`### Scheduled price changes already in the catalog\n\n${upcomingTables(unchanged)}`);
   }
 
   if (decision.retired.length > 0) {
@@ -221,7 +242,7 @@ export function renderReport(decision) {
 
   const parts = ready.length
     ? ready
-    : ["No current price changes or newly discovered models. No pull request is needed."];
+    : ["Nothing in the catalog changes and no new models were found. No pull request is needed."];
   if (attention) parts.push(attention);
   if (sections.length > 0) parts.push("## ℹ️ Additional information\n\nFor information only. Nothing here needs action.\n\n" + sections.join("\n\n"));
   return `${REVIEW_MARKER}\n${parts.join("\n\n")}\n`;

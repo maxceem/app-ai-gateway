@@ -40,6 +40,11 @@ describe("console response headers", () => {
     expect(global?.headers["x-frame-options"]).toBe("DENY");
   });
 
+  it("lets any site read the published model catalog", () => {
+    const catalog = HEADERS.find((rule) => rule.path === "/models.json");
+    expect(catalog?.headers["access-control-allow-origin"]).toBe("*");
+  });
+
   it("has no path-specific frame rule that could be mistaken for the protection", () => {
     for (const rule of HEADERS.filter((candidate) => candidate.path !== "/*")) {
       expect(rule.headers, rule.path).not.toHaveProperty("content-security-policy");

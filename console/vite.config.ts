@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { loadEnv } from "vite";
+import { loadEnv, type Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -29,6 +30,26 @@ function workerConfigPathFor(mode: string): string {
     : path.resolve(repoRoot, "wrangler.jsonc");
 }
 
+/**
+ * The shipped model price catalog, published beside the console as
+ * `/models.json`: exactly the file this build's gateway bills with, served as a
+ * static asset (no Worker runs for it) so anyone can read or track the prices.
+ * Its CORS and cache headers are in `public/_headers`.
+ */
+function modelCatalog(): Plugin {
+  return {
+    name: "model-catalog",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "models.json",
+        source: readFileSync(path.resolve(repoRoot, "src/usage/models.json"), "utf8"),
+      });
+    },
+  };
+}
+
 export default defineConfig(({ command, mode, isPreview }) => {
   // Development is a single Vite server: the Cloudflare plugin runs the API
   // Worker in workerd and Vite serves the console with HMR on the same origin.
@@ -40,6 +61,7 @@ export default defineConfig(({ command, mode, isPreview }) => {
     plugins: [
       react(),
       tailwindcss(),
+      modelCatalog(),
       ...(cloudflareDev
         ? [cloudflare({
           configPath: workerConfigPathFor(mode),

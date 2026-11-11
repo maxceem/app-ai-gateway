@@ -19,7 +19,7 @@ import {
 import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
 import { API_STYLES, type ApiStyle } from "../src/shared/capabilities";
 import { MODEL_KINDS, type ModelKind } from "../src/shared/model-kinds";
-import { TOKEN_RATE_FIELDS } from "../src/shared/token-rates";
+import { TOKEN_RATE_FIELDS, type TokenRateField } from "../src/shared/token-rates";
 import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 import { shippedRates } from "./shipped-rates";
 
@@ -1673,6 +1673,29 @@ describe("the shipped price catalog", () => {
             const day = String(value);
             expect([where, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])
               .toEqual([where, true, true]);
+            continue;
+          }
+          if (field === "price_changes") {
+            // Days in order, each changing at least one rate the entry's
+            // billing unit uses, held to the same band as the entry's own.
+            expect([where, Array.isArray(value) && value.length > 0]).toEqual([where, true]);
+            let previous = "";
+            for (const change of value as Record<string, unknown>[]) {
+              const day = String(change.from);
+              expect([where, day, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day), day > previous])
+                .toEqual([where, day, true, true, true]);
+              previous = day;
+              const rates = Object.entries(change).filter(([key]) => key !== "from");
+              expect([where, day, rates.length > 0]).toEqual([where, day, true]);
+              for (const [rate, amount] of rates) {
+                expect([where, day, rate, PRICED_FIELDS.has(rate), typeof amount]).toEqual([where, day, rate, true, "number"]);
+                if (rate === "long_context_threshold") continue;
+                const unit = entry.per_minute !== undefined ? "per_minute" : entry.per_hour !== undefined ? "per_hour" : entry.per_image !== undefined ? "per_image" : "token";
+                expect([where, day, rate, unit === "token" ? TOKEN_RATE_FIELDS.includes(rate as TokenRateField) : rate === unit])
+                  .toEqual([where, day, rate, true]);
+                expect([where, day, rate, (amount as number) > 0.001 && (amount as number) < 1000]).toEqual([where, day, rate, true]);
+              }
+            }
             continue;
           }
           // A field the rate config does not name would be silently unbilled.
