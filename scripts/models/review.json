@@ -1,28 +1,10 @@
 [
   {
-    "provider": "openai",
-    "model": "gpt-6-astra-law",
+    "provider": "gemini",
+    "model": "gemini-4-carbon",
     "action": "add",
     "kind": "text",
-    "reason": "Add as a text model; it is a distinct current model and no exclusion rule applies.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "anthropic",
-    "model": "claude-fable-5-2",
-    "action": "add",
-    "kind": "text",
-    "reason": "Add this current text model; the supplied information does not mark it retired or otherwise excluded.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
-  },
-  {
-    "provider": "anthropic",
-    "model": "claude-mythos-5-2",
-    "action": "add",
-    "kind": "text",
-    "reason": "Add this current model; sparse metadata is not a reason to skip it.",
+    "reason": "Add as a current text model with multimodal inputs; its family and capabilities make it a distinct application option.",
     "origin": "ai",
     "reviewer": "gpt-6-luna"
   }

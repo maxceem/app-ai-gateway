@@ -549,6 +549,7 @@
     "grok-transcribe": { "kind": "transcription", "per_hour": 0.1 }
   },
   "gemini": {
+    "gemini-4-carbon": { "kind": "text", "input": 2.0, "cached_input": 0.1, "output": 10.0 },
     "gemini-4-argon": { "kind": "text", "input": 2.0, "cached_input": 0.1, "output": 10.0 },
     "gemini-embedding-2": {
       "kind": "embedding",
