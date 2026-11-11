@@ -476,12 +476,61 @@ describe("initial database migration", () => {
     await env.DB.prepare("DELETE FROM app WHERE id IN ('flip-ios', 'flip-ios-set', 'flip-server')").run();
   });
 
-  it("keeps an install's spend beside its user's, and changes both on a reprice", async () => {
+  /**
+   * The default budget scope of a new App Attest application becomes
+   * apple_account with migration 0012, so every one stored before it is
+   * pinned to install, which is what it measured. Run here again, exactly as
+   * the migration holds it, over rows that predate it.
+   */
+  it("pins existing App Attest apps' budgets to the install, and leaves everything else alone", async () => {
+    await seedProviderOrganization();
+    const migration = env.TEST_MIGRATIONS.find((candidate) => candidate.name.startsWith("0012_"))!;
+    const pins = migration.queries.filter((query) => query.includes("UPDATE `app` SET `config_json`"));
+    expect(pins).toHaveLength(2);
+    const ios = (limits?: unknown) => JSON.stringify({
+      authentication: {
+        type: "apple_app_attest",
+        app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.pin" },
+        end_user: { source: "app_install" },
+      },
+      ...(limits === undefined ? {} : { limits }),
+    });
+    const unlimited = { requests: { per_minute: null, per_day: null } };
+    const server = JSON.stringify({ authentication: { type: "api_key", end_user: { source: "none" } } });
+    const insert = (id: string, type: string, config: string) => env.DB.prepare(
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type)
+       VALUES (?, 'org-providers', ?, ?, ?)`,
+    ).bind(id, id, config, type);
+    await env.DB.batch([
+      insert("pin-ios-bare", "apple_app_attest", ios()),
+      insert("pin-ios-unscoped", "apple_app_attest", ios({ per_user: { ...unlimited, spending: { monthly_usd: 3 } } })),
+      insert("pin-ios-user", "apple_app_attest", ios({ per_user: { ...unlimited, spending: { monthly_usd: 3, scope: "user" } } })),
+      insert("pin-server", "api_key", server),
+    ]);
+    for (const pin of pins) await env.DB.prepare(pin).run();
+
+    const limitsOf = async (id: string) => (JSON.parse((await env.DB.prepare("SELECT config_json FROM app WHERE id = ?")
+      .bind(id).first<{ config_json: string }>())!.config_json) as { limits?: { per_user?: unknown } }).limits;
+    expect(await limitsOf("pin-ios-bare")).toEqual({
+      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null, scope: "install" } },
+    });
+    expect(await limitsOf("pin-ios-unscoped")).toEqual({
+      per_user: { ...unlimited, spending: { monthly_usd: 3, scope: "install" } },
+    });
+    // A scope already chosen is kept, and a server app has no install to pin.
+    expect(await limitsOf("pin-ios-user")).toEqual({
+      per_user: { ...unlimited, spending: { monthly_usd: 3, scope: "user" } },
+    });
+    expect(await limitsOf("pin-server")).toBeUndefined();
+    await env.DB.prepare("DELETE FROM app WHERE id LIKE 'pin-%'").run();
+  });
+
+  it("keeps an install's and an Apple Account's spend beside the user's, and changes all on a reprice", async () => {
     await seedProviderOrganization();
     const appId = "migration-install-spend";
     await env.DB.prepare(
-      `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, install_id, provider_type, model, route, cost_usd, status, created_at)
-       VALUES ('migration-install-spend-1', 'org-providers', ?, 'user-1', 'key-1', 'openai', 'm', 'r', 0.25, 'ok', '2026-03-04 05:06:07')`,
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, install_id, apple_account_id, provider_type, model, route, cost_usd, status, created_at)
+       VALUES ('migration-install-spend-1', 'org-providers', ?, 'user-1', 'key-1', 'acct-1', 'openai', 'm', 'r', 0.25, 'ok', '2026-03-04 05:06:07')`,
     ).bind(appId).run();
     await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 1 WHERE event_id = 'migration-install-spend-1'").run();
     const rows = await env.DB.prepare(
@@ -489,6 +538,7 @@ describe("initial database migration", () => {
     ).bind(appId).all();
     expect(rows.results).toEqual([
       { scope: "app", user_key: "", month: "2026-03", microusd: 1_000_000 },
+      { scope: "apple_account", user_key: "acct-1", month: "2026-03", microusd: 1_000_000 },
       { scope: "install", user_key: "key-1", month: "2026-03", microusd: 1_000_000 },
       { scope: "user", user_key: "user-1", month: "2026-03", microusd: 1_000_000 },
     ]);

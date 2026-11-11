@@ -266,11 +266,12 @@ describe("an iOS application", () => {
       end_user: { source: "app_install" },
     });
     // Every install is a stranger, so a mobile app starts rate limited.
-    // Counted per install, the budget included, which the schema writes in.
+    // Requests are counted per install, and the budget per Apple Account,
+    // which the schema writes in as the App Attest default.
     const defaults = mobileDefaultLimits();
     expect(attempts[0]?.config?.limits).toEqual({
       ...defaults,
-      per_user: { ...defaults.per_user, spending: { ...defaults.per_user.spending, scope: "install" } },
+      per_user: { ...defaults.per_user, spending: { ...defaults.per_user.spending, scope: "apple_account" } },
     });
   });
 

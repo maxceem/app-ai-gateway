@@ -181,13 +181,17 @@ credentials as a proxy request:
     "requests_per_day": 10000,
     "monthly_cost_usd": 0.41,
     "monthly_budget_usd": null,
+    "budget_scope": "apple_account",
     "blocked": false
   }
 }
 ```
 
 `install_id` is the App Attest key id of the calling install on an iOS app,
-whose request counts and, by default, spend are per install; it is `null` on
-a server app. `requests_today` is `null` when the app sets no per-user limit, because
+whose request counts are per install; it is `null` on a server app.
+`budget_scope` says whose month `monthly_cost_usd` is: `apple_account`,
+`install` or `user`, as the app's budget is measured. It is `install` for an
+iOS install that sent no verifiable App Store transaction, even when the app
+measures per Apple Account. `requests_today` is `null` when the app sets no per-user limit, because
 requests are then not counted. An app with no user identity answers
 `404 auth_method_not_supported`.

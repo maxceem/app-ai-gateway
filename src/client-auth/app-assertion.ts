@@ -57,9 +57,24 @@ export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
  * The client data the token exchange's assertion signs: the challenge it
  * consumes, bound to the application and the key. A per-request proof signs
  * different client data; see `./request-proof`.
+ *
+ * An exchange that carries the App Store's transaction signs its hash too —
+ * the unpadded base64url SHA-256 of the JWS, as a fourth key — so the
+ * transaction travels under the install's signature and cannot be swapped or
+ * stripped on the way. One without it signs the original three keys, byte for
+ * byte, which is what every client before it sends.
  */
-export function assertionClientData(app: string, challenge: string, keyId: string): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ app, challenge, key_id: keyId }));
+export function assertionClientData(
+  app: string,
+  challenge: string,
+  keyId: string,
+  appTransactionHash?: string,
+): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(
+    appTransactionHash === undefined
+      ? { app, challenge, key_id: keyId }
+      : { app, challenge, key_id: keyId, app_transaction: appTransactionHash },
+  ));
 }
 
 /**

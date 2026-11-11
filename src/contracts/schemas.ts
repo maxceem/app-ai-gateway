@@ -35,6 +35,8 @@ export const APP_ATTEST_ENVIRONMENTS = ["production", "development"] as const;
  */
 export const APP_ATTEST_VERIFY_ON = ["every_request", "token_exchange"] as const;
 export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+/** Longer than any AppTransaction Apple issues: three certificates and a small payload. */
+export const MAX_APP_TRANSACTION_LENGTH = 16_384;
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const HTTP_FIELD_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
@@ -433,23 +435,30 @@ const LimitScopeSchema = z.object({
   spending: z.object({ monthly_usd: NullableSpendLimit }).strict(),
 }).strict();
 
-/** Whose month a `limits.per_user` budget is measured over. */
-export const BUDGET_SCOPES = ["install", "user"] as const;
+/**
+ * Whose month a `limits.per_user` budget is measured over: one install's, one
+ * signed-in user's, or one Apple Account's — every install that account has,
+ * on any device and across reinstalls, as the App Store's signed
+ * AppTransaction names it.
+ */
+export const BUDGET_SCOPES = ["install", "user", "apple_account"] as const;
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
 
 /**
  * The limits on each of an application's callers. The key stays `per_user`,
- * but on an App Attest application its request limits count
- * per install — one copy of the app on one device — and so, by default, does
- * its budget; `spending.scope` moves the budget to the signed-in user, which
- * only an issuer-backed App Attest application can do. A server application
- * has no installs: everything here is per user.
+ * but on an App Attest application its request limits count per install —
+ * one copy of the app on one device — while its budget is measured by
+ * default over the Apple Account the install belongs to, so a reinstall does
+ * not start a fresh month. `spending.scope` moves the budget to the install
+ * alone, or to the signed-in user, which only an issuer-backed App Attest
+ * application can do. A server application has no installs: everything here
+ * is per user.
  */
 const PerUserLimitScopeSchema = LimitScopeSchema.extend({
   spending: LimitScopeSchema.shape.spending.extend({
     scope: z.enum(BUDGET_SCOPES).optional().meta({
       description:
-        "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
+        "Whose month monthly_usd is measured over: apple_account (the default on App Attest applications), install, or user (the default, and the only value, on server applications). apple_account counts every install of one Apple Account together, across devices and reinstalls; an install whose client sent no verifiable App Store transaction is counted on its own, as under install. user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
     }),
   }).strict(),
 }).strict();
@@ -602,11 +611,11 @@ export const AppConfigSchema = z.object({
    */
   const budgetScope = (perUser as PerUserLimitScopeConfig | undefined)?.spending.scope;
   if (authentication !== undefined && budgetScope !== undefined) {
-    if (authentication.type === "api_key" && budgetScope === "install") {
+    if (authentication.type === "api_key" && budgetScope !== "user") {
       context.addIssue({
         code: "custom",
         path: ["limits", "per_user", "spending", "scope"],
-        message: "cannot be install: server applications have no install; the budget is per user",
+        message: `cannot be ${budgetScope}: server applications have no install or Apple Account; the budget is per user`,
       });
     }
     if (
@@ -618,16 +627,18 @@ export const AppConfigSchema = z.object({
         code: "custom",
         path: ["limits", "per_user", "spending", "scope"],
         message:
-          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use install",
+          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use apple_account to count one person's installs together, or install",
       });
     }
   }
 }).overwrite((config) => {
   // The scope's default depends on the application type, so it is filled in
-  // here, once both are parsed, and every reader finds it written.
+  // here, once both are parsed, and every reader finds it written. Every App
+  // Attest application stored before apple_account existed had install
+  // written into it by migration 0012, so this default reaches new ones only.
   const spending = config.limits.per_user.spending;
   if (spending.scope === undefined) {
-    spending.scope = config.authentication.type === "apple_app_attest" ? "install" : "user";
+    spending.scope = config.authentication.type === "apple_app_attest" ? "apple_account" : "user";
   }
   return config;
 }).meta({ id: "AppConfig" });
@@ -734,6 +745,10 @@ export const AppAttestTokenRequestSchema = z.object({
   key_id: AppAttestKeyIdSchema,
   assertion: z.string().min(1),
   challenge: ChallengeSchema,
+  app_transaction: z.string().min(1).max(MAX_APP_TRANSACTION_LENGTH).optional().meta({
+    description:
+      "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify against Apple's root names no account, and the install is counted on its own.",
+  }),
 }).meta({ id: "AppAttestTokenRequest" });
 
 export const ApiKeyTokenRequestSchema = z.object({

@@ -199,6 +199,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "app_transaction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify against Apple's root names no account, and the install is counted on its own."
           }
         },
         "required": [
@@ -808,9 +814,10 @@
                         "type": "string",
                         "enum": [
                           "install",
-                          "user"
+                          "user",
+                          "apple_account"
                         ],
-                        "description": "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration."
+                        "description": "Whose month monthly_usd is measured over: apple_account (the default on App Attest applications), install, or user (the default, and the only value, on server applications). apple_account counts every install of one Apple Account together, across devices and reinstalls; an install whose client sent no verifiable App Store transaction is counted on its own, as under install. user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration."
                       }
                     },
                     "required": [
@@ -2593,6 +2600,7 @@
                   "enum": [
                     "user",
                     "install",
+                    "apple_account",
                     "app",
                     "account",
                     null
@@ -2806,6 +2814,7 @@
             "enum": [
               "user",
               "install",
+              "apple_account",
               "app",
               "account",
               null
@@ -3739,6 +3748,10 @@
                     },
                     "expires_in": {
                       "type": "number"
+                    },
+                    "accepts_app_transaction": {
+                      "type": "boolean",
+                      "description": "True when the token exchange accepts app_transaction, the App Store's signed AppTransaction. A client sends one, and signs over its hash, only when this says so: a gateway that predates it would ignore the field and then refuse the assertion."
                     }
                   },
                   "required": [
@@ -4212,14 +4225,23 @@
                         },
                         "monthly_cost_usd": {
                           "type": "number",
-                          "description": "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user."
+                          "description": "What has been spent so far in the current UTC calendar month against the budget below, by whoever budget_scope names."
                         },
                         "monthly_budget_usd": {
                           "type": [
                             "number",
                             "null"
                           ],
-                          "description": "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited."
+                          "description": "The monthly spending budget this app sets on each Apple Account, install or user, per limits.per_user.spending.scope. Null means unlimited."
+                        },
+                        "budget_scope": {
+                          "type": "string",
+                          "enum": [
+                            "install",
+                            "user",
+                            "apple_account"
+                          ],
+                          "description": "Whose month monthly_cost_usd is: apple_account (every install of this person's Apple Account together), install (this install alone), or user (this signed-in or backend-named user). Usually the app's limits.per_user.spending.scope; install where that is apple_account but this install's client sent no verifiable App Store transaction."
                         },
                         "blocked": {
                           "type": "boolean",
@@ -4233,6 +4255,7 @@
                         "requests_per_day",
                         "monthly_cost_usd",
                         "monthly_budget_usd",
+                        "budget_scope",
                         "blocked"
                       ],
                       "description": "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it."
@@ -9938,6 +9961,7 @@
               "enum": [
                 "user",
                 "install",
+                "apple_account",
                 "app",
                 "account"
               ]

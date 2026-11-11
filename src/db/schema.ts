@@ -460,6 +460,12 @@ export const appUsageEvent = sqliteTable(
      */
     installId: text("install_id"),
     /**
+     * The hashed Apple Account the install belongs to, where the install's
+     * token exchange carried an App Store transaction that verified; null
+     * otherwise, and on every server application's request.
+     */
+    appleAccountId: text("apple_account_id"),
+    /**
      * The client's own `X-Client-Trace-Id`, which groups the requests of one
      * unit of its work — a chat message that takes several model rounds — and
      * joins them with the app's own records and its stored conversations.
@@ -475,6 +481,10 @@ export const appUsageEvent = sqliteTable(
       .where(sql`${table.clientTraceId} IS NOT NULL`),
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
     index("idx_usage_install_month").on(table.appId, table.installId, table.createdAt),
+    // Partial, so the requests that name no Apple Account pay no index write.
+    index("idx_usage_apple_account_month")
+      .on(table.appId, table.appleAccountId, table.createdAt)
+      .where(sql`${table.appleAccountId} IS NOT NULL`),
     index("idx_usage_app_month").on(table.appId, table.createdAt),
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
@@ -484,7 +494,7 @@ export const appUsageEvent = sqliteTable(
   ],
 );
 
-export type AppUsageSpendScope = "app" | "user" | "install";
+export type AppUsageSpendScope = "app" | "user" | "install" | "apple_account";
 
 /**
  * Canonical monthly spend derived atomically from `app_usage_event` by the D1
@@ -495,9 +505,11 @@ export type AppUsageSpendScope = "app" | "user" | "install";
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities
- * distinct in the unique key. An `install` row's key is the App Attest key id;
- * every event of an App Attest application writes both its `user` and its
- * `install` row, so either can become the budget's scope with its history.
+ * distinct in the unique key. An `install` row's key is the App Attest key id,
+ * and an `apple_account` row's the hashed Apple Account. Every event of an
+ * App Attest application writes its `user` and its `install` row, and its
+ * `apple_account` row whenever it names one, so any of them can become the
+ * budget's scope with its history.
  */
 export const appUsageSpend = sqliteTable(
   "app_usage_spend",
@@ -519,7 +531,7 @@ export const appUsageSpend = sqliteTable(
       table.month,
     ),
     index("idx_app_usage_spend_organization").on(table.organizationId),
-    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user', 'install')`),
+    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user', 'install', 'apple_account')`),
     check(
       "app_usage_spend_month_check",
       sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
@@ -684,7 +696,7 @@ export const appRejectionEvent = sqliteTable(
     index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
     index("idx_rejection_events_created").on(table.createdAt),
     check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user', 'blocked_replay')`),
-    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'app', 'account')`),
+    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'apple_account', 'app', 'account')`),
   ],
 );
 

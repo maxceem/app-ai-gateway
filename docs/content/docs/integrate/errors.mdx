@@ -48,7 +48,7 @@ app below, and nothing in the console changes it.
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
 | `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. An `install` or `user` scope means slow this caller down; an `app` scope means the whole app is busy |
-| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. Same `data.scope` | Wait for the next month, or raise the budget in the console |
+| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. `data.scope` is `apple_account`, `install`, `user` or `app`: `apple_account` when an iOS app measures its budget per Apple Account, across that person's installs | Wait for the next month, or raise the budget in the console |
 | `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
 | `billing_unavailable` | 503 | Rare and brief: the account's details were momentarily inconsistent, so the gateway did not serve this call. It is not an outage: while the gateway cannot check the account at all, your app's calls are still served | Retry after `Retry-After`. Not an account problem |
 | `billing_payment_required` | 402 | Account access needs attention in the console | Ask the person managing the gateway account to resolve it; retrying on the device will not help |

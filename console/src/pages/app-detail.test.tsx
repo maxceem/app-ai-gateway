@@ -326,6 +326,27 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
     expect(screen.getAllByRole("progressbar", { name: /monthly budget used/i })).toHaveLength(1);
   });
 
+  /**
+   * One Apple Account's installs may be spread over several rows, whether the
+   * rows are installs or signed-in users, so no row's spend is the figure the
+   * Apple Account budget is measured against.
+   */
+  it("draws no row against a budget measured per Apple Account", async () => {
+    const install = { ...USER, id: "key-id-1", installs: 1, is_install: true, usage: { ...USER.usage, cost_usd: 4 } };
+    renderSection("users", {
+      config: {
+        authentication: ATTEST({ source: "app_install" }),
+        limits: withBudget({ monthly_usd: 10, scope: "apple_account" }).limits,
+      },
+      users: [spendy, install],
+    });
+    expect((await screen.findByTitle(/^Spent by this install; .* applies to each Apple Account/u)).textContent)
+      .toBe("$4.00");
+    expect(screen.getByTitle(/^Spent across this user's installs; .* applies to each Apple Account/u).textContent)
+      .toBe("$14.00");
+    expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
+  });
+
   it("draws it against the budget once the budget is the user's", async () => {
     renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "user" }), users: [spendy] });
     expect(await screen.findByRole("progressbar", { name: /monthly budget used/i })).toBeTruthy();

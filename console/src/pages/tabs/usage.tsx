@@ -104,7 +104,8 @@ export function UsageTab({
   appId: string;
   /**
    * Who an app's traffic is broken down by: an App Attest app's install, or
-   * its user when its budget is measured per user; a server app's user.
+   * its user when its budget is measured per user; a server app's user. An
+   * Apple Account budget has no breakdown of its own and stays on the install.
    */
   identity?: "user" | "install";
   /** Whether events name the install that made them: App Attest apps only. */

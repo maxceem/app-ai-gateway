@@ -226,6 +226,44 @@ describe("setEndUserSource on an App Attest application", () => {
     expect(authOf(session)).toMatchObject({ end_user: { source: "app_install" } });
   });
 
+  /*
+   * The gateway refuses a budget measured per user under app_install, where
+   * the install is the user. The Apple Account is the other person-level
+   * scope, and it needs no sign-in.
+   */
+  it("moves a budget measured per user to the Apple Account under app_install", () => {
+    const session = run(
+      opened({
+        ...attested({ source: "issuer", issuer: STORED_ISSUER }),
+        limits: {
+          per_user: { requests: { per_minute: 10, per_day: null }, spending: { monthly_usd: 5, scope: "user" } },
+          per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+        },
+      }),
+      source("app_install"),
+    );
+
+    expect(session.draft.config.limits?.per_user).toEqual({
+      requests: { per_minute: 10, per_day: null },
+      spending: { monthly_usd: 5, scope: "apple_account" },
+    });
+  });
+
+  it("leaves a budget measured per install where it is under app_install", () => {
+    const session = run(
+      opened({
+        ...attested({ source: "issuer", issuer: STORED_ISSUER }),
+        limits: {
+          per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: 5, scope: "install" } },
+          per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+        },
+      }),
+      source("app_install"),
+    );
+
+    expect(session.draft.config.limits?.per_user?.spending).toEqual({ monthly_usd: 5, scope: "install" });
+  });
+
   it("restores the configured issuer on the way back from app_install", () => {
     const start = opened(attested({ source: "issuer", issuer: STORED_ISSUER }));
     const session = run(start, source("app_install"), source("issuer"));

@@ -918,10 +918,18 @@ describe("App Attest token exchange and installs", () => {
     return value;
   }
 
-  async function assertionFor(install: TestInstall, value: string, counter: number): Promise<string> {
+  async function assertionFor(
+    install: TestInstall,
+    value: string,
+    counter: number,
+    appTransaction?: string,
+  ): Promise<string> {
+    const appTransactionHash = appTransaction === undefined
+      ? undefined
+      : Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(appTransaction))).toString("base64url");
     const clientDataHash = new Uint8Array(await crypto.subtle.digest(
       "SHA-256",
-      Uint8Array.from(assertionClientData(install.appId, value, install.keyId)),
+      Uint8Array.from(assertionClientData(install.appId, value, install.keyId, appTransactionHash)),
     ));
     return (await testAssertion({
       privateKey: install.privateKey,
@@ -951,6 +959,88 @@ describe("App Attest token exchange and installs", () => {
     expect(claims(access_token)).toMatchObject({ sub: "install-key-1", install: "install-key-1", auth_method: "attest" });
     await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
       .resolves.toMatchObject({ installId: "install-key-1", userId: "install-key-1" });
+  });
+
+  it("says on every challenge that it accepts an App Store transaction", async () => {
+    // A client sends one only when told: an older gateway would ignore the
+    // field and then refuse the assertion signed over it.
+    const appId = "exchange-challenge-flag";
+    await seedApp(appId, { endUser: "app_install" });
+    const response = await app.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/auth/challenge`, { method: "POST" }),
+      env,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ expires_in: 300, accepts_app_transaction: true });
+  });
+
+  it("takes an App Store transaction only under the install's signature", async () => {
+    const appId = "exchange-app-transaction";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "at-key", { keyId: "at-key" });
+    // Not one Apple signed, so it names no account, but the exchange that
+    // carries it, signed over it, still succeeds.
+    const jws = "eyJhbGciOiJFUzI1NiJ9.eyJidW5kbGVJZCI6IngifQ.c2lnbmF0dXJl";
+    const signed = await challenge(appId);
+    const response = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: signed,
+      assertion: await assertionFor(install, signed, 1, jws),
+      app_transaction: jws,
+    });
+    expect(response.status).toBe(200);
+    const { access_token } = await response.json<{ access_token: string }>();
+    expect(claims(access_token)).not.toHaveProperty("apple_account");
+    await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
+      .resolves.toMatchObject({ installId: "at-key", appleAccountId: null });
+
+    // Added after signing, or swapped for another, it breaks the assertion.
+    const unsigned = await challenge(appId);
+    const added = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: unsigned,
+      assertion: await assertionFor(install, unsigned, 2),
+      app_transaction: jws,
+    });
+    expect(added.status).toBe(403);
+    await expect(added.json()).resolves.toMatchObject({ error: { code: "attest_failed" } });
+    const swapped = await challenge(appId);
+    const replaced = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: swapped,
+      assertion: await assertionFor(install, swapped, 3, jws),
+      app_transaction: `${jws}x`,
+    });
+    expect(replaced.status).toBe(403);
+  });
+
+  it("signs the Apple Account a verified transaction names into the token", async () => {
+    const appId = "exchange-apple-account";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "aa-key", { keyId: "aa-key" });
+    // Apple will not sign for a test; the verifier itself is covered on its
+    // own in app-transaction.test.ts, so here it answers as for a good one.
+    vi.doMock("../src/client-auth/app-transaction", () => ({
+      verifyAppTransaction: async () => ({ account: "hashed-account", environment: "Production" }),
+    }));
+    try {
+      const jws = "header.payload.signature";
+      const value = await challenge(appId);
+      const response = await exchangeToken(appId, {
+        key_id: install.keyId,
+        challenge: value,
+        assertion: await assertionFor(install, value, 1, jws),
+        app_transaction: jws,
+      });
+      expect(response.status).toBe(200);
+      const { access_token } = await response.json<{ access_token: string }>();
+      expect(claims(access_token)).toMatchObject({ install: "aa-key", apple_account: "hashed-account" });
+      await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
+        .resolves.toMatchObject({ installId: "aa-key", appleAccountId: "hashed-account" });
+    } finally {
+      vi.doUnmock("../src/client-auth/app-transaction");
+    }
   });
 
   it("verifies the assertion and names the install on token_exchange too, and says so", async () => {

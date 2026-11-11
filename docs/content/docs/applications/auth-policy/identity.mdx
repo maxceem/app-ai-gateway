@@ -29,7 +29,8 @@ never leaves the Secure Enclave.
 Keys are per install. A signed-in user who uses your app on a phone and a
 tablet holds two keys, and a user who reinstalls the app gets a new one;
 registering a key never replaces another. Each install is counted on its own
-by the [per-install limits](/applications/limits).
+by the [per-install limits](/applications/limits); the monthly budget is, by
+default, measured across all installs of one Apple Account.
 
 ### iOS app environment
 
@@ -73,8 +74,8 @@ Apps created before this setting was added were set to **Token exchange**, so
 their existing installs keep working. Switch to **Every request** once your
 clients are on the Swift package 1.4 or later: from then on a request without
 a proof is refused with `401 assertion_required`, which is what every build
-on an older package receives. Request limits, budgets and usage are counted
-per install either way. See
+on an older package receives. Neither setting changes how limits, budgets and
+usage are counted. See
 [When App Attest is verified](/how-it-works/identity#when-app-attest-is-verified).
 
 ### In the configuration
