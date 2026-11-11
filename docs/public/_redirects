@@ -11,6 +11,10 @@
 /agents/ /automation/agents/ 301
 /docs/agents /automation/agents/ 301
 /docs/agents/ /automation/agents/ 301
+/agent-quickstart /automation/agents/ 301
+/agent-quickstart/ /automation/agents/ 301
+/docs/agent-quickstart /automation/agents/ 301
+/docs/agent-quickstart/ /automation/agents/ 301
 /authentication /how-it-works/identity/ 301
 /authentication/ /how-it-works/identity/ 301
 /docs/authentication /how-it-works/identity/ 301
@@ -162,4 +166,4 @@
 /docs/api/operator-authentication/signUpOperator /api/console-authentication/signUp/ 301
 /docs/api/operator-authentication/signUpOperator/ /api/console-authentication/signUp/ 301
 
-# Removed cloud-billing, agent-quickstart and billing API pages intentionally have no redirect.
+# Removed cloud-billing and billing API pages intentionally have no redirect.
