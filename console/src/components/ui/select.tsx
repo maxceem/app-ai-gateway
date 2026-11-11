@@ -103,8 +103,16 @@ function SelectLabel({
 function SelectItem({
   className,
   children,
+  description,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+}: React.ComponentProps<typeof SelectPrimitive.Item> & {
+  /**
+   * A muted line under the label, shown only in the open list: the trigger
+   * repeats the label alone. Visible without hovering, so it explains a
+   * disabled option too, which never receives the pointer.
+   */
+  description?: React.ReactNode
+}) {
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
@@ -122,7 +130,16 @@ function SelectItem({
           <CheckIcon className="size-4" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {description === undefined ? (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          <span data-slot="select-item-description" className="text-xs leading-snug text-muted-foreground">
+            {description}
+          </span>
+        </div>
+      )}
     </SelectPrimitive.Item>
   )
 }

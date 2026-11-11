@@ -437,10 +437,27 @@ block is accepted without user identity. Request limits
 must be positive; a spend budget may be `0` to stop all spend.
 
 On an iOS app, `per_user` request limits count per install (one copy of the
-app on one device), and so does the budget unless
-`per_user.spending.scope` is `"user"`, which needs `end_user.source`
-`issuer`. `scope` defaults to `"install"` on iOS apps and `"user"` on server
-apps, where `"install"` is refused. The gateway writes the default in.
+app on one device). `per_user.spending.scope` says what the budget is
+measured per:
+
+- `"apple_account"`: every install of one Apple Account, across devices and
+  reinstalls. The default for new iOS apps. It needs the Swift package 1.7
+  or later, which sends the App Store's signed `AppTransaction` with the
+  token exchange; an install that sent none the gateway could verify is
+  counted on its own, as under `"install"`, and is never refused for it.
+- `"install"`: each install alone. iOS apps created before
+  `"apple_account"` existed have this written in.
+- `"user"`: every install of one signed-in user; needs `end_user.source`
+  `issuer`.
+
+Server apps accept only `"user"`, their default. The gateway writes the
+default in. Spend is kept per install, per user and per Apple Account alike,
+so switching scope mid-month counts the month so far; the Apple Account's
+total holds only requests from builds that sent the transaction. A budget
+refusal (`429 app_budget_exhausted`) carries `data.scope` `apple_account`,
+`install`, `user` or `app`, and `GET /v1/apps/{app}/me` reports
+`limits.budget_scope`: whose month `monthly_cost_usd` is, which is `install`
+for an install that sent no verifiable transaction.
 
 ```json
 "limits": {
@@ -580,7 +597,8 @@ endpoint:
 Usage event `status` values: `ok`, `provider_error`. Refusal sample `reason`
 values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
 `blocked_billing`, `blocked_replay` (a replayed App Attest proof). `scope` is
-`install`, `user`, `app` or `account`. Samples are limited to one per identity per minute, so
+`install`, `apple_account`, `user`, `app` or `account`; `apple_account` is an
+end user's Apple Account budget, unrelated to `account`. Samples are limited to one per identity per minute, so
 sample counts are not exact request totals. Event
 `cost_source` values: `computed`, `reported`, `unresolved`.
 
@@ -608,7 +626,9 @@ client code.
   the app's own send closure, and on a `401` discards the token and sends a
   rebuilt request once. Pass the request body to it, never set it afterwards.
   `authorizedRequest` builds the request alone, for an app that handles the
-  retry itself. See the human documentation under Integrate your app.
+  retry itself. From 1.7 the token exchange also carries the app's App Store
+  transaction, which an `apple_account` budget needs; nothing is configured
+  in the app for it. See the human documentation under Integrate your app.
 
 For Auth0's API-identifier preset, `issuer_token` must be a JWT access token
 for that API. Firebase uses its ID token. In every case the configured issuer

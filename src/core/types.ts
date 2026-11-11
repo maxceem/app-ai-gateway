@@ -50,10 +50,14 @@ interface GatewayIdentityFields {
  * does not is refused — so an attest identity always has it, and under
  * `app_install` it equals `userId`. An API-key identity has none: a server
  * application has no installs.
+ *
+ * `appleAccountId` is the hashed Apple Account the install belongs to, where
+ * the token exchange was handed an App Store transaction that verified; null
+ * where it was not, and always on an API-key identity.
  */
 export type GatewayIdentity =
-  | (GatewayIdentityFields & { authMethod: "attest"; installId: string })
-  | (GatewayIdentityFields & { authMethod: "api_key"; installId: null });
+  | (GatewayIdentityFields & { authMethod: "attest"; installId: string; appleAccountId: string | null })
+  | (GatewayIdentityFields & { authMethod: "api_key"; installId: null; appleAccountId: null });
 
 /** A modality a model may price apart from text. */
 export type Modality = "image" | "audio" | "video";

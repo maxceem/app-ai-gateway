@@ -207,6 +207,24 @@ describe("app usage accounting", () => {
     expect(await spend(appId)).toEqual([]);
   });
 
+  it("keeps an Apple Account's old total while an event of its month survives", async () => {
+    const appId = `${PREFIX}prune-account`;
+    await env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         organization_id, event_id, app_id, user_id, install_id, apple_account_id, provider_type, model, route,
+         cost_usd, status, created_at
+       ) VALUES ('operator-test-organization', ?, ?, 'user-1', 'key-1', 'acct-1', 'openai', 'gpt-5.6-sol',
+         'openai/v1/responses', 0.5, 'ok', '2025-01-15T12:00:00.000Z')`,
+    ).bind(crypto.randomUUID(), appId).run();
+    const scopes = async () => (await spend(appId)).map((row) => row.scope).sort();
+    expect(await scopes()).toEqual(["app", "apple_account", "install", "user"]);
+
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(0);
+    await env.DB.prepare("DELETE FROM app_usage_event WHERE app_id = ?").bind(appId).run();
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(4);
+    expect(await spend(appId)).toEqual([]);
+  });
+
   it("atomically refuses a late event after its account was deleted", async () => {
     const appId = `${PREFIX}deleted-owner`;
     await expect(env.DB.prepare(

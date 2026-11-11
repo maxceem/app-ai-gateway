@@ -211,7 +211,7 @@ authRoutes.post("/challenge", async (c) => {
       }),
     );
   }
-  return c.json({ challenge, expires_in: 300 });
+  return c.json({ challenge, expires_in: 300, accepts_app_transaction: true });
 });
 
 authRoutes.post("/register", async (c) => {

@@ -454,6 +454,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       organizationId: input.organizationId,
       userId: identity.userId,
       installId: identity.installId,
+      appleAccountId: identity.appleAccountId,
       apiKeyId: identity.apiKeyId ?? null,
       providerType: attribution.provider,
       providerId: attribution.providerId,

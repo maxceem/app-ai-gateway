@@ -28,6 +28,7 @@ import {
 import {
   APP_ATTEST_VERIFY_ON,
   AppConfigSchema,
+  BUDGET_SCOPES,
   CredentialGrantSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
@@ -114,6 +115,9 @@ export const GoogleSignInResponseSchema = z.object({
 export const AppAttestChallengeResponseSchema = z.object({
   challenge: z.string(),
   expires_in: z.number(),
+  accepts_app_transaction: z.boolean().optional().meta({
+    description: "True when the token exchange accepts app_transaction, the App Store's signed AppTransaction. A client sends one, and signs over its hash, only when this says so: a gateway that predates it would ignore the field and then refuse the assertion.",
+  }),
 });
 
 export const AppAttestRegisterResponseSchema = z.object({ user_id: z.string() });
@@ -143,8 +147,9 @@ export const CurrentUserResponseSchema = z.object({
     requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
     requests_per_minute: z.number().nullable().meta({ description: "The per-minute limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
     requests_per_day: z.number().nullable().meta({ description: "The per-day limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
-    monthly_cost_usd: z.number().meta({ description: "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user." }),
-    monthly_budget_usd: z.number().nullable().meta({ description: "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited." }),
+    monthly_cost_usd: z.number().meta({ description: "What has been spent so far in the current UTC calendar month against the budget below, by whoever budget_scope names." }),
+    monthly_budget_usd: z.number().nullable().meta({ description: "The monthly spending budget this app sets on each Apple Account, install or user, per limits.per_user.spending.scope. Null means unlimited." }),
+    budget_scope: z.enum(BUDGET_SCOPES).meta({ description: "Whose month monthly_cost_usd is: apple_account (every install of this person's Apple Account together), install (this install alone), or user (this signed-in or backend-named user). Usually the app's limits.per_user.spending.scope; install where that is apple_account but this install's client sent no verifiable App Store transaction." }),
     blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
   }).meta({
     description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",

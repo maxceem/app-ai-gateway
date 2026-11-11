@@ -197,6 +197,7 @@ export async function verifyApiKey(
     credentialType: "api_key",
     apiKeyId: value.id,
     installId: null,
+    appleAccountId: null,
   };
 }
 

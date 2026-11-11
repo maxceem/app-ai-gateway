@@ -1,10 +1,10 @@
 import { Hono } from "hono";
-import { budgetScope, hasUserLevelLimits } from "../shared/app-config";
+import { hasUserLevelLimits } from "../shared/app-config";
 import { appUserBlocked } from "../client-auth/user-status";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
-import { monthlySpendMicrousd } from "../usage/app-usage-accounting";
+import { attestLedger, monthlySpendMicrousd, type PerUserSpendKey } from "../usage/app-usage-accounting";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { contained } from "../core/background";
 
@@ -53,9 +53,10 @@ meRoutes.get("/", async (c) => {
     })));
     throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
   }
-  const spendKey = installId !== null && budgetScope(app.config) === "install"
-    ? { appId: app.id, scope: "install" as const, key: installId }
-    : { appId: app.id, scope: "user" as const, key: userId };
+  // The same ledger admission measures this caller's budget over.
+  const spendKey: PerUserSpendKey = identity.authMethod === "attest"
+    ? attestLedger(app.config, identity)
+    : { appId: app.id, scope: "user", key: userId };
   const [status, spentMicrousd, blocked] = await Promise.all([
     limiter.getStatus(now),
     monthlySpendMicrousd(c.env.DB, spendKey, new Date(now).toISOString().slice(0, 7)),
@@ -89,6 +90,10 @@ meRoutes.get("/", async (c) => {
       requests_per_day: perUser.requests.per_day,
       monthly_cost_usd: spentMicrousd / 1_000_000,
       monthly_budget_usd: perUser.spending.monthly_usd,
+      // Whose month the two figures above are, which on an App Attest app can
+      // differ from the configured scope: an install that sent no verifiable
+      // App Store transaction is measured on its own.
+      budget_scope: spendKey.scope,
       blocked,
     },
   } satisfies CurrentUserResponse);

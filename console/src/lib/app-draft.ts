@@ -163,12 +163,14 @@ function switchEndUserSource(
     ? next.type === "apple_app_attest" && next.end_user.source === "app_install"
       && perUser?.spending.scope === "user"
       // Under app_install the install is the user, and the gateway refuses a
-      // budget measured per user there: it moves back to the install.
+      // budget measured per user there. It moves to the Apple Account: like the
+      // user, it is one person's every install, it needs no sign-in, and it is
+      // what a new App Attest app starts with.
       ? {
         ...current.config,
         limits: {
           ...current.config.limits,
-          per_user: { ...perUser, spending: { ...perUser.spending, scope: "install" as const } },
+          per_user: { ...perUser, spending: { ...perUser.spending, scope: "apple_account" as const } },
         },
       }
       : current.config

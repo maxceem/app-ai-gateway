@@ -506,10 +506,19 @@ describe("the application configuration grammar", () => {
         },
       };
 
-      it("defaults to install on an App Attest application, and fills it in", () => {
+      it("defaults to apple_account on an App Attest application, and fills it in", () => {
         const parsed = parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5 }));
-        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "install" });
-        expect(budgetScope(parsed)).toBe("install");
+        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "apple_account" });
+        expect(budgetScope(parsed)).toBe("apple_account");
+      });
+
+      it("takes install or apple_account on any App Attest application", () => {
+        for (const endUser of [{ source: "app_install" }, issuerUser]) {
+          for (const scopeName of ["install", "apple_account"] as const) {
+            expect(budgetScope(parseAppConfig(attest(endUser, { monthly_usd: 5, scope: scopeName }))))
+              .toBe(scopeName);
+          }
+        }
       });
 
       it("moves to user only on an issuer-backed App Attest application", () => {
@@ -519,17 +528,22 @@ describe("the application configuration grammar", () => {
           .toThrowError(/limits\.per_user\.spending\.scope.*end_user\.source is issuer/u);
       });
 
-      it("refuses install on a server application, which has none", () => {
-        expect(() => parseAppConfig(withLimits({
-          per_user: scope({ spending: { monthly_usd: 5, scope: "install" } }),
-          per_app: scope(),
-        }))).toThrowError(/server applications have no install; the budget is per user/u);
+      it("refuses install and apple_account on a server application, which has neither", () => {
+        for (const scopeName of ["install", "apple_account"]) {
+          expect(() => parseAppConfig(withLimits({
+            per_user: scope({ spending: { monthly_usd: 5, scope: scopeName } }),
+            per_app: scope(),
+          }))).toThrowError(
+            new RegExp(`cannot be ${scopeName}: server applications have no install or Apple Account; the budget is per user`, "u"),
+          );
+        }
       });
 
-      it("keeps a stored configuration written before it existed", () => {
-        // Rows stored before the field still parse, and read the default.
+      it("reads a configuration without the field as the default, and writes it back", () => {
+        // Rows stored before the field had install written into them by
+        // migration 0012, so only a new write reaches this default.
         const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5 }));
-        expect(parsed.limits.per_user.spending.scope).toBe("install");
+        expect(parsed.limits.per_user.spending.scope).toBe("apple_account");
         expect(parseAppConfig(parsed)).toEqual(parsed);
       });
 

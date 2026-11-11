@@ -17,6 +17,16 @@ test("an iOS app is issued an App Attest challenge", async () => {
   expect(body.expires_in).toBeGreaterThan(0);
 });
 
+// The Swift package sends the App Store transaction, and signs over it, only
+// when the challenge says the exchange reads one; a deployment that stopped
+// saying so would silently put every iOS app back on per-install budgets.
+test("an iOS app's challenge says the exchange accepts an App Store transaction", async () => {
+  const response = await call(env, `/v1/apps/${app.id}/auth/challenge`, { method: "POST", headers });
+  await expectStatus(response, 200, "App Attest challenge");
+  const body = await json<{ accepts_app_transaction?: boolean }>(response, "App Attest challenge");
+  expect(body.accepts_app_transaction).toBe(true);
+});
+
 test("a forged App Attest registration is refused as a client error", async () => {
   const response = await call(env, `/v1/apps/${app.id}/auth/register`, {
     headers,

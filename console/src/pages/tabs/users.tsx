@@ -29,6 +29,7 @@ import { BudgetCell } from "@/components/budget";
 import { currentMonth, formatCompact, formatCost, formatNumber, formatRelative, totalTokens } from "@/lib/format";
 import { useUserAction, useUsers } from "@/lib/queries";
 import type { GatewayUser } from "@/lib/types";
+import type { BudgetScope } from "@shared/app-config";
 
 const PAGE_SIZE = 25;
 
@@ -51,9 +52,11 @@ export function UsersTab({
    * Whose month `monthlyBudgetUsd` is measured over. A signed-in user's row is
    * their spend across every install they hold, so an install budget is drawn
    * only against a row that is itself one install (`is_install`) — never one
-   * install's budget against several installs' spend.
+   * install's budget against several installs' spend. An Apple Account budget
+   * is drawn against no row: rows are installs or signed-in users, and an
+   * Apple Account's installs may be spread over several of either.
    */
-  budgetScope?: "install" | "user";
+  budgetScope?: BudgetScope;
   /** Whether users hold App Attest keys, one per install, whose count is shown. */
   appAttest?: boolean;
   /** Under app_install every user is one install, and is named as one. */
@@ -63,7 +66,14 @@ export function UsersTab({
   // Whether a row's spend is what the budget measures, decided from the row
   // itself: an install budget is a row's own only when the row is one
   // install, and history from before an app moved to app_install is not.
-  const budgetIsRows = (user: GatewayUser) => budgetScope === "user" || user.is_install;
+  const budgetIsRows = (user: GatewayUser) =>
+    budgetScope === "user" || (budgetScope === "install" && user.is_install);
+  // Where a row's spend is only part of what the budget measures, the cost is
+  // shown alone, with a title saying what it is and whose the budget is.
+  const partialSpendTitle = (user: GatewayUser) =>
+    monthlyBudgetUsd === null
+      ? "No monthly budget"
+      : `${user.is_install ? "Spent by this install" : "Spent across this user's installs"}; the ${formatCost(monthlyBudgetUsd)} budget applies to each ${budgetScope === "apple_account" ? "Apple Account, across all of its installs" : "install"}`;
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -200,15 +210,11 @@ export function UsersTab({
                     {budgetIsRows(user) ? (
                       <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
                     ) : (
-                      // The budget is each install's, and this is the sum of
-                      // the user's installs: no single bar says where any of
-                      // them stands, so the cost is shown on its own.
-                      <span
-                        className="whitespace-nowrap"
-                        title={monthlyBudgetUsd === null
-                          ? "No monthly budget"
-                          : `Spent across this user's installs; the ${formatCost(monthlyBudgetUsd)} budget applies to each install`}
-                      >
+                      // The budget is each install's and this is the sum of
+                      // the user's installs, or it is each Apple Account's and
+                      // this is one slice of one: no single bar says where
+                      // anyone stands, so the cost is shown on its own.
+                      <span className="whitespace-nowrap" title={partialSpendTitle(user)}>
                         {formatCost(user.usage.cost_usd)}
                       </span>
                     )}

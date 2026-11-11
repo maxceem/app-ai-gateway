@@ -65,7 +65,14 @@ function key(secret: string): Promise<CryptoKey> {
  */
 export type GatewayTokenClaims =
   | { appId: string; userId: string; authMethod: "api_key"; apiKeyId?: string }
-  | { appId: string; userId: string; authMethod: "attest"; installId: string };
+  | {
+    appId: string;
+    userId: string;
+    authMethod: "attest";
+    installId: string;
+    /** The Apple Account the exchange's App Store transaction named; absent or null where it named none. */
+    appleAccountId?: string | null;
+  };
 
 /** A gateway token for one user of one application. */
 export async function issueGatewayToken(
@@ -83,6 +90,11 @@ export async function issueGatewayToken(
     // has to carry an assertion that key signed, so a copied token is worth
     // nothing without the device it was minted on.
     ...(claims.authMethod === "attest" ? { install: claims.installId } : {}),
+    // Signed into the token rather than looked up per request: Apple's
+    // signature proved it once, at the exchange, and the token lives an hour.
+    ...(claims.authMethod === "attest" && typeof claims.appleAccountId === "string"
+      ? { apple_account: claims.appleAccountId }
+      : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(claims.userId)
@@ -124,7 +136,12 @@ export async function verifyGatewayToken(
       // An attest token names its install, and only an attest token does.
       (payload.auth_method === "attest"
         ? typeof payload.install !== "string" || payload.install.length === 0
-        : payload.install !== undefined)
+        : payload.install !== undefined) ||
+      // An Apple Account is optional on an attest token, and never on another.
+      (payload.apple_account !== undefined &&
+        (payload.auth_method !== "attest" ||
+          typeof payload.apple_account !== "string" ||
+          payload.apple_account.length === 0))
     ) {
       throw new Error("Required gateway token claims are missing");
     }
@@ -135,8 +152,13 @@ export async function verifyGatewayToken(
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
     return payload.auth_method === "attest"
-      ? { ...fields, authMethod: "attest", installId: payload.install as string }
-      : { ...fields, authMethod: "api_key", installId: null };
+      ? {
+        ...fields,
+        authMethod: "attest",
+        installId: payload.install as string,
+        appleAccountId: typeof payload.apple_account === "string" ? payload.apple_account : null,
+      }
+      : { ...fields, authMethod: "api_key", installId: null, appleAccountId: null };
   } catch {
     throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
   }

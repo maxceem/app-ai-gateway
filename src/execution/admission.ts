@@ -1,7 +1,6 @@
 import { admitAppTraffic, type BillingRequestCache } from "../billing/gateway";
 import { billingQuota } from "../billing/quota";
 import {
-  budgetScope,
   hasAppLevelLimits,
   hasUserLevelLimits,
   monthlyBudgetMicrousd,
@@ -15,7 +14,7 @@ import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
 import type { QuotaAdmission } from "../do/OrgQuota";
 import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
-import type { SpendKey } from "../usage/app-usage-accounting";
+import { attestLedger, type PerUserSpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
@@ -89,16 +88,15 @@ export interface AdmissionInput {
  * and its object is called on every signed request, because it also owns the
  * install's assertion counter; an application that verifies App Attest on the
  * token exchange signs nothing per request, so its object is called only
- * where limits exist. Its budget is the install's month by default,
- * or the user's when the application says so. A server application's request
- * is counted per user, and only where per-user limits exist, as before
- * installs did.
+ * where limits exist. Its budget is measured over whichever month
+ * {@link attestLedger} names. A server application's request is counted per
+ * user, and only where per-user limits exist, as before installs did.
  */
 export function callerLimiter(
   app: AppRecord,
   identity: GatewayIdentity,
   assertionCounter: number | null,
-): { name: string; scope: "install" | "user"; spend: SpendKey & { scope: "install" | "user" } } | null {
+): { name: string; scope: "install" | "user"; spend: PerUserSpendKey } | null {
   const config = app.config;
   const { appId, userId } = identity;
   // An attest identity is an App Attest application's — client
@@ -109,10 +107,7 @@ export function callerLimiter(
     return {
       name: `${appId}:install:${identity.installId}`,
       scope: "install",
-      // An App Attest identity always names somebody, so `user` has a key.
-      spend: budgetScope(config) === "user" && userId !== null
-        ? { appId, scope: "user", key: userId }
-        : { appId, scope: "install", key: identity.installId },
+      spend: attestLedger(config, identity),
     };
   }
   // `identity.userId` is non-null whenever per-user limits exist: configuring
@@ -162,7 +157,7 @@ export async function admitRequest(
   /** Refuses the request the way the app's own limits decided to. */
   const refuseByAppLimits = (
     result: Extract<LimiterCheckResult, { allowed: false }>,
-    scope: "user" | "install" | "app",
+    scope: "user" | "install" | "apple_account" | "app",
     now: number,
   ): never => {
     const durationMs = finish();
@@ -178,7 +173,7 @@ export async function admitRequest(
       throw new GatewayError(
         429,
         "app_budget_exhausted",
-        `The application's monthly ${scope} spending budget is exhausted`,
+        `The application's monthly ${scope === "apple_account" ? "Apple Account" : scope} spending budget is exhausted`,
         { "Retry-After": String(retryAfter) },
         { data: { scope } },
       );

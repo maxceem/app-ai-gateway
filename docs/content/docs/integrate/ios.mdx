@@ -185,8 +185,9 @@ the request alone, for an app that wants to drive the retry itself; see
 `withCurrentUserRequest` sends a `GET /v1/apps/{app}/me`, which answers
 the limits that apply to the caller, its requests today, the month's spend
 against its budget, and whether it is blocked. On an iOS app the request
-counts are the install's and `install_id` names it. It retries a `401` the
-same way; `currentUserRequest()` builds the request alone.
+counts are the install's and `install_id` names it; `budget_scope` says
+whether the spend is the Apple Account's, the install's or the user's. It
+retries a `401` the same way; `currentUserRequest()` builds the request alone.
 
 ```swift
 let (data, _) = try await gateway.withCurrentUserRequest { try await URLSession.shared.data(for: $0) }
@@ -198,6 +199,32 @@ gateway request, so one without a proof is refused with
 `401 assertion_required`, and changing a signed request's URL afterwards
 breaks its proof. The response is described under
 [Calling the provider proxy](/integrate/proxy#reading-your-own-limits).
+
+## Budgets per Apple Account
+
+From 1.7, the package sends the app's App Store transaction (StoreKit's
+`AppTransaction`, which Apple signs) with each token exchange, bound into
+the exchange's App Attest assertion. The gateway checks Apple's signature,
+your bundle ID and that the transaction comes from the App Store or Apple's
+sandbox, then reads its app transaction ID: the same for one Apple Account
+on every device and after every reinstall. That is what lets your app
+measure its monthly budget per Apple Account, the default for new apps; see
+[Limits and blocking](/how-it-works/limits#whose-month-an-ios-budget-is).
+
+There is nothing to configure and nothing to call. The package reads only
+what StoreKit already holds and never asks the user to sign in to the App
+Store. When no transaction arrives within a few seconds, as on a simulator
+or offline, the exchange goes ahead without one. The gateway counts such an
+install on its own, as it does an install that sent a transaction it cannot
+verify, such as one signed by an Xcode StoreKit configuration, and one on a
+build with an earlier package. None of them is refused. Ship 1.7 or later
+before you rely on per-account budgets.
+
+The gateway keeps neither the transaction nor the ID itself, only a hash of
+the ID combined with your app and the environment, so it never matches
+across apps. That hash is still an identifier linked to the person's Apple
+Account, so take it into account when you fill in your app's privacy
+details in App Store Connect.
 
 ## Per-request proof
 
@@ -279,7 +306,9 @@ prove themselves.
   `dev.aigateway.credentials`, so later launches skip this step.
 - **Token exchange.** It obtains a gateway token valid for one hour by
   signing a fresh challenge with the key, with the ID token alongside when
-  the mode has one. Concurrent callers share one exchange.
+  the mode has one and, from 1.7, the app's App Store transaction; see
+  [Budgets per Apple Account](#budgets-per-apple-account). Concurrent
+  callers share one exchange.
 - **Refresh.** It refreshes the token five minutes before expiry in a
   background task, so a request rarely waits for an exchange.
 - **Request signing.** When the app verifies App Attest on every request, it
@@ -355,9 +384,11 @@ reads it. The useful properties:
 - `code`: a `GatewayErrorCode` such as `.appRateLimited`, or `.unknown` for a
   code this version of the package does not know.
 - `retryAfter`: seconds until a rate limit or budget window reopens.
-- `limitScope`: `"install"`, `"user"` or `"app"` for an app limit, so you
-  can tell "slow this caller down" from "the whole app is busy". An iOS app's
-  request limits count per install, one copy of the app on one device.
+- `limitScope`: `"install"`, `"apple_account"`, `"user"` or `"app"` for an
+  app limit, so you can tell "slow this caller down" from "the whole app is
+  busy". An iOS app's request limits count per install, one copy of the app
+  on one device; `"apple_account"` is a budget spent across all of one Apple
+  Account's installs.
 - `isRetryable`: whether the same request could succeed later without a
   change.
 

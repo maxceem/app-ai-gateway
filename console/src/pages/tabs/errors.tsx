@@ -25,7 +25,21 @@ import { AuthOutcomeBadge } from "@/components/status-badge";
 import { foldOutcomes } from "@/lib/auth-events";
 import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
 import { useAuthEventSummary, useAuthEvents, useRejectionEvents } from "@/lib/queries";
-import { REJECTION_REASONS, REJECTION_SCOPES } from "@shared/rejection-reasons";
+import { REJECTION_REASONS, REJECTION_SCOPES, type RejectionScope } from "@shared/rejection-reasons";
+
+/**
+ * Whose limit refused, in the filter and the table. A record over every scope,
+ * so a scope the gateway adds fails the build here rather than going missing
+ * from the filter. `account` is the plan allowance shared by all your apps and
+ * `apple_account` is one end user's Apple Account: the labels keep them apart.
+ */
+const REJECTION_SCOPE_LABELS: Record<RejectionScope, string> = {
+  user: "User",
+  install: "Install",
+  apple_account: "Apple Account",
+  app: "App",
+  account: "Your account",
+};
 
 const OUTCOME_FILTERS = [
   "issuer_claims_missing",
@@ -188,10 +202,9 @@ export function ErrorsTab({ appId }: { appId: string }) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All scopes</SelectItem>
-                <SelectItem value="user">User</SelectItem>
-                <SelectItem value="install">Install</SelectItem>
-                <SelectItem value="app">App</SelectItem>
-                <SelectItem value="account">Account</SelectItem>
+                {REJECTION_SCOPES.map((scope) => (
+                  <SelectItem key={scope} value={scope}>{REJECTION_SCOPE_LABELS[scope]}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Input
@@ -250,7 +263,9 @@ export function ErrorsTab({ appId }: { appId: string }) {
                       {event.user_id ?? event.api_key_id ?? "—"}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{event.reason}</TableCell>
-                    <TableCell className="text-xs">{event.scope ?? "unknown"}</TableCell>
+                    <TableCell className="text-xs">
+                      {event.scope === null ? "unknown" : REJECTION_SCOPE_LABELS[event.scope]}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
                       {event.endpoint_slug ?? event.route ?? "—"}
                     </TableCell>

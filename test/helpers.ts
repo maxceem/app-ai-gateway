@@ -67,6 +67,7 @@ export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayI
     authMethod: "api_key",
     credentialType: "api_key",
     installId: null,
+    appleAccountId: null,
     ...overrides,
   } as GatewayIdentity;
 }
@@ -193,7 +194,7 @@ export interface SeedOptions {
   limits?: { rpm?: number | null; rpd?: number | null; app_rpm?: number | null; app_rpd?: number | null };
   budgetUsd?: number | null;
   /** Whose month `budgetUsd` is measured over; the application type's default when absent. */
-  budgetScope?: "install" | "user";
+  budgetScope?: "install" | "user" | "apple_account";
   appBudgetUsd?: number | null;
 }
 
@@ -493,13 +494,20 @@ export async function gatewayToken(appId: string, userId = "user-1"): Promise<st
   return tokenForInstall(install);
 }
 
-/** A gateway token for an install registered with {@link registerTestInstall}. */
-export async function tokenForInstall(install: TestInstall): Promise<string> {
+/**
+ * A gateway token for an install registered with {@link registerTestInstall},
+ * naming the Apple Account an exchange's App Store transaction would have.
+ */
+export async function tokenForInstall(
+  install: TestInstall,
+  options: { appleAccountId?: string } = {},
+): Promise<string> {
   const issued = await issueGatewayToken(env.JWT_SECRET, {
     appId: install.appId,
     userId: install.userId,
     authMethod: "attest",
     installId: install.keyId,
+    appleAccountId: options.appleAccountId ?? null,
   });
   installsByToken.set(issued.token, install);
   return issued.token;

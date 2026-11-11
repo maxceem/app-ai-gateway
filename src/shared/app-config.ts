@@ -208,7 +208,7 @@ export function monthlyBudgetMicrousd(scope: LimitScopeConfig): number | null {
  */
 export function budgetScope(config: AppConfig): BudgetScope {
   if (config.authentication.type === "api_key") return "user";
-  return config.limits.per_user.spending.scope ?? "install";
+  return config.limits.per_user.spending.scope ?? "apple_account";
 }
 
 export const hasUserLevelLimits = (config: AppConfig): boolean =>
