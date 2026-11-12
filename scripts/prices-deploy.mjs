@@ -5,6 +5,8 @@
 //
 //   node scripts/prices-deploy.mjs start     # on main: dispatch the deploy at the newest release tag
 //   node scripts/prices-deploy.mjs prepare   # in that run's build job: check the tag, swap in main's price list
+//   node scripts/prices-deploy.mjs check <revision>    # in its deploy job: is the build still current?
+//   node scripts/prices-deploy.mjs follow <revision>   # at the end of a release: deploy main's price list if newer
 //
 // The deploy runs at a release tag, so its workflow file, this script and the
 // code it builds are all released code, and the `prices` environment that
@@ -95,11 +97,9 @@ function output(values) {
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
 }
 
-/** On main: start the deploy at the newest release tag, which runs that tag's own workflow. */
-async function start() {
-  const { tag } = newestTag();
-  const ref = encodeURIComponent(tag);
-  const present = await github(`contents/.github/workflows/${WORKFLOW}?ref=${ref}`);
+/** Starts this workflow at `tag`, which runs that tag's own copy of it. */
+async function dispatch(tag) {
+  const present = await github(`contents/.github/workflows/${WORKFLOW}?ref=${encodeURIComponent(tag)}`);
   if (present.status === 404) {
     console.log(`${tag} predates prices deploys, so this price list goes live with the next release.`);
     return;
@@ -113,8 +113,16 @@ async function start() {
   console.log(`Started the prices deploy at ${tag}.`);
 }
 
-/** In the deploy run at a tag: check the tag is the live release, then swap in main's price list. */
-async function prepare() {
+/** On main: start the deploy at the newest release tag. */
+async function start() {
+  await dispatch(newestTag().tag);
+}
+
+/**
+ * The newest release, when this run is at its commit and its release
+ * succeeded; otherwise an error saying why the price list cannot go out on it.
+ */
+async function liveRelease() {
   const sha = process.env.GITHUB_SHA;
   const release = newestTag();
   if (sha !== release.sha) {
@@ -129,24 +137,80 @@ async function prepare() {
       + "Deploying it with an older release could replace newer code; it goes live with the next release or price change.",
     );
   }
+  return release;
+}
 
+/** Main's price list as scripts/prices-revision.mjs names it: `{ revision, updated }`. */
+function mainPrices() {
   git(["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
+  const [revision, updated] = git(["log", "-1", "--first-parent", "--format=%h %cs", "--abbrev=7", "origin/main", "--", PRICES]).trim().split(" ");
+  return { revision, updated };
+}
+
+/** Two short hashes name the same commit (one may be longer, to stay unique). */
+export function sameRevision(a, b) {
+  return Boolean(a && b) && (a.startsWith(b) || b.startsWith(a));
+}
+
+/** In the build job at a tag: check the tag is the live release, then swap in main's price list. */
+async function prepare() {
+  const release = await liveRelease();
+  const main = mainPrices();
   writeFileSync(join(root, PRICES), git(["show", `origin/main:${PRICES}`]));
   const status = git(["status", "--porcelain", "--untracked-files=all"]);
   if (!onlyPricesChanged(status)) {
     throw new Error(`The checkout differs from ${release.tag} in more than ${PRICES}:\n${status}`);
   }
-  // The price list's revision, as scripts/prices-revision.mjs names it, but on main.
-  const [revision, updated] = git(["log", "-1", "--first-parent", "--format=%h %cs", "--abbrev=7", "origin/main", "--", PRICES]).trim().split(" ");
-  output({ tag: release.tag, prices_revision: revision, prices_updated: updated });
+  output({ tag: release.tag, prices_revision: main.revision, prices_updated: main.updated });
+}
+
+/**
+ * In the deploy job, just before deploying a build: is its release still the
+ * live one, and its price list still main's? A deploy job run again later
+ * would otherwise ship an old build over a newer release or price list.
+ */
+async function check(revision) {
+  if (!revision) throw new Error("usage: node scripts/prices-deploy.mjs check <revision>");
+  await liveRelease();
+  const main = mainPrices();
+  if (!sameRevision(main.revision, revision)) {
+    throw new Error(
+      `This build carries the price list from ${revision}, but main's is now ${main.revision}. `
+      + "Not deploying a stale build; the prices deploy for the newer one ships it.",
+    );
+  }
+  console.log(`The build is still the live release with main's price list (${revision}).`);
+}
+
+/**
+ * At the end of a release: when main's price list moved on since the tag,
+ * as when one merged while the release waited, or the release ran again after
+ * a prices deploy, deploy main's on this release. Only for the newest release:
+ * running an older one again is a rollback, and stays one.
+ */
+async function follow(revision) {
+  const release = newestTag();
+  if (process.env.GITHUB_SHA !== release.sha) {
+    console.log(`This is not the newest release (${release.tag}); leaving its price list as released.`);
+    return;
+  }
+  const main = mainPrices();
+  if (sameRevision(main.revision, revision)) {
+    console.log(`${release.tag} carries main's price list (${revision}).`);
+    return;
+  }
+  console.log(`${release.tag} carries the price list from ${revision || "an unknown commit"}, main's is ${main.revision}.`);
+  await dispatch(release.tag);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [command] = process.argv.slice(2);
+  const [command, argument] = process.argv.slice(2);
   try {
     if (command === "start") await start();
     else if (command === "prepare") await prepare();
-    else throw new Error("usage: node scripts/prices-deploy.mjs <start|prepare>");
+    else if (command === "check") await check(argument);
+    else if (command === "follow") await follow(argument);
+    else throw new Error("usage: node scripts/prices-deploy.mjs <start|prepare|check <revision>|follow <revision>>");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

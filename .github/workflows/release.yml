@@ -183,6 +183,7 @@ jobs:
     permissions:
       contents: write # create the GitHub release and upload the gateway archive
       id-token: write # npm trusted publishing
+      actions: write # start a prices deploy when main's price list is newer than the tag's
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -326,6 +327,16 @@ jobs:
 
       - name: Submit the changed documentation pages to IndexNow
         run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out
+
+      # Near the end: when main's price list moved on since the tag (one merged while
+      # this release waited, or this is a run again after a prices deploy), the
+      # gateway now runs an older one. Deploy main's on this release, unless a
+      # newer release exists: running an older release again is a rollback.
+      - name: Deploy main's price list if it is newer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+        run: node scripts/prices-deploy.mjs follow "$PRICES_REVISION"
 
       # Context7 serves the docs to coding agents from llms.txt and otherwise
       # re-reads them only every few weeks. Never fails the job.

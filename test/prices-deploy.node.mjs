@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { newestRelease, onlyPricesChanged, releaseState } from "../scripts/prices-deploy.mjs";
+import { newestRelease, onlyPricesChanged, releaseState, sameRevision } from "../scripts/prices-deploy.mjs";
 
 const a = "a".repeat(40);
 const b = "b".repeat(40);
@@ -61,4 +61,13 @@ test("prices revision: a deploy's given revision wins, a broken one is refused, 
   }
   // This checkout has history, so it names its own.
   assert.match(pricesRevision({}).revision, /^[0-9a-f]{7,40}$/u);
+});
+
+test("prices deploy: a build is current only while its revision is main's, however long either hash", () => {
+  assert.equal(sameRevision("3f9a1c2", "3f9a1c2"), true);
+  assert.equal(sameRevision("3f9a1c2", "3f9a1c2d"), true);
+  assert.equal(sameRevision("3f9a1c2d", "3f9a1c2"), true);
+  assert.equal(sameRevision("3f9a1c2", "3f9a1c3"), false);
+  assert.equal(sameRevision("", "3f9a1c2"), false);
+  assert.equal(sameRevision(undefined, undefined), false);
 });

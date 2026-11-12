@@ -127,9 +127,11 @@ jobs:
     environment: prices
     permissions:
       contents: read
+      actions: read # the Release workflow's runs, to confirm the build is still current
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # main's history, to compare its price list with the build's
           persist-credentials: false
 
       # As in release.yml: into a directory of its own, never over the checkout,
@@ -171,6 +173,14 @@ jobs:
           set -euo pipefail
           test -n "$WRANGLER_CLOUD_OVERLAY" || { echo "WRANGLER_CLOUD_OVERLAY is missing" >&2; exit 1; }
           printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
+
+      # Again, right before deploying: this job can be run again on its own,
+      # long after `build`, when a newer release or price list is live.
+      - name: Check the build is still current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+        run: node scripts/prices-deploy.mjs check "$PRICES_REVISION"
 
       - name: Deploy the gateway
         env:

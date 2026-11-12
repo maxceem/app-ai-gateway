@@ -18,7 +18,8 @@
 # Something needs a person when a parser no longer reads its page, lists
 # disagree, a price moves suspiciously or a model is gone from its official
 # page. The pull request then carries it: its description lists it and a red
-# "Model prices" status marks it. Only when there is no pull request to carry
+# "Model catalog" status marks it (a name other automation filters on, so it
+# keeps the old word). Only when there is no pull request to carry
 # it does the run itself end red. An item that is expected is acknowledged by
 # adding its key and a reason to scripts/models/acknowledged.json.
 #
@@ -126,7 +127,7 @@ jobs:
             state=success; text="Nothing needs your attention"
           fi
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
-            -f state="$state" -f context="Model prices" -f description="$text" -f target_url="$RUN_URL"
+            -f state="$state" -f context="Model catalog" -f description="$text" -f target_url="$RUN_URL"
 
       - name: Fail when something needs a person and no pull request shows it
         if: steps.models.outputs.code != '0' && steps.pr.outputs.pull-request-number == ''
