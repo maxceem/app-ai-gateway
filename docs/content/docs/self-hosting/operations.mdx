@@ -41,11 +41,12 @@ and above at `error`. A `usage_unresolved_cost` line at `error` level means a
 request was served but its cost could not be read from the provider's
 response.
 
-Proxied responses also carry a `Server-Timing` header with three measurements:
-`auth` for authentication, `limiter` for limit evaluation, and
-`provider_ttfb` for the provider's time to first byte. It is useful when a
-client reports slowness and you want to know which side of the gateway it is
-on.
+Proxied responses also carry a `Server-Timing` header with four measurements:
+`auth` for authentication, `prepare` for resolving the provider, unlocking its
+stored key and building the upstream request, `limiter` for limit evaluation,
+and `provider_ttfb` for the provider's time to first byte. A refused request
+reports the steps it reached, and `0` for the rest. It is useful when a client
+reports slowness and you want to know which side of the gateway it is on.
 
 ## Rotate the vault key
 
