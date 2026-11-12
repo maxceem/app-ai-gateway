@@ -29,6 +29,7 @@
     "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
     "recover-access": "node scripts/recover-access.mjs",
     "deploy:dry-run": "pnpm run console:build && node scripts/wrangler.mjs deploy --dry-run",
+    "deploy:prebuilt:dry-run": "node scripts/build-prebuilt.mjs && node scripts/wrangler.mjs --prebuilt dist/prebuilt deploy --dry-run",
     "startup:check": "wrangler check startup",
     "console:test": "pnpm --filter @app-ai-gateway/console test",
     "console:ensure": "node -e \"require('node:fs').mkdirSync('console/dist',{recursive:true})\"",
