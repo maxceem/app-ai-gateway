@@ -196,19 +196,33 @@ describe("UsageTab event costs", () => {
 
     // A cost the provider reported for a passthrough call is still its cost.
     expect(await screen.findByText("$0.50")).toBeTruthy();
-    // No model on either; no price on the one the provider reported nothing for.
-    expect(screen.getAllByText("—")).toHaveLength(3);
+    // No model and no tokens reported on either, and no price on the one the
+    // provider reported nothing for.
+    expect(screen.getAllByText("—")).toHaveLength(5);
     expect(screen.queryByText("Passthrough")).toBeNull();
     expect(screen.queryByText("$0.00")).toBeNull();
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 
-  it("names passthrough requests' model as none in the breakdown, not a blank row", async () => {
+  it("names passthrough requests' model as none in the breakdown, with dashes for what was never reported", async () => {
     const row = { requests: 3, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, cost_usd: 0, errors: 0 };
     renderUsage([], {}, [{ ...row, key: "" }, { ...row, key: "gpt-4o-mini" }]);
 
     expect(await screen.findByText("none")).toBeTruthy();
     expect(screen.getByText("gpt-4o-mini")).toBeTruthy();
+    // Input, cached input, cache write, output and cost on the passthrough row;
+    // the model's own zeros are real counts and stay numbers.
+    expect(screen.getAllByText("—")).toHaveLength(5);
+  });
+
+  it("shows what a provider did report for passthrough requests", async () => {
+    const row = { requests: 2, input_tokens: 120, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 30, cost_usd: 0.5, errors: 0 };
+    renderUsage([], {}, [{ ...row, key: "" }]);
+
+    expect(await screen.findByText("none")).toBeTruthy();
+    expect(screen.getByText("120")).toBeTruthy();
+    expect(screen.getByText("$0.50")).toBeTruthy();
+    expect(screen.queryByText("—")).toBeNull();
   });
 
   it("names the gateway a request was routed through", async () => {

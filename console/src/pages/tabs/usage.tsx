@@ -69,6 +69,15 @@ export function isPassthroughEvent(event: {
 }
 
 /**
+ * What a cell shows for a count a passthrough request never reported. The
+ * gateway records a passthrough call's tokens and cost only where the provider
+ * said them, and stores nothing as 0, so a 0 there means "not reported", not
+ * "none used": a dash says that, and a number the provider did report still
+ * shows.
+ */
+const UNREPORTED = <span className="text-muted-foreground">—</span>;
+
+/**
  * The categorical slots, in the fixed order they were validated in — see the
  * comment on `--chart-1` in `index.css`. Assigned in sequence and never cycled:
  * a series past the last of them does not get a hue, because `pivot` has
@@ -305,7 +314,13 @@ export function UsageTab({
                   </TableCell>
                 </TableRow>
               ) : (
-                breakdown.data?.rows.map((row) => (
+                breakdown.data?.rows.map((row) => {
+                  // The model breakdown's empty key is passthrough requests,
+                  // whose counts are only what a provider reported.
+                  const passthrough = dimension === "model" && row.key === "";
+                  const noTokens = passthrough
+                    && inputTokens(row) + row.cache_write_tokens + row.output_tokens === 0;
+                  return (
                   <TableRow key={row.key ?? "unknown"}>
                     <TableCell className="font-mono text-xs">
                       {/* Empty is a passthrough request's model: the gateway read none. */}
@@ -319,18 +334,31 @@ export function UsageTab({
                       )}
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(inputTokens(row))}</TableCell>
                     <TableCell className="tabular text-right">
-                      <span className="block">{formatCompact(row.cached_input_tokens)}</span>
-                      <span className="block text-[11px] text-muted-foreground">
-                        {formatPercent(cachedInputRate(row))} of input
-                      </span>
+                      {noTokens ? UNREPORTED : formatCompact(inputTokens(row))}
                     </TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(row.cache_write_tokens)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(row.output_tokens)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCost(row.cost_usd)}</TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? UNREPORTED : (
+                        <>
+                          <span className="block">{formatCompact(row.cached_input_tokens)}</span>
+                          <span className="block text-[11px] text-muted-foreground">
+                            {formatPercent(cachedInputRate(row))} of input
+                          </span>
+                        </>
+                      )}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? UNREPORTED : formatCompact(row.cache_write_tokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? UNREPORTED : formatCompact(row.output_tokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {passthrough && row.cost_usd === 0 ? UNREPORTED : formatCost(row.cost_usd)}
+                    </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -451,7 +479,9 @@ export function UsageTab({
                       ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
-                      {formatCompact(totalTokens(event))}
+                      {isPassthroughEvent(event) && totalTokens(event) === 0
+                        ? UNREPORTED
+                        : formatCompact(totalTokens(event))}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {/* An unresolved event was not billed because its usage

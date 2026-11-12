@@ -72,7 +72,8 @@ Each event records how its cost was arrived at.
   **unresolved** rather than `$0.00`.
 - No source, on a [passthrough path](/applications/provider-access#passthrough-paths)
   the provider reported no cost for. The gateway reads no model there, so it
-  has nothing to price. Shown with no model and no cost.
+  has nothing to price. Its model, tokens and cost show as a dash, since
+  nothing was reported. Tokens or a cost the provider does report still show.
 
 The usual cause of an unresolved event is a client that disconnected from a
 stream before the final chunk carrying the usage arrived. The generation stops
