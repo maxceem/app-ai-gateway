@@ -69,7 +69,8 @@ client URLs from its own origin.
 
 Static assets are served before the Worker runs, so the console's files still
 load at `https://api.example.com/`. An API host should answer nothing but the
-API. Refuse everything outside `/v1/` with a zone
+API. The console host keeps serving them, the published price list
+(`/models.json`) included. Refuse everything outside `/v1/` with a zone
 [WAF custom rule](https://developers.cloudflare.com/waf/custom-rules/), action
 **Block**, matching:
 
