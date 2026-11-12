@@ -172,7 +172,7 @@ describe("UsageTab event costs", () => {
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 
-  it("labels a passthrough call instead of naming a model or a price", async () => {
+  it("shows a passthrough call with no model and no price, rather than a guess", async () => {
     renderUsage([
       event({
         id: 2,
@@ -194,10 +194,12 @@ describe("UsageTab event costs", () => {
       }),
     ]);
 
-    expect(await screen.findByText("Passthrough")).toBeTruthy();
     // A cost the provider reported for a passthrough call is still its cost.
-    expect(screen.getByText("$0.50")).toBeTruthy();
-    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(await screen.findByText("$0.50")).toBeTruthy();
+    // No model on either; no price on the one the provider reported nothing for.
+    expect(screen.getAllByText("—")).toHaveLength(3);
+    expect(screen.queryByText("Passthrough")).toBeNull();
+    expect(screen.queryByText("$0.00")).toBeNull();
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 

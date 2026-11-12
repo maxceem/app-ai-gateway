@@ -460,9 +460,9 @@ export function UsageTab({
                       {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
                         <span
                           className="text-muted-foreground"
-                          title="Passthrough: forwarded without being read, so it is not priced and consumes no spending budget. Request limits still apply."
+                          title="Passthrough: forwarded as sent and not priced, because the provider reported no cost. Request limits still apply."
                         >
-                          Passthrough
+                          —
                         </span>
                       ) : event.cost_source === "unresolved" ? (
                         <span
