@@ -4,13 +4,18 @@
 # the public `/models.json`, minutes after it merges. Nothing is published: no
 # tag, GitHub release, npm package or documentation deploy.
 #
-# Two jobs, so that only released code ever holds the deploy secrets:
+# Three jobs, so that only released code ever holds the deploy secrets and no
+# package code runs beside them, as in .github/workflows/release.yml:
 #   start   runs on main when a merge changes the catalog. It holds no secrets;
 #           it starts this workflow again at the newest `vX.Y.Z` tag.
-#   deploy  runs at that tag, so this file, scripts/catalog-deploy.mjs and the
-#           Worker it builds are the tag's own, released code. It checks the tag
-#           is the newest and its release succeeded, swaps in main's catalog,
-#           runs the release's checks against it and deploys.
+#   build   runs at that tag, so this file, scripts/catalog-deploy.mjs and the
+#           code it builds are the tag's own, released code. With no secret, it
+#           checks the tag is the newest and its release succeeded, swaps in
+#           main's catalog, runs the release's checks against it and builds the
+#           Worker and console (scripts/build-prebuilt.mjs).
+#   deploy  installs only Wrangler (deploy/), takes only those built files and
+#           deploys them; its Wrangler config and D1 migrations come from the
+#           tag's checkout.
 #
 # The `catalog` environment holds the secrets. It must admit `v*` tags only,
 # and only the project owner can create those (see release.yml), so neither a
@@ -33,6 +38,16 @@ on:
 permissions:
   contents: read
 
+# A run at a tag shares the `release` group with release.yml for its whole
+# length, queued rather than replaced, so a release and a catalog deploy never
+# run at once and the release check in `build` still holds when `deploy` runs.
+# Each run reads main's catalog when it builds, so the last one carries every
+# change before it. `start` runs outside the group.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'release' || format('deploy-catalog-start-{0}', github.run_id) }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   start:
     if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'push'
@@ -51,21 +66,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/catalog-deploy.mjs start
 
-  deploy:
+  build:
     if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: catalog
     permissions:
       contents: read
       actions: read # the Release workflow's runs, to confirm the tag is live
-    # Shared with release.yml, and queued rather than replaced, so a release and
-    # a catalog deploy never deploy at the same time and neither drops the other.
-    # Each run reads main's catalog when it starts, so the last one carries every
-    # change before it.
-    concurrency:
-      group: release
-      cancel-in-progress: false
-      queue: max
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      catalog_commit: ${{ steps.plan.outputs.catalog_commit }}
+      catalog_date: ${{ steps.plan.outputs.catalog_date }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,6 +105,63 @@ jobs:
       # for the next release.
       - run: pnpm run verify
 
+      - name: Build the gateway
+        env:
+          # Settings shows when the prices last changed: main's day, not the tag's.
+          CATALOG_UPDATED: ${{ steps.plan.outputs.catalog_date }}
+        run: node scripts/build-prebuilt.mjs dist/prebuilt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: catalog
+          path: dist/prebuilt/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: catalog
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in release.yml: into a directory of its own, never over the checkout,
+      # and only the expected built files are copied out.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: catalog
+          path: ${{ runner.temp }}/catalog
+      - name: Take only the built files from the artifact
+        env:
+          FROM: ${{ runner.temp }}/catalog
+        run: |
+          set -euo pipefail
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          test ! -e dist || { echo "dist already exists in the checkout" >&2; exit 1; }
+          mkdir -p dist/prebuilt/worker
+          cp "$FROM/worker/index.js" dist/prebuilt/worker/
+          cp -R "$FROM/console" dist/prebuilt/console
+
+      # Only Wrangler and jsonc-parser, from deploy/'s lockfile, with no install
+      # scripts and no cache another job could have written.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install the deploy tools
+        run: |
+          set -euo pipefail
+          pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
+          ln -s deploy/node_modules node_modules
+
       - name: Write the Cloudflare deployment profile
         env:
           WRANGLER_CLOUD_OVERLAY: ${{ secrets.WRANGLER_CLOUD_OVERLAY }}
@@ -108,9 +175,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-          # Settings shows when the prices last changed: main's day, not the tag's.
-          CATALOG_UPDATED: ${{ steps.plan.outputs.catalog_date }}
-        run: pnpm run deploy --profile cloud
+        run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
 
       - name: Start the post-deploy checks
         if: vars.POST_DEPLOY_CHECK_URL != ''
@@ -118,7 +183,7 @@ jobs:
         env:
           POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
           POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
-          TAG: ${{ steps.plan.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
           printf 'Authorization: Bearer %s\n' "$POST_DEPLOY_CHECK_TOKEN" |
@@ -128,7 +193,7 @@ jobs:
 
       - name: Summarize
         env:
-          TAG: ${{ steps.plan.outputs.tag }}
-          COMMIT: ${{ steps.plan.outputs.catalog_commit }}
-          DATE: ${{ steps.plan.outputs.catalog_date }}
+          TAG: ${{ needs.build.outputs.tag }}
+          COMMIT: ${{ needs.build.outputs.catalog_commit }}
+          DATE: ${{ needs.build.outputs.catalog_date }}
         run: echo "Deployed ${TAG} with the model catalog from ${COMMIT} (${DATE})." >> "$GITHUB_STEP_SUMMARY"

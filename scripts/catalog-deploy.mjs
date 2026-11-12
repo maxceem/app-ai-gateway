@@ -4,14 +4,15 @@
 // without a release. Run by `.github/workflows/deploy-catalog.yml`:
 //
 //   node scripts/catalog-deploy.mjs start     # on main: dispatch the deploy at the newest release tag
-//   node scripts/catalog-deploy.mjs prepare   # in that run: check the tag, swap in main's catalog
+//   node scripts/catalog-deploy.mjs prepare   # in that run's build job: check the tag, swap in main's catalog
 //
 // The deploy runs at a release tag, so its workflow file, this script and the
 // code it builds are all released code, and the `catalog` environment that
 // holds the deploy secrets admits `v*` tags only. Code merged to main but not
-// released never runs with those secrets. `prepare` also refuses a tag that
-// is not the newest one or whose release did not succeed, and a checkout that
-// differs from the tag in anything but the catalog.
+// released never runs with those secrets, and the build runs in a job of its
+// own without them. `prepare` also refuses a tag that is not the newest one or
+// whose release did not succeed, and a checkout that differs from the tag in
+// anything but the catalog.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
