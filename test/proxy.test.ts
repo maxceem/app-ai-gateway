@@ -990,7 +990,8 @@ describe("provider-native proxy", () => {
       body: { model: "gpt-5.6-sol" },
     });
     expect(deniedPath.status).toBe(403);
-    expect(deniedPath.headers.get("server-timing")).toMatch(/auth.*limiter.*provider_ttfb/u);
+    // Refused while preparing: the steps after it never ran, so they are not named.
+    expect(deniedPath.headers.get("server-timing")).toMatch(/^auth;dur=[\d.]+, prepare;dur=[\d.]+$/u);
     await expect(deniedPath.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
     const deniedModel = await proxyRequest({
       appId: "proxy-deny",
