@@ -53,9 +53,12 @@ pick. Their models proxy once you price them, and not before.
 
 ### The price list as a file
 
-Every gateway publishes its price list as a static file at `/models.json` on its
-own domain: for the hosted service,
-[`https://api.appaigateway.com/models.json`](https://api.appaigateway.com/models.json).
+Every gateway publishes its price list as a static file at `/models.json` beside
+its console: for the hosted service,
+[`https://console.appaigateway.com/models.json`](https://console.appaigateway.com/models.json).
+A separate API host that answers only `/v1/`, as
+[the custom domain guide](/self-hosting/custom-domain#keep-the-api-host-to-the-api)
+sets up, does not serve it.
 It is exactly the price list that deployment bills with, so it changes when the
 gateway is updated, and any web page may read it (it is served with
 `Access-Control-Allow-Origin: *`). The same file is

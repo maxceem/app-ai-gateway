@@ -77,5 +77,6 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 The model price list, [`src/usage/models.json`](src/usage/models.json), is
 also available under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/),
-at your choice. Each gateway publishes it at `/models.json`; see
+at your choice. Each gateway publishes it at `/models.json` beside its console
+(`https://console.appaigateway.com/models.json` for the hosted service); see
 [Model pricing](https://docs.appaigateway.com/providers/model-pricing/#the-price-list-as-a-file).
