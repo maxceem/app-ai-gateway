@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./settings";
 import { version } from "../../../package.json";
 import { renderAuthenticated } from "@/test/render";
+import { PRICES_UPDATED } from "@/lib/version";
 
 /** Settings is only reachable through its section routes, so tests mount them. */
 function renderSettings(route = "/settings/account") {
@@ -26,10 +27,12 @@ describe("SettingsPage", () => {
     expect(screen.getByText("ada@example.test")).toBeTruthy();
   });
 
-  it("shows the release the console was built from", () => {
+  it("shows the release the console was built from, and when its prices last changed", () => {
     renderSettings();
 
-    expect(screen.getByText(`v${version}`)).toBeTruthy();
+    // The build dates the catalog from git; this checkout has history, so the date shows.
+    expect(PRICES_UPDATED).toMatch(/2\d{3}/);
+    expect(screen.getByText(`v${version} · prices updated ${PRICES_UPDATED}`)).toBeTruthy();
   });
 
   it("swaps the panel for the section the operator picks", async () => {

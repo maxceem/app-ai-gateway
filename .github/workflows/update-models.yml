@@ -12,6 +12,8 @@
 # The pull request always comes from the branch `automation/update-models`, so
 # there is one rolling pull request rather than one a day, and no diff means no
 # pull request. The report is its body and this run's summary.
+# Merging it deploys the catalog without a release
+# (.github/workflows/deploy-catalog.yml).
 #
 # Something needs a person when a parser no longer reads its page, lists
 # disagree, a price moves suspiciously or a model is gone from its official
