@@ -1,11 +1,11 @@
 [
   {
     "provider": "gemini",
-    "model": "gemini-4-carbon",
-    "action": "add",
-    "kind": "text",
-    "reason": "Add as a current text model with multimodal inputs; its family and capabilities make it a distinct application option.",
-    "origin": "ai",
-    "reviewer": "gpt-6-luna"
+    "model": "gemini-decision-1",
+    "action": "skip",
+    "kind": "",
+    "reason": "Unsupported public pricing: gemini-decision-1, Output price: unknown price format \"Not applicable (0 output tokens)\"",
+    "origin": "rules",
+    "reviewer": ""
   }
 ]
