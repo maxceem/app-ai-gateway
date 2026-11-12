@@ -119,13 +119,10 @@ export function callerLimiter(
 
 /**
  * Admits one prepared request, or refuses it. Resolves with how long the
- * limiters took, which the response reports as `server-timing`; a refusal
- * throws, and `onDuration` has reported the same figure by then.
+ * limiters took; a refusal throws, and records the same figure on its
+ * rejection event. The caller times the call itself for `server-timing`.
  */
-export async function admitRequest(
-  input: AdmissionInput,
-  onDuration: (durationMs: number) => void = () => {},
-): Promise<number> {
+export async function admitRequest(input: AdmissionInput): Promise<number> {
   const start = performance.now();
   const { env, app, identity, plan } = input;
   const firstAttempt = plan.attempts[0];
@@ -149,9 +146,7 @@ export async function admitRequest(
     );
 
   const finish = (): number => {
-    const durationMs = performance.now() - start;
-    onDuration(durationMs);
-    return durationMs;
+    return performance.now() - start;
   };
 
   /** Refuses the request the way the app's own limits decided to. */

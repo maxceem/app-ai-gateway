@@ -74,32 +74,40 @@ async function authenticated(
   assertionCounter: number | null;
 }> {
   const start = performance.now();
-  const appId = c.req.param("app");
-  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadApp(c.env, appId);
-  const providers = organizationProviders(c.env, app.organizationId);
-  // A rejection nobody awaits yet — the request may still be refused for its
-  // account or its credential first — must not surface as an unhandled one.
-  providers.catch(() => {});
-  // Only a hosted deployment writes an account deadline, and only one that
-  // sends email waits for a verified one, so only those can refuse here. It
-  // decides before the app, the credential or any limit the organization set
-  // on its own users is consulted: an account that may not be served has no
-  // claim on them.
-  const deployment = c.get("deployment");
-  if (deployment.rules.accountDeadlines || deployment.emailVerification === "required") {
-    await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
+  // Timed whether it succeeds or refuses, as every step is: a refused caller
+  // reports how long the refusal took.
+  let app: AppRecord;
+  let authenticatedRequest: Awaited<ReturnType<typeof authenticateRequest>>;
+  try {
+    const appId = c.req.param("app");
+    if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+    app = await loadApp(c.env, appId);
+    const providers = organizationProviders(c.env, app.organizationId);
+    // A rejection nobody awaits yet — the request may still be refused for its
+    // account or its credential first — must not surface as an unhandled one.
+    providers.catch(() => {});
+    // Only a hosted deployment writes an account deadline, and only one that
+    // sends email waits for a verified one, so only those can refuse here. It
+    // decides before the app, the credential or any limit the organization set
+    // on its own users is consulted: an account that may not be served has no
+    // claim on them.
+    const deployment = c.get("deployment");
+    if (deployment.rules.accountDeadlines || deployment.emailVerification === "required") {
+      await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
+    }
+    assertAppActive(app);
+    authenticatedRequest = await authenticateRequest({
+      env: c.env,
+      app,
+      request: c.req.raw,
+      body,
+      providerSlug,
+      providers,
+    });
+  } finally {
+    timings.authMs = performance.now() - start;
   }
-  assertAppActive(app);
-  const { identity, credential, assertionCounter } = await authenticateRequest({
-    env: c.env,
-    app,
-    request: c.req.raw,
-    body,
-    providerSlug,
-    providers,
-  });
-  timings.authMs = performance.now() - start;
+  const { identity, credential, assertionCounter } = authenticatedRequest;
   if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
@@ -111,7 +119,7 @@ async function serve(
   providerSlug: string | undefined,
   prepare: (input: PrepareInput) => Promise<ExecutionPlan>,
 ): Promise<Response> {
-  const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
+  const timings: ServedTimings = {};
   c.set("servedTimings", timings);
   const body = bodyOnce(c.req.raw);
   const { app, identity, credentialHeader, assertionCounter } =
@@ -120,8 +128,7 @@ async function serve(
   // from a refusal of its headers; before the plan, so a malformed one is
   // refused before anything is spent on the request.
   const conversation = readConversationHeaders(c.req.raw.headers);
-  // Timed whether it succeeds or refuses, like admission: a request refused
-  // here reports how long the refusal took.
+  // Timed whether it succeeds or refuses, as every step is.
   const prepareStart = performance.now();
   let plan: ExecutionPlan;
   try {
@@ -131,8 +138,9 @@ async function serve(
   }
   const appVersion = c.req.header("x-app-version") ?? null;
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(contained("served_request", promise));
-  await admitRequest(
-    {
+  const limiterStart = performance.now();
+  try {
+    await admitRequest({
       env: c.env,
       deployment: c.get("deployment"),
       billingCache: c.get("billingRequestCache"),
@@ -142,11 +150,10 @@ async function serve(
       plan,
       appVersion,
       waitUntil,
-    },
-    (durationMs) => {
-      timings.limiterMs = durationMs;
-    },
-  );
+    });
+  } finally {
+    timings.limiterMs = performance.now() - limiterStart;
+  }
   // Conversation storage needs the app to have turned it on, the deployment to
   // have somewhere to keep it, the client not to have opted this request out,
   // and the account's plan to include it: an app that turned it on under a plan

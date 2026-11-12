@@ -145,7 +145,7 @@ On the way back, `set-cookie`, `openai-organization` and `openai-project`
 are removed. `x-request-id` is kept, because provider support asks for it.
 The gateway adds a `Server-Timing` header with the time spent on
 authentication, preparing the request, limits and the provider's time to first
-byte.
+byte. A step the request never reached is left out.
 
 ## Limits on a request
 

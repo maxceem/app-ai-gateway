@@ -8,13 +8,13 @@ import { clearIsolateCaches, seedServerApp } from "./helpers";
  * The `server-timing` header a served request answers with: which steps it
  * names, in which order, and what a step the request never reached reports.
  *
- * Clients may parse it, so the entries keep their names and their order.
- * `prepare` is named only once a request reached it, so a step that never ran
- * is not mistaken for one that took no time.
+ * Clients may parse it, so the entries keep their names and their order. A
+ * step a request was refused in reports how long the refusal took, and one it
+ * never reached is left out, so it is not mistaken for one that took no time.
  */
 
 /** Long enough that no other step of a test request could account for it. */
-const SLOW_DECRYPT_MS = 100;
+const SLOW_MS = 100;
 
 const ORIGIN = "https://example.test";
 const ENTRIES = ["auth", "prepare", "limiter", "provider_ttfb"];
@@ -60,8 +60,6 @@ function expectEntries(response: Response, names = ENTRIES): Record<string, numb
     expect(Number.isFinite(duration)).toBe(true);
     expect(duration).toBeGreaterThanOrEqual(0);
   }
-  // The pattern readers written before `prepare` existed match on.
-  expect(response.headers.get("server-timing")).toMatch(/auth.*limiter.*provider_ttfb/u);
   return Object.fromEntries(entries);
 }
 
@@ -72,8 +70,20 @@ function expectEntries(response: Response, names = ENTRIES): Record<string, numb
 function slowDecrypt(): void {
   const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
   vi.spyOn(crypto.subtle, "decrypt").mockImplementation(async (...args) => {
-    await new Promise((resolve) => setTimeout(resolve, SLOW_DECRYPT_MS));
+    await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
     return decrypt(...args);
+  });
+}
+
+/**
+ * Makes hashing a presented API key slow. Only authentication hashes one, so
+ * the delay belongs to `auth` and to nothing else.
+ */
+function slowKeyHash(): void {
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  vi.spyOn(crypto.subtle, "digest").mockImplementation(async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
+    return digest(...args);
   });
 }
 
@@ -93,21 +103,22 @@ afterEach(async () => {
 });
 
 describe("server-timing", () => {
-  it("reports prepare on a served proxy request, between auth and limiter", async () => {
+  it("names every step of a served proxy request, prepare between auth and limiter", async () => {
     const key = await seedServerApp("timing-proxy");
     mockUpstream();
-
     slowDecrypt();
 
     const response = await proxy("timing-proxy", key);
 
     expect(response.status).toBe(200);
     const timings = expectEntries(response);
-    expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_DECRYPT_MS * 0.9);
-    expect(timings.limiter).toBeLessThan(SLOW_DECRYPT_MS * 0.9);
+    expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_MS * 0.9);
+    expect(timings.limiter).toBeLessThan(SLOW_MS * 0.9);
+    // The pattern readers written before `prepare` existed match on.
+    expect(response.headers.get("server-timing")).toMatch(/auth.*limiter.*provider_ttfb/u);
   });
 
-  it("reports prepare on a served custom endpoint", async () => {
+  it("names every step of a served custom endpoint", async () => {
     const key = await seedServerApp("timing-endpoint", {
       endpoints: { chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-luna" } },
     });
@@ -119,7 +130,7 @@ describe("server-timing", () => {
     expectEntries(response);
   });
 
-  it("reports prepare on a request refused at admission, after the plan was prepared", async () => {
+  it("leaves the provider out of a request refused at admission", async () => {
     const key = await seedServerApp("timing-admission", { limits: { rpm: 1 } });
     mockUpstream();
 
@@ -128,10 +139,10 @@ describe("server-timing", () => {
 
     expect(refused.status).toBe(429);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "app_rate_limited" } });
-    expect(expectEntries(refused).provider_ttfb).toBe(0);
+    expectEntries(refused, ["auth", "prepare", "limiter"]);
   });
 
-  it("reports how long prepare took to refuse a request, with nothing after it", async () => {
+  it("reports how long prepare took to refuse a request, and nothing after it", async () => {
     const key = await seedServerApp("timing-prepare-refused");
     slowDecrypt();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -145,21 +156,18 @@ describe("server-timing", () => {
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "model_not_allowed" } });
     expect(fetchSpy).not.toHaveBeenCalled();
-    const timings = expectEntries(refused);
-    expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_DECRYPT_MS * 0.9);
-    expect(timings.limiter).toBe(0);
-    expect(timings.provider_ttfb).toBe(0);
+    const timings = expectEntries(refused, ["auth", "prepare"]);
+    expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_MS * 0.9);
   });
 
-  it("leaves prepare out when the credential was refused before it", async () => {
+  it("reports how long a refused credential took, and nothing after it", async () => {
     await seedServerApp("timing-auth-refused");
+    slowKeyHash();
 
     const refused = await proxy("timing-auth-refused", `agw_${"Z".repeat(48)}`);
 
     expect(refused.status).toBe(401);
-    // The entries that predate `prepare` keep their shape, zero included.
-    const timings = expectEntries(refused, ["auth", "limiter", "provider_ttfb"]);
-    expect(timings.limiter).toBe(0);
-    expect(timings.provider_ttfb).toBe(0);
+    const timings = expectEntries(refused, ["auth"]);
+    expect(timings.auth).toBeGreaterThanOrEqual(SLOW_MS * 0.9);
   });
 });

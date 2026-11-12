@@ -1,21 +1,29 @@
 /**
- * How long authentication, preparing the plan and the limiters took, for
- * `server-timing` on any answer. `prepareMs` stays absent until the request
- * reaches that step; one refused in it reports the time it took to refuse.
+ * How long each step of a served request took, for `server-timing` on any
+ * answer. A step is timed whether it succeeds or refuses, so one a request was
+ * refused in reports how long the refusal took; a step it never reached stays
+ * absent.
  */
 export interface ServedTimings {
-  authMs: number;
+  authMs?: number;
   prepareMs?: number;
-  limiterMs: number;
+  limiterMs?: number;
 }
 
 /**
- * The `server-timing` value for a served request, provider time included where
- * there was one. Clients may parse it, so entries keep their names and order:
- * `prepare` is named only once the request reached it, so a reader can tell a
- * step that never ran from one that took no time.
+ * The `server-timing` value for a served request. Entries keep their names and
+ * their order, and each is named only once the request reached its step, so a
+ * reader can tell a step that never ran from one that took no time. The
+ * provider's entry is present only when it answered.
  */
-export function serverTiming(timings: ServedTimings, providerTtfbMs = 0): string {
-  const prepare = timings.prepareMs === undefined ? "" : `, prepare;dur=${timings.prepareMs.toFixed(1)}`;
-  return `auth;dur=${timings.authMs.toFixed(1)}${prepare}, limiter;dur=${timings.limiterMs.toFixed(1)}, provider_ttfb;dur=${providerTtfbMs.toFixed(1)}`;
+export function serverTiming(timings: ServedTimings, providerTtfbMs?: number): string {
+  return [
+    ["auth", timings.authMs],
+    ["prepare", timings.prepareMs],
+    ["limiter", timings.limiterMs],
+    ["provider_ttfb", providerTtfbMs],
+  ]
+    .filter((entry): entry is [string, number] => entry[1] !== undefined)
+    .map(([name, durationMs]) => `${name};dur=${durationMs.toFixed(1)}`)
+    .join(", ");
 }
