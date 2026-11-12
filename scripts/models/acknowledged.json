@@ -370,5 +370,9 @@
   {
     "key": "gemini/gemini-omni-1.2-flash: not added",
     "reason": "Unsupported public pricing: gemini-omni-1.2-flash, Output price (including thinking tokens): unknown price format \"$9.00 (text) $12.00 (video)^*^\""
+  },
+  {
+    "key": "gemini/gemini-decision-1: not added",
+    "reason": "Unsupported public pricing: gemini-decision-1, Output price: unknown price format \"Not applicable (0 output tokens)\""
   }
 ]
