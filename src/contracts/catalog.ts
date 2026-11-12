@@ -284,6 +284,17 @@ const TranscriptionStyleBodySchema = z.object({
   response_format: z.string().optional(),
 }).meta({ description: "Body for endpoints whose api_style is audio_transcription." });
 
+const CLIENT_SDK_HEADER_DESCRIPTION =
+  "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.";
+
+/** What an App Attest or issuer-backed client sends beside its proof. */
+const AppAuthClientHeadersSchema = z.object({
+  "x-app-version": z.string().optional().meta({
+    description: "The app's own version, recorded on the auth event.",
+  }),
+  "x-client-sdk": z.string().optional().meta({ description: CLIENT_SDK_HEADER_DESCRIPTION }),
+});
+
 /** What an application client sends beside its credential. */
 const GatewayClientHeadersSchema = z.object({
   "x-app-version": z.string().optional().meta({
@@ -296,6 +307,7 @@ const GatewayClientHeadersSchema = z.object({
   "x-end-user-id": z.string().optional().meta({
     description: "Optional configured end-user identity for issuer-less API-key applications.",
   }),
+  "x-client-sdk": z.string().optional().meta({ description: CLIENT_SDK_HEADER_DESCRIPTION }),
   "x-client-trace-id": z.string().regex(CLIENT_TRACE_ID_PATTERN).optional().meta({
     description:
       "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
@@ -446,6 +458,7 @@ export const CATALOG = {
     summary: "Register an App Attest key",
     security: "public",
     params: APP_PARAM,
+    headers: AppAuthClientHeadersSchema,
     request: AppAttestRegisterRequestSchema,
     response: AppAttestRegisterResponseSchema,
     responseDescription: "The key was registered for the verified issuer identity.",
@@ -465,6 +478,7 @@ export const CATALOG = {
     description: "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
     security: "public",
     params: APP_PARAM,
+    headers: AppAuthClientHeadersSchema,
     request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
     response: GatewayTokenResponseSchema,
     responseDescription: "A short-lived gateway access token.",

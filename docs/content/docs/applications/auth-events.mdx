@@ -67,4 +67,8 @@ do about it.
 - `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&before_id=`
 - `GET /v1/admin/apps/{app}/rejection-events?limit=&reason=&scope=&user=&from=&to=&before_id=`
 
+Each attempt the API lists also carries `client_sdk`: the client package and
+version the attempt named, such as `app-ai-gateway-swift/1.8.0`, or `null`
+when it named none.
+
 Auth events and refusal samples are kept for 90 days.

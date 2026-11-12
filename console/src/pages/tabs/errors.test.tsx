@@ -34,6 +34,7 @@ function event(overrides: Partial<AuthEvent> = {}): AuthEvent {
     outcome: "ok",
     reason: null,
     app_version: "1.0.0",
+    client_sdk: null,
     latency_ms: 12,
     claim_delay_ms: null,
     created_at: "2026-08-30T10:00:00.000Z",

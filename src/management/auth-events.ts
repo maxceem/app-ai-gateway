@@ -187,6 +187,7 @@ export async function listAppAuthEvents(
       outcome: row.outcome,
       reason: row.reason,
       app_version: row.appVersion,
+      client_sdk: row.clientSdk,
       latency_ms: row.latencyMs,
       claim_delay_ms: row.claimDelayMs,
       created_at: row.createdAt,

@@ -167,6 +167,7 @@ describe("initial database migration", () => {
       "latency_ms",
       "claim_delay_ms",
       "created_at",
+      "client_sdk",
     ]);
     expect(authEventColumns.results.find((column) => column.name === "user_id")?.notnull).toBe(0);
     expect(authEventColumns.results.find((column) => column.name === "outcome")?.notnull).toBe(1);

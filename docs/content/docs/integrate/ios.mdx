@@ -349,6 +349,11 @@ prove themselves.
   token.
 - **App version.** `X-App-Version` is set from `CFBundleShortVersionString`,
   which is what the console's **By app version** breakdown groups by.
+- **Package version.** Releases after 1.7.0 also send `X-Client-SDK`, such
+  as `app-ai-gateway-swift/1.8.0`, on every request. The gateway records it
+  on each token exchange and key registration, as `client_sdk` in the
+  [auth events API](/applications/auth-events#through-the-api), so you can
+  see which package release your installs run. It never reaches the provider.
 
 ## Handling a missing entitlement
 
