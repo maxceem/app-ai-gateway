@@ -2,13 +2,14 @@
 //
 // One `{% table %}` per model family and stage, with a shutdown date or "No
 // shutdown date announced" for every model, or "N/A" for one whose endpoint is
-// not shutting down but routes to its replacement. Google calls these dates the earliest a
-// model may be shut down, so a date here can move later, never earlier.
+// not shutting down but routes to its replacement. A model cell is the ID in
+// code, sometimes linked to that same model's page. Google calls these dates the
+// earliest a model may be shut down, so a date here can move later, never earlier.
 
 import { ParseError, findMarkdocTables, parseDate, put } from "../price.mjs";
 
 const HEADER = ["Model", "Release date", "Shutdown date", "Recommended replacement"];
-const MODEL = /^`([^`]+)`$/u;
+const MODEL = /^(?:`([^`]+)`|\[`([^`]+)`\]\(\/docs\/models\/\2\))$/u;
 const NO_DATE = new Set(["No shutdown date announced", "N/A"]);
 
 export function parseGeminiDeprecations(text, { wanted }) {
@@ -27,7 +28,7 @@ export function parseGeminiDeprecations(text, { wanted }) {
         if (row.slice(1).every((cell) => cell === "")) continue;
         throw new ParseError(`unexpected model cell "${row[0]}"`);
       }
-      const id = model[1];
+      const id = model[1] ?? model[2];
       if (!wanted.has(id) || NO_DATE.has(row[2])) continue;
       put(retirements, id, { date: parseDate(row[2], id) });
     }

@@ -585,6 +585,12 @@ test("gemini deprecations: a shutdown date, none announced or N/A", () => {
   assert.deepEqual(dates.get("gemini-3.1-flash-lite"), { date: "2027-05-07" });
   assert.deepEqual(dates.get("gemini-2.5-flash-image"), { date: "2026-10-02" });
   assert.deepEqual(dates.get("gemini-3-pro-preview"), { date: "2026-03-09" });
+  // A model cell may link the ID to that model's page.
+  assert.equal(parse(parseGeminiDeprecations, text, ["gemini-decision-1"]).has("gemini-decision-1"), false);
+  const linked = replaceOnce(text, "  * `gemini-3.1-flash-lite`\n  * May 7, 2026\n", "  * [`gemini-3.1-flash-lite`](/docs/models/gemini-3.1-flash-lite)\n  * May 7, 2026\n");
+  assert.deepEqual(parse(parseGeminiDeprecations, linked, ["gemini-3.1-flash-lite"]).get("gemini-3.1-flash-lite"), { date: "2027-05-07" });
+  assertFails(parseGeminiDeprecations, replaceOnce(text, "(/docs/models/gemini-decision-1)", "(/docs/models/gemini-4-carbon)"), ["gemini-decision-1"], /unexpected model cell/);
+  assertFails(parseGeminiDeprecations, replaceOnce(text, "[`gemini-decision-1`](/docs/models/gemini-decision-1)", "[Gemini Decision 1](/docs/models/gemini-decision-1)"), ["gemini-decision-1"], /unexpected model cell/);
   assertFails(parseGeminiDeprecations, text.replaceAll("* Shutdown date", "* Retirement date"), ["gemini-3.6-flash"], /no model tables/);
   assertFails(parseGeminiDeprecations, replaceOnce(text, "* May 7, 2027\n", "* Mid 2027\n"), ["gemini-3.1-flash-lite"], /not a date/);
   assertFails(parseGeminiDeprecations, replaceOnce(text, "  * May 7, 2027\n", ""), ["gemini-3.1-flash-lite"], /a row has 3 cells/);

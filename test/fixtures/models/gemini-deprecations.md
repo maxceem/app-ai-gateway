@@ -117,3 +117,19 @@
   * January 15, 2026
   * `gemini-2.5-flash-image`
   {% /table %}
+
+## Gemini Decision models  {% id="gemini-decision-models" %}
+
+{% table %}
+  * Model
+  * Release date
+  * Shutdown date
+  * Recommended replacement
+
+  ---
+
+  * [`gemini-decision-1`](/docs/models/gemini-decision-1)
+  * November 11, 2026
+  * No shutdown date announced
+  * 
+{% /table %}
