@@ -8,6 +8,7 @@ import { timeOrderedId } from "../core/ids";
 import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../conversations/capture";
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
+import { mintsCredential } from "./credential-minting";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -32,6 +33,14 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/**
+ * Where an attempt's exchange is stored from, or null when it is not stored:
+ * an answer that is itself a credential never is, whatever the app chose.
+ */
+function captureFor(context: ExecutionContext, attempt: ExecutionAttempt): CaptureSource | null {
+  return context.capture && !mintsCredential(attempt.providerPath) ? context.capture : null;
+}
+
 function route(attempt: ExecutionAttempt): string {
   return `${attempt.resolved.slug}/${attempt.providerPath}`;
 }
@@ -53,10 +62,11 @@ function record(
 ): void {
   // One id for the usage row and the stored conversation, so each finds the other.
   const eventId = timeOrderedId();
-  if (context.capture && input.observed && input.httpStatus !== undefined && input.sent) {
+  const capture = captureFor(context, input.attempt);
+  if (capture && input.observed && input.httpStatus !== undefined && input.sent) {
     context.waitUntil(conversationCapture({
       env: context.env,
-      source: context.capture,
+      source: capture,
       sent: input.sent,
       eventId,
       appId: context.app.id,
@@ -207,12 +217,15 @@ export async function execute(
 
     const headers = clientResponseHeaders(upstream);
     headers.set("Server-Timing", serverTiming(context.timings, providerTtfb));
+    // A minted credential is the client's alone: no cache on the way may keep
+    // it, whether the provider answered with one or with an error.
+    if (mintsCredential(attempt.providerPath)) headers.set("Cache-Control", "no-store");
     let clientStream = upstream.body;
     let observed: Promise<ObservedBody> | null = null;
     if (upstream.body) {
       ({ stream: clientStream, observed } = observeUpstreamBody(
         upstream.body,
-        context.capture ? { keepWholeUpTo: CAPTURE_MAX_BYTES } : {},
+        captureFor(context, attempt) ? { keepWholeUpTo: CAPTURE_MAX_BYTES } : {},
       ));
     }
     record(plan, context, {

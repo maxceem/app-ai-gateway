@@ -31,6 +31,11 @@ always kept.
 Anything over 8 MB, or a single string over 256 KB, is recorded by its size
 instead.
 
+A request that mints a short-lived provider key, such as OpenAI's
+`v1/realtime/client_secrets`, `v1/realtime/sessions` or
+`v1/realtime/transcription_sessions`, is never stored, neither the request nor
+the response, because the answer is a live key. Its usage is still recorded.
+
 Each record also carries the request's `event_id` (the same as its usage
 event), the time, the user id, the install, the app version, the route, the
 model, the status and the latency.
