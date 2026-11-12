@@ -724,8 +724,8 @@
                                         "items": {
                                           "type": "string",
                                           "enum": [
-                                            "GET",
                                             "POST",
+                                            "GET",
                                             "PUT",
                                             "PATCH",
                                             "DELETE"

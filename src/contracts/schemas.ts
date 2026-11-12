@@ -365,7 +365,7 @@ const ApiKeyAuthenticationSchema = z.object({
  * on the provider account — and reaching that has to be the owner's explicit
  * choice. A model call is always a POST, so a recognised path never takes one.
  */
-export const PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export const PASSTHROUGH_METHODS = ["POST", "GET", "PUT", "PATCH", "DELETE"] as const;
 export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
 
 const AllowedPathSchema = z.union([

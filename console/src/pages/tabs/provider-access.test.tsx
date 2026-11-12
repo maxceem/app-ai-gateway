@@ -201,7 +201,10 @@ describe("ProviderAccessTab", () => {
     // A model API keeps its model fields; the passthrough path takes methods instead.
     expect(screen.getAllByText("Passthrough")).toHaveLength(1);
     expect(screen.getAllByText("Fixed model")).toHaveLength(1);
-    expect(screen.getByText(/not used for passthrough paths/u)).toBeTruthy();
+    expect(screen.getByText(/Spending limits apply only if the provider reports a cost/u)).toBeTruthy();
+    // POST, the default, comes first.
+    expect(screen.getAllByText(/^(GET|POST|PUT|PATCH|DELETE)$/u).map((label) => label.textContent))
+      .toEqual(["POST", "GET", "PUT", "PATCH", "DELETE"]);
     const post = screen.getByRole("checkbox", { name: "POST" });
     expect(post.getAttribute("aria-checked")).toBe("true");
     // POST is the only method open, so it cannot be taken away.
@@ -215,7 +218,7 @@ describe("ProviderAccessTab", () => {
           path: "v1/realtime/client_secrets",
           fixed_model: "gpt-live-transcribe",
           clamp: "none",
-          methods: ["GET", "POST"],
+          methods: ["POST", "GET"],
         },
       ]));
 

@@ -194,7 +194,10 @@ export function policySummary(policy: ProviderPolicy): string {
  * model and an output cap style; a passthrough path — anything else — takes
  * the methods it is opened for instead, because the gateway forwards it
  * without reading a model or a body. Settings a passthrough path stored from
- * before are kept untouched and only said to be unused.
+ * before are kept untouched.
+ *
+ * Every row shares one grid, so a path field is as wide on a passthrough row,
+ * whose methods span the model columns, as on a model row.
  */
 function PathRow({
   entry,
@@ -216,8 +219,8 @@ function PathRow({
   };
   return (
     <div className="space-y-1.5">
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="min-w-[200px] flex-[2]">
+      <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_170px_auto]">
+        <div className="min-w-0">
           <Label className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
             Path
             {passthrough ? (
@@ -242,7 +245,7 @@ function PathRow({
           />
         </div>
         {passthrough ? (
-          <div className="min-w-[320px] flex-1">
+          <div className="min-w-0 sm:col-span-2">
             <Label className="mb-1.5 text-xs text-muted-foreground">Methods</Label>
             <div className="flex h-9 flex-wrap items-center gap-x-3 gap-y-1">
               {PASSTHROUGH_METHODS.map((method) => {
@@ -268,7 +271,7 @@ function PathRow({
           </div>
         ) : (
           <>
-            <div className="min-w-[150px] flex-1">
+            <div className="min-w-0">
               <Label className="mb-1.5 text-xs text-muted-foreground">Fixed model</Label>
               <Input
                 value={entry.fixed_model ?? ""}
@@ -277,7 +280,7 @@ function PathRow({
                 onChange={(event) => onChange({ ...entry, fixed_model: event.target.value || undefined })}
               />
             </div>
-            <div className="w-[170px]">
+            <div className="min-w-0">
               <Label className="mb-1.5 text-xs text-muted-foreground">Output cap style</Label>
               <Select
                 value={entry.clamp ?? "auto"}
@@ -303,17 +306,14 @@ function PathRow({
             </div>
           </>
         )}
-        <Button variant="ghost" size="icon" aria-label="Remove endpoint" onClick={onRemove}>
+        <Button variant="ghost" size="icon" aria-label="Remove endpoint" className="justify-self-end" onClick={onRemove}>
           <Trash2 className="size-4" />
         </Button>
       </div>
       {passthrough ? (
         <p className="text-xs leading-relaxed text-muted-foreground">
-          Forwarded as sent: no model is checked, it is not priced unless the provider reports a
-          cost, and it is never stored. Request limits still apply.
-          {entry.fixed_model || entry.clamp
-            ? " The fixed model and output cap style saved on this path are not used for passthrough paths."
-            : ""}
+          Non-standard path, forwarded as sent. No model check. Spending limits apply only if the
+          provider reports a cost. Request limits still apply.
         </p>
       ) : null}
     </div>

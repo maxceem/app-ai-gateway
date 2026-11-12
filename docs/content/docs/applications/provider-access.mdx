@@ -113,8 +113,8 @@ A passthrough path takes `POST` only. The same provider path often reads or
 deletes data under another method: `GET v1/files` lists every file in the
 provider account, including other users' uploads. To allow more, list the
 methods on the row, for example
-`{ "path": "v1/files", "methods": ["GET", "POST"] }`. The methods are `GET`,
-`POST`, `PUT`, `PATCH` and `DELETE`. A request with another method answers
+`{ "path": "v1/files", "methods": ["POST", "GET"] }`. The methods are `POST`,
+`GET`, `PUT`, `PATCH` and `DELETE`. A request with another method answers
 `403 path_not_allowed`.
 
 ## Models this provider serves
