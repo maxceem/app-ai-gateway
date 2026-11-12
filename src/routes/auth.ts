@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
 import { assertAppActive, loadApp } from "../core/app-records";
+import { CLIENT_SDK_HEADER } from "../core/client-sdk";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError, type ErrorCode, type GatewayErrorReason } from "../core/errors";
 import { log } from "../core/log";
@@ -103,6 +104,7 @@ async function recorded(
   const startedAt = Date.now();
   const appId = c.req.param("app") ?? "";
   const appVersion = c.req.header("x-app-version") ?? null;
+  const clientSdk = c.req.header(CLIENT_SDK_HEADER) ?? null;
   const attempt: AuthAttempt = { authMethod: null, userId: null, claimDelayMs: null };
   let settled = false;
   const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
@@ -120,6 +122,7 @@ async function recorded(
       outcome,
       reason,
       appVersion,
+      clientSdk,
       latencyMs: Date.now() - startedAt,
       claimDelayMs: attempt.claimDelayMs,
     })));

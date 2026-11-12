@@ -234,6 +234,7 @@ const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "x-appattest-proof",
   ...PROVIDER_CREDENTIAL_HEADERS,
   "x-app-version",
+  "x-client-sdk",
   "x-client-trace-id",
   "x-conversation-storage",
   "content-type",

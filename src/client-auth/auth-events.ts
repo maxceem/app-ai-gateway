@@ -5,6 +5,7 @@ import { database } from "../db/index";
 import type { AuthMethod } from "../core/types";
 import { appAuthEvent, type AuthEventName } from "../db/schema";
 import { storedAppVersion } from "../core/app-version";
+import { storedClientSdk } from "../core/client-sdk";
 import { errorFacts } from "../core/error-facts";
 
 /**
@@ -31,6 +32,8 @@ export interface AuthEventInput {
   outcome: "ok" | ErrorCode;
   reason?: string | null;
   appVersion?: string | null;
+  /** The raw `X-Client-SDK` header; only a well-formed value is stored. */
+  clientSdk?: string | null;
   latencyMs: number;
   claimDelayMs?: number | null;
 }
@@ -66,6 +69,7 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
           outcome: input.outcome,
           reason: input.reason ?? null,
           appVersion: storedAppVersion(input.appVersion),
+          clientSdk: storedClientSdk(input.clientSdk),
           latencyMs: input.latencyMs,
           claimDelayMs: input.claimDelayMs ?? null,
         })

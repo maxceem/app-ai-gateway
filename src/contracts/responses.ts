@@ -254,6 +254,9 @@ export const AuthEventSchema = z.object({
     description: "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it.",
   }),
   app_version: z.string().nullable(),
+  client_sdk: z.string().nullable().meta({
+    description: "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version.",
+  }),
   latency_ms: z.number().int().nullable(),
   claim_delay_ms: z.number().int().nullable().meta({
     description: "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection.",

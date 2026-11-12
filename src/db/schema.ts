@@ -744,6 +744,13 @@ export const appAuthEvent = sqliteTable(
     /** The granular cause behind the outcome — see `IssuerRejectionReason`. */
     reason: text("reason"),
     appVersion: text("app_version"),
+    /**
+     * The gateway client package and version the attempt named in
+     * `X-Client-SDK`, such as `app-ai-gateway-swift/1.7.0`; null when it named
+     * none or anything else (see `storedClientSdk`). Recorded here, once per
+     * exchange or registration, rather than on every usage event.
+     */
+    clientSdk: text("client_sdk"),
     latencyMs: integer("latency_ms"),
     /**
      * Set only on the exchange that ends a claim-propagation window: how long

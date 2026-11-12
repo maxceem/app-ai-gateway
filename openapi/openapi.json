@@ -2741,6 +2741,13 @@
               "null"
             ]
           },
+          "client_sdk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version."
+          },
           "latency_ms": {
             "type": [
               "integer",
@@ -2766,6 +2773,7 @@
           "outcome",
           "reason",
           "app_version",
+          "client_sdk",
           "latency_ms",
           "claim_delay_ms",
           "created_at"
@@ -3851,6 +3859,26 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app's own version, recorded on the auth event."
+            },
+            "required": false,
+            "description": "The app's own version, recorded on the auth event.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3972,6 +4000,26 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app's own version, recorded on the auth event."
+            },
+            "required": false,
+            "description": "The app's own version, recorded on the auth event.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -4147,6 +4195,16 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
             "in": "header"
           },
           {
@@ -4411,6 +4469,16 @@
           {
             "schema": {
               "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
               "pattern": "^[A-Za-z0-9._:-]{1,128}$",
               "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
             },
@@ -4612,6 +4680,16 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
             "in": "header"
           },
           {

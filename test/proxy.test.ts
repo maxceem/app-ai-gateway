@@ -1511,6 +1511,7 @@ describe("provider-native proxy", () => {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
           "x-app-version": "1.2.3",
+          "x-client-sdk": "app-ai-gateway-swift/1.7.0",
           "x-client-trace-id": "message-1",
           "x-conversation-storage": "off",
           // Nothing below is the provider's business: the first group would
@@ -1557,6 +1558,7 @@ describe("provider-native proxy", () => {
       "x-goog-user-project",
       "accept-encoding",
       "x-app-version",
+      "x-client-sdk",
       "x-client-trace-id",
       "x-conversation-storage",
     ]) {
@@ -1612,6 +1614,73 @@ describe("provider-native proxy", () => {
     expect(upstreamHeaders.get("cookie")).toBeNull();
 
     await env.DB.prepare("DELETE FROM provider WHERE id = 'proxy-aig-control-openai'").run();
+    clearProviderCaches();
+  });
+
+  it("never forwards X-Client-SDK, whichever route or entry point the request takes", async () => {
+    const appId = "proxy-client-sdk-routes";
+    await seedApp(appId, {
+      proxy: { provider_mode: "all", model_rewrites: {} },
+      endpoints: { chat: { api_style: "responses", provider: "openai-sdk-vercel", model: "gpt-5.6-sol" } },
+    });
+    await seedProvider({
+      type: "openai",
+      id: "proxy-client-sdk-aig",
+      slug: "openai-sdk-aig",
+      gateway: "cf_aig",
+      providerGatewayId: "proxy-client-sdk-aig-gateway",
+    });
+    await seedProvider({
+      type: "openai",
+      id: "proxy-client-sdk-vercel",
+      slug: "openai-sdk-vercel",
+      gateway: "vercel",
+      providerGatewayId: "proxy-client-sdk-vercel-gateway",
+    });
+    const upstream: { url: string; headers: Headers }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      upstream.push({
+        url: request instanceof Request ? request.url : String(request),
+        headers: new Headers(init?.headers),
+      });
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const send = async (path: string) => {
+      const response = await workerFetch(`https://example.test/v1/apps/${appId}/${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(appId)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+          "x-client-sdk": "app-ai-gateway-swift/1.7.0",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      });
+      await response.text();
+      return response.status;
+    };
+    // Direct, through Cloudflare AI Gateway, through Vercel, and a custom
+    // endpoint: every way a request reaches a provider.
+    expect(await send("proxy/openai/v1/responses")).toBe(200);
+    expect(await send("proxy/openai-sdk-aig/v1/responses")).toBe(200);
+    expect(await send("proxy/openai-sdk-vercel/v1/responses")).toBe(200);
+    expect(await send("endpoints/chat")).toBe(200);
+
+    expect(upstream.map(({ url }) => new URL(url).host)).toEqual([
+      "api.openai.com",
+      "gateway.ai.cloudflare.com",
+      "ai-gateway.vercel.sh",
+      "ai-gateway.vercel.sh",
+    ]);
+    for (const { headers } of upstream) {
+      expect(headers.get("x-client-sdk")).toBeNull();
+      expect(headers.get("x-app-version")).toBeNull();
+    }
+
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('proxy-client-sdk-aig', 'proxy-client-sdk-vercel')",
+    ).run();
     clearProviderCaches();
   });
 

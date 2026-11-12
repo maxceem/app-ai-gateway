@@ -92,6 +92,13 @@
       "when": 1794366803685,
       "tag": "0012_apple_account_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1794460932481,
+      "tag": "0013_auth_event_client_sdk",
+      "breakpoints": true
     }
   ]
 }
