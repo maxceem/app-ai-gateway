@@ -9,6 +9,7 @@ import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../c
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
 import { mintsCredential } from "./credential-minting";
+import { isInferencePath } from "../shared/app-config";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -34,11 +35,20 @@ function isRetryableStatus(status: number): boolean {
 }
 
 /**
- * Where an attempt's exchange is stored from, or null when it is not stored:
- * an answer that is itself a credential never is, whatever the app chose.
+ * Where an attempt's exchange is stored from, or null when it is not stored.
+ *
+ * Conversation storage keeps model calls alone: an API style the gateway
+ * reads, or one of the provider type's own inference operations, the same two
+ * lists an app that names no paths may reach. Anything else an app's
+ * `allowed_paths` lets through — files, batches, jobs whose result a later
+ * poll returns, a realtime session's key — is not a conversation, whatever
+ * the app chose. A minted credential is refused by name as well, so adding a
+ * realtime path to a provider's inference list cannot start storing keys.
  */
 function captureFor(context: ExecutionContext, attempt: ExecutionAttempt): CaptureSource | null {
-  return context.capture && !mintsCredential(attempt.providerPath) ? context.capture : null;
+  if (!context.capture || mintsCredential(attempt.providerPath)) return null;
+  const modelCall = attempt.apiStyle !== "other" || isInferencePath(attempt.resolved.type, attempt.providerPath);
+  return modelCall ? context.capture : null;
 }
 
 function route(attempt: ExecutionAttempt): string {

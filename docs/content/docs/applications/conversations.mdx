@@ -5,8 +5,8 @@ description: Keep a copy of what an app's users send and what the model answers,
 
 Usage shows what an app's requests cost. It cannot show whether the model
 understood the person: for that you need what was said and what came back.
-With **Conversation history** on, the gateway keeps a copy of every request an
-app sends and the response it got, and you can download them to review,
+With **Conversation history** on, the gateway keeps a copy of every model call
+an app makes and the response it got, and you can download them to review,
 analyse, or turn into test cases.
 
 It is off for every app until you turn it on.
@@ -31,10 +31,14 @@ always kept.
 Anything over 8 MB, or a single string over 256 KB, is recorded by its size
 instead.
 
-A request that mints a short-lived provider key, such as OpenAI's
-`v1/realtime/client_secrets`, `v1/realtime/sessions` or
-`v1/realtime/transcription_sessions`, is never stored, neither the request nor
-the response, because the answer is a live key. Its usage is still recorded.
+Only model calls are stored: the
+[inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
+and every custom endpoint. Anything else an app's `allowed_paths` lets through,
+such as files, batches or a job whose result arrives on a later poll, is never
+stored. Neither is a request that mints a short-lived provider key, such as
+OpenAI's `v1/realtime/client_secrets`, `v1/realtime/sessions` or
+`v1/realtime/transcription_sessions`, because the answer is a live key. Usage is
+still recorded for all of them.
 
 Each record also carries the request's `event_id` (the same as its usage
 event), the time, the user id, the install, the app version, the route, the

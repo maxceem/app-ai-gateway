@@ -11,7 +11,8 @@
  *
  *   - never written to conversation storage, request or response, whatever
  *     the app's settings: a stored key would be readable later wherever the
- *     conversation is;
+ *     conversation is. Storage keeps only model calls, which these are not,
+ *     and refuses them by name too, so that can never change by accident;
  *   - returned with `Cache-Control: no-store`, whatever the provider sent, so
  *     no cache between the gateway and the client keeps it.
  *

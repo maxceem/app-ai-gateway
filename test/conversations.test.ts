@@ -9,6 +9,7 @@ import { conversationRecord, type ConversationCapture } from "../src/conversatio
 import { RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention";
 import { QueryBudget } from "../src/core/query-budget";
 import { mintsCredential } from "../src/execution/credential-minting";
+import { isInferencePath } from "../src/shared/app-config";
 import { clearIsolateCaches, seedServerApp } from "./helpers";
 import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
 
@@ -641,6 +642,82 @@ describe("credential-minting responses", () => {
     ]) {
       expect([path, mintsCredential(path)]).toEqual([path, false]);
     }
+  });
+});
+
+describe("what conversation storage keeps", () => {
+  const PROXY = {
+    openai: {
+      allowed_paths: [
+        "v1/images/edits",
+        { path: "v1/batches", fixed_model: "gpt-5.6-sol", clamp: "none" },
+      ],
+      allowed_models: ["gpt-5.6-sol", "gpt-image-2.6-flare"],
+      max_output_tokens: 128,
+    },
+  };
+
+  function proxied(appId: string, key: string, path: string, traceId: string, body: unknown): [string, RequestInit] {
+    return [
+      `https://example.test/v1/apps/${appId}/proxy/openai/${path}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "user-1",
+          "x-client-trace-id": traceId,
+        },
+        body: JSON.stringify(body),
+      },
+    ];
+  }
+
+  it("stores a provider's own model call, and nothing an app allowed that is not one", async () => {
+    const appId = "conversation-model-calls";
+    const key = await seedServerApp(appId, { proxy: PROXY });
+    await enableStorage(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ id: "answer_1" }));
+
+    const edit = await served(...proxied(appId, key, "v1/images/edits", "call-edit", {
+      model: "gpt-image-2.6-flare",
+      prompt: "add a lemon",
+      images: [{ image_url: `data:image/png;base64,${PIXEL}` }],
+    }));
+    expect(edit.status).toBe(200);
+    const batch = await served(...proxied(appId, key, "v1/batches", "call-batch", {
+      input_file_id: "file-1",
+      endpoint: "/v1/responses",
+      completion_window: "24h",
+    }));
+    expect(batch.status).toBe(200);
+    // A call that is not stored is answered as before, caching included.
+    expect(batch.headers.get("cache-control")).toBeNull();
+
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    expect((await storedRecords(appId)).map((record) => [record.trace_id, record.route]))
+      .toEqual([["call-edit", "openai/v1/images/edits"]]);
+    // Both are still billed and listed.
+    for (const traceId of ["call-edit", "call-batch"]) {
+      const row = await env.DB.prepare("SELECT route FROM app_usage_event WHERE client_trace_id = ?")
+        .bind(traceId).first<{ route: string }>();
+      expect([traceId, row?.route]).toEqual([traceId, expect.stringMatching(/^openai\/v1\//u)]);
+    }
+  });
+
+  it("knows a provider type's own inference operations by its exact paths", () => {
+    expect(isInferencePath("openai", "v1/images/edits")).toBe(true);
+    expect(isInferencePath("openai", "v1/audio/speech")).toBe(true);
+    expect(isInferencePath("gemini", "v1beta/models/gemini-embedding-2:embedContent")).toBe(true);
+    expect(isInferencePath("gemini", "v1beta/models/a/b:embedContent")).toBe(false);
+    expect(isInferencePath("openai", "v1/batches")).toBe(false);
+    expect(isInferencePath("openai", "v1/files")).toBe(false);
+    expect(isInferencePath("openai", "v1/realtime/client_secrets")).toBe(false);
+    // Another type's operation is not this one's.
+    expect(isInferencePath("anthropic", "v1/images/edits")).toBe(false);
+    // Matched exactly, as `allowed_paths` is.
+    expect(isInferencePath("openai", "v1/images/editsx")).toBe(false);
+    expect(isInferencePath("openai", "xv1/images/edits")).toBe(false);
   });
 });
 
