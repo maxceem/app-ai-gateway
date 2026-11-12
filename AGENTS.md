@@ -20,6 +20,10 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Reach `@maxceem/cf-auth` only through `cfAuth()` in `src/auth/identity.ts` and
   never import `better-auth` directly: a static import puts them on every
   proxied request's cold start. Type-only imports are fine.
+- Keep one Workers `compatibility_date`, in `wrangler.jsonc`, for every
+  deployment, self-hosted, hosted and tests alike. Don't set another in a
+  deployment profile overlay unless it is absolutely necessary and the user
+  has confirmed it; the release's prebuilt deploy refuses one anyway.
 - There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
 
 ## Documentation changes
@@ -69,7 +73,8 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - `pnpm run verify` — both of the above, once, before a commit or hand-off. It
   costs essentially no more than `pnpm run test` alone, because the checks run
   alongside the suites rather than after them.
-- `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`) or
+- `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`, and
+  `pnpm run deploy:prebuilt:dry-run` for the release's prebuilt deploy) or
   `docs/` (`pnpm run docs:build`).
 - `smoke/` holds checks that run against a live deployment, not the code; see
   `smoke/README.md`. `verify` only typechecks them and runs the mock's offline

@@ -10,7 +10,18 @@
 # The project owner cuts a release with `pnpm run release <version>` (scripts/release.mjs),
 # which bumps both manifests, commits, tags and pushes the two together.
 #
-# In order, in one job so the built archive is on disk for every later step:
+# Building and publishing are separate jobs, so that no package code runs where
+# the secrets are. `build` installs every dependency and builds, with no secret
+# and read-only access: the gateway archive and the CLI package, the Worker and
+# console the hosted gateway deploys (scripts/build-prebuilt.mjs), and the
+# documentation site. `publish` installs only Wrangler and its config reader,
+# from deploy/'s own lockfile and without install scripts, plus a pinned npm,
+# and takes nothing from `build` but those built files. Its Wrangler
+# configuration and the D1 migrations it applies come from the tag's checkout.
+# A dependency that misbehaves while building can still change what is built,
+# but it never runs beside the Cloudflare token or npm's publishing identity.
+#
+# `publish` does, in order:
 #   1. the gateway archive, uploaded to the GitHub release the tag names
 #   2. the gateway Worker, deployed to Cloudflare with the `cloud` profile
 #      and, when POST_DEPLOY_CHECK_URL is set, the smoke checks asked for
@@ -31,7 +42,10 @@
 #   CLOUDFLARE_API_TOKEN         D1: Edit, Workers Scripts: Edit and Workers R2 Storage: Edit
 #                                on the account, and Workers Routes: Edit on the zone
 #   CLOUDFLARE_ACCOUNT_ID        the account both Workers live in
-#   WRANGLER_CLOUD_OVERLAY       contents of wrangler.cloud.overlay.jsonc
+#   WRANGLER_CLOUD_OVERLAY       contents of wrangler.cloud.overlay.jsonc; it may not
+#                                change how the Worker is built (`BUILD_KEYS` in
+#                                scripts/wrangler-config.mjs), since `build` builds
+#                                from wrangler.jsonc alone
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
 # Environment secrets, optional:
 #   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
@@ -100,19 +114,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run verify
 
-  publish:
-    needs: verify
+  build:
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
-    environment: production
     permissions:
-      contents: write # create the GitHub release and upload the gateway archive
-      id-token: write # npm trusted publishing
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
-          fetch-depth: 0
           persist-credentials: false
 
       # Installs the pnpm version pinned in packageManager.
@@ -123,14 +133,93 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # First, and before any overlay is written: this refuses to run in a dirty
-      # working tree, because the archive is packed from the tree rather than
-      # from the commit. The overlays and everything the build writes are
-      # gitignored, but the ordering keeps that from being load-bearing.
-      - name: Build the gateway archive and publish the GitHub release
+      # The archive the CLI downloads and its integrity file, then the CLI
+      # package that carries that digest (`prepack` checks it).
+      - name: Build the gateway archive and the CLI package
+        run: |
+          set -euo pipefail
+          node cli/scripts/release.mjs
+          mkdir -p dist/npm
+          (cd cli && npm pack --pack-destination ../dist/npm)
+
+      - name: Build the hosted gateway
+        run: node scripts/build-prebuilt.mjs dist/prebuilt
+
+      - name: Build the documentation
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: pnpm run cli:release:github
+          DOCS_SITE_SCRIPT: ${{ vars.DOCS_SITE_SCRIPT }}
+        run: pnpm --filter @app-ai-gateway/docs static:build
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            cli/dist/gateway-*.tar.gz
+            cli/dist/release-integrity.json
+            dist/npm/
+            dist/prebuilt/
+            docs/out/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [verify, build]
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write # create the GitHub release and upload the gateway archive
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0 # the previous release tag, for the release notes
+          persist-credentials: false
+
+      # Into a directory of its own, never over the checkout: code that ran in
+      # `build` could have put anything in the artifact, such as a changed
+      # script. Only the expected built files are copied out, to paths the
+      # checkout does not have, and a symbolic link (which could make the docs
+      # deploy upload a file such as an overlay) stops the job.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      - name: Take only the built files from the artifact
+        env:
+          FROM: ${{ runner.temp }}/release
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          for path in cli/dist dist docs/out; do
+            test ! -e "$path" || { echo "$path already exists in the checkout" >&2; exit 1; }
+          done
+          mkdir -p cli/dist dist/npm dist/prebuilt/worker
+          cp "$FROM/cli/dist/gateway-${version}.tar.gz" "$FROM/cli/dist/release-integrity.json" cli/dist/
+          cp "$FROM/dist/npm/maxceem-agw-${version}.tgz" dist/npm/
+          cp "$FROM/dist/prebuilt/worker/index.js" dist/prebuilt/worker/
+          cp -R "$FROM/dist/prebuilt/console" dist/prebuilt/console
+          cp -R "$FROM/docs/out" docs/out
+
+      # Only Wrangler and jsonc-parser, from deploy/'s lockfile, with no install
+      # scripts and no cache another job could have written. Linked as the root
+      # node_modules, where scripts/ resolves them.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install the deploy tools
+        run: |
+          set -euo pipefail
+          pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
+          ln -s deploy/node_modules node_modules
 
       - name: Write the Cloudflare deployment profile
         env:
@@ -143,13 +232,25 @@ jobs:
           printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
           printf '%s\n' "$DOCS_WRANGLER_CLOUD_OVERLAY" > docs/wrangler.cloud.overlay.jsonc
 
+      # Before anything is published: the overlays must suit the prebuilt
+      # Worker (scripts/wrangler-config.mjs refuses one that changes how it is
+      # built), which a dry run checks without contacting Cloudflare.
+      - name: Check the deployment configuration
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: node scripts/wrangler.mjs --profile cloud --prebuilt dist/prebuilt deploy --dry-run
+
+      - name: Publish the gateway archive to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node cli/scripts/publish-release.mjs --prebuilt
+
       - name: Deploy the gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: pnpm run deploy --profile cloud
-
+        run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
       # Asks the outside monitor to run the smoke checks (smoke/) against what
       # was just deployed, the previous release's included. It reports the
       # result itself, so this only starts it, and never fails the release.
@@ -168,35 +269,36 @@ jobs:
               --data "{\"version\":\"${TAG}\"}" "$POST_DEPLOY_CHECK_URL"
 
       # Trusted publishing needs npm 11.5.1 or newer; Node 22 still bundles 10.
-      # Provenance is generated by the OIDC exchange itself, so no flag and no
-      # NPM_TOKEN are involved.
+      # Pinned, since it runs in this job. Provenance is generated by the OIDC
+      # exchange itself, so no flag and no NPM_TOKEN are involved. The package
+      # is the one `build` packed, published as is: no lifecycle script runs.
       - name: Publish the CLI to npm
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          npm install --global npm@latest
+          npm install --global --ignore-scripts npm@12.2.1
           npm --version
           version="${TAG#v}"
           if npm view "@maxceem/agw@${version}" version >/dev/null 2>&1; then
             echo "@maxceem/agw@${version} is already published; leaving it alone."
             exit 0
           fi
-          cd cli
-          npm publish --access public
+          npm publish "dist/npm/maxceem-agw-${version}.tgz" --access public --ignore-scripts
 
       # IndexNow: fingerprint the live docs before deploying, then submit the
       # pages the deploy added, changed or removed. Neither step fails the job.
       - name: Fingerprint the live documentation for IndexNow
         run: node docs/scripts/indexnow.mjs snapshot https://docs.appaigateway.com
 
+      # The site `build` built into docs/out; docs/wrangler.jsonc serves it as
+      # static assets.
       - name: Deploy the documentation
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-          DOCS_SITE_SCRIPT: ${{ vars.DOCS_SITE_SCRIPT }}
-        run: pnpm run docs:deploy --profile cloud
+        run: node scripts/wrangler.mjs --profile cloud --cwd docs deploy
 
       - name: Submit the changed documentation pages to IndexNow
         run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out

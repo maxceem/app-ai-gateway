@@ -2,6 +2,8 @@
 //
 //   pnpm run deploy                    # the tracked wrangler.jsonc, as one-click deploy uses it
 //   pnpm run deploy --profile <name>   # wrangler.jsonc merged with wrangler.<name>.overlay.jsonc
+//   node scripts/deploy.mjs [--profile <name>] --prebuilt <dir>
+//                                      # a Worker and console built by scripts/build-prebuilt.mjs
 //
 // See scripts/wrangler-config.mjs for how profiles are resolved.
 import { existsSync, readFileSync } from "node:fs";
@@ -26,10 +28,14 @@ import {
 
 function parseArguments(argv) {
   const { profile, rest } = takeProfileArgument(argv);
+  let prebuilt;
+  if (rest[0] === "--prebuilt" && rest.length === 2) prebuilt = rest.splice(0, 2)[1];
   if (rest.length > 0) {
-    throw new Error(`Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>]`);
+    throw new Error(
+      `Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>] [--prebuilt <dir>]`,
+    );
   }
-  return { profile };
+  return { profile, prebuilt };
 }
 
 let profile;
@@ -40,8 +46,9 @@ let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
 function prepare(argv) {
-  ({ profile } = parseArguments(argv));
-  ({ config, configArgs } = resolveWranglerConfig(profile));
+  let prebuilt;
+  ({ profile, prebuilt } = parseArguments(argv));
+  ({ config, configArgs } = resolveWranglerConfig(profile, undefined, { prebuilt }));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
   const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};

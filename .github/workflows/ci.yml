@@ -53,6 +53,15 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
+      # The release deploys the hosted gateway prebuilt, from a job that installs
+      # only deploy/ (from its own lockfile). Both would otherwise first fail
+      # after the owner approved a release.
+      - run: pnpm run deploy:prebuilt:dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+      - name: Check the deploy tools install
+        run: pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
+
   versions:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
