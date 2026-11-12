@@ -168,6 +168,22 @@ export function defaultInferencePaths(provider: ProviderType): readonly DefaultI
   return DEFAULT_INFERENCE_PATHS.get(provider) ?? [];
 }
 
+/** The same entries as anchored patterns, `{model}` matching one path segment as an `allowed_paths` entry does. */
+const INFERENCE_PATH_PATTERNS: ReadonlyMap<ProviderType, readonly RegExp[]> = new Map(
+  [...DEFAULT_INFERENCE_PATHS].map(([type, entries]) => [
+    type,
+    entries.map(({ path }) => new RegExp(
+      `^${path.split("{model}").map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[^/]+")}$`,
+      "u",
+    )),
+  ]),
+);
+
+/** True when a provider path is one of its type's own inference operations, as {@link defaultInferencePaths} lists them. */
+export function isInferencePath(provider: ProviderType, path: string): boolean {
+  return (INFERENCE_PATH_PATTERNS.get(provider) ?? []).some((pattern) => pattern.test(path));
+}
+
 /**
  * The policy an application applies to one provider instance, or undefined
  * when it may not reach that instance at all. All-mode reaches every instance

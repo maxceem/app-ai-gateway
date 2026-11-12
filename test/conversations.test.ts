@@ -8,6 +8,7 @@ import { app as appTable } from "../src/db/schema";
 import { conversationRecord, type ConversationCapture } from "../src/conversations/record";
 import { RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention";
 import { QueryBudget } from "../src/core/query-budget";
+import { isInferencePath } from "../src/shared/app-config";
 import { clearIsolateCaches, seedServerApp } from "./helpers";
 import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
 
@@ -505,6 +506,158 @@ describe("conversation storage through the gateway", () => {
     );
     expect(update.status).toBe(400);
     expect(await update.json()).toMatchObject({ error: { code: "invalid_request" } });
+  });
+});
+
+describe("realtime session keys", () => {
+  /** A made-up ephemeral key: what a realtime session endpoint answers with. */
+  const EPHEMERAL_KEY = "ek_test_never_stored_0123456789abcdef";
+  const REALTIME = {
+    openai: {
+      allowed_paths: [
+        { path: "v1/realtime/client_secrets", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        { path: "v1/realtime/sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        { path: "v1/realtime/transcription_sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
+      ],
+      allowed_models: ["gpt-live-transcribe"],
+      max_output_tokens: 128,
+    },
+  };
+
+  /** Every line the gateway logged while `run` ran, as text. */
+  async function logged<T>(run: () => Promise<T>): Promise<{ result: T; lines: string }> {
+    const lines: unknown[] = [];
+    for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        lines.push(args);
+      });
+    }
+    const result = await run();
+    return { result, lines: lines.map((args) => JSON.stringify(args)).join("\n") };
+  }
+
+  /** The provider answers with a key, or refuses. */
+  function providerMints(status = 200): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
+      status === 200
+        ? { value: EPHEMERAL_KEY, expires_at: 1_900_000_000, session: { type: "transcription" } }
+        : { error: { message: "Invalid session configuration", type: "invalid_request_error" } },
+      { status },
+    ));
+  }
+
+  function mintRequest(appId: string, key: string, path: string, traceId: string): [string, RequestInit] {
+    return [
+      `https://example.test/v1/apps/${appId}/proxy/openai/${path}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "user-1",
+          "x-client-trace-id": traceId,
+        },
+        body: JSON.stringify({ session: { type: "transcription" } }),
+      },
+    ];
+  }
+
+  it("are never stored, answered or refused, while their usage is still recorded", async () => {
+    const appId = "conversation-mint";
+    const key = await seedServerApp(appId, { proxy: REALTIME });
+    await enableStorage(appId);
+    const paths = ["v1/realtime/client_secrets", "v1/realtime/sessions", "v1/realtime/transcription_sessions"];
+    for (const [index, path] of paths.entries()) {
+      for (const status of [200, 400]) {
+        const traceId = `mint-${index}-${status}`;
+        providerMints(status);
+        const { result: response, lines } = await logged(() => served(...mintRequest(appId, key, path, traceId)));
+        expect([path, status, response.status]).toEqual([path, status, status]);
+        if (status === 200) expect(await response.text()).toContain(EPHEMERAL_KEY);
+        expect([path, status, lines.includes(EPHEMERAL_KEY)]).toEqual([path, status, false]);
+        const row = await env.DB.prepare("SELECT route FROM app_usage_event WHERE client_trace_id = ?")
+          .bind(traceId).first<{ route: string }>();
+        expect([path, status, row?.route]).toEqual([path, status, `openai/${path}`]);
+        vi.restoreAllMocks();
+      }
+    }
+    expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(0);
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    expect(await storedRecords(appId)).toEqual([]);
+  });
+});
+
+describe("what conversation storage keeps", () => {
+  const PROXY = {
+    openai: {
+      allowed_paths: [
+        "v1/images/edits",
+        { path: "v1/batches", fixed_model: "gpt-5.6-sol", clamp: "none" },
+      ],
+      allowed_models: ["gpt-5.6-sol", "gpt-image-2.6-flare"],
+      max_output_tokens: 128,
+    },
+  };
+
+  function proxied(appId: string, key: string, path: string, traceId: string, body: unknown): [string, RequestInit] {
+    return [
+      `https://example.test/v1/apps/${appId}/proxy/openai/${path}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "user-1",
+          "x-client-trace-id": traceId,
+        },
+        body: JSON.stringify(body),
+      },
+    ];
+  }
+
+  it("stores a provider's own model call, and nothing an app allowed that is not one", async () => {
+    const appId = "conversation-model-calls";
+    const key = await seedServerApp(appId, { proxy: PROXY });
+    await enableStorage(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ id: "answer_1" }));
+
+    const edit = await served(...proxied(appId, key, "v1/images/edits", "call-edit", {
+      model: "gpt-image-2.6-flare",
+      prompt: "add a lemon",
+      images: [{ image_url: `data:image/png;base64,${PIXEL}` }],
+    }));
+    expect(edit.status).toBe(200);
+    const batch = await served(...proxied(appId, key, "v1/batches", "call-batch", {
+      input_file_id: "file-1",
+      endpoint: "/v1/responses",
+      completion_window: "24h",
+    }));
+    expect(batch.status).toBe(200);
+
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    expect((await storedRecords(appId)).map((record) => [record.trace_id, record.route]))
+      .toEqual([["call-edit", "openai/v1/images/edits"]]);
+    // Both are still billed and listed.
+    for (const traceId of ["call-edit", "call-batch"]) {
+      const row = await env.DB.prepare("SELECT route FROM app_usage_event WHERE client_trace_id = ?")
+        .bind(traceId).first<{ route: string }>();
+      expect([traceId, row?.route]).toEqual([traceId, expect.stringMatching(/^openai\/v1\//u)]);
+    }
+  });
+
+  it("knows a provider type's own inference operations by its exact paths", () => {
+    expect(isInferencePath("openai", "v1/images/edits")).toBe(true);
+    expect(isInferencePath("openai", "v1/audio/speech")).toBe(true);
+    expect(isInferencePath("gemini", "v1beta/models/gemini-embedding-2:embedContent")).toBe(true);
+    expect(isInferencePath("gemini", "v1beta/models/a/b:embedContent")).toBe(false);
+    expect(isInferencePath("openai", "v1/batches")).toBe(false);
+    expect(isInferencePath("openai", "v1/files")).toBe(false);
+    expect(isInferencePath("openai", "v1/realtime/client_secrets")).toBe(false);
+    // Another type's operation is not this one's.
+    expect(isInferencePath("anthropic", "v1/images/edits")).toBe(false);
+    // Matched exactly, as `allowed_paths` is.
+    expect(isInferencePath("openai", "v1/images/editsx")).toBe(false);
+    expect(isInferencePath("openai", "xv1/images/edits")).toBe(false);
   });
 });
 

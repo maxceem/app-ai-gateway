@@ -8,6 +8,7 @@ import { timeOrderedId } from "../core/ids";
 import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../conversations/capture";
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
+import { isInferencePath } from "../shared/app-config";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -32,6 +33,22 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/**
+ * Where an attempt's exchange is stored from, or null when it is not stored.
+ *
+ * Conversation storage keeps model calls alone: an API style the gateway
+ * reads, or one of the provider type's own inference operations, the same two
+ * lists an app that names no paths may reach. Anything else an app's
+ * `allowed_paths` lets through — files, batches, jobs whose result a later
+ * poll returns, a realtime session's key — is not a conversation, whatever
+ * the app chose.
+ */
+function captureFor(context: ExecutionContext, attempt: ExecutionAttempt): CaptureSource | null {
+  if (!context.capture) return null;
+  const modelCall = attempt.apiStyle !== "other" || isInferencePath(attempt.resolved.type, attempt.providerPath);
+  return modelCall ? context.capture : null;
+}
+
 function route(attempt: ExecutionAttempt): string {
   return `${attempt.resolved.slug}/${attempt.providerPath}`;
 }
@@ -53,10 +70,11 @@ function record(
 ): void {
   // One id for the usage row and the stored conversation, so each finds the other.
   const eventId = timeOrderedId();
-  if (context.capture && input.observed && input.httpStatus !== undefined && input.sent) {
+  const capture = captureFor(context, input.attempt);
+  if (capture && input.observed && input.httpStatus !== undefined && input.sent) {
     context.waitUntil(conversationCapture({
       env: context.env,
-      source: context.capture,
+      source: capture,
       sent: input.sent,
       eventId,
       appId: context.app.id,
@@ -212,7 +230,7 @@ export async function execute(
     if (upstream.body) {
       ({ stream: clientStream, observed } = observeUpstreamBody(
         upstream.body,
-        context.capture ? { keepWholeUpTo: CAPTURE_MAX_BYTES } : {},
+        captureFor(context, attempt) ? { keepWholeUpTo: CAPTURE_MAX_BYTES } : {},
       ));
     }
     record(plan, context, {
