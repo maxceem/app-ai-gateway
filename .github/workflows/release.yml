@@ -178,9 +178,35 @@ jobs:
           fetch-depth: 0 # the previous release tag, for the release notes
           persist-credentials: false
 
+      # Into a directory of its own, never over the checkout: code that ran in
+      # `build` could have put anything in the artifact, such as a changed
+      # script. Only the expected built files are copied out, to paths the
+      # checkout does not have, and a symbolic link (which could make the docs
+      # deploy upload a file such as an overlay) stops the job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release
+          path: ${{ runner.temp }}/release
+      - name: Take only the built files from the artifact
+        env:
+          FROM: ${{ runner.temp }}/release
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          for path in cli/dist dist docs/out; do
+            test ! -e "$path" || { echo "$path already exists in the checkout" >&2; exit 1; }
+          done
+          mkdir -p cli/dist dist/npm dist/prebuilt/worker
+          cp "$FROM/cli/dist/gateway-${version}.tar.gz" "$FROM/cli/dist/release-integrity.json" cli/dist/
+          cp "$FROM/dist/npm/maxceem-agw-${version}.tgz" dist/npm/
+          cp "$FROM/dist/prebuilt/worker/index.js" dist/prebuilt/worker/
+          cp -R "$FROM/dist/prebuilt/console" dist/prebuilt/console
+          cp -R "$FROM/docs/out" docs/out
 
       # Only Wrangler and jsonc-parser, from deploy/'s lockfile, with no install
       # scripts and no cache another job could have written. Linked as the root
