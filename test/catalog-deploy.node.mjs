@@ -34,7 +34,8 @@ test("catalog deploy: a release is live only once a run for its commit succeeded
 
 test("catalog deploy: the release checkout may differ from its tag in the catalog alone", () => {
   assert.equal(onlyCatalogChanged(" M src/usage/models.json\n"), true);
-  assert.equal(onlyCatalogChanged(""), false);
+  // Main's catalog reverted to the release's own: still deployed, which is how the revert goes live.
+  assert.equal(onlyCatalogChanged(""), true);
   assert.equal(onlyCatalogChanged(" M src/usage/models.json\n M src/usage/pricing.ts\n"), false);
   assert.equal(onlyCatalogChanged("?? src/extra.ts\n M src/usage/models.json\n"), false);
   assert.equal(onlyCatalogChanged(" D src/usage/models.json\n"), false);

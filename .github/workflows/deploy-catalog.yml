@@ -1,19 +1,22 @@
 # Deploys a merged model catalog without a release: the gateway release that is
 # live, with only `src/usage/models.json` from main swapped in. The daily price
 # pull request (.github/workflows/update-models.yml) then goes live, and so does
-# the public `/models.json`, minutes after it merges.
+# the public `/models.json`, minutes after it merges. Nothing is published: no
+# tag, GitHub release, npm package or documentation deploy.
 #
-# Only released code is ever deployed here. The Worker is built from the newest
-# `vX.Y.Z` tag's own tree, and only once that tag's release has finished, so a
-# tag waiting for approval never ships through this path and older code never
-# replaces a newer release. scripts/catalog-deploy.mjs holds the checks; when
-# one fails the run fails and says why, and the prices go out with the next
-# catalog change or release instead. Nothing is published: no tag, no GitHub
-# release, no npm package and no documentation deploy.
+# Two jobs, so that only released code ever holds the deploy secrets:
+#   start   runs on main when a merge changes the catalog. It holds no secrets;
+#           it starts this workflow again at the newest `vX.Y.Z` tag.
+#   deploy  runs at that tag, so this file, scripts/catalog-deploy.mjs and the
+#           Worker it builds are the tag's own, released code. It checks the tag
+#           is the newest and its release succeeded, swaps in main's catalog,
+#           runs the release's checks against it and deploys.
 #
-# The job runs in the `catalog` environment. It has no required reviewer, since
-# the merge is the review, and it must admit the `main` branch only, so neither
-# a pull request nor another branch can reach its secrets. Its secrets:
+# The `catalog` environment holds the secrets. It must admit `v*` tags only,
+# and only the project owner can create those (see release.yml), so neither a
+# merged but unreleased change, nor a pull request, nor another branch reaches
+# them. It has no required reviewer: merging the catalog change is the review.
+# A change to this file takes effect with the next release. Secrets:
 #   CLOUDFLARE_API_TOKEN      the same permissions the release's deploy uses
 #   CLOUDFLARE_ACCOUNT_ID     the account the gateway Worker lives in
 #   WRANGLER_CLOUD_OVERLAY    contents of wrangler.cloud.overlay.jsonc
@@ -24,108 +27,93 @@ on:
   push:
     branches: [main]
     paths: [src/usage/models.json]
+  # Started by `start` below at a release tag, or by hand at one.
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer run replaces one still waiting; it reads main when it starts, so it
-# carries every catalog change the replaced one would have.
-concurrency:
-  group: deploy-catalog
-  cancel-in-progress: false
-
 jobs:
+  start:
+    if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # start this workflow at the release tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/catalog-deploy.mjs start
+
   deploy:
-    if: github.repository == 'maxceem/app-ai-gateway' && github.ref == 'refs/heads/main'
+    if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: catalog
     permissions:
       contents: read
-      actions: read # the Release workflow's runs, to find the live release
+      actions: read # the Release workflow's runs, to confirm the tag is live
+    # Shared with release.yml, and queued rather than replaced, so a release and
+    # a catalog deploy never deploy at the same time and neither drops the other.
+    # Each run reads main's catalog when it starts, so the last one carries every
+    # change before it.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+      queue: max
     steps:
-      - name: Check out main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
-          path: control
-          fetch-depth: 0
+          fetch-depth: 0 # main's history, for the day its catalog last changed
           persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
-      - name: Find the live release
+      - name: Check the release and swap in main's catalog
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node control/scripts/catalog-deploy.mjs plan
+        run: node scripts/catalog-deploy.mjs prepare
 
-      - name: Check out the live release
-        if: steps.plan.outputs.deploy == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.plan.outputs.sha }}
-          path: release
-          persist-credentials: false
-
-      - name: Swap in the catalog from main
-        if: steps.plan.outputs.deploy == 'true'
-        run: node control/scripts/catalog-deploy.mjs apply release
-
-      # Installs the pnpm version pinned in the release's packageManager.
-      - if: steps.plan.outputs.deploy == 'true'
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          package_json_file: release/package.json
-      - if: steps.plan.outputs.deploy == 'true'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      # Installs the pnpm version pinned in packageManager.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: release/pnpm-lock.yaml
-      - if: steps.plan.outputs.deploy == 'true'
-        working-directory: release
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
       # The release's own checks, against the new catalog. A catalog that needs
       # code the release lacks, such as a new price field, fails here and waits
       # for the next release.
-      - if: steps.plan.outputs.deploy == 'true'
-        working-directory: release
-        run: pnpm run verify
-
-      - name: Check the release is still the live one
-        if: steps.plan.outputs.deploy == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.plan.outputs.tag }}
-        run: node control/scripts/catalog-deploy.mjs recheck "$TAG"
+      - run: pnpm run verify
 
       - name: Write the Cloudflare deployment profile
-        if: steps.plan.outputs.deploy == 'true'
         env:
           WRANGLER_CLOUD_OVERLAY: ${{ secrets.WRANGLER_CLOUD_OVERLAY }}
         run: |
           set -euo pipefail
           test -n "$WRANGLER_CLOUD_OVERLAY" || { echo "WRANGLER_CLOUD_OVERLAY is missing" >&2; exit 1; }
-          printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > release/wrangler.cloud.overlay.jsonc
+          printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
 
       - name: Deploy the gateway
-        if: steps.plan.outputs.deploy == 'true'
-        working-directory: release
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-          # The console shows when the prices last changed; the release checkout
-          # has the tag's history, not main's, so it is passed in.
+          # Settings shows when the prices last changed: main's day, not the tag's.
           CATALOG_UPDATED: ${{ steps.plan.outputs.catalog_date }}
         run: pnpm run deploy --profile cloud
 
       - name: Start the post-deploy checks
-        if: steps.plan.outputs.deploy == 'true' && vars.POST_DEPLOY_CHECK_URL != ''
+        if: vars.POST_DEPLOY_CHECK_URL != ''
         continue-on-error: true
         env:
           POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
@@ -139,7 +127,6 @@ jobs:
               --data "{\"version\":\"${TAG}\"}" "$POST_DEPLOY_CHECK_URL"
 
       - name: Summarize
-        if: steps.plan.outputs.deploy == 'true'
         env:
           TAG: ${{ steps.plan.outputs.tag }}
           COMMIT: ${{ steps.plan.outputs.catalog_commit }}

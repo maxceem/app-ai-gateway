@@ -55,9 +55,12 @@ on:
 permissions:
   contents: read
 
+# Shared with the catalog deploy (.github/workflows/deploy-catalog.yml), so the
+# two never deploy at once, and queued so neither replaces the other's pending run.
 concurrency:
   group: release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   verify:

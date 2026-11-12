@@ -1,25 +1,24 @@
 #!/usr/bin/env node
-// Plans a catalog deploy: the gateway release that is live, with only the model
-// catalog on `main` swapped in. `.github/workflows/deploy-catalog.yml` runs it
-// when a merge changes `src/usage/models.json`, so a merged price update
-// reaches the gateway and its public `/models.json` without a release.
+// Deploys the model catalog on `main` with the gateway release that is live,
+// so a merged price update reaches the gateway and its public `/models.json`
+// without a release. Run by `.github/workflows/deploy-catalog.yml`:
 //
-//   node scripts/catalog-deploy.mjs plan              # in a checkout of main
-//   node scripts/catalog-deploy.mjs apply <release>   # copy the catalog into the release checkout
-//   node scripts/catalog-deploy.mjs recheck <tag>     # just before deploying
+//   node scripts/catalog-deploy.mjs start     # on main: dispatch the deploy at the newest release tag
+//   node scripts/catalog-deploy.mjs prepare   # in that run: check the tag, swap in main's catalog
 //
-// No code reaches the deploy that a release has not already shipped: the
-// release checkout is the tag's own tree, and `apply` refuses it once anything
-// besides the catalog differs. The tag must be the newest `vX.Y.Z` and its
-// release run must have finished successfully, so this never ships a tag still
-// waiting for the owner's approval, nor older code over a newer release. When
-// either fails, the run fails and says why: the merged prices are not live yet.
+// The deploy runs at a release tag, so its workflow file, this script and the
+// code it builds are all released code, and the `catalog` environment that
+// holds the deploy secrets admits `v*` tags only. Code merged to main but not
+// released never runs with those secrets. `prepare` also refuses a tag that
+// is not the newest one or whose release did not succeed, and a checkout that
+// differs from the tag in anything but the catalog.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, copyFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CATALOG = "src/usage/models.json";
+const WORKFLOW = "deploy-catalog.yml";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 /** The newest `vX.Y.Z` tag in `git ls-remote --tags` output, with the commit it names. */
@@ -52,50 +51,41 @@ export function releaseState(runs, sha) {
   return own.length > 0 ? "failed" : "none";
 }
 
-/** True when `git status --porcelain` lists the catalog as the only change. */
+/**
+ * True when `git status --porcelain` shows nothing but the catalog changed.
+ * A clean checkout passes too: main's catalog may be the release's own again,
+ * after a revert, and deploying it is how the revert goes live.
+ */
 export function onlyCatalogChanged(porcelain) {
   const lines = porcelain.split("\n").filter((line) => line.trim() !== "");
-  return lines.length === 1 && lines[0] === ` M ${CATALOG}`;
+  return lines.length === 0 || (lines.length === 1 && lines[0] === ` M ${CATALOG}`);
 }
 
-function git(args, cwd = root) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+function git(args) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   return result.stdout;
 }
 
-async function releaseRuns(tag) {
+async function github(path, init = {}) {
   const repository = process.env.GITHUB_REPOSITORY;
   const token = process.env.GH_TOKEN;
   if (!repository || !token) throw new Error("GITHUB_REPOSITORY and GH_TOKEN are required");
-  const url = `https://api.github.com/repos/${repository}/actions/workflows/release.yml/runs`
-    + `?event=push&branch=${encodeURIComponent(tag)}&per_page=50`;
-  const response = await fetch(url, {
+  return fetch(`https://api.github.com/repos/${repository}/${path}`, {
+    ...init,
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       "x-github-api-version": "2022-11-28",
+      ...init.headers,
     },
   });
-  if (!response.ok) throw new Error(`Listing the release runs failed: HTTP ${response.status}`);
-  return (await response.json()).workflow_runs;
 }
 
-/** The live release, or an error saying why the catalog can't go out on it. */
-async function liveRelease() {
+function newestTag() {
   const release = newestRelease(git(["ls-remote", "--tags", "origin", "v*"]));
   if (!release) throw new Error("No vX.Y.Z tag exists yet, so there is no release to deploy the catalog with.");
-  const state = releaseState(await releaseRuns(release.tag), release.sha);
-  if (state === "deployed") return release;
-  const reason = {
-    running: `${release.tag} is still being released`,
-    failed: `the release of ${release.tag} did not finish`,
-    none: `${release.tag} has no release run`,
-  }[state];
-  throw new Error(
-    `Not deploying the catalog: ${reason}. Deploying it with an older release could replace newer code. `
-    + `Run this workflow again once ${release.tag} is live, or release again; a release ships the catalog on main.`,
-  );
+  return release;
 }
 
 function output(values) {
@@ -104,43 +94,57 @@ function output(values) {
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
 }
 
-async function plan() {
-  const release = await liveRelease();
-  const unchanged = spawnSync("git", ["diff", "--quiet", release.sha, "HEAD", "--", CATALOG], { cwd: root });
-  if (unchanged.status === 0) {
-    console.log(`${release.tag} already ships the catalog on main; nothing to deploy.`);
-    output({ deploy: "false", tag: release.tag });
+/** On main: start the deploy at the newest release tag, which runs that tag's own workflow. */
+async function start() {
+  const { tag } = newestTag();
+  const ref = encodeURIComponent(tag);
+  const present = await github(`contents/.github/workflows/${WORKFLOW}?ref=${ref}`);
+  if (present.status === 404) {
+    console.log(`${tag} predates catalog deploys, so this catalog goes live with the next release.`);
     return;
   }
-  if (unchanged.status !== 1) throw new Error(`Comparing the catalog with ${release.tag} failed`);
-  const [commit, date] = git(["log", "-1", "--first-parent", "--format=%H %cs", "HEAD", "--", CATALOG]).trim().split(" ");
-  output({ deploy: "true", tag: release.tag, sha: release.sha, catalog_commit: commit, catalog_date: date });
+  if (!present.ok) throw new Error(`Looking for ${WORKFLOW} in ${tag} failed: HTTP ${present.status}`);
+  const dispatched = await github(`actions/workflows/${WORKFLOW}/dispatches`, {
+    method: "POST",
+    body: JSON.stringify({ ref: tag }),
+  });
+  if (!dispatched.ok) throw new Error(`Starting the deploy at ${tag} failed: HTTP ${dispatched.status}`);
+  console.log(`Started the catalog deploy at ${tag}.`);
 }
 
-function apply(releaseDir) {
-  if (!releaseDir) throw new Error("usage: node scripts/catalog-deploy.mjs apply <release checkout>");
-  copyFileSync(join(root, CATALOG), join(releaseDir, CATALOG));
-  const status = git(["status", "--porcelain", "--untracked-files=all"], releaseDir);
-  if (!onlyCatalogChanged(status)) {
-    throw new Error(`The release checkout differs from its tag in more than ${CATALOG}:\n${status}`);
+/** In the deploy run at a tag: check the tag is the live release, then swap in main's catalog. */
+async function prepare() {
+  const sha = process.env.GITHUB_SHA;
+  const release = newestTag();
+  if (sha !== release.sha) {
+    throw new Error(`This run is at ${sha}, but the newest release is ${release.tag} (${release.sha}). Not deploying older code.`);
   }
-  console.log(`${CATALOG} is the only change to the release checkout.`);
-}
+  const response = await github(`actions/workflows/release.yml/runs?event=push&branch=${encodeURIComponent(release.tag)}&per_page=50`);
+  if (!response.ok) throw new Error(`Listing the release runs failed: HTTP ${response.status}`);
+  const state = releaseState((await response.json()).workflow_runs, release.sha);
+  if (state !== "deployed") {
+    throw new Error(
+      `Not deploying the catalog: the release of ${release.tag} ${state === "running" ? "has not finished" : "did not succeed"}. `
+      + "Deploying it with an older release could replace newer code; it goes live with the next release or catalog change.",
+    );
+  }
 
-async function recheck(tag) {
-  if (!tag) throw new Error("usage: node scripts/catalog-deploy.mjs recheck <tag>");
-  const release = await liveRelease();
-  if (release.tag !== tag) throw new Error(`${release.tag} was released while this run checked ${tag}; not deploying older code.`);
-  console.log(`${tag} is still the live release.`);
+  git(["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
+  writeFileSync(join(root, CATALOG), git(["show", `origin/main:${CATALOG}`]));
+  const status = git(["status", "--porcelain", "--untracked-files=all"]);
+  if (!onlyCatalogChanged(status)) {
+    throw new Error(`The checkout differs from ${release.tag} in more than ${CATALOG}:\n${status}`);
+  }
+  const [commit, date] = git(["log", "-1", "--first-parent", "--format=%H %cs", "origin/main", "--", CATALOG]).trim().split(" ");
+  output({ tag: release.tag, catalog_commit: commit, catalog_date: date });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [command, argument] = process.argv.slice(2);
+  const [command] = process.argv.slice(2);
   try {
-    if (command === "plan") await plan();
-    else if (command === "apply") apply(argument);
-    else if (command === "recheck") await recheck(argument);
-    else throw new Error("usage: node scripts/catalog-deploy.mjs <plan|apply <release>|recheck <tag>>");
+    if (command === "start") await start();
+    else if (command === "prepare") await prepare();
+    else throw new Error("usage: node scripts/catalog-deploy.mjs <start|prepare>");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
