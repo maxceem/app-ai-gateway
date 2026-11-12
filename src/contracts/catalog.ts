@@ -1291,7 +1291,7 @@ export const CATALOG = {
     summary: "List known model prices",
     security: "management",
     response: PricesResponseSchema,
-    responseDescription: "The priced model catalog this deployment enforces.",
+    responseDescription: "The model price list this deployment enforces.",
   },
 
   getOperation: {

@@ -409,6 +409,12 @@ export const CliUsageResponseSchema = z.object({
 export const CliCapabilitiesResponseSchema = z.object({
   protocolVersion: z.literal(1),
   serverVersion: z.string(),
+  /**
+   * The model price list this deployment bills with: the commit that last
+   * changed it and that commit's day. Null when its build did not record one;
+   * absent on older deployments.
+   */
+  prices: z.object({ revision: z.string(), updated: z.string().nullable() }).nullable().optional(),
   deployment: CliDeploymentSchema,
   consoleOrigin: z.url(),
   providers: z.array(

@@ -1,4 +1,4 @@
-// The Markdown report that becomes the catalog pull request's body and the
+// The Markdown report that becomes the model prices pull request's body and the
 // workflow's step summary, in three parts: what merging applies (✅), what a
 // person has to resolve (❌), and everything else, for information (ℹ️). Empty
 // sections are left out.
@@ -101,7 +101,7 @@ function count(n, one, many) {
 
 /**
  * The pull request's title: what it holds and the day it was checked, e.g.
- * "Model catalog: 3 price changes, 2 need attention (Oct 10)". Only counts and
+ * "Model prices: 3 price changes, 2 need attention (Oct 10)". Only counts and
  * the date go in, nothing fetched. A price change counts once per model.
  */
 export function renderTitle(decision, today) {
@@ -117,7 +117,7 @@ export function renderTitle(decision, today) {
     discovered && count(discovered, "new model", "new models"),
     decision.attention.length && count(decision.attention.length, "needs attention", "need attention"),
   ].filter(Boolean);
-  return `Model catalog: ${parts.length ? parts.join(", ") : "no changes"} (${MONTHS[month - 1]} ${day})`;
+  return `Model prices: ${parts.length ? parts.join(", ") : "no changes"} (${MONTHS[month - 1]} ${day})`;
 }
 
 export function renderReport(decision) {
@@ -141,7 +141,7 @@ export function renderReport(decision) {
     );
     ready.push(
       "## ✅ Newly discovered models\n\n" +
-      "Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source, and takes each model's kind from LiteLLM or Models.dev where they name one. **⚠️ Pending** models remain undecided.\n\n" +
+      "Merging applies the proposed **✅ Add** entries to the price list and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source, and takes each model's kind from LiteLLM or Models.dev where they name one. **⚠️ Pending** models remain undecided.\n\n" +
       (decision.modelChoices?.length ? `| Model | Proposal | Kind | Reason | Reviewer |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
       "\n\nTo override a proposal, comment on this PR with one or more commands, one per line. The bot updates this same PR and preserves your choices on later runs:\n\n" +
       "```text\n/models add openai/gpt-6-luna\n/models add openai/gpt-image-3 image\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```\n\nAn addition may name its kind (text, image, speech, transcription, embedding or realtime), which replaces the proposed one.",
@@ -185,7 +185,7 @@ export function renderReport(decision) {
 
   const unchanged = decision.upcoming.filter(({ provider, model }) => !rescheduled.has(`${provider}/${model}`));
   if (unchanged.length > 0) {
-    sections.push(`### Scheduled price changes already in the catalog\n\n${upcomingTables(unchanged)}`);
+    sections.push(`### Scheduled price changes already in the price list\n\n${upcomingTables(unchanged)}`);
   }
 
   if (decision.retired.length > 0) {
@@ -242,7 +242,7 @@ export function renderReport(decision) {
 
   const parts = ready.length
     ? ready
-    : ["Nothing in the catalog changes and no new models were found. No pull request is needed."];
+    : ["Nothing in the price list changes and no new models were found. No pull request is needed."];
   if (attention) parts.push(attention);
   if (sections.length > 0) parts.push("## ℹ️ Additional information\n\nFor information only. Nothing here needs action.\n\n" + sections.join("\n\n"));
   return `${REVIEW_MARKER}\n${parts.join("\n\n")}\n`;

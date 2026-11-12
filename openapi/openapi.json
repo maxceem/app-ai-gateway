@@ -11813,7 +11813,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The priced model catalog this deployment enforces.",
+            "description": "The model price list this deployment enforces.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12251,6 +12251,27 @@
                     },
                     "serverVersion": {
                       "type": "string"
+                    },
+                    "prices": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "updated"
+                      ]
                     },
                     "deployment": {
                       "type": "object",

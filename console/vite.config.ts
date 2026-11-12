@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
@@ -10,6 +9,9 @@ import tailwindcss from "@tailwindcss/vite";
 // overlay over the tracked config. It ships no declarations.
 // @ts-expect-error - untyped .mjs
 import { resolveWranglerConfig } from "../scripts/wrangler-config.mjs";
+// The day the model price list last changed, shown in Settings; see the script.
+// @ts-expect-error - untyped .mjs
+import { pricesRevision } from "../scripts/prices-revision.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -32,14 +34,14 @@ function workerConfigPathFor(mode: string): string {
 }
 
 /**
- * The shipped model price catalog, published beside the console as
+ * The shipped model price list, published beside the console as
  * `/models.json`: exactly the file this build's gateway bills with, served as a
  * static asset (no Worker runs for it) so anyone can read or track the prices.
  * Its CORS and cache headers are in `public/_headers`.
  */
-function modelCatalog(): Plugin {
+function modelPrices(): Plugin {
   return {
-    name: "model-catalog",
+    name: "model-prices",
     apply: "build",
     generateBundle() {
       this.emitFile({
@@ -51,28 +53,6 @@ function modelCatalog(): Plugin {
   };
 }
 
-/**
- * The day the model prices last changed, `YYYY-MM-DD`, shown beside the
- * version: the last commit on this branch's own line of merges that touched the
- * catalog. A catalog deploy builds a release's tree with main's catalog, whose
- * history the checkout lacks, so it passes the day in `CATALOG_UPDATED`. With
- * neither, as in a copy without git, the console leaves the date out.
- */
-function catalogUpdated(): string | null {
-  const day = /^\d{4}-\d{2}-\d{2}$/u;
-  const given = process.env.CATALOG_UPDATED?.trim();
-  if (given) {
-    if (!day.test(given)) throw new Error(`CATALOG_UPDATED must be YYYY-MM-DD, got "${given}"`);
-    return given;
-  }
-  const log = spawnSync("git", ["log", "-1", "--first-parent", "--format=%cs", "--", "src/usage/models.json"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  const found = log.status === 0 ? log.stdout.trim() : "";
-  return day.test(found) ? found : null;
-}
-
 export default defineConfig(({ command, mode, isPreview }) => {
   // Development is a single Vite server: the Cloudflare plugin runs the API
   // Worker in workerd and Vite serves the console with HMR on the same origin.
@@ -82,12 +62,12 @@ export default defineConfig(({ command, mode, isPreview }) => {
 
   return {
     define: {
-      __CATALOG_UPDATED__: JSON.stringify(catalogUpdated()),
+      __PRICES_UPDATED__: JSON.stringify((pricesRevision() as { updated: string | null }).updated),
     },
     plugins: [
       react(),
       tailwindcss(),
-      modelCatalog(),
+      modelPrices(),
       ...(cloudflareDev
         ? [cloudflare({
           configPath: workerConfigPathFor(mode),

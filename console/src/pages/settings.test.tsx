@@ -30,7 +30,7 @@ describe("SettingsPage", () => {
   it("shows the release the console was built from, and when its prices last changed", () => {
     renderSettings();
 
-    // The build dates the catalog from git; this checkout has history, so the date shows.
+    // The build dates the price list from git; this checkout has history, so the date shows.
     expect(PRICES_UPDATED).toMatch(/2\d{3}/);
     expect(screen.getByText(`v${version} · prices updated ${PRICES_UPDATED}`)).toBeTruthy();
   });

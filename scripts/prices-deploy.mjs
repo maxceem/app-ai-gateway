@@ -1,25 +1,25 @@
 #!/usr/bin/env node
-// Deploys the model catalog on `main` with the gateway release that is live,
+// Deploys the model price list on `main` with the gateway release that is live,
 // so a merged price update reaches the gateway and its public `/models.json`
-// without a release. Run by `.github/workflows/deploy-catalog.yml`:
+// without a release. Run by `.github/workflows/deploy-prices.yml`:
 //
-//   node scripts/catalog-deploy.mjs start     # on main: dispatch the deploy at the newest release tag
-//   node scripts/catalog-deploy.mjs prepare   # in that run's build job: check the tag, swap in main's catalog
+//   node scripts/prices-deploy.mjs start     # on main: dispatch the deploy at the newest release tag
+//   node scripts/prices-deploy.mjs prepare   # in that run's build job: check the tag, swap in main's price list
 //
 // The deploy runs at a release tag, so its workflow file, this script and the
-// code it builds are all released code, and the `catalog` environment that
+// code it builds are all released code, and the `prices` environment that
 // holds the deploy secrets admits `v*` tags only. Code merged to main but not
 // released never runs with those secrets, and the build runs in a job of its
 // own without them. `prepare` also refuses a tag that is not the newest one or
 // whose release did not succeed, and a checkout that differs from the tag in
-// anything but the catalog.
+// anything but the price list.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CATALOG = "src/usage/models.json";
-const WORKFLOW = "deploy-catalog.yml";
+const PRICES = "src/usage/models.json";
+const WORKFLOW = "deploy-prices.yml";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 /** The newest `vX.Y.Z` tag in `git ls-remote --tags` output, with the commit it names. */
@@ -53,13 +53,13 @@ export function releaseState(runs, sha) {
 }
 
 /**
- * True when `git status --porcelain` shows nothing but the catalog changed.
- * A clean checkout passes too: main's catalog may be the release's own again,
+ * True when `git status --porcelain` shows nothing but the price list changed.
+ * A clean checkout passes too: main's price list may be the release's own again,
  * after a revert, and deploying it is how the revert goes live.
  */
-export function onlyCatalogChanged(porcelain) {
+export function onlyPricesChanged(porcelain) {
   const lines = porcelain.split("\n").filter((line) => line.trim() !== "");
-  return lines.length === 0 || (lines.length === 1 && lines[0] === ` M ${CATALOG}`);
+  return lines.length === 0 || (lines.length === 1 && lines[0] === ` M ${PRICES}`);
 }
 
 function git(args) {
@@ -85,7 +85,7 @@ async function github(path, init = {}) {
 
 function newestTag() {
   const release = newestRelease(git(["ls-remote", "--tags", "origin", "v*"]));
-  if (!release) throw new Error("No vX.Y.Z tag exists yet, so there is no release to deploy the catalog with.");
+  if (!release) throw new Error("No vX.Y.Z tag exists yet, so there is no release to deploy the price list with.");
   return release;
 }
 
@@ -101,7 +101,7 @@ async function start() {
   const ref = encodeURIComponent(tag);
   const present = await github(`contents/.github/workflows/${WORKFLOW}?ref=${ref}`);
   if (present.status === 404) {
-    console.log(`${tag} predates catalog deploys, so this catalog goes live with the next release.`);
+    console.log(`${tag} predates prices deploys, so this price list goes live with the next release.`);
     return;
   }
   if (!present.ok) throw new Error(`Looking for ${WORKFLOW} in ${tag} failed: HTTP ${present.status}`);
@@ -110,10 +110,10 @@ async function start() {
     body: JSON.stringify({ ref: tag }),
   });
   if (!dispatched.ok) throw new Error(`Starting the deploy at ${tag} failed: HTTP ${dispatched.status}`);
-  console.log(`Started the catalog deploy at ${tag}.`);
+  console.log(`Started the prices deploy at ${tag}.`);
 }
 
-/** In the deploy run at a tag: check the tag is the live release, then swap in main's catalog. */
+/** In the deploy run at a tag: check the tag is the live release, then swap in main's price list. */
 async function prepare() {
   const sha = process.env.GITHUB_SHA;
   const release = newestTag();
@@ -125,19 +125,20 @@ async function prepare() {
   const state = releaseState((await response.json()).workflow_runs, release.sha);
   if (state !== "deployed") {
     throw new Error(
-      `Not deploying the catalog: the release of ${release.tag} ${state === "running" ? "has not finished" : "did not succeed"}. `
-      + "Deploying it with an older release could replace newer code; it goes live with the next release or catalog change.",
+      `Not deploying the price list: the release of ${release.tag} ${state === "running" ? "has not finished" : "did not succeed"}. `
+      + "Deploying it with an older release could replace newer code; it goes live with the next release or price change.",
     );
   }
 
   git(["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
-  writeFileSync(join(root, CATALOG), git(["show", `origin/main:${CATALOG}`]));
+  writeFileSync(join(root, PRICES), git(["show", `origin/main:${PRICES}`]));
   const status = git(["status", "--porcelain", "--untracked-files=all"]);
-  if (!onlyCatalogChanged(status)) {
-    throw new Error(`The checkout differs from ${release.tag} in more than ${CATALOG}:\n${status}`);
+  if (!onlyPricesChanged(status)) {
+    throw new Error(`The checkout differs from ${release.tag} in more than ${PRICES}:\n${status}`);
   }
-  const [commit, date] = git(["log", "-1", "--first-parent", "--format=%H %cs", "origin/main", "--", CATALOG]).trim().split(" ");
-  output({ tag: release.tag, catalog_commit: commit, catalog_date: date });
+  // The price list's revision, as scripts/prices-revision.mjs names it, but on main.
+  const [revision, updated] = git(["log", "-1", "--first-parent", "--format=%h %cs", "--abbrev=7", "origin/main", "--", PRICES]).trim().split(" ");
+  output({ tag: release.tag, prices_revision: revision, prices_updated: updated });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -145,7 +146,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     if (command === "start") await start();
     else if (command === "prepare") await prepare();
-    else throw new Error("usage: node scripts/catalog-deploy.mjs <start|prepare>");
+    else throw new Error("usage: node scripts/prices-deploy.mjs <start|prepare>");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

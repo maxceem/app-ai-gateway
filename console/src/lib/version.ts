@@ -9,15 +9,15 @@ import { version } from "../../../package.json";
 export const CONSOLE_VERSION: string = version;
 
 // Written by `console/vite.config.ts` at build time.
-declare const __CATALOG_UPDATED__: string | null;
+declare const __PRICES_UPDATED__: string | null;
 
 /**
  * The day the model prices this deployment bills with last changed, such as
- * "Nov 12, 2026", or null when the build could not tell. A catalog deploy
+ * "Nov 12, 2026", or null when the build could not tell. A prices deploy
  * moves it without a new version.
  */
-export const PRICES_UPDATED: string | null = __CATALOG_UPDATED__
-  ? new Date(`${__CATALOG_UPDATED__}T00:00:00Z`).toLocaleDateString(undefined, {
+export const PRICES_UPDATED: string | null = __PRICES_UPDATED__
+  ? new Date(`${__PRICES_UPDATED__}T00:00:00Z`).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",

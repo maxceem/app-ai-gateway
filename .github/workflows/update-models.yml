@@ -1,6 +1,6 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# when anything the catalog says changed — a current price, a scheduled price
+# when anything the price list says changed — a current price, a scheduled price
 # change, a retirement date — or new models need review. The file is published
 # for others to read, so each of those is worth a pull request on its own. AI
 # proposes add/skip choices; prices are parsed and validated in code. Comments
@@ -12,13 +12,13 @@
 # The pull request always comes from the branch `automation/update-models`, so
 # there is one rolling pull request rather than one a day, and no diff means no
 # pull request. The report is its body and this run's summary.
-# Merging it deploys the catalog without a release
-# (.github/workflows/deploy-catalog.yml).
+# Merging it deploys the price list without a release
+# (.github/workflows/deploy-prices.yml).
 #
 # Something needs a person when a parser no longer reads its page, lists
 # disagree, a price moves suspiciously or a model is gone from its official
 # page. The pull request then carries it: its description lists it and a red
-# "Model catalog" status marks it. Only when there is no pull request to carry
+# "Model prices" status marks it. Only when there is no pull request to carry
 # it does the run itself end red. An item that is expected is acknowledged by
 # adding its key and a reason to scripts/models/acknowledged.json.
 #
@@ -126,7 +126,7 @@ jobs:
             state=success; text="Nothing needs your attention"
           fi
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
-            -f state="$state" -f context="Model catalog" -f description="$text" -f target_url="$RUN_URL"
+            -f state="$state" -f context="Model prices" -f description="$text" -f target_url="$RUN_URL"
 
       - name: Fail when something needs a person and no pull request shows it
         if: steps.models.outputs.code != '0' && steps.pr.outputs.pull-request-number == ''

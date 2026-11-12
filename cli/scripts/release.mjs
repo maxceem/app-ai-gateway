@@ -6,6 +6,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { assertVersionsAgree, cliManifest } from "./manifest.mjs";
+import { pricesDefines, pricesRevision } from "../../scripts/prices-revision.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 // One version, checked here rather than trusted: `cli/package.json` names the
@@ -42,6 +43,8 @@ run(process.execPath, [
   "--dry-run",
   "--outdir",
   join(out, "worker"),
+  // The price list it carries, which `GET /v1/cli/capabilities` reports.
+  ...pricesDefines(pricesRevision()),
 ]);
 await rm(join(out, "worker/index.js.map"), { force: true });
 await rm(join(out, "worker/README.md"), { force: true });

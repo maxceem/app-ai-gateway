@@ -111,7 +111,7 @@ export function PricingDialog({
         </DialogHeader>
         <DialogBody className="space-y-3">
           <DialogDescription>
-            For models the built-in catalog does not cover, or prices it in a way you disagree with.
+            For models the built-in price list does not cover, or prices it in a way you disagree with.
             {provider ? ` ${pricingNote(provider)}` : null}{" "}
             Enter $0 for a model that is genuinely free. A cache price left blank bills at the
             input price.

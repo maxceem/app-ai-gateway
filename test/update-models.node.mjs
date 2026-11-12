@@ -875,7 +875,7 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   // is folded into the rates and the schedule leaves the entry.
   catalog.gemini["gemini-3.6-flash"].price_changes = scheduled;
   assert.deepEqual(catalogEdits(run("2026-12-31")), []);
-  assert.match(renderReport(run("2026-12-31")), /### Scheduled price changes already in the catalog/u);
+  assert.match(renderReport(run("2026-12-31")), /### Scheduled price changes already in the price list/u);
   const folded = run("2027-01-01");
   assert.deepEqual(catalogEdits(folded).slice(3), [
     { provider: "gemini", model: "gemini-3.6-flash", field: "price_changes", to: undefined },
@@ -1187,8 +1187,8 @@ for (const written of [false, true]) {
     const [trigger, additional] = report.split("## ℹ️ Additional information");
     if (written) {
       assert.deepEqual(report.match(/^## .+$/gmu), ["## ℹ️ Additional information"]);
-      assert.match(trigger, /Nothing in the catalog changes and no new models were found\. No pull request is needed\./u);
-      assert.match(additional, /### Scheduled price changes already in the catalog[\s\S]*2027-01-01/u);
+      assert.match(trigger, /Nothing in the price list changes and no new models were found\. No pull request is needed\./u);
+      assert.match(additional, /### Scheduled price changes already in the price list[\s\S]*2027-01-01/u);
       assert.deepEqual(catalogEdits(decision), []);
     } else {
       assert.deepEqual(report.match(/^## .+$/gmu), [
@@ -1227,7 +1227,7 @@ test("report: upcoming prices are grouped by date, earliest first", () => {
       { provider: "p", model: "unknown", field: "input", value: 3, date: "2027-01-01" },
     ],
   });
-  const section = report.slice(report.indexOf("### Scheduled price changes already in the catalog"));
+  const section = report.slice(report.indexOf("### Scheduled price changes already in the price list"));
   assert.ok(section.indexOf("**From 2027-01-01**") < section.indexOf("**From 2027-02-01**"));
   assert.match(section, /\| `p\/late` \| input \| \$2\u00a0→\u00a0\*\*\$1\*\* \| 🟩\u2060🟩\u2060🟩\u2060⬜\u2060⬜\u00a0\*\*−50%\*\* \|/u);
   assert.match(section, /\| `p\/early` \| output \| \$4\u00a0→\u00a0\*\*\$5\*\* \| 🟥\u2060⬜\u2060⬜\u2060⬜\u2060⬜\u00a0\*\*\+25%\*\* \|/u);
@@ -1236,22 +1236,22 @@ test("report: upcoming prices are grouped by date, earliest first", () => {
 
 test("title: counts what the pull request holds, with a short date", () => {
   const empty = { changes: [], newModels: [], attention: [] };
-  assert.equal(renderTitle(empty, "2026-10-10"), "Model catalog: no changes (Oct 10)");
+  assert.equal(renderTitle(empty, "2026-10-10"), "Model prices: no changes (Oct 10)");
   // One model with several changed fields is one price change.
   const changes = [
     { provider: "p", model: "a", field: "input" },
     { provider: "p", model: "a", field: "output" },
     { provider: "q", model: "a", field: "input" },
   ];
-  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model catalog: 2 price changes (Jan 5)");
+  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model prices: 2 price changes (Jan 5)");
   assert.equal(
     renderTitle({ changes: changes.slice(0, 1), newModels: [{ provider: "p", ids: ["x", "y"] }, { provider: "q", ids: ["z"] }], attention: [{}] }, "2026-12-31"),
-    "Model catalog: 1 price change, 3 new models, 1 needs attention (Dec 31)",
+    "Model prices: 1 price change, 3 new models, 1 needs attention (Dec 31)",
   );
-  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model catalog: 1 new model, 2 need attention (Oct 10)");
+  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model prices: 1 new model, 2 need attention (Oct 10)");
   assert.equal(
     renderTitle({ ...empty, schedules: [{}], retirements: [{}, {}] }, "2026-11-12"),
-    "Model catalog: 1 scheduled price change, 2 retirement dates (Nov 12)",
+    "Model prices: 1 scheduled price change, 2 retirement dates (Nov 12)",
   );
 });
 

@@ -40,7 +40,7 @@ describe("console response headers", () => {
     expect(global?.headers["x-frame-options"]).toBe("DENY");
   });
 
-  it("lets any site read the published model catalog", () => {
+  it("lets any site read the published price list", () => {
     const catalog = HEADERS.find((rule) => rule.path === "/models.json");
     expect(catalog?.headers["access-control-allow-origin"]).toBe("*");
   });
