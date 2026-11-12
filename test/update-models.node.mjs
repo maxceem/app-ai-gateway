@@ -850,7 +850,10 @@ test("rules: a dated price is applied on its day and announced before it", () =>
     });
   const before = run("2026-12-31");
   assert.deepEqual(before.changes, []);
-  assert.deepEqual(catalogEdits(before), [], "a future announcement must not trigger a catalog update");
+  const scheduled = [{ from: "2027-01-01", input: 1.5, cached_input: 0.15, output: 7.5 }];
+  assert.deepEqual(catalogEdits(before), [
+    { provider: "gemini", model: "gemini-3.6-flash", field: "price_changes", to: scheduled },
+  ], "an announcement is written to the catalog before its day");
   assert.deepEqual(before.upcoming.map((item) => [item.field, item.from, item.value, item.date]), [
     ["input", 0.75, 1.5, "2027-01-01"],
     ["output", 3.75, 7.5, "2027-01-01"],
@@ -858,7 +861,7 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   ]);
   assert.equal(needsHuman(before), false);
   const report = renderReport(before);
-  assert.match(report, /### Upcoming price changes\n\n\*\*From 2027-01-01\*\*\n\n\| Model \| Field \| Today → new \| Change \|/u);
+  assert.match(report, /## ✅ Scheduled price changes\n\n[^\n]+\n\n\*\*From 2027-01-01\*\*\n\n\| Model \| Field \| Today → new \| Change \|/u);
   const rows = report.split("\n").filter((line) => line.includes("🟥"));
   assert.equal(rows.length, 3);
   assert.equal(rows[0], "| `gemini/gemini-3.6-flash` | input | $0.75\u00a0→\u00a0**$1.5** | 🟥\u2060🟥\u2060🟥\u2060🟥\u2060🟥\u00a0**+100%** |");
@@ -867,6 +870,45 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   assert.deepEqual(after.changes.map((change) => [change.field, change.to]), [["input", 1.5], ["cached_input", 0.15], ["output", 7.5]]);
   assert.equal(catalogEdits(after).length, 3);
   assert.deepEqual(after.upcoming, []);
+
+  // Once written, the announcement is no news until its day, when the change
+  // is folded into the rates and the schedule leaves the entry.
+  catalog.gemini["gemini-3.6-flash"].price_changes = scheduled;
+  assert.deepEqual(catalogEdits(run("2026-12-31")), []);
+  assert.match(renderReport(run("2026-12-31")), /### Scheduled price changes already in the price list/u);
+  const folded = run("2027-01-01");
+  assert.deepEqual(catalogEdits(folded).slice(3), [
+    { provider: "gemini", model: "gemini-3.6-flash", field: "price_changes", to: undefined },
+  ]);
+  const text = JSON.stringify({ gemini: { "gemini-3.6-flash": { input: 0.75, cached_input: 0.075, output: 3.75, price_changes: scheduled } } });
+  assert.deepEqual(JSON.parse(applyEdits(text, catalogEdits(folded))).gemini["gemini-3.6-flash"], { input: 1.5, cached_input: 0.15, output: 7.5 });
+  delete catalog.gemini["gemini-3.6-flash"].price_changes;
+});
+
+test("rules: a schedule is only rewritten by a page that priced the model", () => {
+  const scheduled = [{ from: "2027-01-01", input: 1.5 }];
+  const catalog = { openai: { a: { input: 1.0, output: 2.0, price_changes: scheduled }, b: { input: 1.0, output: 2.0, price_changes: scheduled } } };
+  // The page no longer announces a's change, and fails to price b at all.
+  const decision = decide({
+    catalog,
+    official: { openai: page({ a: { input: 1, output: 2 }, b: { input: 1, output: 9 } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(decision.schedules.map((item) => [item.model, item.to]), [["a", undefined]], "a withdrawn announcement leaves the catalog; b keeps its own");
+  assert.match(renderReport(decision), /No longer announced, so removed:\n\n- `openai\/a`/u);
+});
+
+test("rules: a scheduled change that moves too far is not written and needs a person", () => {
+  const decision = decide({
+    catalog: { openai: { a: { input: 1.0, output: 2.0 } } },
+    official: { openai: page({ a: { input: 1, output: 2, upcoming: [{ field: "input", value: 10, date: "2027-01-01" }] } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(decision.schedules, []);
+  assert.deepEqual(decision.attention.map((item) => item.key), ["openai/a: suspicious scheduled change"]);
+  assert.equal(needsHuman(decision), true);
 });
 
 test("rules: a provider no source covers is reported as such, not as a disagreement", () => {
@@ -955,6 +997,47 @@ test("catalog editor: a multi-line entry gains a line after its last field", () 
   assert.equal(moved, edited.replace('"retirement_date": "2027-06-01"', '"retirement_date": "2027-07-01"'));
 });
 
+test("catalog editor: a multi-line entry gains a retirement date and a longer price together", () => {
+  const edited = applyEdits(catalogText, [
+    { provider: "openai", model: "gpt-5.4", field: "input", to: 2.625 },
+    { provider: "openai", model: "gpt-5.4", field: "retirement_date", to: "2027-06-01" },
+  ]);
+  assert.equal(JSON.parse(edited).openai["gpt-5.4"].input, 2.625);
+  assert.ok(edited.includes('      "long_output": 22.5,\n      "retirement_date": "2027-06-01"\n    },\n    "gpt-5.4-pro"'));
+});
+
+test("catalog editor: a schedule spreads a one-line entry out, and removing it restores the line", () => {
+  const edited = applyEdits(catalogText, [{ provider: "openai", model: "whisper-1", field: "price_changes", to: [{ from: "2027-01-01", per_minute: 0.008 }] }]);
+  assert.ok(edited.includes(
+    '    "whisper-1": {\n      "per_minute": 0.006,\n      "price_changes": [\n        { "from": "2027-01-01", "per_minute": 0.008 }\n      ]\n    }',
+  ));
+  assert.equal(applyEdits(edited, [{ provider: "openai", model: "whisper-1", field: "price_changes", to: undefined }]), catalogText);
+  // Removing a schedule an entry does not have changes nothing.
+  assert.equal(applyEdits(catalogText, [{ provider: "openai", model: "whisper-1", field: "price_changes", to: undefined }]), catalogText);
+  assert.throws(
+    () => applyEdits(catalogText, [{ provider: "openai", model: "whisper-1", field: "price_changes", to: [{ input: 1 }] }]),
+    /needs a "from" day/,
+  );
+});
+
+test("catalog editor: a multi-line entry gains its schedule last, and a new one replaces it whole", () => {
+  const first = [{ from: "2026-12-01", input: 3.0 }, { from: "2027-01-01", input: 4, output: 30 }];
+  const edited = applyEdits(catalogText, [{ provider: "openai", model: "gpt-5.4", field: "price_changes", to: first }]);
+  assert.ok(edited.includes(
+    '      "long_output": 22.5,\n      "price_changes": [\n        { "from": "2026-12-01", "input": 3.0 },\n        { "from": "2027-01-01", "input": 4.0, "output": 30.0 }\n      ]\n    },\n    "gpt-5.4-pro"',
+  ));
+  const before = catalogText.split("\n");
+  const added = edited.split("\n").filter((line) => !before.includes(line));
+  assert.ok(added.every((line) => line.length <= 100));
+  const replaced = applyEdits(edited, [
+    { provider: "openai", model: "gpt-5.4", field: "price_changes", to: first.slice(1) },
+    { provider: "openai", model: "gpt-5.4", field: "input", to: 3 },
+  ]);
+  assert.deepEqual(JSON.parse(replaced).openai["gpt-5.4"].price_changes, first.slice(1));
+  assert.equal(JSON.parse(replaced).openai["gpt-5.4"].input, 3);
+  assert.equal(applyEdits(edited, [{ provider: "openai", model: "gpt-5.4", field: "price_changes", to: undefined }]), catalogText);
+});
+
 test("catalog editor: refuses to add a field", () => {
   assert.throws(
     () => applyEdits(catalogText, [{ provider: "openai", model: "gpt-5-pro", field: "cached_input", to: 1 }]),
@@ -982,8 +1065,11 @@ test("retirement: an official date is added, and a moved one updated", () => {
     [["a", undefined, "2027-02-26", "official"], ["b", "2026-12-01", "2027-01-15", "official"]],
   );
   assert.equal(needsHuman(decision), false);
-  assert.deepEqual(catalogEdits(decision), [], "retirement-only changes must not trigger a catalog update");
-  assert.match(renderReport(decision), /### Retirement dates[\s\S]*2027-02-26/u);
+  assert.deepEqual(catalogEdits(decision), [
+    { provider: "openai", model: "a", field: "retirement_date", to: "2027-02-26" },
+    { provider: "openai", model: "b", field: "retirement_date", to: "2027-01-15" },
+  ], "a retirement date is written on its own, with no price change");
+  assert.match(renderReport(decision), /## ✅ Retirement dates[\s\S]*2027-02-26/u);
 });
 
 test("retirement: dates accompany an actual price update", () => {
@@ -1081,12 +1167,16 @@ test("retirement: a failed deprecation parser needs a person and falls back to t
 
 // Report --------------------------------------------------------------------
 
-for (const changed of [false, true]) {
-  test(`report: ${changed ? "current prices trigger a PR" : "informational changes do not trigger a PR"}`, () => {
+for (const written of [false, true]) {
+  test(`report: ${written ? "dates already in the catalog are information only" : "a scheduled change or a retirement date alone opens a pull request"}`, () => {
+    const scheduled = [{ from: "2027-01-01", input: 1.5 }];
     const decision = decide({
-      catalog: { openai: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0 } } },
+      catalog: { openai: {
+        a: { input: 1.0, output: 2.0, ...(written ? { price_changes: scheduled } : {}) },
+        b: { input: 1.0, output: 2.0, ...(written ? { retirement_date: "2027-02-26" } : {}) },
+      } },
       official: { openai: page({
-        a: { input: changed ? 1.25 : 1, output: 2, upcoming: [{ field: "input", value: 1.5, date: "2027-01-01" }] },
+        a: { input: 1, output: 2, upcoming: [{ field: "input", value: 1.5, date: "2027-01-01" }] },
         b: { input: 1, output: 2 },
       }) },
       deprecations: { openai: dates({ b: { date: "2027-02-26" } }) },
@@ -1094,24 +1184,24 @@ for (const changed of [false, true]) {
       today: TODAY,
     });
     const report = renderReport(decision);
-    assert.deepEqual(report.match(/^## .+$/gmu), [
-      ...(changed ? ["## ✅ Current price changes"] : []),
-      "## ℹ️ Additional information",
-    ]);
     const [trigger, additional] = report.split("## ℹ️ Additional information");
-    assert.doesNotMatch(trigger, /Retirement dates|Upcoming price changes|2027-01-01|2027-02-26/u);
-    assert.match(additional, /For information only/u);
-    assert.match(additional, /### Retirement dates[\s\S]*2027-02-26/u);
-    assert.match(additional, /### Upcoming price changes[\s\S]*2027-01-01/u);
-    assert.doesNotMatch(additional, /Current price changes/u);
-    if (changed) {
-      assert.match(trigger, /## ✅ Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
-      assert.doesNotMatch(trigger, /No pull request is needed/u);
-      assert.ok(catalogEdits(decision).length > 0);
-    } else {
-      assert.match(trigger, /No current price changes or newly discovered models\. No pull request is needed\./u);
-      assert.doesNotMatch(trigger, /Current price changes/u);
+    if (written) {
+      assert.deepEqual(report.match(/^## .+$/gmu), ["## ℹ️ Additional information"]);
+      assert.match(trigger, /Nothing in the price list changes and no new models were found\. No pull request is needed\./u);
+      assert.match(additional, /### Scheduled price changes already in the price list[\s\S]*2027-01-01/u);
       assert.deepEqual(catalogEdits(decision), []);
+    } else {
+      assert.deepEqual(report.match(/^## .+$/gmu), [
+        "## ✅ Scheduled price changes",
+        "## ✅ Retirement dates",
+        "## ℹ️ Additional information",
+      ]);
+      assert.match(trigger, /## ✅ Scheduled price changes[\s\S]*\*\*From 2027-01-01\*\*[\s\S]*## ✅ Retirement dates[\s\S]*2027-02-26/u);
+      assert.doesNotMatch(additional, /Scheduled price changes|Retirement dates/u);
+      assert.deepEqual(catalogEdits(decision), [
+        { provider: "openai", model: "b", field: "retirement_date", to: "2027-02-26" },
+        { provider: "openai", model: "a", field: "price_changes", to: scheduled },
+      ]);
     }
   });
 }
@@ -1137,7 +1227,7 @@ test("report: upcoming prices are grouped by date, earliest first", () => {
       { provider: "p", model: "unknown", field: "input", value: 3, date: "2027-01-01" },
     ],
   });
-  const section = report.slice(report.indexOf("### Upcoming price changes"));
+  const section = report.slice(report.indexOf("### Scheduled price changes already in the price list"));
   assert.ok(section.indexOf("**From 2027-01-01**") < section.indexOf("**From 2027-02-01**"));
   assert.match(section, /\| `p\/late` \| input \| \$2\u00a0→\u00a0\*\*\$1\*\* \| 🟩\u2060🟩\u2060🟩\u2060⬜\u2060⬜\u00a0\*\*−50%\*\* \|/u);
   assert.match(section, /\| `p\/early` \| output \| \$4\u00a0→\u00a0\*\*\$5\*\* \| 🟥\u2060⬜\u2060⬜\u2060⬜\u2060⬜\u00a0\*\*\+25%\*\* \|/u);
@@ -1146,19 +1236,23 @@ test("report: upcoming prices are grouped by date, earliest first", () => {
 
 test("title: counts what the pull request holds, with a short date", () => {
   const empty = { changes: [], newModels: [], attention: [] };
-  assert.equal(renderTitle(empty, "2026-10-10"), "Model catalog: no changes (Oct 10)");
+  assert.equal(renderTitle(empty, "2026-10-10"), "Model prices: no changes (Oct 10)");
   // One model with several changed fields is one price change.
   const changes = [
     { provider: "p", model: "a", field: "input" },
     { provider: "p", model: "a", field: "output" },
     { provider: "q", model: "a", field: "input" },
   ];
-  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model catalog: 2 price changes (Jan 5)");
+  assert.equal(renderTitle({ ...empty, changes }, "2027-01-05"), "Model prices: 2 price changes (Jan 5)");
   assert.equal(
     renderTitle({ changes: changes.slice(0, 1), newModels: [{ provider: "p", ids: ["x", "y"] }, { provider: "q", ids: ["z"] }], attention: [{}] }, "2026-12-31"),
-    "Model catalog: 1 price change, 3 new models, 1 needs attention (Dec 31)",
+    "Model prices: 1 price change, 3 new models, 1 needs attention (Dec 31)",
   );
-  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model catalog: 1 new model, 2 need attention (Oct 10)");
+  assert.equal(renderTitle({ ...empty, newModels: [{ provider: "p", ids: ["x"] }], attention: [{}, {}] }, "2026-10-10"), "Model prices: 1 new model, 2 need attention (Oct 10)");
+  assert.equal(
+    renderTitle({ ...empty, schedules: [{}], retirements: [{}, {}] }, "2026-11-12"),
+    "Model prices: 1 scheduled price change, 2 retirement dates (Nov 12)",
+  );
 });
 
 test("report: fetched text is escaped", () => {

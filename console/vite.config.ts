@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { loadEnv } from "vite";
+import { loadEnv, type Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -8,6 +9,9 @@ import tailwindcss from "@tailwindcss/vite";
 // overlay over the tracked config. It ships no declarations.
 // @ts-expect-error - untyped .mjs
 import { resolveWranglerConfig } from "../scripts/wrangler-config.mjs";
+// The day the model price list last changed, shown in Settings; see the script.
+// @ts-expect-error - untyped .mjs
+import { pricesRevision } from "../scripts/prices-revision.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -29,6 +33,26 @@ function workerConfigPathFor(mode: string): string {
     : path.resolve(repoRoot, "wrangler.jsonc");
 }
 
+/**
+ * The shipped model price list, published beside the console as
+ * `/models.json`: exactly the file this build's gateway bills with, served as a
+ * static asset (no Worker runs for it) so anyone can read or track the prices.
+ * Its CORS and cache headers are in `public/_headers`.
+ */
+function modelPrices(): Plugin {
+  return {
+    name: "model-prices",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "models.json",
+        source: readFileSync(path.resolve(repoRoot, "src/usage/models.json"), "utf8"),
+      });
+    },
+  };
+}
+
 export default defineConfig(({ command, mode, isPreview }) => {
   // Development is a single Vite server: the Cloudflare plugin runs the API
   // Worker in workerd and Vite serves the console with HMR on the same origin.
@@ -37,9 +61,13 @@ export default defineConfig(({ command, mode, isPreview }) => {
   const cloudflareDev = command === "serve" && !isPreview && mode !== "test";
 
   return {
+    define: {
+      __PRICES_UPDATED__: JSON.stringify((pricesRevision() as { updated: string | null }).updated),
+    },
     plugins: [
       react(),
       tailwindcss(),
+      modelPrices(),
       ...(cloudflareDev
         ? [cloudflare({
           configPath: workerConfigPathFor(mode),

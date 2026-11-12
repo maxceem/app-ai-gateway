@@ -36,7 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/review-models.mjs prepare "$RUNNER_TEMP/model-review.json" "$RUNNER_TEMP/model-overrides.json"
-      - name: Rebuild the proposed catalog with overrides
+      - name: Rebuild the proposed price list with overrides
         id: models
         if: steps.decisions.outputs.ready == 'true'
         env:

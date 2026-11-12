@@ -1,0 +1,216 @@
+# Deploys a merged model price list without a release: the gateway release that
+# is live, with only `src/usage/models.json` from main swapped in. The daily price
+# pull request (.github/workflows/update-models.yml) then goes live, and so does
+# the public `/models.json`, minutes after it merges. Nothing is published: no
+# tag, GitHub release, npm package or documentation deploy.
+#
+# Three jobs, so that only released code ever holds the deploy secrets and no
+# package code runs beside them, as in .github/workflows/release.yml:
+#   start   runs on main when a merge changes the price list. It holds no secrets;
+#           it starts this workflow again at the newest `vX.Y.Z` tag.
+#   build   runs at that tag, so this file, scripts/prices-deploy.mjs and the
+#           code it builds are the tag's own, released code. With no secret, it
+#           checks the tag is the newest and its release succeeded, swaps in
+#           main's price list, runs the release's checks against it and builds the
+#           Worker and console (scripts/build-prebuilt.mjs).
+#   deploy  installs only Wrangler (deploy/), takes only those built files and
+#           deploys them; its Wrangler config and D1 migrations come from the
+#           tag's checkout.
+#
+# The `prices` environment holds the secrets. It must admit `v*` tags only,
+# and only the project owner can create those (see release.yml), so neither a
+# merged but unreleased change, nor a pull request, nor another branch reaches
+# them. It has no required reviewer: merging the price change is the review.
+# A change to this file takes effect with the next release. Secrets:
+#   CLOUDFLARE_API_TOKEN      the same permissions the release's deploy uses
+#   CLOUDFLARE_ACCOUNT_ID     the account the gateway Worker lives in
+#   WRANGLER_CLOUD_OVERLAY    contents of wrangler.cloud.overlay.jsonc
+#   POST_DEPLOY_CHECK_TOKEN   optional, as in .github/workflows/release.yml
+name: Deploy the model prices
+
+on:
+  push:
+    branches: [main]
+    paths: [src/usage/models.json]
+  # Started by `start` below at a release tag, or by hand at one.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A run at a tag shares the `release` group with release.yml for its whole
+# length, queued rather than replaced, so a release and a prices deploy never
+# run at once and the release check in `build` still holds when `deploy` runs.
+# Each run reads main's price list when it builds, so the last one carries every
+# change before it. `start` runs outside the group.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'release' || format('deploy-prices-start-{0}', github.run_id) }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  start:
+    if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # start this workflow at the release tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prices-deploy.mjs start
+
+  build:
+    if: github.repository == 'maxceem/app-ai-gateway' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # the Release workflow's runs, to confirm the tag is live
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      prices_revision: ${{ steps.plan.outputs.prices_revision }}
+      prices_updated: ${{ steps.plan.outputs.prices_updated }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # main's history, for its price list's revision and day
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Check the release and swap in main's price list
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prices-deploy.mjs prepare
+
+      # Installs the pnpm version pinned in packageManager.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The release's own checks, against the new price list. One that needs
+      # code the release lacks, such as a new price field, fails here and waits
+      # for the next release.
+      - run: pnpm run verify
+
+      - name: Build the gateway
+        env:
+          # Main's revision and day, not the tag's: the Worker reports them and
+          # Settings shows the day.
+          PRICES_REVISION: ${{ steps.plan.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ steps.plan.outputs.prices_updated }}
+        run: node scripts/build-prebuilt.mjs dist/prebuilt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prices
+          path: dist/prebuilt/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prices
+    permissions:
+      contents: read
+      actions: read # the Release workflow's runs, to confirm the build is still current
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # main's history, to compare its price list with the build's
+          persist-credentials: false
+
+      # As in release.yml: into a directory of its own, never over the checkout,
+      # and only the expected built files are copied out.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prices
+          path: ${{ runner.temp }}/prices
+      - name: Take only the built files from the artifact
+        env:
+          FROM: ${{ runner.temp }}/prices
+        run: |
+          set -euo pipefail
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          test ! -e dist || { echo "dist already exists in the checkout" >&2; exit 1; }
+          mkdir -p dist/prebuilt/worker
+          cp "$FROM/worker/index.js" dist/prebuilt/worker/
+          cp -R "$FROM/console" dist/prebuilt/console
+
+      # Only Wrangler and jsonc-parser, from deploy/'s lockfile, with no install
+      # scripts and no cache another job could have written.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install the deploy tools
+        run: |
+          set -euo pipefail
+          pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
+          ln -s deploy/node_modules node_modules
+
+      - name: Write the Cloudflare deployment profile
+        env:
+          WRANGLER_CLOUD_OVERLAY: ${{ secrets.WRANGLER_CLOUD_OVERLAY }}
+        run: |
+          set -euo pipefail
+          test -n "$WRANGLER_CLOUD_OVERLAY" || { echo "WRANGLER_CLOUD_OVERLAY is missing" >&2; exit 1; }
+          printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
+
+      # Again, right before deploying: this job can be run again on its own,
+      # long after `build`, when a newer release or price list is live.
+      - name: Check the build is still current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+        run: node scripts/prices-deploy.mjs check "$PRICES_REVISION"
+
+      - name: Deploy the gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
+
+      - name: Start the post-deploy checks
+        if: vars.POST_DEPLOY_CHECK_URL != ''
+        continue-on-error: true
+        env:
+          POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
+          POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
+        run: |
+          set -euo pipefail
+          jq -nc --arg version "$TAG" --arg revision "$PRICES_REVISION" --arg updated "$PRICES_UPDATED" \
+            '{version: $version, title: "prices \($revision) (\($updated)) on \($version)"}' \
+            > "$RUNNER_TEMP/announcement.json"
+          printf 'Authorization: Bearer %s\n' "$POST_DEPLOY_CHECK_TOKEN" |
+            curl --fail --silent --show-error --max-time 30 --header @- \
+              --header 'Content-Type: application/json' \
+              --data "@$RUNNER_TEMP/announcement.json" "$POST_DEPLOY_CHECK_URL"
+
+      - name: Summarize
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
+        run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"

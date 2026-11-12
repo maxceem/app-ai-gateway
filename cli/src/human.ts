@@ -247,6 +247,7 @@ function status(
           ["Connected", yesNo(result.connected)],
           ["Authenticated", yesNo(result.authenticated)],
           ["Version", result.serverVersion],
+          ["Prices", result.prices ? `${result.prices.revision} (${result.prices.updated ?? "date unknown"})` : undefined],
           ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
           ["Console", result.consoleOrigin],
           ["Provider types", result.providers.length],

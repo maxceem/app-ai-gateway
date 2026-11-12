@@ -23,7 +23,7 @@ export function trustedPull(pr, repository) {
 }
 
 export async function readReview(pr, { api, repository }) {
-  if (!trustedPull(pr, repository)) throw new Error("This is not the rolling model catalog PR.");
+  if (!trustedPull(pr, repository)) throw new Error("This is not the rolling model prices PR.");
   let file;
   try { file = await api(`contents/${REVIEW_PATH}?ref=${pr.head.sha}`); }
   catch (error) { if (error.status === 404) return []; throw error; }

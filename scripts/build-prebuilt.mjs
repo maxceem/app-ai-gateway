@@ -11,6 +11,7 @@
 import { spawnSync } from "node:child_process";
 import { cp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pricesDefines, pricesRevision } from "./prices-revision.mjs";
 import { projectRoot } from "./wrangler-config.mjs";
 
 const out = resolve(projectRoot, process.argv[2] ?? "dist/prebuilt");
@@ -30,7 +31,9 @@ try {
   run("pnpm", ["run", "console:build"]);
   // No profile: the bundle depends only on the tracked file, and the deploy
   // refuses a profile that changes how it would have been built.
-  run(process.execPath, ["scripts/wrangler.mjs", "deploy", "--dry-run", "--outdir", join(out, "worker")]);
+  // The price list it carries, which `GET /v1/cli/capabilities` reports.
+  const defines = pricesDefines(pricesRevision());
+  run(process.execPath, ["scripts/wrangler.mjs", "deploy", "--dry-run", "--outdir", join(out, "worker"), ...defines]);
   // Neither is deployed: the map is not uploaded and the README is Wrangler's note.
   await rm(join(out, "worker/index.js.map"), { force: true });
   await rm(join(out, "worker/README.md"), { force: true });

@@ -1,8 +1,9 @@
 // Checks every model in src/usage/models.json against its provider's official
 // pricing and deprecation pages, falling back to Models.dev and LiteLLM where
-// there is no official source or its parser failed, and updates the prices
-// that changed, including retirement dates only alongside a price update. New
-// model IDs also open a review PR with AI add/skip suggestions. PR comments
+// there is no official source or its parser failed, and updates whatever the
+// catalog should now say differently: current prices, scheduled price changes
+// and retirement dates, each on its own. New model IDs also open a review PR
+// with AI add/skip suggestions. PR comments
 // can override those choices; nothing is added until the PR is merged. Run daily by
 // .github/workflows/update-models.yml, which opens the pull request.
 //
@@ -129,7 +130,7 @@ async function main() {
     if (options.title) await writeFile(options.title, `${renderTitle(decision, options.today)}\n`);
   }
   console.error(
-    `${decision.changes.length} price change(s), ${candidates.length} new model(s), ${decision.retirements.length} retirement date(s), ` +
+    `${decision.changes.length} price change(s), ${decision.schedules.length} scheduled change(s), ${candidates.length} new model(s), ${decision.retirements.length} retirement date(s), ` +
       `${decision.attention.length} item(s) need attention`,
   );
   return needsHuman(decision) ? 3 : 0;

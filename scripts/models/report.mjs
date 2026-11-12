@@ -1,4 +1,4 @@
-// The Markdown report that becomes the catalog pull request's body and the
+// The Markdown report that becomes the model prices pull request's body and the
 // workflow's step summary, in three parts: what merging applies (✅), what a
 // person has to resolve (❌), and everything else, for information (ℹ️). Empty
 // sections are left out.
@@ -101,19 +101,23 @@ function count(n, one, many) {
 
 /**
  * The pull request's title: what it holds and the day it was checked, e.g.
- * "Model catalog: 3 price changes, 2 need attention (Oct 10)". Only counts and
+ * "Model prices: 3 price changes, 2 need attention (Oct 10)". Only counts and
  * the date go in, nothing fetched. A price change counts once per model.
  */
 export function renderTitle(decision, today) {
   const [, month, day] = today.split("-").map(Number);
   const changed = new Set(decision.changes.map(({ provider, model }) => `${provider}/${model}`)).size;
   const discovered = decision.newModels.reduce((sum, { ids }) => sum + ids.length, 0);
+  const retirements = decision.retirements?.length ?? 0;
+  const scheduled = decision.schedules?.length ?? 0;
   const parts = [
     changed && count(changed, "price change", "price changes"),
+    scheduled && count(scheduled, "scheduled price change", "scheduled price changes"),
+    retirements && count(retirements, "retirement date", "retirement dates"),
     discovered && count(discovered, "new model", "new models"),
     decision.attention.length && count(decision.attention.length, "needs attention", "need attention"),
   ].filter(Boolean);
-  return `Model catalog: ${parts.length ? parts.join(", ") : "no changes"} (${MONTHS[month - 1]} ${day})`;
+  return `Model prices: ${parts.length ? parts.join(", ") : "no changes"} (${MONTHS[month - 1]} ${day})`;
 }
 
 export function renderReport(decision) {
@@ -137,10 +141,26 @@ export function renderReport(decision) {
     );
     ready.push(
       "## ✅ Newly discovered models\n\n" +
-      "Merging applies the proposed **✅ Add** entries to the catalog and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source, and takes each model's kind from LiteLLM or Models.dev where they name one. **⚠️ Pending** models remain undecided.\n\n" +
+      "Merging applies the proposed **✅ Add** entries to the price list and saves each **⏭️ Skip** reason. AI chooses models; code reads and validates every price from the official source, and takes each model's kind from LiteLLM or Models.dev where they name one. **⚠️ Pending** models remain undecided.\n\n" +
       (decision.modelChoices?.length ? `| Model | Proposal | Kind | Reason | Reviewer |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
       "\n\nTo override a proposal, comment on this PR with one or more commands, one per line. The bot updates this same PR and preserves your choices on later runs:\n\n" +
       "```text\n/models add openai/gpt-6-luna\n/models add openai/gpt-image-3 image\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```\n\nAn addition may name its kind (text, image, speech, transcription, embedding or realtime), which replaces the proposed one.",
+    );
+  }
+
+  const rescheduled = new Set((decision.schedules ?? []).map(({ provider, model }) => `${provider}/${model}`));
+  if (rescheduled.size > 0) {
+    const announced = decision.upcoming.filter(({ provider, model }) => rescheduled.has(`${provider}/${model}`));
+    const withdrawn = decision.schedules.filter((item) => item.to === undefined);
+    ready.push(
+      "## ✅ Scheduled price changes\n\n" +
+        "Merging writes these to each model's `price_changes`: the rates that change, from 00:00 UTC on the day given. Billing keeps today's rates; this sync applies a change on its day.\n\n" +
+        [
+          announced.length > 0 ? upcomingTables(announced) : "",
+          withdrawn.length > 0
+            ? `No longer announced, so removed:\n\n${list(withdrawn, (item) => code(`${item.provider}/${item.model}`))}`
+            : "",
+        ].filter(Boolean).join("\n\n"),
     );
   }
 
@@ -149,8 +169,8 @@ export function renderReport(decision) {
       (item) =>
         `| ${code(`${item.provider}/${item.model}`)} | ${item.from === undefined ? "" : `${item.from} → `}**${item.to}** | ${item.source} |`,
     );
-    sections.push(
-      "### Retirement dates\n\n" +
+    ready.push(
+      "## ✅ Retirement dates\n\n" +
         `| Model | Retires on | Source |\n| --- | --- | --- |\n${rows.join("\n")}`,
     );
   }
@@ -163,8 +183,9 @@ export function renderReport(decision) {
       "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
 
-  if (decision.upcoming.length > 0) {
-    sections.push(`### Upcoming price changes\n\n${upcomingTables(decision.upcoming)}`);
+  const unchanged = decision.upcoming.filter(({ provider, model }) => !rescheduled.has(`${provider}/${model}`));
+  if (unchanged.length > 0) {
+    sections.push(`### Scheduled price changes already in the price list\n\n${upcomingTables(unchanged)}`);
   }
 
   if (decision.retired.length > 0) {
@@ -221,7 +242,7 @@ export function renderReport(decision) {
 
   const parts = ready.length
     ? ready
-    : ["No current price changes or newly discovered models. No pull request is needed."];
+    : ["Nothing in the price list changes and no new models were found. No pull request is needed."];
   if (attention) parts.push(attention);
   if (sections.length > 0) parts.push("## ℹ️ Additional information\n\nFor information only. Nothing here needs action.\n\n" + sections.join("\n\n"));
   return `${REVIEW_MARKER}\n${parts.join("\n\n")}\n`;

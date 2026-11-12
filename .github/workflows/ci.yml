@@ -14,7 +14,7 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The daily model catalog pull request (.github/workflows/update-models.yml) is
+  # The daily model prices pull request (.github/workflows/update-models.yml) is
   # opened with the default token, which starts no `pull_request` run; that
   # workflow dispatches this one on its branch instead, and `report` below puts
   # the result on the pull request.

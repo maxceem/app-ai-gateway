@@ -1,7 +1,11 @@
 // The decision rules of the model sync, as one pure function: given the
-// catalog, what every source said and today's date, which prices and
-// retirement dates change and what a person has to look at. No network, no
-// filesystem.
+// catalog, what every source said and today's date, which prices, scheduled
+// price changes and retirement dates change and what a person has to look at.
+// No network, no filesystem.
+//
+// Every change to what the catalog says is written, not only a change to a
+// price billed today: the file is also published for others to read, so a new
+// retirement date or an announced price change is news on its own.
 //
 // A retirement date only ever documents when a provider stops serving a
 // model. The entry stays in the catalog and stays priced, so an app that
@@ -11,6 +15,7 @@
 // and accepts it adds that key to scripts/models/acknowledged.json with a
 // reason, and the item stops failing the run.
 
+import { isDeepStrictEqual } from "node:util";
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
 import { RATE_LABELS } from "../../src/shared/token-rates.ts";
 import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6 } from "./price.mjs";
@@ -222,6 +227,7 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
   const deprecationNotes = [];
   const attention = [];
   const upcoming = [];
+  const schedules = [];
   const noSource = [];
   const newModels = [];
   const skippedModels = [];
@@ -386,7 +392,25 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
       for (const edit of result.edits) changes.push({ provider, model, ...edit, source: label });
       // `from` is the rate the page bills today, which is the catalog's once
       // this update is merged.
-      for (const next of price.upcoming ?? []) upcoming.push({ provider, model, from: price[next.field], ...next });
+      const announced = (price.upcoming ?? []).map((next) => ({ provider, model, from: price[next.field], ...next }));
+      // A rate the page prices only from a later day has nothing to move from,
+      // so it is held to the price band alone.
+      const check = (item) => item.from === undefined
+        ? (item.value > MIN_PRICE && item.value < MAX_PRICE ? null : `$${item.value} is outside $${MIN_PRICE}–$${MAX_PRICE}`)
+        : suspicious(item.from, item.value);
+      const unsafe = announced.map((item) => [item, check(item)]).find(([, problem]) => problem);
+      if (unsafe) {
+        const [item, problem] = unsafe;
+        flag(`${where}: suspicious scheduled change`, provider, model, `suspicious scheduled change, not written: ${item.field} from ${item.date}: ${problem} (${label})`);
+        continue;
+      }
+      upcoming.push(...announced);
+      // Only a page that priced the model can say what is scheduled for it: a
+      // model priced from the lists, or not priced this run, keeps its schedule.
+      const scheduled = schedule(announced);
+      if (!isDeepStrictEqual(scheduled, entry.price_changes ?? [])) {
+        schedules.push({ provider, model, from: entry.price_changes, to: scheduled.length > 0 ? scheduled : undefined, source: label });
+      }
     }
   }
 
@@ -403,6 +427,7 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
     attention: open,
     acknowledged: seen,
     upcoming,
+    schedules,
     noSource,
     newModels,
     skippedModels,
@@ -415,11 +440,31 @@ export function needsHuman(decision) {
   return decision.attention.length > 0;
 }
 
-/** Only current price changes trigger an update; retirement dates travel with them. */
+/**
+ * Everything the catalog should now say differently: current prices,
+ * retirement dates and scheduled price changes alike, each on its own.
+ */
 export function catalogEdits(decision) {
-  if (decision.changes.length === 0) return [];
   return [
     ...decision.changes.map(({ provider, model, field, to }) => ({ provider, model, field, to })),
     ...decision.retirements.map(({ provider, model, to }) => ({ provider, model, field: "retirement_date", to })),
+    ...(decision.schedules ?? []).map(({ provider, model, to }) => ({ provider, model, field: "price_changes", to })),
   ];
+}
+
+/**
+ * A model's announced changes as the catalog's `price_changes`: one entry per
+ * day, earliest first, each naming the day it takes effect (`from`, 00:00 UTC)
+ * and only the rates that change then, in the order the catalog lists rates.
+ */
+export function schedule(announced) {
+  const days = [...new Set(announced.map((item) => item.date))].sort();
+  return days.map((day) => {
+    const change = { from: day };
+    const fields = new Map(announced.filter((item) => item.date === day).map((item) => [item.field, round6(item.value)]));
+    for (const field of [...PRICE_FIELDS, ...AUDIO_FIELDS, "per_image", "long_context_threshold"]) {
+      if (fields.has(field)) change[field] = fields.get(field);
+    }
+    return change;
+  });
 }

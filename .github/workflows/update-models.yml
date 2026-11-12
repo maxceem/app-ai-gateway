@@ -1,22 +1,25 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# when a current price changed or new models need review. AI proposes add/skip
-# choices; prices are parsed and validated in code. Comments override choices
-# on the same PR, and merging applies them. No review issue is created.
-# Retirement dates accompany current price changes.
-# Retirement-only changes and upcoming prices stay in the run summary.
-# The rules — official page
+# when anything the price list says changed — a current price, a scheduled price
+# change, a retirement date — or new models need review. The file is published
+# for others to read, so each of those is worth a pull request on its own. AI
+# proposes add/skip choices; prices are parsed and validated in code. Comments
+# override choices on the same PR, and merging applies them. No review issue
+# is created. The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
 # in scripts/update-models.mjs.
 #
 # The pull request always comes from the branch `automation/update-models`, so
 # there is one rolling pull request rather than one a day, and no diff means no
 # pull request. The report is its body and this run's summary.
+# Merging it deploys the price list without a release
+# (.github/workflows/deploy-prices.yml).
 #
 # Something needs a person when a parser no longer reads its page, lists
 # disagree, a price moves suspiciously or a model is gone from its official
 # page. The pull request then carries it: its description lists it and a red
-# "Model catalog" status marks it. Only when there is no pull request to carry
+# "Model catalog" status marks it (a name other automation filters on, so it
+# keeps the old word). Only when there is no pull request to carry
 # it does the run itself end red. An item that is expected is acknowledged by
 # adding its key and a reason to scripts/models/acknowledged.json.
 #

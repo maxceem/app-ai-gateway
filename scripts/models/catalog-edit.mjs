@@ -4,11 +4,12 @@
 // columns, a field per line when it does not, `5.0` rather than `5` — and a
 // `JSON.stringify` round trip would rewrite every line of it. Instead the text
 // is read with a small JSON reader that records where each value sits, and
-// only the literals being changed are replaced. The one field that may be
-// added, `retirement_date`, goes after an entry's last field, and an entry
-// that no longer fits on its line is spread over several. The result is then
-// parsed and compared with the original, so an edit that touched anything
-// else is refused.
+// only the literals being changed are replaced. A `retirement_date` that is
+// added goes after an entry's last field, and an entry that no longer fits on
+// its line is spread over several. A `price_changes` list is written as a
+// whole, one change a line, and an entry holding one is one field a line. The
+// result is then parsed and compared with the original, so an edit that
+// touched anything else is refused.
 
 import { isDeepStrictEqual } from "node:util";
 import { round6 } from "./price.mjs";
@@ -99,13 +100,46 @@ function lineEnd(text, position) {
   return end === -1 ? text.length : end;
 }
 
+/** Fields an edit may also replace as a whole or remove, by setting `to` to undefined. */
+const LISTS = new Set(["price_changes"]);
+
+/**
+ * A scheduled change as one line: `{ "from": "2027-01-01", "input": 1.5 }`,
+ * its prices written like every other price in the file.
+ */
+function changeLiteral(change) {
+  if (typeof change?.from !== "string" || Object.keys(change).length < 2) {
+    throw new Error(`models.json: a scheduled change needs a "from" day and a rate, got ${JSON.stringify(change)}`);
+  }
+  return `{ ${Object.entries(change).map(([key, value]) => {
+    if (key === "from") return `"from": ${JSON.stringify(value)}`;
+    if (typeof value !== "number") throw new Error(`models.json: scheduled ${key} is not a number`);
+    return `${JSON.stringify(key)}: ${key === "long_context_threshold" ? JSON.stringify(value) : formatPrice(value)}`;
+  }).join(", ")} }`;
+}
+
+/** A list of scheduled changes, one per line, indented under its field. */
+function listLiteral(changes, indent) {
+  if (!Array.isArray(changes) || changes.length === 0) throw new Error("models.json: a scheduled list needs at least one change");
+  return `[\n${changes.map((change) => `${indent}  ${changeLiteral(change)}`).join(",\n")}\n${indent}]`;
+}
+
 /** One model's object with its edits applied, formatted as the file formats it. */
 function rewriteEntry(text, node, edits, where) {
   const original = text.slice(node.start, node.end);
   const replaced = new Map();
   const added = [];
+  // Whole lists being written (a value) or removed (undefined), by field.
+  const lists = new Map();
   for (const edit of edits) {
     const value = member(node, edit.field, `${where} ${edit.field}`);
+    if (LISTS.has(edit.field)) {
+      if (lists.has(edit.field)) throw new Error(`models.json: two edits to ${where} ${edit.field}`);
+      if (value !== undefined && value.type !== "array") throw new Error(`models.json: ${where} ${edit.field} is not a list`);
+      if (value === undefined && edit.to === undefined) continue;
+      lists.set(edit.field, edit.to);
+      continue;
+    }
     if (value === undefined) {
       if (!ADDABLE.has(edit.field)) throw new Error(`models.json: ${where} ${edit.field} is missing`);
       added.push([edit.field, literal(edit.to)]);
@@ -122,35 +156,54 @@ function rewriteEntry(text, node, edits, where) {
   for (const [value, written] of [...replaced].sort((a, b) => b[0].start - a[0].start)) {
     result = result.slice(0, value.start - node.start) + written + result.slice(value.end - node.start);
   }
-  if (added.length === 0) return result;
+  if (added.length === 0 && lists.size === 0) return result;
 
-  const members = node.entries.map((entry) => [
-    JSON.stringify(entry.key),
-    replaced.get(entry.value) ?? text.slice(entry.value.start, entry.value.end),
-  ]);
+  const prefix = text.slice(lineStart(text, node.start), node.start);
+  const outer = /^\s*/u.exec(prefix)[0];
+  const multiLine = original.includes("\n");
+
+  if (lists.size === 0 && multiLine) {
+    // A multi-line entry gains lines after its last field, at that field's indent.
+    const last = node.entries.at(-1);
+    const indent = /^\s*/u.exec(text.slice(lineStart(text, last.keyStart), last.keyStart))[0];
+    // Measured in `result`, which values written at another length have shifted.
+    let cut = last.value.end - node.start;
+    for (const [value, written] of replaced) cut += written.length - (value.end - value.start);
+    const extra = added.map(([field, value]) => `,\n${indent}${JSON.stringify(field)}: ${value}`).join("");
+    return result.slice(0, cut) + extra + result.slice(cut);
+  }
+
+  // Otherwise the entry is written out again from its members, in their
+  // order, each keeping its own text unless an edit changed it. A list goes
+  // last when it is new, and an entry holding one is always one field a line.
+  const fieldIndent = `${outer}  `;
+  const members = [];
+  for (const entry of node.entries) {
+    if (lists.has(entry.key)) {
+      const to = lists.get(entry.key);
+      if (to !== undefined) members.push([JSON.stringify(entry.key), listLiteral(to, fieldIndent)]);
+      lists.delete(entry.key);
+      continue;
+    }
+    members.push([JSON.stringify(entry.key), replaced.get(entry.value) ?? text.slice(entry.value.start, entry.value.end)]);
+  }
   for (const [field, value] of added) members.push([JSON.stringify(field), value]);
+  for (const [field, to] of lists) members.push([JSON.stringify(field), listLiteral(to, fieldIndent)]);
 
-  if (!original.includes("\n")) {
-    const prefix = text.slice(lineStart(text, node.start), node.start);
+  const holdsList = members.some(([, value]) => value.startsWith("["));
+  if (!holdsList) {
     const suffix = text.slice(node.end, lineEnd(text, node.end));
     const inline = `{ ${members.map(([key, value]) => `${key}: ${value}`).join(", ")} }`;
     if (prefix.length + inline.length + suffix.length <= WIDTH) return inline;
-    const indent = /^\s*/u.exec(prefix)[0];
-    return `{\n${members.map(([key, value]) => `${indent}  ${key}: ${value}`).join(",\n")}\n${indent}}`;
   }
-
-  // A multi-line entry gains lines after its last field, at that field's indent.
-  const last = node.entries.at(-1);
-  const indent = /^\s*/u.exec(text.slice(lineStart(text, last.keyStart), last.keyStart))[0];
-  const cut = last.value.end - node.start;
-  const extra = added.map(([field, value]) => `,\n${indent}${JSON.stringify(field)}: ${value}`).join("");
-  return result.slice(0, cut) + extra + result.slice(cut);
+  return `{\n${members.map(([key, value]) => `${fieldIndent}${key}: ${value}`).join(",\n")}\n${outer}}`;
 }
 
 /**
  * Applies `[{ provider, model, field, to }]` to the catalog text. A price
- * field must already exist; `retirement_date` may be added. Nothing is ever
- * removed.
+ * field must already exist; `retirement_date` may be added; `price_changes`
+ * is written as a whole, and removed when `to` is undefined. No other field
+ * is ever removed.
  */
 export function applyEdits(text, edits) {
   if (edits.length === 0) return text;
@@ -174,7 +227,9 @@ export function applyEdits(text, edits) {
 
   const expected = JSON.parse(text);
   for (const edit of edits) {
-    expected[edit.provider][edit.model][edit.field] = typeof edit.to === "number" ? round6(edit.to) : edit.to;
+    const entry = expected[edit.provider][edit.model];
+    if (edit.to === undefined) delete entry[edit.field];
+    else entry[edit.field] = typeof edit.to === "number" ? round6(edit.to) : edit.to;
   }
   if (!isDeepStrictEqual(JSON.parse(result), expected)) {
     throw new Error("models.json: the edited file differs from the original in more than the intended values");

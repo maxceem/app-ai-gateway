@@ -8,3 +8,10 @@
 /*
   Content-Security-Policy: frame-ancestors 'none'
   X-Frame-Options: DENY
+
+# The model price catalog (see modelCatalog in vite.config.ts) is public data
+# meant to be read from anywhere, including other sites' pages, and it changes
+# only when a release deploys.
+/models.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=300

@@ -274,22 +274,22 @@ a slug, or the create answers `409 slug_taken`.
 { "my-model": { "input": 0.5, "output": 1.5, "cached_input": 0.05 } }
 ```
 
-`input` and `output` are required. Any other per-token rate the catalog uses
+`input` and `output` are required. Any other per-token rate the price list uses
 is optional under the same name: `cached_input`, `cache_write`,
 `cache_write_1h`, `cache_write_12h`, `image_input`, `audio_input`, `video_input`,
 `image_output`, and the `long_*` rates, which also need
-`long_context_threshold`. A custom price replaces the catalog's rates for that
-model and inherits none of them: a rate left out bills as on a catalog entry
+`long_context_threshold`. A custom price replaces the price list's rates for that
+model and inherits none of them: a rate left out bills as on an entry in the price list
 without it, so a cache rate falls back to `input`.
 
-A model that is in neither the built-in catalog (`GET /v1/admin/prices`)
+A model that is in neither the built-in price list (`GET /v1/admin/prices`)
 nor the provider's `pricing` cannot be used by any app: requests answer
 `400 pricing_not_configured`, and an app configuration that names it in
 `allowed_models`, `model_rewrites` targets or endpoints is rejected on
 validation. OpenRouter reports its own cost and needs no price, and so does
 xAI on Chat Completions, Responses and image generation, directly or through
 Cloudflare; its Messages API, `v1/stt` and the Vercel route still need one.
-The catalog prices OpenAI's `gpt-image-*` and Gemini's image models per token,
+The price list charges OpenAI's `gpt-image-*` and Gemini's image models per token,
 with separate image rates, and BytePlus Seedream 5.0 flash, 5.0 lite, 4.5 and
 4.0 per generated image. Other image models billed per image or per
 megapixel, such as Together AI's and Seedream 5.0 pro, are not supported, and
@@ -480,7 +480,7 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 | `max_output_tokens` | positive integer, optional | Text endpoints only |
 | `fallback` | array of `{ provider, model }`, optional | Tried in order when the primary fails before streaming starts. Same format and kind |
 
-`listModelPrices` gives every catalog model's `kind`: `text`, `image`,
+`listModelPrices` gives every listed model's `kind`: `text`, `image`,
 `speech`, `transcription`, `embedding` or `realtime`. Pick an endpoint's
 models by it; a `realtime` model serves no endpoint.
 

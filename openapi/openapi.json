@@ -11813,7 +11813,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The priced model catalog this deployment enforces.",
+            "description": "The model price list this deployment enforces.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11908,6 +11908,88 @@
                             "retirement_date": {
                               "type": "string",
                               "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."
+                            },
+                            "price_changes": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "from": {
+                                    "type": "string",
+                                    "description": "The day (YYYY-MM-DD) the change takes effect, from 00:00 UTC."
+                                  },
+                                  "input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input": {
+                                    "type": "number"
+                                  },
+                                  "cache_write": {
+                                    "type": "number"
+                                  },
+                                  "cache_write_1h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "cache_write_12h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "output": {
+                                    "type": "number"
+                                  },
+                                  "image_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                  },
+                                  "audio_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                  },
+                                  "video_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                  },
+                                  "image_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                  },
+                                  "long_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_1h": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_12h": {
+                                    "type": "number"
+                                  },
+                                  "long_output": {
+                                    "type": "number"
+                                  },
+                                  "per_minute": {
+                                    "type": "number"
+                                  },
+                                  "per_hour": {
+                                    "type": "number"
+                                  },
+                                  "per_image": {
+                                    "type": "number"
+                                  },
+                                  "long_context_threshold": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "from"
+                                ]
+                              },
+                              "description": "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today."
                             }
                           },
                           "required": [
@@ -12169,6 +12251,27 @@
                     },
                     "serverVersion": {
                       "type": "string"
+                    },
+                    "prices": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "updated"
+                      ]
                     },
                     "deployment": {
                       "type": "object",

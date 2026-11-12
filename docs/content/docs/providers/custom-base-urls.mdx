@@ -142,7 +142,7 @@ only you can write this field.
 ## Custom endpoints still need prices
 
 A model served from your own endpoint is almost certainly not in the shipped
-catalog, so it is refused with `400 pricing_not_configured` until you enter a
+price list, so it is refused with `400 pricing_not_configured` until you enter a
 price for it under the provider's **Pricing** action. Entering the price is
 what allows the model. There is no "unmetered because it is mine" path.
 
@@ -177,5 +177,5 @@ also appends `v1/models`. Two things to know:
   key.
 
 The `model` field in your requests is your **deployment name**, not the
-upstream model name, and deployment names are not in the shipped catalog. Price
+upstream model name, and deployment names are not in the shipped price list. Price
 them on that provider as described above.

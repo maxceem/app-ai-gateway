@@ -860,7 +860,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_models",
     title: "List priced models",
     description:
-      "Returns the model catalog this deployment prices, grouped by provider type: per-token prices and, where known, the day a model retires. Use it to choose a model an app may allow, or to explain a cost. A model missing here has no price, and an app that allows it by name is refused when validated.",
+      "Returns the model price list this deployment uses, grouped by provider type: per-token prices and, where known, the day a model retires. Use it to choose a model an app may allow, or to explain a cost. A model missing here has no price, and an app that allows it by name is refused when validated.",
     operation: "listModelPrices",
     summary: (result) => {
       const providers = Object.keys(result.prices);
