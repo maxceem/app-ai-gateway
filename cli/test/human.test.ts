@@ -401,6 +401,19 @@ const cases: Case[] = [
     includes: ["Grouped by:", "KEY", "gpt-5", "Raw events and retained daily aggregates."],
   },
   {
+    name: "a breakdown names passthrough requests' empty model as none, not a blank key",
+    command: "usage breakdown",
+    result: {
+      app_id: "app_1",
+      by: "model",
+      from: "2026-09-01",
+      to: "2026-09-17",
+      rows: [{ ...totals, key: "" }],
+      coverage: { from: "2026-09-01", to: "2026-09-17", source: "Raw events." },
+    },
+    includes: ["(none)"],
+  },
+  {
     name: "an empty breakdown says so",
     command: "usage breakdown",
     result: {

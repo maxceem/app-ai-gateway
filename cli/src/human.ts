@@ -474,7 +474,8 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
       ? table(
           ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
           result.rows.map((row) => [
-            row.key ?? "(none)",
+            // Empty is a passthrough request's model: the gateway read none.
+            row.key || "(none)",
             String(row.requests),
             String(row.input_tokens),
             String(row.output_tokens),

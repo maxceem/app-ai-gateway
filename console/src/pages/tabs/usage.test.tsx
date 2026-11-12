@@ -46,13 +46,14 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
 function renderUsage(
   events: UsageEvent[],
   props: { identity?: "user" | "install"; showInstalls?: boolean } = {},
+  breakdownRows: Record<string, unknown>[] = [],
 ) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}/usage/timeseries`]: {
       body: { app_id: APP_ID, from: "2026-08-01", to: "2026-08-01", buckets: [] },
     },
     [`/v1/admin/apps/${APP_ID}/usage/breakdown`]: {
-      body: { app_id: APP_ID, by: "model", from: "2026-08-01", to: "2026-08-01", rows: [] },
+      body: { app_id: APP_ID, by: "model", from: "2026-08-01", to: "2026-08-01", rows: breakdownRows },
     },
     [`/v1/admin/apps/${APP_ID}/events`]: {
       body: { app_id: APP_ID, limit: 25, next_before_id: null, events },
@@ -198,6 +199,14 @@ describe("UsageTab event costs", () => {
     expect(screen.getByText("$0.50")).toBeTruthy();
     expect(screen.getAllByText("—")).toHaveLength(2);
     expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
+  it("names passthrough requests' model as none in the breakdown, not a blank row", async () => {
+    const row = { requests: 3, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, cost_usd: 0, errors: 0 };
+    renderUsage([], {}, [{ ...row, key: "" }, { ...row, key: "gpt-4o-mini" }]);
+
+    expect(await screen.findByText("none")).toBeTruthy();
+    expect(screen.getByText("gpt-4o-mini")).toBeTruthy();
   });
 
   it("names the gateway a request was routed through", async () => {

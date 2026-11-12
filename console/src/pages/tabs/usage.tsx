@@ -308,7 +308,8 @@ export function UsageTab({
                 breakdown.data?.rows.map((row) => (
                   <TableRow key={row.key ?? "unknown"}>
                     <TableCell className="font-mono text-xs">
-                      {row.key === null ? (
+                      {/* Empty is a passthrough request's model: the gateway read none. */}
+                      {!row.key ? (
                         <span className="text-muted-foreground">none</span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
