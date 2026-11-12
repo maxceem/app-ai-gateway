@@ -44,9 +44,10 @@ response.
 Proxied responses also carry a `Server-Timing` header with four measurements:
 `auth` for authentication, `prepare` for resolving the provider, unlocking its
 stored key and building the upstream request, `limiter` for limit evaluation,
-and `provider_ttfb` for the provider's time to first byte. A refused request
-reports the steps it reached, and `0` for the rest. It is useful when a client
-reports slowness and you want to know which side of the gateway it is on.
+and `provider_ttfb` for the provider's time to first byte. `prepare` is left
+out when a request was refused before reaching it, such as for a bad
+credential. It is useful when a client reports slowness and you want to know
+which side of the gateway it is on.
 
 ## Rotate the vault key
 

@@ -111,7 +111,7 @@ async function serve(
   providerSlug: string | undefined,
   prepare: (input: PrepareInput) => Promise<ExecutionPlan>,
 ): Promise<Response> {
-  const timings: ServedTimings = { authMs: 0, prepareMs: 0, limiterMs: 0 };
+  const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
   c.set("servedTimings", timings);
   const body = bodyOnce(c.req.raw);
   const { app, identity, credentialHeader, assertionCounter } =

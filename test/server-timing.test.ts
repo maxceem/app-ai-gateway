@@ -8,8 +8,9 @@ import { clearIsolateCaches, seedServerApp } from "./helpers";
  * The `server-timing` header a served request answers with: which steps it
  * names, in which order, and what a step the request never reached reports.
  *
- * Clients may parse it, so the entries keep their names and their order, and
- * every one is present on every served answer, a refusal included.
+ * Clients may parse it, so the entries keep their names and their order.
+ * `prepare` is named only once a request reached it, so a step that never ran
+ * is not mistaken for one that took no time.
  */
 
 /** Long enough that no other step of a test request could account for it. */
@@ -52,9 +53,9 @@ function serverTimings(response: Response): Array<[string, number]> {
   });
 }
 
-function expectEveryEntry(response: Response): Record<string, number> {
+function expectEntries(response: Response, names = ENTRIES): Record<string, number> {
   const entries = serverTimings(response);
-  expect(entries.map(([name]) => name)).toEqual(ENTRIES);
+  expect(entries.map(([name]) => name)).toEqual(names);
   for (const [, duration] of entries) {
     expect(Number.isFinite(duration)).toBe(true);
     expect(duration).toBeGreaterThanOrEqual(0);
@@ -101,7 +102,7 @@ describe("server-timing", () => {
     const response = await proxy("timing-proxy", key);
 
     expect(response.status).toBe(200);
-    const timings = expectEveryEntry(response);
+    const timings = expectEntries(response);
     expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_DECRYPT_MS * 0.9);
     expect(timings.limiter).toBeLessThan(SLOW_DECRYPT_MS * 0.9);
   });
@@ -115,7 +116,7 @@ describe("server-timing", () => {
     const response = await send("/v1/apps/timing-endpoint/endpoints/chat", key, { input: "hello" });
 
     expect(response.status).toBe(200);
-    expectEveryEntry(response);
+    expectEntries(response);
   });
 
   it("reports prepare on a request refused at admission, after the plan was prepared", async () => {
@@ -127,7 +128,7 @@ describe("server-timing", () => {
 
     expect(refused.status).toBe(429);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "app_rate_limited" } });
-    expect(expectEveryEntry(refused).provider_ttfb).toBe(0);
+    expect(expectEntries(refused).provider_ttfb).toBe(0);
   });
 
   it("reports how long prepare took to refuse a request, with nothing after it", async () => {
@@ -144,22 +145,20 @@ describe("server-timing", () => {
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "model_not_allowed" } });
     expect(fetchSpy).not.toHaveBeenCalled();
-    const timings = expectEveryEntry(refused);
+    const timings = expectEntries(refused);
     expect(timings.prepare).toBeGreaterThanOrEqual(SLOW_DECRYPT_MS * 0.9);
     expect(timings.limiter).toBe(0);
     expect(timings.provider_ttfb).toBe(0);
   });
 
-  it("reports every step after a failed credential as not reached", async () => {
+  it("leaves prepare out when the credential was refused before it", async () => {
     await seedServerApp("timing-auth-refused");
 
     const refused = await proxy("timing-auth-refused", `agw_${"Z".repeat(48)}`);
 
     expect(refused.status).toBe(401);
-    // As before `prepare` was measured, a refused credential reports the
-    // steps it never reached as zero, and `prepare` is one of them.
-    const timings = expectEveryEntry(refused);
-    expect(timings.prepare).toBe(0);
+    // The entries that predate `prepare` keep their shape, zero included.
+    const timings = expectEntries(refused, ["auth", "limiter", "provider_ttfb"]);
     expect(timings.limiter).toBe(0);
     expect(timings.provider_ttfb).toBe(0);
   });
