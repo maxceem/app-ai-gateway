@@ -33,8 +33,9 @@ instead.
 
 Only model calls are stored: the
 [inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
-and every custom endpoint. Anything else an app's `allowed_paths` lets through,
-such as files, batches, a job whose result arrives on a later poll, or OpenAI's
+and every custom endpoint. A
+[passthrough path](/applications/provider-access#passthrough-paths), such as
+files, batches, a job whose result arrives on a later poll, or OpenAI's
 `v1/realtime/client_secrets`, which answers with a live key, is never stored.
 Its usage is still recorded.
 

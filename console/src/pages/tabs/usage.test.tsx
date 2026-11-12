@@ -171,6 +171,35 @@ describe("UsageTab event costs", () => {
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 
+  it("labels a passthrough call instead of naming a model or a price", async () => {
+    renderUsage([
+      event({
+        id: 2,
+        model: "",
+        model_author: null,
+        route: "openai/v1/realtime/client_secrets",
+        cost_source: null,
+      }),
+      event({
+        id: 1,
+        provider: "xai",
+        provider_slug: "xai",
+        model: "",
+        model_author: null,
+        route: "xai/v1/videos/generations",
+        cost_usd: 0.5,
+        reported_cost_usd: 0.5,
+        cost_source: "reported",
+      }),
+    ]);
+
+    expect(await screen.findByText("Passthrough")).toBeTruthy();
+    // A cost the provider reported for a passthrough call is still its cost.
+    expect(screen.getByText("$0.50")).toBeTruthy();
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
   it("names the gateway a request was routed through", async () => {
     renderUsage([event({ provider_gateway_type: "cf_aig", credential_source: "byok" })]);
     expect(await screen.findByText(/via cf_aig/u)).toBeTruthy();

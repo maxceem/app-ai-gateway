@@ -185,6 +185,50 @@ describe("ProviderAccessTab", () => {
       expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual(["v1/responses"]));
   });
 
+  it("shows a passthrough path with its methods, and keeps settings saved on it from before", async () => {
+    renderTab(selectedRouting({
+      "openai-dev": {
+        allowed_paths: [
+          "v1/responses",
+          { path: "v1/realtime/client_secrets", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        ],
+        allowed_models: [],
+      },
+    }));
+
+    await screen.findByText("2 endpoints · all models · no output cap");
+    await expand("openai-dev");
+    // A model API keeps its model fields; the passthrough path takes methods instead.
+    expect(screen.getAllByText("Passthrough")).toHaveLength(1);
+    expect(screen.getAllByText("Fixed model")).toHaveLength(1);
+    expect(screen.getByText(/not used for passthrough paths/u)).toBeTruthy();
+    const post = screen.getByRole("checkbox", { name: "POST" });
+    expect(post.getAttribute("aria-checked")).toBe("true");
+    // POST is the only method open, so it cannot be taken away.
+    expect(post.hasAttribute("disabled")).toBe(true);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "GET" }));
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual([
+        "v1/responses",
+        {
+          path: "v1/realtime/client_secrets",
+          fixed_model: "gpt-live-transcribe",
+          clamp: "none",
+          methods: ["GET", "POST"],
+        },
+      ]));
+
+    // Back to POST alone is the default, so the list is not stored.
+    await userEvent.click(screen.getByRole("checkbox", { name: "GET" }));
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths[1]).toEqual({
+        path: "v1/realtime/client_secrets",
+        fixed_model: "gpt-live-transcribe",
+        clamp: "none",
+      }));
+  });
+
   it("asks for models the same way, and only shows the list once asked", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
 

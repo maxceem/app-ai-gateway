@@ -358,12 +358,25 @@ const ApiKeyAuthenticationSchema = z.object({
   end_user: ApiKeyEndUserSchema,
 }).strict();
 
+/**
+ * The HTTP methods a passthrough path can be opened for. Without `methods` a
+ * passthrough path takes POST alone, because the same provider path often
+ * reads or deletes data under another method — `GET v1/files` lists every file
+ * on the provider account — and reaching that has to be the owner's explicit
+ * choice. A model call is always a POST, so a recognised path never takes one.
+ */
+export const PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
+
 const AllowedPathSchema = z.union([
   z.string().min(1),
   z.object({
     path: z.string().min(1),
     fixed_model: z.string().min(1).optional(),
     clamp: z.enum(OUTPUT_CLAMP_STYLES).optional(),
+    methods: z.array(z.enum(PASSTHROUGH_METHODS)).min(1)
+      .refine((methods) => new Set(methods).size === methods.length, "methods must not repeat a method")
+      .optional(),
   }).strict(),
 ]);
 

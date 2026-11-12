@@ -284,6 +284,7 @@ export async function resolveEndpointAttempts(
       // The endpoint's own style settles the API, so the answer is read by the
       // reader for the contract this gateway composed rather than a guess.
       apiStyle: endpoint.api_style,
+      passthrough: false,
       buildRequest,
     } satisfies ExecutionAttempt;
   });

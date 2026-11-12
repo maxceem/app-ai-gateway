@@ -80,17 +80,42 @@ An endpoint is named by its path: the provider's own API path without a leading 
 `{model}` in a path matches one segment, which is how Gemini's
 `v1beta/models/{model}:generateContent` names its model in the URL.
 
-Each row has two optional settings:
+A model API row has two optional settings:
 
-- **Fixed model** applies to routes with no model in the body, such as
-  transcription, and is used for pricing and the model allowlist. It is never
-  injected into the request.
+- **Fixed model** is the model a request on this path is priced and judged
+  as when it names none itself. It is never injected into the request.
 - **Output cap style** tells the gateway which body field carries the output
   limit for this path when it applies **Max output tokens**. Leave it on
   **auto** unless the route needs an exception. The styles are `responses`,
   `chat_completions`, `gemini_native`, `anthropic` and `none`.
 
 A request for a path not in the list answers `403 path_not_allowed`.
+
+### Passthrough paths
+
+A listed path that is neither one of the APIs above nor one of the provider's
+own inference endpoints is a **passthrough** path, for example OpenAI's
+`v1/files`, `v1/batches` or `v1/realtime/client_secrets`. The console marks
+these rows **Passthrough**. The gateway forwards such a request without
+reading it:
+
+- Your app's authentication, the endpoint list and its per-user and app
+  request limits still apply, and a user or app over its spending limit is
+  still refused.
+- No model is read or checked, so **Selected models** and model rewrites do
+  not apply, and the body is sent exactly as the client sent it.
+- It is not priced. If the provider reports what the request cost in its
+  answer, as xAI does, that cost is recorded and counts like any other.
+  Otherwise the call is shown as **Passthrough** in usage, with no cost.
+- It is never kept in [conversation history](/applications/conversations).
+
+A passthrough path takes `POST` only. The same provider path often reads or
+deletes data under another method: `GET v1/files` lists every file in the
+provider account, including other users' uploads. To allow more, list the
+methods on the row, for example
+`{ "path": "v1/files", "methods": ["GET", "POST"] }`. The methods are `GET`,
+`POST`, `PUT`, `PATCH` and `DELETE`. A request with another method answers
+`403 path_not_allowed`.
 
 ## Models this provider serves
 
@@ -165,7 +190,7 @@ more, and you can turn it off or recreate the provider.
           "v1/responses",
           { "path": "v1/audio/transcriptions", "fixed_model": "gpt-4o-mini-transcribe", "clamp": "none" }
         ],
-        "allowed_models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+        "allowed_models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-4o-mini-transcribe"],
         "max_output_tokens": 4096
       },
       "anthropic": { "allowed_paths": [], "allowed_models": [] }

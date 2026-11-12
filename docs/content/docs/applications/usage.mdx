@@ -70,6 +70,9 @@ Each event records how its cost was arrived at.
 - **unresolved**: the provider answered successfully but reported no usage
   the gateway could read, so the request consumed no budget. Shown as
   **unresolved** rather than `$0.00`.
+- No source, on a [passthrough path](/applications/provider-access#passthrough-paths)
+  the provider reported no cost for. The gateway reads no model there, so it
+  has nothing to price. Shown as **Passthrough**, with no model.
 
 The usual cause of an unresolved event is a client that disconnected from a
 stream before the final chunk carrying the usage arrived. The generation stops

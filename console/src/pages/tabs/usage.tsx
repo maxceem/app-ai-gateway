@@ -32,6 +32,7 @@ import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
 import { isGatewayType } from "@/lib/config-types";
 import { isProviderType } from "@shared/providers";
+import { isPassthroughPath } from "@shared/app-config";
 import {
   cachedInputRate,
   daysAgo,
@@ -48,6 +49,24 @@ import {
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
 import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
 import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
+
+/**
+ * Whether an event was a passthrough call, read off its route with the rule
+ * the gateway itself applies: the gateway forwarded it without reading a
+ * model, so there is no model to name and a cost only where the provider
+ * reported one. A custom endpoint is never one.
+ */
+export function isPassthroughEvent(event: {
+  provider: string;
+  route: string;
+  endpoint_slug: string | null;
+}): boolean {
+  const slash = event.route.indexOf("/");
+  return event.endpoint_slug === null
+    && slash > 0
+    && isProviderType(event.provider)
+    && isPassthroughPath(event.provider, event.route.slice(slash + 1));
+}
 
 /**
  * The categorical slots, in the fixed order they were validated in — see the
@@ -398,7 +417,14 @@ export function UsageTab({
                         </span>
                       ) : null}
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{event.model}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {/* A passthrough call names no model: the gateway never read one. */}
+                      {isPassthroughEvent(event) ? (
+                        <span className="font-sans text-muted-foreground">—</span>
+                      ) : (
+                        event.model
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
                       {/* The configured route, which is known with certainty;
@@ -430,7 +456,14 @@ export function UsageTab({
                       {/* An unresolved event was not billed because its usage
                           was unreadable, so showing $0.00 would be a claim the
                           gateway cannot make. */}
-                      {event.cost_source === "unresolved" ? (
+                      {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
+                        <span
+                          className="text-muted-foreground"
+                          title="Passthrough: forwarded without being read, so it is not priced and consumes no spending budget. Request limits still apply."
+                        >
+                          Passthrough
+                        </span>
+                      ) : event.cost_source === "unresolved" ? (
                         <span
                           className="text-amber-600 dark:text-amber-400"
                           title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
@@ -444,7 +477,9 @@ export function UsageTab({
                           // saying, because the two can differ.
                           title={
                             event.cost_source === "reported"
-                              ? "Cost reported by the provider for this request."
+                              ? isPassthroughEvent(event)
+                                ? "Passthrough: cost reported by the provider for this request."
+                                : "Cost reported by the provider for this request."
                               : undefined
                           }
                         >

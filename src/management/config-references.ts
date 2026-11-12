@@ -10,6 +10,7 @@ import {
   ConfigError,
   defaultInferencePaths,
   endpointKind,
+  isPassthroughPath,
   selectedProviderPolicies,
   type AppConfig,
   type EndpointConfig,
@@ -56,14 +57,25 @@ function validateRoutingPrices(
         ...defaultInferencePaths(provider.type).map((entry) => classifyPath(entry.path).protocol.style),
       ]
       : paths.map((path) => classifyPath(path).protocol.style);
+    policy.allowed_paths.forEach((path, index) => {
+      // Methods open a passthrough path beyond POST. A model call is always a
+      // POST, so on any other path the list could only ever be wrong.
+      if (typeof path !== "string" && path.methods !== undefined && !isPassthroughPath(provider.type, path.path)) {
+        throw new ConfigError(
+          `${slug}.allowed_paths[${index}].methods applies only to passthrough paths; ${path.path} is a model call, which is always a POST`,
+        );
+      }
+    });
     const configured = [
       ...policy.allowed_models.map((model) => ({
         model,
         styles: allowedStyles,
         label: `${slug}.allowed_models`,
       })),
+      // A passthrough path reads no model, so a `fixed_model` stored on one is
+      // never used and is not judged either.
       ...policy.allowed_paths.flatMap((path, index) =>
-        typeof path === "string" || path.fixed_model === undefined
+        typeof path === "string" || path.fixed_model === undefined || isPassthroughPath(provider.type, path.path)
           ? []
           : [{
             model: path.fixed_model,

@@ -17,6 +17,7 @@
 
 import {
   endpointKind,
+  isPassthroughPath,
   providerPolicyFor,
   reachableProviders,
   type AuthenticationConfig,
@@ -271,7 +272,10 @@ export function firstRequest(
     for (const entry of paths) {
       const path = typeof entry === "string" ? entry : entry.path;
       if (path.includes("*")) continue;
-      const fixed = typeof entry !== "string" ? entry.fixed_model : undefined;
+      // A passthrough path reads no model, so a fixed model stored on one is not one.
+      const fixed = typeof entry !== "string" && !isPassthroughPath(provider.type, path)
+        ? entry.fixed_model
+        : undefined;
       // A fixed model is the app's own, so it is never a gap.
       const chosen = fixed
         ? { model: fixed, kind: modelKind(prices, provider.type, fixed, provider.pricing) ?? "text" }

@@ -86,6 +86,7 @@ export function testAttribution(overrides: Partial<AttemptAttribution> = {}): At
     pricing: null,
     model: "gpt-5.6-sol",
     apiStyle: "responses",
+    passthrough: false,
     route: "openai/v1/responses",
     ...overrides,
   };
