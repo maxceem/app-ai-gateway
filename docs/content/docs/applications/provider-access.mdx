@@ -84,7 +84,8 @@ Each row has two optional settings:
 
 - **Fixed model** applies to routes with no model in the body, such as
   transcription, and is used for pricing and the model allowlist. It is never
-  injected into the request.
+  injected into the request. On a realtime key request it is a requirement
+  instead; see [Realtime sessions](#realtime-sessions).
 - **Output cap style** tells the gateway which body field carries the output
   limit for this path when it applies **Max output tokens**. Leave it on
   **auto** unless the route needs an exception. The styles are `responses`,
@@ -142,6 +143,50 @@ Gemini Embedding 2 bills images, audio and video at their own rates, above the
 text rate. `embedContent` reports what each request contained, so call it there:
 a response that does not say, such as one from the OpenAI-compatible endpoint, is
 billed entirely at the video rate.
+
+## Realtime sessions
+
+An app can let its users stream audio to an OpenAI realtime model by asking
+the gateway for a short-lived key. List `v1/realtime/client_secrets` as a
+selected endpoint; it is not one of the defaults. The app then connects to
+OpenAI with the returned key, and that session never passes through the
+gateway.
+
+```json
+"openai": {
+  "allowed_paths": [
+    { "path": "v1/realtime/client_secrets", "fixed_model": "gpt-live-transcribe", "clamp": "none" }
+  ],
+  "allowed_models": []
+}
+```
+
+Because the gateway cannot see the session, it checks the session the request
+asks OpenAI to create before forwarding it:
+
+- `session.type` must be `transcription` or `realtime`.
+- Every model the session names is checked like any other requested model:
+  the row's **Fixed model**, the allowed models, your
+  [model rewrites](/applications/model-rewrites), and its price. A realtime
+  session names its model in `session.model`. The model that transcribes the
+  input audio, in `session.audio.input.transcription.model`, is checked too.
+  A transcription session must name it, and a realtime session must name it
+  when it turns transcription on.
+- On this path **Fixed model** is a requirement: every model the session names
+  must be that model, and a session that names none is refused rather than
+  given it. A realtime session with input transcription therefore names two
+  models, so give its row no fixed model and list both under the allowed
+  models instead.
+- The key may stay valid for at most 600 seconds. A larger
+  `expires_after.seconds` is refused, and a request that does not set one gets
+  600. One key can open several sessions until it expires.
+
+A session that breaks any of these is refused with `400 invalid_request`,
+`403 model_not_allowed` or `400 pricing_not_configured`, and nothing reaches
+OpenAI. **Max output tokens** is not applied to this path. OpenAI's older
+`v1/realtime/sessions` and `v1/realtime/transcription_sessions`, and
+`v1/realtime/calls`, answer `403 path_not_allowed` even when listed; use
+`v1/realtime/client_secrets` for both session types.
 
 ## When a provider is missing
 

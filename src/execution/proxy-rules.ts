@@ -25,6 +25,12 @@ import {
 } from "../shared/app-config";
 import type { AllowedPath, AllowedPathConfig, AppRecord } from "../core/types";
 import type { ProviderType } from "../shared/providers";
+import {
+  guardRealtimeMint,
+  realtimePathKind,
+  refusedRealtimePath,
+  type JudgedModel,
+} from "./realtime-mint";
 
 export interface PreparedProxyRequest {
   provider: ProviderType;
@@ -344,23 +350,36 @@ export function clientResponseHeaders(upstream: Response): Headers {
  * before it settled. One function for both shapes, so the multipart path and
  * the JSON path cannot drift into two policies.
  */
-function resolveModel(input: {
+function resolveModel(input: ModelPolicyInput & {
   match: MatchedPath;
   /** The model the body named, where the body is where this shape carries it. */
   bodyModel: string | undefined;
-  policy: ProviderPolicy;
-  rewrites: Record<string, string> | undefined;
-  resolved: ResolvedProvider;
-  /** The API the request speaks, which decides whether a cost report covers it. */
-  style: ApiStyle;
-}): { requestedModel: string; actualModel: string; wireModel: string } {
-  const provider = input.resolved.type;
+}): JudgedModel {
   const requestedModel = input.match.modelFromPath
     ?? input.bodyModel
     ?? input.match.entry.fixed_model;
   if (!requestedModel) {
     throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
   }
+  return judgeModel(input, requestedModel);
+}
+
+/** What the app's model policy judges a requested model against. */
+interface ModelPolicyInput {
+  policy: ProviderPolicy;
+  rewrites: Record<string, string> | undefined;
+  resolved: ResolvedProvider;
+  /** The API the request speaks, which decides whether a cost report covers it. */
+  style: ApiStyle;
+}
+
+/**
+ * One requested model through the app's policy: the allowlist, the rewrites,
+ * billability, and the route's wire name. Shared by {@link resolveModel} and
+ * the realtime mint guard, which judges every model a session names.
+ */
+function judgeModel(input: ModelPolicyInput, requestedModel: string): JudgedModel {
+  const provider = input.resolved.type;
   if (!modelIsAllowed(input.policy.allowed_models, requestedModel)) {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
@@ -441,6 +460,9 @@ export async function prepareProxyRequest(input: {
     ? defaultPath(input.providerPath, provider, apiStyle, classified.model)
     : listedPath(input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  // A realtime session is judged only where it is minted; see `realtime-mint.ts`.
+  const realtime = realtimePathKind(provider, input.providerPath);
+  if (realtime === "refuse") throw refusedRealtimePath();
   assertApiStyleSupported(route.kind, provider, apiStyle);
 
   const bytes = await input.body();
@@ -455,6 +477,35 @@ export async function prepareProxyRequest(input: {
     headers,
     query: sanitizedQuery(input.request),
   });
+
+  if (realtime === "mint") {
+    // A JSON body whatever the content type claims: the guard has to read the
+    // session, and a body it cannot read is refused here.
+    const text = new TextDecoder().decode(bytes);
+    const parsed = jsonObjectFromText(text);
+    const policy: ModelPolicyInput = {
+      policy: config,
+      rewrites: input.app.config.routing.model_rewrites,
+      resolved,
+      style: apiStyle,
+    };
+    const mint = guardRealtimeMint(parsed, {
+      fixedModel: match.entry.fixed_model || undefined,
+      judge: (requestedModel) => judgeModel(policy, requestedModel),
+    });
+    // No output cap: this body has no top-level output field, and the default
+    // clamp for an unclassified path would add one OpenAI refuses here. The
+    // route's own rewrites still apply.
+    const routed = finishJsonBody(parsed, {
+      provider,
+      route,
+      style: apiStyle,
+      clamp: "none",
+      cap: undefined,
+    });
+    headers.set("content-type", "application/json");
+    return prepared(mint.changed || routed ? JSON.stringify(parsed) : text, input.providerPath, mint.model);
+  }
 
   // The body's format is the client's, whatever the path: a classified
   // transcription is multipart, but so are provider-native uploads under

@@ -169,6 +169,7 @@ export async function setup(env: SmokeEnv): Promise<string[]> {
       server: { id: ids.server, key: await ensureKey(env, ids.server, previous?.apps.server.key) },
       signedIn: { id: ids.signedIn, key: await ensureKey(env, ids.signedIn, previous?.apps.signedIn.key) },
       ios: { id: ids.ios },
+      realtime: { id: ids.realtime, key: await ensureKey(env, ids.realtime, previous?.apps.realtime?.key) },
     },
   };
   writeState(env, state);

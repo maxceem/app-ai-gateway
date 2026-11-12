@@ -28,6 +28,7 @@ export const APP_NAMES = {
   server: "smoke-server",
   signedIn: "smoke-signed-in",
   ios: "smoke-ios",
+  realtime: "smoke-realtime",
 } as const;
 
 export const ENDPOINT_SLUG = "smoke-chat";
@@ -76,6 +77,27 @@ export function appConfigs(mockUrl: string): Record<keyof typeof APP_NAMES, Reco
         app_attest: { team_id: "SMOKETEST0", bundle_id: "com.example.smoke" },
       },
       routing: ROUTING,
+    },
+    // A backend that hands out realtime keys, the one operation whose session
+    // the gateway judges before forwarding. The older ways to start a session
+    // are listed so their refusal is the guard's, not the allowlist's.
+    realtime: {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: {
+        providers: {
+          mode: "selected",
+          selected: {
+            "smoke-openai": {
+              allowed_paths: [
+                { path: "v1/realtime/client_secrets", fixed_model: MODEL, clamp: "none" },
+                { path: "v1/realtime/sessions", fixed_model: MODEL, clamp: "none" },
+              ],
+              allowed_models: [],
+            },
+          },
+        },
+        model_rewrites: {},
+      },
     },
   };
 }

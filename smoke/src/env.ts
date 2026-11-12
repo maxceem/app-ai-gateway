@@ -99,6 +99,7 @@ export interface SmokeState {
     server: { id: string; key: string };
     signedIn: { id: string; key: string };
     ios: { id: string };
+    realtime: { id: string; key: string };
   };
 }
 

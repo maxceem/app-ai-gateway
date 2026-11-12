@@ -2864,3 +2864,365 @@ describe("a custom end-user header", () => {
     });
   });
 });
+
+describe("OpenAI realtime client secrets", () => {
+  const MINT_PATH = "openai/v1/realtime/client_secrets";
+  const FIXED_ENTRY = { path: "v1/realtime/client_secrets", fixed_model: "gpt-live-transcribe", clamp: "none" };
+
+  function transcriptionMint(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      session: {
+        type: "transcription",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24000 },
+            noise_reduction: { type: "near_field" },
+            transcription: { model: "gpt-live-transcribe", language: "en" },
+            turn_detection: null,
+          },
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  async function seedMintApp(
+    appId: string,
+    openai: Record<string, unknown> = { allowed_paths: [FIXED_ENTRY], allowed_models: [] },
+    rewrites: Record<string, string> = {},
+  ): Promise<string> {
+    await seedApp(appId, { proxy: { openai, model_rewrites: rewrites } });
+    return gatewayToken(appId);
+  }
+
+  /** The upstream calls, answered the way OpenAI answers a mint. */
+  function captureMints(): CapturedRequest[] {
+    const captured: CapturedRequest[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      const bytes = upstreamBodyBytes(init?.body);
+      captured.push({
+        url: typeof request === "string" ? request : request instanceof URL ? request.toString() : request.url,
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === "string" ? init.body : bytes ? new TextDecoder().decode(bytes) : "",
+      });
+      return Response.json({ value: "ek_test", expires_at: 1, session: { type: "transcription" } });
+    });
+    return captured;
+  }
+
+  async function lastRecordedModel(appId: string): Promise<string | undefined> {
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT model FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    )
+      .bind(appId)
+      .first<{ model: string }>();
+    return row?.model;
+  }
+
+  async function expectRefused(
+    appId: string,
+    token: string,
+    body: Record<string, unknown>,
+    status: number,
+    code: string,
+    path = MINT_PATH,
+  ): Promise<void> {
+    const captured = captureMints();
+    const response = await proxyRequest({ appId, token, path, body });
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toMatchObject({ error: { code } });
+    expect(captured).toHaveLength(0);
+    vi.restoreAllMocks();
+  }
+
+  it("forwards a transcription mint unchanged apart from the injected key lifetime", async () => {
+    const appId = "mint-transcription";
+    const token = await seedMintApp(appId);
+    const captured = captureMints();
+    const body = transcriptionMint();
+
+    const response = await proxyRequest({ appId, token, path: MINT_PATH, body });
+
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/realtime/client_secrets");
+    expect(JSON.parse(captured[0]?.body ?? "")).toEqual({
+      ...body,
+      expires_after: { anchor: "created_at", seconds: 600 },
+    });
+    expect(await lastRecordedModel(appId)).toBe("gpt-live-transcribe");
+  });
+
+  it("forwards a mint that already names an allowed lifetime as the text the client sent", async () => {
+    const appId = "mint-lifetime-kept";
+    const token = await seedMintApp(appId);
+    const captured = captureMints();
+    const body = transcriptionMint({ expires_after: { anchor: "created_at", seconds: 300 } });
+
+    const response = await proxyRequest({ appId, token, path: MINT_PATH, body });
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.body).toBe(JSON.stringify(body));
+  });
+
+  it("writes the cap into an expires_after that names no seconds", async () => {
+    const appId = "mint-lifetime-partial";
+    const token = await seedMintApp(appId);
+    const captured = captureMints();
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: MINT_PATH,
+      body: transcriptionMint({ expires_after: { anchor: "created_at" } }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(captured[0]?.body ?? "")).toMatchObject({
+      expires_after: { anchor: "created_at", seconds: 600 },
+    });
+  });
+
+  it("refuses a key lifetime above the cap", async () => {
+    const appId = "mint-lifetime-over";
+    const token = await seedMintApp(appId);
+    await expectRefused(
+      appId,
+      token,
+      transcriptionMint({ expires_after: { anchor: "created_at", seconds: 7200 } }),
+      400,
+      "invalid_request",
+    );
+    await expectRefused(
+      appId,
+      token,
+      transcriptionMint({ expires_after: { anchor: "created_at", seconds: "7200" } }),
+      400,
+      "invalid_request",
+    );
+  });
+
+  it("refuses a realtime session when the path's fixed model is a transcription model", async () => {
+    const appId = "mint-fixed-realtime";
+    const token = await seedMintApp(appId);
+    await expectRefused(
+      appId,
+      token,
+      { session: { type: "realtime", model: "gpt-realtime" } },
+      403,
+      "model_not_allowed",
+    );
+  });
+
+  it("refuses another transcription model under the fixed model", async () => {
+    const appId = "mint-fixed-other";
+    const token = await seedMintApp(appId);
+    await expectRefused(
+      appId,
+      token,
+      {
+        session: {
+          type: "transcription",
+          audio: { input: { transcription: { model: "gpt-4o-transcribe" } } },
+        },
+      },
+      403,
+      "model_not_allowed",
+    );
+  });
+
+  it("enforces allowed_models on every model the session names when no model is fixed", async () => {
+    const appId = "mint-allowlist";
+    const token = await seedMintApp(appId, {
+      allowed_paths: [{ path: "v1/realtime/client_secrets", clamp: "none" }],
+      allowed_models: ["gpt-live-transcribe", "gpt-realtime-translate", "gpt-transcribe"],
+    });
+    await expectRefused(
+      appId,
+      token,
+      {
+        session: {
+          type: "transcription",
+          audio: { input: { transcription: { model: "gpt-4o-transcribe" } } },
+        },
+      },
+      403,
+      "model_not_allowed",
+    );
+    // A realtime session's input transcription is judged as well as its own model.
+    await expectRefused(
+      appId,
+      token,
+      {
+        session: {
+          type: "realtime",
+          model: "gpt-realtime-translate",
+          audio: { input: { transcription: { model: "gpt-4o-transcribe" } } },
+        },
+      },
+      403,
+      "model_not_allowed",
+    );
+
+    const captured = captureMints();
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: MINT_PATH,
+      body: {
+        session: {
+          type: "realtime",
+          model: "gpt-realtime-translate",
+          audio: { input: { transcription: { model: "gpt-transcribe" } } },
+        },
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    // The session's own model is the one the usage event names.
+    expect(await lastRecordedModel(appId)).toBe("gpt-realtime-translate");
+  });
+
+  it("refuses a model with no price", async () => {
+    const appId = "mint-unpriced";
+    const token = await seedMintApp(appId, {
+      allowed_paths: [{ path: "v1/realtime/client_secrets", clamp: "none" }],
+      allowed_models: [],
+    });
+    await expectRefused(
+      appId,
+      token,
+      { session: { type: "realtime", model: "gpt-realtime" } },
+      400,
+      "pricing_not_configured",
+    );
+  });
+
+  it("writes a rewritten model back into the field it came in and records it", async () => {
+    const appId = "mint-rewrite";
+    const token = await seedMintApp(
+      appId,
+      { allowed_paths: [{ path: "v1/realtime/client_secrets", clamp: "none" }], allowed_models: [] },
+      { "live-transcribe": "gpt-live-transcribe" },
+    );
+    const captured = captureMints();
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: MINT_PATH,
+      body: {
+        expires_after: { anchor: "created_at", seconds: 600 },
+        session: {
+          type: "transcription",
+          audio: { input: { transcription: { model: "live-transcribe", language: "en" } } },
+        },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(captured[0]?.body ?? "")).toMatchObject({
+      session: { audio: { input: { transcription: { model: "gpt-live-transcribe", language: "en" } } } },
+    });
+    expect(await lastRecordedModel(appId)).toBe("gpt-live-transcribe");
+  });
+
+  it("refuses a session that names no model where its type needs one", async () => {
+    const appId = "mint-no-model";
+    const token = await seedMintApp(appId);
+    // Not injected from the fixed model: the client names it, or the mint is refused.
+    await expectRefused(
+      appId,
+      token,
+      { session: { type: "transcription", audio: { input: { format: { type: "audio/pcm", rate: 24000 } } } } },
+      400,
+      "invalid_request",
+    );
+    await expectRefused(
+      appId,
+      token,
+      { session: { type: "transcription", audio: { input: { transcription: { language: "en" } } } } },
+      400,
+      "invalid_request",
+    );
+    await expectRefused(appId, token, { session: { type: "realtime" } }, 400, "invalid_request");
+    // Input transcription switched on must name its model rather than take OpenAI's default.
+    const openApp = "mint-no-transcription-model";
+    const openToken = await seedMintApp(openApp, {
+      allowed_paths: [{ path: "v1/realtime/client_secrets", clamp: "none" }],
+      allowed_models: [],
+    });
+    await expectRefused(
+      openApp,
+      openToken,
+      {
+        session: {
+          type: "realtime",
+          model: "gpt-realtime-translate",
+          audio: { input: { transcription: { language: "en" } } },
+        },
+      },
+      400,
+      "invalid_request",
+    );
+  });
+
+  it("refuses a body without a usable session", async () => {
+    const appId = "mint-malformed";
+    const token = await seedMintApp(appId);
+    for (const body of [
+      {},
+      { session: "transcription" },
+      { session: [] },
+      { session: { type: "translation" } },
+      { session: { audio: { input: { transcription: { model: "gpt-live-transcribe" } } } } },
+      { session: { type: "transcription", audio: "pcm" } },
+      { session: { type: "transcription", audio: { input: { transcription: "gpt-live-transcribe" } } } },
+      { session: { type: "transcription", model: "gpt-live-transcribe" } },
+      { session: { type: "realtime", model: "gpt-live-transcribe", input_audio_transcription: {} } },
+      { ...transcriptionMint(), model: "gpt-live-transcribe" },
+      { ...transcriptionMint(), expires_after: 600 },
+    ]) {
+      await expectRefused(appId, token, body, 400, "invalid_request");
+    }
+  });
+
+  it("refuses the other ways to start a realtime session, even when listed", async () => {
+    const appId = "mint-legacy";
+    const token = await seedMintApp(appId, {
+      allowed_paths: [
+        { path: "v1/realtime/sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        { path: "v1/realtime/transcription_sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        { path: "v1/realtime/calls", fixed_model: "gpt-live-transcribe", clamp: "none" },
+      ],
+      allowed_models: [],
+    });
+    for (const path of ["sessions", "transcription_sessions", "calls"]) {
+      await expectRefused(
+        appId,
+        token,
+        transcriptionMint(),
+        403,
+        "path_not_allowed",
+        `openai/v1/realtime/${path}`,
+      );
+    }
+  });
+
+  it("guards a listed spelling of the mint path that differs only in its slashes", async () => {
+    const appId = "mint-spelling";
+    const token = await seedMintApp(appId, {
+      allowed_paths: [{ path: "v1/realtime/client_secrets/", fixed_model: "gpt-live-transcribe", clamp: "none" }],
+      allowed_models: [],
+    });
+    await expectRefused(
+      appId,
+      token,
+      { session: { type: "realtime", model: "gpt-realtime" } },
+      403,
+      "model_not_allowed",
+      "openai/v1/realtime/client_secrets/",
+    );
+  });
+});
