@@ -8,7 +8,6 @@ import { app as appTable } from "../src/db/schema";
 import { conversationRecord, type ConversationCapture } from "../src/conversations/record";
 import { RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention";
 import { QueryBudget } from "../src/core/query-budget";
-import { mintsCredential } from "../src/execution/credential-minting";
 import { isInferencePath } from "../src/shared/app-config";
 import { clearIsolateCaches, seedServerApp } from "./helpers";
 import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
@@ -510,18 +509,17 @@ describe("conversation storage through the gateway", () => {
   });
 });
 
-describe("credential-minting responses", () => {
+describe("realtime session keys", () => {
   /** A made-up ephemeral key: what a realtime session endpoint answers with. */
   const EPHEMERAL_KEY = "ek_test_never_stored_0123456789abcdef";
   const REALTIME = {
     openai: {
       allowed_paths: [
-        "v1/responses",
         { path: "v1/realtime/client_secrets", fixed_model: "gpt-live-transcribe", clamp: "none" },
         { path: "v1/realtime/sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
         { path: "v1/realtime/transcription_sessions", fixed_model: "gpt-live-transcribe", clamp: "none" },
       ],
-      allowed_models: ["gpt-5.6-sol", "gpt-live-transcribe"],
+      allowed_models: ["gpt-live-transcribe"],
       max_output_tokens: 128,
     },
   };
@@ -538,13 +536,13 @@ describe("credential-minting responses", () => {
     return { result, lines: lines.map((args) => JSON.stringify(args)).join("\n") };
   }
 
-  /** The provider answers with a key, or refuses, and asks for its answer to be cached either way. */
+  /** The provider answers with a key, or refuses. */
   function providerMints(status = 200): void {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
       status === 200
         ? { value: EPHEMERAL_KEY, expires_at: 1_900_000_000, session: { type: "transcription" } }
         : { error: { message: "Invalid session configuration", type: "invalid_request_error" } },
-      { status, headers: { "cache-control": "public, max-age=600" } },
+      { status },
     ));
   }
 
@@ -564,13 +562,7 @@ describe("credential-minting responses", () => {
     ];
   }
 
-  async function usageRoute(traceId: string): Promise<string | undefined> {
-    const row = await env.DB.prepare("SELECT route FROM app_usage_event WHERE client_trace_id = ?")
-      .bind(traceId).first<{ route: string }>();
-    return row?.route;
-  }
-
-  it("never stores a minted key or lets it be cached, while still recording usage", async () => {
+  it("are never stored, answered or refused, while their usage is still recorded", async () => {
     const appId = "conversation-mint";
     const key = await seedServerApp(appId, { proxy: REALTIME });
     await enableStorage(appId);
@@ -581,67 +573,17 @@ describe("credential-minting responses", () => {
         providerMints(status);
         const { result: response, lines } = await logged(() => served(...mintRequest(appId, key, path, traceId)));
         expect([path, status, response.status]).toEqual([path, status, status]);
-        expect([path, status, response.headers.get("cache-control")]).toEqual([path, status, "no-store"]);
         if (status === 200) expect(await response.text()).toContain(EPHEMERAL_KEY);
         expect([path, status, lines.includes(EPHEMERAL_KEY)]).toEqual([path, status, false]);
-        expect([path, status, await usageRoute(traceId)]).toEqual([path, status, `openai/${path}`]);
+        const row = await env.DB.prepare("SELECT route FROM app_usage_event WHERE client_trace_id = ?")
+          .bind(traceId).first<{ route: string }>();
+        expect([path, status, row?.route]).toEqual([path, status, `openai/${path}`]);
         vi.restoreAllMocks();
       }
     }
     expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(0);
     await env.CONVERSATION_LOG.getByName(appId).flush();
     expect(await storedRecords(appId)).toEqual([]);
-  });
-
-  it("still stores every other exchange as before, and leaves its caching to the provider", async () => {
-    const appId = "conversation-mint-other";
-    const key = await seedServerApp(appId, { proxy: REALTIME });
-    await enableStorage(appId);
-    providerAnswers();
-    const plain = await served(...responsesRequest(appId, key, { "x-client-trace-id": "other-1" }));
-    expect(plain.status).toBe(200);
-    expect(plain.headers.get("cache-control")).toBeNull();
-    vi.restoreAllMocks();
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
-      { id: "resp_2", output_text: "Cached.", usage: { input_tokens: 3, output_tokens: 2 } },
-      { headers: { "cache-control": "private, max-age=5" } },
-    ));
-    const cached = await served(...responsesRequest(appId, key, { "x-client-trace-id": "other-2" }));
-    expect(cached.headers.get("cache-control")).toBe("private, max-age=5");
-
-    await env.CONVERSATION_LOG.getByName(appId).flush();
-    const records = await storedRecords(appId);
-    expect(records.map((record) => [record.trace_id, record.route, (record.response as { value: { id: string } }).value.id]))
-      .toEqual([["other-1", "openai/v1/responses", "resp_1"], ["other-2", "openai/v1/responses", "resp_2"]]);
-  });
-
-  it("knows a minting path by any spelling a server would resolve to it, and nothing else", () => {
-    for (const path of [
-      "v1/realtime/client_secrets",
-      "v1/realtime/sessions",
-      "v1/realtime/transcription_sessions",
-      "openai/v1/realtime/client_secrets",
-      "v1/realtime/client_secrets/",
-      "v1//realtime///client_secrets",
-      "V1/Realtime/Client_Secrets",
-      "v1/realtime/%63lient_secrets",
-      "v1/realtime%2Fclient_secrets",
-      "v1/./realtime/x/../client_secrets",
-    ]) {
-      expect([path, mintsCredential(path)]).toEqual([path, true]);
-    }
-    for (const path of [
-      "v1/responses",
-      "v1/realtime",
-      "v1/realtime/calls",
-      "v1/realtime/client_secrets/extra",
-      "v1/sessions",
-      "v1/realtime/client_secrets/..",
-      "v1/chat/completions",
-      "v1/realtime/%E0%A4%A",
-    ]) {
-      expect([path, mintsCredential(path)]).toEqual([path, false]);
-    }
   });
 });
 
@@ -691,8 +633,6 @@ describe("what conversation storage keeps", () => {
       completion_window: "24h",
     }));
     expect(batch.status).toBe(200);
-    // A call that is not stored is answered as before, caching included.
-    expect(batch.headers.get("cache-control")).toBeNull();
 
     await env.CONVERSATION_LOG.getByName(appId).flush();
     expect((await storedRecords(appId)).map((record) => [record.trace_id, record.route]))

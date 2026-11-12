@@ -34,11 +34,9 @@ instead.
 Only model calls are stored: the
 [inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
 and every custom endpoint. Anything else an app's `allowed_paths` lets through,
-such as files, batches or a job whose result arrives on a later poll, is never
-stored. Neither is a request that mints a short-lived provider key, such as
-OpenAI's `v1/realtime/client_secrets`, `v1/realtime/sessions` or
-`v1/realtime/transcription_sessions`, because the answer is a live key. Usage is
-still recorded for all of them.
+such as files, batches, a job whose result arrives on a later poll, or OpenAI's
+`v1/realtime/client_secrets`, which answers with a live key, is never stored.
+Its usage is still recorded.
 
 Each record also carries the request's `event_id` (the same as its usage
 event), the time, the user id, the install, the app version, the route, the

@@ -8,7 +8,6 @@ import { timeOrderedId } from "../core/ids";
 import { conversationCapture, CAPTURE_MAX_BYTES, type CaptureSource } from "../conversations/capture";
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan, type ExecutionRequest } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
-import { mintsCredential } from "./credential-minting";
 import { isInferencePath } from "../shared/app-config";
 import {
   fetchWithTtfbTimeout,
@@ -42,11 +41,10 @@ function isRetryableStatus(status: number): boolean {
  * lists an app that names no paths may reach. Anything else an app's
  * `allowed_paths` lets through — files, batches, jobs whose result a later
  * poll returns, a realtime session's key — is not a conversation, whatever
- * the app chose. A minted credential is refused by name as well, so adding a
- * realtime path to a provider's inference list cannot start storing keys.
+ * the app chose.
  */
 function captureFor(context: ExecutionContext, attempt: ExecutionAttempt): CaptureSource | null {
-  if (!context.capture || mintsCredential(attempt.providerPath)) return null;
+  if (!context.capture) return null;
   const modelCall = attempt.apiStyle !== "other" || isInferencePath(attempt.resolved.type, attempt.providerPath);
   return modelCall ? context.capture : null;
 }
@@ -227,9 +225,6 @@ export async function execute(
 
     const headers = clientResponseHeaders(upstream);
     headers.set("Server-Timing", serverTiming(context.timings, providerTtfb));
-    // A minted credential is the client's alone: no cache on the way may keep
-    // it, whether the provider answered with one or with an error.
-    if (mintsCredential(attempt.providerPath)) headers.set("Cache-Control", "no-store");
     let clientStream = upstream.body;
     let observed: Promise<ObservedBody> | null = null;
     if (upstream.body) {
