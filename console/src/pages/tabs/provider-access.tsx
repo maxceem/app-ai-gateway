@@ -230,7 +230,15 @@ function PathRow({
             value={entry.path}
             placeholder="v1/responses"
             className="font-mono text-xs"
-            onChange={(event) => onChange({ ...entry, path: event.target.value })}
+            onChange={(event) => {
+              const path = event.target.value;
+              // Methods belong to passthrough paths only, and a model path's row
+              // has no control left to clear them with, so they go when the path
+              // becomes one. An emptied field keeps them for what is typed next.
+              const modelPath = type !== undefined && path.trim() !== "" && !isPassthroughPath(type, path.trim());
+              const { methods: _methods, ...rest } = entry;
+              onChange(modelPath ? { ...rest, path } : { ...entry, path });
+            }}
           />
         </div>
         {passthrough ? (

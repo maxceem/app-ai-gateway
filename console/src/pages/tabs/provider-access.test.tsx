@@ -229,6 +229,21 @@ describe("ProviderAccessTab", () => {
       }));
   });
 
+  it("drops a passthrough path's methods when it is edited into a model API", async () => {
+    renderTab(selectedRouting({
+      "openai-dev": { allowed_paths: [{ path: "v1/files", methods: ["GET", "POST"] }], allowed_models: [] },
+    }));
+
+    await screen.findByText("1 endpoint · all models · no output cap");
+    await expand("openai-dev");
+    const path = screen.getByDisplayValue("v1/files");
+    await userEvent.clear(path);
+    await userEvent.type(path, "v1/responses");
+
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual(["v1/responses"]));
+  });
+
   it("asks for models the same way, and only shows the list once asked", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
 
