@@ -311,7 +311,7 @@ function PathRow({
         </Button>
       </div>
       {passthrough ? (
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
           Non-standard path, forwarded as sent. No model check. Spending limits apply only if the
           provider reports a cost. Request limits still apply.
         </p>
