@@ -991,6 +991,15 @@ test("catalog editor: a multi-line entry gains a line after its last field", () 
   assert.equal(moved, edited.replace('"retirement_date": "2027-06-01"', '"retirement_date": "2027-07-01"'));
 });
 
+test("catalog editor: a multi-line entry gains a retirement date and a longer price together", () => {
+  const edited = applyEdits(catalogText, [
+    { provider: "openai", model: "gpt-5.4", field: "input", to: 2.625 },
+    { provider: "openai", model: "gpt-5.4", field: "retirement_date", to: "2027-06-01" },
+  ]);
+  assert.equal(JSON.parse(edited).openai["gpt-5.4"].input, 2.625);
+  assert.ok(edited.includes('      "long_output": 22.5,\n      "retirement_date": "2027-06-01"\n    },\n    "gpt-5.4-pro"'));
+});
+
 test("catalog editor: a schedule spreads a one-line entry out, and removing it restores the line", () => {
   const edited = applyEdits(catalogText, [{ provider: "openai", model: "whisper-1", field: "price_changes", to: [{ from: "2027-01-01", per_minute: 0.008 }] }]);
   assert.ok(edited.includes(

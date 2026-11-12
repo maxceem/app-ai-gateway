@@ -166,7 +166,9 @@ function rewriteEntry(text, node, edits, where) {
     // A multi-line entry gains lines after its last field, at that field's indent.
     const last = node.entries.at(-1);
     const indent = /^\s*/u.exec(text.slice(lineStart(text, last.keyStart), last.keyStart))[0];
-    const cut = last.value.end - node.start;
+    // Measured in `result`, which values written at another length have shifted.
+    let cut = last.value.end - node.start;
+    for (const [value, written] of replaced) cut += written.length - (value.end - value.start);
     const extra = added.map(([field, value]) => `,\n${indent}${JSON.stringify(field)}: ${value}`).join("");
     return result.slice(0, cut) + extra + result.slice(cut);
   }
