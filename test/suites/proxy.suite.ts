@@ -5,3 +5,4 @@ import "../endpoints.test";
 import "../request-proof.test";
 import "../gateway-errors.test";
 import "../server-timing.test";
+import "../stale-read.test";

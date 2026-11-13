@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { database } from "../db/index";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
+import { readOrKnown } from "./stale-read";
 import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
 import { isAppStatus } from "../shared/app-status";
@@ -88,6 +89,11 @@ let invalidations = 0;
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appConfigCache.get(appId);
   if (cached) return cached;
+  // An expired record still rides out a D1 stall; see `./stale-read`.
+  return readOrKnown("app", appConfigCache.peek(appId), () => readApp(env, appId));
+}
+
+async function readApp(env: Env, appId: string): Promise<AppRecord> {
   // The window is measured from the read's start, not its end, so a slow read
   // never extends how stale a cached record may be.
   const startedAt = Date.now();
@@ -95,7 +101,11 @@ export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   // Fill from the authoritative primary. This TTL is the only intentional
   // configuration staleness window and must not be extended by replica lag.
   const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
-  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+  if (!row) {
+    // A deleted app is never brought back by a later stall.
+    appConfigCache.delete(appId);
+    throw new GatewayError(404, "app_not_found", "App is not registered");
+  }
   const value = appRecordFromRow(row);
   if (generation === invalidations) appConfigCache.set(appId, value, { storedAt: startedAt });
   return value;

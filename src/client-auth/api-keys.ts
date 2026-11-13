@@ -2,6 +2,7 @@ import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { database, type Database } from "../db/index";
 import { appApiKey } from "../db/schema";
 import { GatewayError } from "../core/errors";
+import { readOrKnown } from "../core/stale-read";
 import { ttlCache } from "../core/ttl-cache";
 import type { GatewayIdentity } from "../core/types";
 
@@ -146,15 +147,19 @@ async function lookupCachedApiKey(
     return cached.value;
   }
 
-  apiKeyCache.delete(cacheKey);
-  const lookupStartedAt = Date.now();
-  const value = await lookup();
-  apiKeyCache.set(cacheKey, value, {
-    // A slow read must not add its own duration to the revocation window.
-    storedAt: lookupStartedAt,
-    ttlMs: value ? HIT_TTL_MS : MISS_TTL_MS,
+  // An expired hit still rides out a D1 stall; see `../core/stale-read`. A
+  // miss never does: a key this isolate could not find is looked up again.
+  const known = cached?.value ? { value: cached.value, storedAt: cached.storedAt } : undefined;
+  return readOrKnown<ApiKeyRecord | null>("api_key", known, async () => {
+    const lookupStartedAt = Date.now();
+    const value = await lookup();
+    apiKeyCache.set(cacheKey, value, {
+      // A slow read must not add its own duration to the revocation window.
+      storedAt: lookupStartedAt,
+      ttlMs: value ? HIT_TTL_MS : MISS_TTL_MS,
+    });
+    return value;
   });
-  return value;
 }
 
 /**

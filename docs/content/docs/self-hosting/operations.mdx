@@ -154,6 +154,13 @@ account state from the D1 primary. Bounded Worker caches provide the documented
 propagation windows. Enabling D1 read replication does not make these reads use
 replicas; the gateway does not opt them into replica sessions.
 
+When D1 stalls or fails, a read whose cached entry has expired waits at most one
+second; past that, the last record this isolate read, up to fifteen minutes old,
+is served instead, and the log line `known_record_served` names it. A read
+with no such record still waits for D1. So during a D1 incident, a revoked key,
+a disabled app or a blocked user can take up to fifteen minutes to reach a warm
+isolate.
+
 ## Routine verification
 
 After a deployment, a configuration change, or a Cloudflare zone change:
