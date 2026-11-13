@@ -106,6 +106,15 @@ when the destination is a terminal, and `NO_COLOR` turns it off. Add
 { "schemaVersion": 1, "ok": false, "error": { "code": "...", "message": "...", "nextAction": "...", "details": { } } }
 ```
 
+Either document may also carry `notices`: things to know that are not the
+answer, each with a `code`, a `message` and the `paths` it applies to. The
+CLI prints them to stderr without `--json`. `newer_deployment` means the
+gateway is newer than this `agw` and has settings it does not understand: they
+are shown and kept unchanged when it saves, but not checked. Update `agw` to
+manage them. `version_mismatch` follows a failure the gateway answered when
+the CLI and the gateway API are different releases, and says which one to
+update.
+
 Every error names a `code` and a `nextAction`. Follow the `nextAction`.
 
 | Exit | Meaning |
@@ -141,6 +150,9 @@ back with `app update <id> --file`. The command reads a revision when it
 starts and rejects competing writes during that command; refresh and merge
 an older export first. `app validate --file` checks a new app document;
 `app update <id> --file app.json --dry-run` validates an existing app's update.
+Flags change only the settings they name. A file replaces the whole config,
+so when it would drop or change a setting this `agw` does not understand,
+the CLI names it and needs `--yes`.
 Finish with `app check <id>` and `app snippet <id>`, which send no inference.
 
 **State.** Connection, credentials and pending operations live in

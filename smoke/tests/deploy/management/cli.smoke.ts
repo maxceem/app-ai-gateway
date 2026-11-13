@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -6,7 +7,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
 import { need } from "../../../src/env.ts";
-import { APP_NAMES, PROVIDERS } from "../../../src/fixtures.ts";
+import { APP_NAMES, ENDPOINT_SLUG, PROVIDERS, TEMPORARY_PREFIX } from "../../../src/fixtures.ts";
+import { admin } from "../../../src/gateway.ts";
+import { MODEL } from "../../../src/mock/formats.ts";
 import { env } from "../../support.ts";
 
 const run = promisify(execFile);
@@ -53,6 +56,55 @@ async function cliFor(version: string): Promise<string> {
   return entry;
 }
 
+/**
+ * Whether a version keeps configuration settings it does not know when it
+ * saves. Releases up to 0.17.1 refuse to read an app that has one, so a newer
+ * gateway's field in the fixture below would fail them for a reason that is
+ * already known; every later release, and this checkout's, is held to it.
+ */
+function keepsUnknownSettings(version: string): boolean {
+  if (version === "current") return true;
+  const [major = 0, minor = 0, patch = 0] = version.split(/[.-]/u).map(Number);
+  return major > 0 || minor > 17 || (minor === 17 && patch > 1);
+}
+
+/**
+ * An application that sets the optional configuration fields, each away from
+ * its default. A release that adds an optional field adds it here too: this is
+ * the configuration published CLIs are asked to read and write back intact.
+ */
+const EVERY_OPTION = {
+  authentication: { type: "api_key", end_user: { source: "header", header: "x-smoke-user" } },
+  routing: {
+    providers: {
+      mode: "selected",
+      selected: {
+        [PROVIDERS[0]!.slug]: {
+          allowed_paths: ["v1/responses", { path: "v1/chat/completions", fixed_model: MODEL, clamp: "chat_completions" }],
+          allowed_models: [MODEL],
+          max_output_tokens: 512,
+        },
+      },
+    },
+    model_rewrites: { "smoke-alias": MODEL },
+  },
+  limits: {
+    per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_usd: 5, scope: "user" } },
+    per_app: { requests: { per_minute: 600, per_day: null }, spending: { monthly_usd: 50 } },
+  },
+  endpoints: {
+    [ENDPOINT_SLUG]: {
+      provider: PROVIDERS[0]!.slug,
+      model: MODEL,
+      api_style: "responses",
+      kind: "text",
+      params: { temperature: 0 },
+      max_output_tokens: 256,
+    },
+  },
+  conversations: { store: false, keep: { images: false, audio: true, files: false }, retention_days: 30 },
+};
+
 const homes: string[] = [];
 afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })));
 
@@ -92,5 +144,27 @@ for (const version of versions) {
       expect(await agw("app", "list", "--json")).toContain(APP_NAMES.server);
       expect(await agw("provider", "list", "--json")).toContain(PROVIDERS[0]!.slug);
     });
+
+    test.skipIf(!keepsUnknownSettings(version))(
+      "shows and renames an app that sets every optional field, writing its configuration back unchanged",
+      { timeout: 180_000 },
+      async () => {
+        const name = `${TEMPORARY_PREFIX}${randomBytes(4).toString("hex")}`;
+        const { app } = await admin<{ app: { id: string } }>(env, "POST", "/v1/admin/apps", { name, config: EVERY_OPTION });
+        const path = `/v1/admin/apps/${encodeURIComponent(app.id)}`;
+        try {
+          const { app: before } = await admin<{ app: { config: unknown } }>(env, "GET", path);
+          await agw("deployment", "connect", "--url", cliUrl, "--json");
+          const shown = JSON.parse(await agw("app", "show", app.id, "--json")) as { ok: boolean };
+          expect(shown.ok).toBe(true);
+          await agw("app", "update", app.id, "--name", `${name}-renamed`, "--json", "--no-input");
+          const { app: after } = await admin<{ app: { name: string; config: unknown } }>(env, "GET", path);
+          expect(after.name).toBe(`${name}-renamed`);
+          expect(after.config).toEqual(before.config);
+        } finally {
+          await admin(env, "DELETE", `${path}?confirm=${encodeURIComponent(app.id)}`);
+        }
+      },
+    );
   });
 }

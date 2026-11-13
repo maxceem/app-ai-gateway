@@ -2,7 +2,7 @@ import { Writable } from "node:stream";
 import { appCommand } from "./apps.ts";
 import { conversationsCommand } from "./conversations.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
-import { Context, type ContextIo } from "./context.ts";
+import { Context, noticeText, type ContextIo, type Notice } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
 import { CliErrorDetailsSchema } from "./errors.ts";
 import { humanResult, type OutputContext } from "./human.ts";
@@ -14,6 +14,7 @@ import { supportCommand } from "./support.ts";
 import { styleFor } from "./style.ts";
 import { Transport } from "./transport.ts";
 import { positive, usageCommand } from "./usage.ts";
+import { versionNotice } from "./versions.ts";
 
 /** Anything stdout can be pointed at, including the test suite's own sinks. */
 export interface OutputSink {
@@ -84,6 +85,12 @@ export async function main(
   }: MainOptions = {},
 ): Promise<number> {
   const json = argv.includes("--json");
+  // What the run noticed, which either envelope carries; empty until a command runs.
+  let notices: Notice[] = [];
+  // The run's context, once a command has one, and the command it runs: a
+  // failure is explained with both.
+  let ctx: Context | undefined;
+  let command: ParsedCommand["command"] | undefined;
   try {
     const parsed = parse(argv);
     if (parsed.help) {
@@ -96,7 +103,9 @@ export async function main(
     }
     const run = async (): Promise<number> => {
       const state = await store.read((line) => stderr.write(line + "\n"));
-      const ctx = new Context(store, state, transport, parsed.flags, { ...io, stderr });
+      ctx = new Context(store, state, transport, parsed.flags, { ...io, stderr });
+      command = parsed.command;
+      notices = ctx.notices;
       const result = await execute(parsed, ctx);
       const context: OutputContext = {
         url: ctx.url,
@@ -108,7 +117,15 @@ export async function main(
       const rendered: RenderedResult = ctx.onboarding
         ? { ...result, ...ctx.onboarding }
         : result;
-      const output = { schemaVersion: 1, ok: true, context, result: rendered };
+      // `notices` only when there is one, so the envelope of an ordinary run is
+      // what it has always been.
+      const output = {
+        schemaVersion: 1,
+        ok: true,
+        context,
+        result: rendered,
+        ...(notices.length ? { notices } : {}),
+      };
       const text = json
         ? JSON.stringify(output) + "\n"
         : humanResult(parsed.command, rendered, context, styleFor(stdout));
@@ -142,6 +159,12 @@ export async function main(
     // fields this envelope declares may reach stdout. Fail-closed — details
     // that do not parse are dropped rather than printed, and never turn a
     // reportable failure into a crash inside the reporter.
+    // Said after the failure, not instead of it: the gateway's own explanation
+    // comes first, and a release difference is only a possible cause.
+    const mismatch = ctx && command && error instanceof CliError
+      ? await versionNotice(ctx, command, error)
+      : undefined;
+    if (mismatch) notices.push(mismatch);
     const details = e.details ? CliErrorDetailsSchema.safeParse(e.details) : undefined;
     const reported = {
       code: e.code,
@@ -151,7 +174,12 @@ export async function main(
     };
     if (json) {
       stdout.write(
-        JSON.stringify({ schemaVersion: 1, ok: false, error: reported }) + "\n",
+        JSON.stringify({
+          schemaVersion: 1,
+          ok: false,
+          error: reported,
+          ...(notices.length ? { notices } : {}),
+        }) + "\n",
       );
       return e.exitCode;
     }
@@ -170,6 +198,7 @@ export async function main(
     for (const [key, value] of Object.entries(reported.details ?? {}))
       lines.push(`  ${style.dim(`${key}:`)} ${String(value)}`);
     stderr.write(lines.join("\n") + "\n");
+    if (mismatch) stderr.write(noticeText(mismatch, style));
     return e.exitCode;
   }
 }

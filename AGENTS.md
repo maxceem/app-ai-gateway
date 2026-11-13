@@ -26,6 +26,27 @@ The primary target is iOS applications, with secure measures for calling AI APIs
   has confirmed it; the release's prebuilt deploy refuses one anyway.
 - There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
 
+## Compatibility with older clients
+
+An installed `agw` outlives many gateway releases, so a newer gateway must
+never break an older CLI's work.
+
+- Additions to API responses and the app configuration are additive and
+  optional. Never make an existing field required, change what one means, or
+  remove one that older clients read.
+- Write a new configuration field only when it differs from its default, so
+  older clients meet it only once the feature is used. Put a new writable app
+  setting inside `config`: the CLI writes back only `name`, `config` and
+  `status`.
+- Add an enum value only where clients tolerate unknown values: a string they
+  display or store. A value that drives a client's control flow, such as an
+  operation's `state` or a protocol version, needs a new field instead.
+- The CLI keeps and resends fields it does not know (`cli/src/tolerant.ts`).
+  It edits only what a flag names, and asks before an `--file` update drops
+  them. Add every new optional config field to `EVERY_OPTION` in
+  `smoke/tests/deploy/management/cli.smoke.ts`, which published CLIs read and
+  write back.
+
 ## Documentation changes
 
 - Handwritten guides live in `docs/content/docs/`. Everything generated from
