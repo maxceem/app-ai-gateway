@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
 import { assertAppActive, loadApp } from "../core/app-records";
@@ -57,13 +57,14 @@ async function exchangeToken<K extends ExchangeType>(input: {
   exchange: TokenExchange<K>;
   rawBody: Record<string, unknown>;
   attempt: AuthAttempt;
+  waitUntil: (promise: Promise<unknown>) => void;
 }): Promise<IssuedToken> {
   const { exchange, attempt } = input;
   const handler = EXCHANGES[exchange.type];
   handler.refuseBody?.(input.rawBody);
   attempt.authMethod = handler.authMethod;
   const body = parseRequest(handler.tokenBody(exchange), input.rawBody);
-  return handler.token({ env: input.env, appId: input.appId, exchange, body, attempt });
+  return handler.token({ env: input.env, appId: input.appId, exchange, body, attempt, waitUntil: input.waitUntil });
 }
 
 /** The application's key registration, run on a `/auth/register` body, or the refusal where its exchange has none. */
@@ -73,6 +74,7 @@ async function registerKey<K extends ExchangeType>(input: {
   exchange: TokenExchange<K>;
   rawBody: Record<string, unknown>;
   attempt: AuthAttempt;
+  waitUntil: (promise: Promise<unknown>) => void;
 }): Promise<{ user_id: string }> {
   const { exchange, attempt } = input;
   const handler = EXCHANGES[exchange.type];
@@ -80,7 +82,7 @@ async function registerKey<K extends ExchangeType>(input: {
   if (!registration) throw attestNotSupported();
   attempt.authMethod = handler.authMethod;
   const body = parseRequest(registration.body(exchange), input.rawBody);
-  return registration.run({ env: input.env, appId: input.appId, exchange, body, attempt });
+  return registration.run({ env: input.env, appId: input.appId, exchange, body, attempt, waitUntil: input.waitUntil });
 }
 
 /**
@@ -164,6 +166,13 @@ async function recorded(
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
 
+/** The limit each application authentication endpoint is counted under. */
+const APP_AUTH_LIMITS: Partial<Record<string, "app_auth_challenge" | "app_auth_register" | "app_auth_token">> = {
+  challenge: "app_auth_challenge",
+  register: "app_auth_register",
+  token: "app_auth_token",
+};
+
 /**
  * Bounds flooding of one application's unauthenticated authentication routes
  * from one network address.
@@ -177,18 +186,17 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables 
  * row. Recording it would give a flood a database write per request, which is
  * exactly the cost this limit exists to refuse, and would bury the app's real
  * failures under rows nobody acted on. For the same reason it runs before the
- * app is loaded, so a flood aimed at an invented app id costs no read either.
+ * app is loaded, so a flood aimed at an invented app id costs no read either:
+ * it is mounted ahead of the billing gate, which loads the app and its account,
+ * not inside the routes.
  */
-async function enforceAppAuthLimit(
-  c: Context<{ Bindings: Env; Variables: RequestVariables }>,
-  policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
-): Promise<void> {
-  const appId = c.req.param("app") ?? "";
-  await enforceEndpointRateLimit(c.env, policy, `${appId}:${clientAddress(c.req.raw)}`);
-}
+export const appAuthRateLimit: MiddlewareHandler<{ Bindings: Env; Variables: RequestVariables }> = async (c, next) => {
+  const policy = c.req.method === "POST" ? APP_AUTH_LIMITS[new URL(c.req.url).pathname.split("/").at(-1) ?? ""] : undefined;
+  if (policy) await enforceEndpointRateLimit(c.env, policy, `${c.req.param("app") ?? ""}:${clientAddress(c.req.raw)}`);
+  await next();
+};
 
 authRoutes.post("/challenge", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_challenge");
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
@@ -218,7 +226,6 @@ authRoutes.post("/challenge", async (c) => {
 });
 
 authRoutes.post("/register", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_register");
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
@@ -227,12 +234,12 @@ authRoutes.post("/register", async (c) => {
     assertAppActive(app);
     const { exchange } = clientAuth(app);
     if (exchange === null) throw attestNotSupported();
-    return c.json(await registerKey({ env: c.env, appId, exchange, rawBody, attempt }));
+    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+    return c.json(await registerKey({ env: c.env, appId, exchange, rawBody, attempt, waitUntil }));
   });
 });
 
 authRoutes.post("/token", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_token");
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
@@ -247,7 +254,8 @@ authRoutes.post("/token", async (c) => {
         "API key token exchange requires an issuer end-user source",
       );
     }
-    const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt });
+    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+    const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt, waitUntil });
     return c.json({
       access_token: issued.token,
       expires_in: issued.expiresIn,

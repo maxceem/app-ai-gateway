@@ -10,6 +10,7 @@
  */
 
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { contained } from "../core/background";
 import { z } from "zod";
 import { lookupApiKeyUncached } from "./api-keys";
 import type { ExchangeType, TokenExchange } from "./client-auth";
@@ -135,6 +136,8 @@ interface ExchangeInput<K extends ExchangeType, Body> {
   exchange: TokenExchange<K>;
   body: Body;
   attempt: AuthAttempt;
+  /** For bookkeeping the answer must not wait on, or fail over. */
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 /** One token exchange: the bodies it accepts from an application, and what it does with them. */
@@ -454,7 +457,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     }
   },
   tokenBody: ({ authentication }) => attestBodiesFor(authentication.end_user).token,
-  async token({ env, appId, exchange: { authentication: auth }, body, attempt }) {
+  async token({ env, appId, exchange: { authentication: auth }, body, attempt, waitUntil }) {
     const { userId, trusted } = await attestedUserId(body);
     if (trusted) attempt.userId = userId;
     const db = database(env.DB);
@@ -505,17 +508,20 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     if (!accepted) {
       throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
     }
-    const [appleAccountId] = await Promise.all([
-      appTransaction === undefined ? null : appleAccount(appId, auth.app_attest.bundle_id, appTransaction),
-      db.batch([
-        db.update(appAttestKey)
-          .set({ lastSeenAt: sql`datetime('now')` })
-          .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id))),
-        db.update(appUser)
-          .set({ lastSeenAt: sql`datetime('now')` })
-          .where(and(eq(appUser.appId, appId), eq(appUser.id, userId))),
-      ]),
-    ]);
+    // When the install and its user were last seen is for the console only:
+    // the token neither waits on it nor fails over it, so a slow or failing
+    // D1 write never costs an exchange whose challenge and counter are spent.
+    waitUntil(contained("auth_last_seen", db.batch([
+      db.update(appAttestKey)
+        .set({ lastSeenAt: sql`datetime('now')` })
+        .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id))),
+      db.update(appUser)
+        .set({ lastSeenAt: sql`datetime('now')` })
+        .where(and(eq(appUser.appId, appId), eq(appUser.id, userId))),
+    ])));
+    const appleAccountId = appTransaction === undefined
+      ? null
+      : await appleAccount(appId, auth.app_attest.bundle_id, appTransaction);
     // Proved now: the assertion verified against the stored public key for this
     // key id, so the identity is the gateway's own conclusion rather than a
     // string the caller supplied.

@@ -33,7 +33,7 @@ import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/ser
 import { serverTiming } from "./execution/timing";
 import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import { authRoutes } from "./routes/auth";
+import { appAuthRateLimit, authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
@@ -139,7 +139,7 @@ app.all(
 // schemas, drizzle, the app configuration parser) is on every request's path
 // already. So it needs no wrapper app of its own, and its failures reach the
 // one `onError` below without one.
-app.use("/v1/apps/:app/auth/*", clientCallDeadline, billingEntitlementGate);
+app.use("/v1/apps/:app/auth/*", clientCallDeadline, appAuthRateLimit, billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
 // A served request is one handler that runs its own sequence — account,

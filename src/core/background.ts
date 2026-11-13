@@ -7,6 +7,7 @@ export type BackgroundTask =
   | "served_request"
   | "auth_event"
   | "claim_pending"
+  | "auth_last_seen"
   | "rejection_event";
 
 /**
