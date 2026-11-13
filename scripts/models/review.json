@@ -1,11 +1,29 @@
 [
   {
     "provider": "gemini",
-    "model": "gemini-decision-1",
-    "action": "skip",
-    "kind": "",
-    "reason": "Unsupported public pricing: gemini-decision-1, Output price: unknown price format \"Not applicable (0 output tokens)\"",
-    "origin": "rules",
-    "reviewer": ""
+    "model": "gemini-4-hydrogen",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this current Gemini 4 text model; its multimodal inputs and text output are explicitly listed.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "together",
+    "model": "elorian-labs/glimpse-1.0",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this candidate text model; sparse metadata is not a reason to skip it.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
+  },
+  {
+    "provider": "together",
+    "model": "thinkingmachines/Inkling-2-Small",
+    "action": "add",
+    "kind": "text",
+    "reason": "Add this candidate text model; sparse metadata is not a reason to skip it.",
+    "origin": "ai",
+    "reviewer": "gpt-6-luna"
   }
 ]
