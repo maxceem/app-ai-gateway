@@ -34,10 +34,17 @@ export async function appUserBlocked(db: D1Database, appId: string, userId: stri
 /** Admission tolerates at most ten seconds of staleness across isolates. */
 export function cachedAppUserBlocked(db: D1Database, appId: string, userId: string): Promise<boolean> {
   const key = cacheKey(appId, userId);
+  const known = lastKnownBlocked.peek(key);
   const cached = blockedUserCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // A read that has answered is the answer. One still in flight — shared
+    // with the request that started it — is waited for no longer than that
+    // request waits, so a stalled D1 holds no caller beyond the budget.
+    if (known === undefined || known.storedAt >= blockedUserCache.peek(key)!.storedAt) return cached;
+    return readOrKnown("user_status", known, () => cached);
+  }
 
-  return readOrKnown("user_status", lastKnownBlocked.peek(key), () => {
+  return readOrKnown("user_status", known, () => {
     // Store before awaiting, so concurrent requests share this read. The TTL is
     // measured from its start. An invalidation cannot be undone by completion.
     const startedAt = Date.now();

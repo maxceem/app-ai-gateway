@@ -9,6 +9,9 @@ import {
   STALE_READ_MAX_MS,
   STALL_HOLD_MS,
 } from "../src/core/stale-read";
+import { cachedAppUserBlocked } from "../src/client-auth/user-status";
+import { registeredKey } from "../src/client-auth/request-proof";
+import { loadApp } from "../src/core/app-records";
 import { clearIsolateCaches, seedServerApp } from "./helpers";
 
 const BUDGET_MS = 20;
@@ -62,6 +65,108 @@ describe("readOrKnown", () => {
 
   it("waits for a slow read when nothing usable is known, however long it takes", async () => {
     await expect(readOrKnown("t", undefined, () => later("fresh", BUDGET_MS * 5), BUDGET_MS)).resolves.toBe("fresh");
+  });
+});
+
+/** A database whose block-status reads answer only when the test says so. */
+function controlledStatusDb() {
+  const reads: Array<(row: { status: "active" | "blocked" } | null) => void> = [];
+  const db = {
+    prepare: () => ({
+      bind: () => ({
+        first: () => new Promise((resolve) => reads.push(resolve)),
+      }),
+    }),
+  } as unknown as D1Database;
+  return { db, reads };
+}
+
+describe("records whose read is shared between concurrent requests", () => {
+  it("holds a second caller no longer than the budget while D1 stalls", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    const { db, reads } = controlledStatusDb();
+    const first = cachedAppUserBlocked(db, "shared-app", "user");
+    reads[0]!({ status: "active" });
+    await expect(first).resolves.toBe(false);
+
+    // The status has expired and D1 has stalled: the refresh never answers.
+    clock.mockReturnValue(start + 60_000);
+    const started = performance.now();
+    const refreshing = cachedAppUserBlocked(db, "shared-app", "user");
+    const concurrent = cachedAppUserBlocked(db, "shared-app", "user");
+    expect(reads).toHaveLength(2);
+    await expect(Promise.all([refreshing, concurrent])).resolves.toEqual([false, false]);
+    expect(performance.now() - started).toBeLessThan(STALE_READ_BUDGET_MS * 2);
+    reads[1]!({ status: "active" });
+  });
+});
+
+/**
+ * Only a record D1 still had is ever served in place of a stalled read. One D1
+ * answered as gone stays gone, whatever the cache held before.
+ */
+describe("a record D1 has answered as gone", () => {
+  /** Every D1 query this environment issues waits `ms` before it runs. */
+  function slowEnv(ms: number): Env {
+    const statement = (inner: D1PreparedStatement): D1PreparedStatement => new Proxy(inner, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        if (property === "bind") return (...args: unknown[]) => statement(value.apply(target, args));
+        if (["first", "all", "raw", "run"].includes(String(property))) {
+          return (...args: unknown[]) => later(undefined, ms).then(() => value.apply(target, args));
+        }
+        return value.bind(target);
+      },
+    });
+    const db = new Proxy(env.DB, {
+      get: (target, property, receiver) => {
+        if (property === "prepare") return (query: string) => statement(target.prepare(query));
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return new Proxy(env, {
+      get: (target, property, receiver) => (property === "DB" ? db : Reflect.get(target, property, receiver)),
+    }) as Env;
+  }
+
+  it("never brings back a deleted App Attest key", async () => {
+    await seedServerApp("gone-key-app", { endUser: "none" });
+    await env.DB.prepare(
+      "INSERT INTO app_attest_key(app_id, key_id, public_key, environment) VALUES (?, ?, ?, ?)",
+    ).bind("gone-key-app", "gone-key", "-----BEGIN PUBLIC KEY-----", "production").run();
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    await expect(registeredKey(env, "gone-key-app", "gone-key")).resolves.not.toBeNull();
+
+    await env.DB.prepare("DELETE FROM app_attest_key WHERE key_id = ?").bind("gone-key").run();
+    clock.mockReturnValue(start + 2 * 60_000);
+    await expect(registeredKey(env, "gone-key-app", "gone-key")).resolves.toBeNull();
+
+    clock.mockReturnValue(start + 4 * 60_000);
+    await expect(registeredKey(slowEnv(STALE_READ_BUDGET_MS * 2), "gone-key-app", "gone-key")).resolves.toBeNull();
+  });
+
+  it("never brings back a deleted app", async () => {
+    await seedServerApp("gone-app", { endUser: "none" });
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    await expect(loadApp(env, "gone-app")).resolves.toMatchObject({ id: "gone-app" });
+
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM app_api_key WHERE app_id = ?").bind("gone-app"),
+      env.DB.prepare("DELETE FROM app WHERE id = ?").bind("gone-app"),
+    ]);
+    clock.mockReturnValue(start + 2 * 60_000);
+    await expect(loadApp(env, "gone-app")).rejects.toMatchObject({ code: "app_not_found" });
+
+    clock.mockReturnValue(start + 4 * 60_000);
+    await expect(loadApp(slowEnv(STALE_READ_BUDGET_MS * 2), "gone-app")).rejects.toMatchObject({ code: "app_not_found" });
   });
 });
 

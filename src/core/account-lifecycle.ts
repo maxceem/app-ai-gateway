@@ -83,7 +83,11 @@ async function readAccountLifecycle(env: Env, id: string): Promise<AccountLifecy
     o.expires_at AS expiresAt,
     ${accountActivatedCondition(sql.raw("o.id"))} AS activated
     FROM mgmt_organization o WHERE o.id = ${id}`).first<AccountLifecycle>();
-  if (!row) throw new GatewayError(404, "not_found", "Account was not found");
+  if (!row) {
+    // A deleted account is never brought back by a later stall.
+    accountLifecycleCache.delete(id);
+    throw new GatewayError(404, "not_found", "Account was not found");
+  }
   const value = { ...row, claimed: Boolean(row.claimed), activated: Boolean(row.activated) };
   accountLifecycleCache.set(id, value);
   return value;

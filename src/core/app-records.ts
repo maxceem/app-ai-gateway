@@ -101,7 +101,11 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
   // Fill from the authoritative primary. This TTL is the only intentional
   // configuration staleness window and must not be extended by replica lag.
   const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
-  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+  if (!row) {
+    // A deleted app is never brought back by a later stall.
+    appConfigCache.delete(appId);
+    throw new GatewayError(404, "app_not_found", "App is not registered");
+  }
   const value = appRecordFromRow(row);
   if (generation === invalidations) appConfigCache.set(appId, value, { storedAt: startedAt });
   return value;

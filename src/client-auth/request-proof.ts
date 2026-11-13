@@ -141,11 +141,18 @@ export function invalidateRegisteredKey(appId: string, keyId: string): void {
   lastKnownKey.delete(keyCacheKey(appId, keyId));
 }
 
-function registeredKey(env: Env, appId: string, keyId: string): Promise<RegisteredKey | null> {
+/** Exported for tests; nothing in the Worker calls it but this file. */
+export function registeredKey(env: Env, appId: string, keyId: string): Promise<RegisteredKey | null> {
   const cacheKey = keyCacheKey(appId, keyId);
+  const known = lastKnownKey.peek(cacheKey);
   const cached = keyCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  return readOrKnown<RegisteredKey | null>("app_attest_key", lastKnownKey.peek(cacheKey), () => {
+  if (cached !== undefined) {
+    // A lookup that has answered is the answer; one still in flight is waited
+    // for no longer than the request that started it waits.
+    if (known === undefined || known.storedAt >= keyCache.peek(cacheKey)!.storedAt) return cached;
+    return readOrKnown<RegisteredKey | null>("app_attest_key", known, () => cached);
+  }
+  return readOrKnown<RegisteredKey | null>("app_attest_key", known, () => {
     const startedAt = Date.now();
     const pending = database(env.DB).query.appAttestKey.findFirst({
       columns: { publicKey: true, environment: true },
@@ -154,9 +161,10 @@ function registeredKey(env: Env, appId: string, keyId: string): Promise<Register
     keyCache.set(cacheKey, pending, { storedAt: startedAt });
     void pending.then(
       (key) => {
-        if (key !== null && keyCache.peek(cacheKey)?.value === pending) {
-          lastKnownKey.set(cacheKey, key, { storedAt: startedAt });
-        }
+        if (keyCache.peek(cacheKey)?.value !== pending) return;
+        // A key D1 no longer has is never brought back by a later stall.
+        if (key === null) lastKnownKey.delete(cacheKey);
+        else lastKnownKey.set(cacheKey, key, { storedAt: startedAt });
       },
       () => {
         if (keyCache.peek(cacheKey)?.value === pending) keyCache.delete(cacheKey);
