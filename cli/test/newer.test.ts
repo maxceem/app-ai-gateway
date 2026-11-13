@@ -55,7 +55,7 @@ const known = parseAppConfig({
  */
 function newerConfig(): Record<string, unknown> {
   const config = structuredClone(known) as unknown as Record<string, any>;
-  config.routing.providers.selected.openai.allowed_paths[1].methods = ["POST"];
+  config.routing.providers.selected.openai.allowed_paths[1].timeout_ms = 30000;
   config.limits.per_install = { requests: { per_minute: 5 } };
   config.limits.per_user.requests.burst = 3;
   config.endpoints.answer.kind = "video";
@@ -67,7 +67,7 @@ function newerConfig(): Record<string, unknown> {
 /** Every addition `newerConfig` makes, where `agw` should report it. */
 const NEWER_PATHS = [
   "app.config.authentication.app_attest.verify_on",
-  "app.config.routing.providers.selected.openai.allowed_paths[1].methods",
+  "app.config.routing.providers.selected.openai.allowed_paths[1].timeout_ms",
   "app.config.limits.per_user.requests.burst",
   "app.config.limits.per_install",
   "app.config.endpoints.answer.kind",
@@ -157,11 +157,11 @@ test("app show reads a newer configuration, keeps every addition as sent, and sa
   assert.equal(human.code, 0, human.err);
   assert.match(human.err, /^Note: This deployment is newer than agw \S+ and has settings this agw does not understand\./);
   assert.match(human.err, /npm install -g @maxceem\/agw/);
-  assert.match(human.err, /Settings: .*allowed_paths\[1\]\.methods/);
+  assert.match(human.err, /Settings: .*allowed_paths\[1\]\.timeout_ms/);
   // One note, however many additions.
   assert.equal(human.err.match(/Note:/g)?.length, 1);
   assert.match(human.out, /^Newer \(app-1\)/);
-  assert.match(human.out, /"methods"/);
+  assert.match(human.out, /"timeout_ms"/);
 
   const json = await run(["app", "show", "app-1", "--json"], gateway.transport);
   assert.equal(json.code, 0);
@@ -287,7 +287,7 @@ test("a flag still cannot write a value this release does not know", async () =>
   // Named by its own field, and only by it: the additions the app already had
   // are not what is wrong.
   assert.match(error.message, /verify_on/);
-  assert.doesNotMatch(error.message, /methods|moderation|per_install/);
+  assert.doesNotMatch(error.message, /timeout_ms|moderation|per_install/);
 });
 
 test("an authentication type newer than this release is kept, and only its own flags are refused", async () => {
