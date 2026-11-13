@@ -58,6 +58,17 @@ test("a failure fixed by editing the test counts against it, and twice makes it 
   assert.deepEqual(one(report), ["edited-not-caught"]);
 });
 
+test("a test edited between two failures is not a clean catch", () => {
+  const report = stats([
+    run({ day: 4, code: "A", tests: [["passed"]] }),
+    run({ day: 3, code: "B", tests: [["failed"]] }),
+    run({ day: 2, code: "B", files: { [FILE]: "t2" }, tests: [["failed"]] }),
+    run({ day: 1, code: "C", files: { [FILE]: "t2" }, tests: [["passed"]] }),
+  ]);
+  assert.equal(report.history.totals.caught, 0);
+  assert.equal(report.history.totals.mixed, 1);
+});
+
 test("a new or just-rewritten test going red then green is ordinary work, not a catch", () => {
   const report = stats([
     // New: never passed before failing.

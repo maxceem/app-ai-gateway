@@ -206,9 +206,11 @@ export function analyze(allRuns, { now = new Date(), repo, rules = RULES } = {})
         // red-green work and says nothing about its value.
         const brokenByCode = lastPass && lastPass.test === firstFailure.test && lastPass.code !== firstFailure.code;
         const sameAsBefore = lastPass && lastPass.test === firstFailure.test && lastPass.code === firstFailure.code;
-        // What turned it green again.
-        const codeFix = lastFailure.code !== event.code;
-        const testFix = lastFailure.test !== event.test;
+        // What changed between going red and being green again, across the
+        // whole streak of failures: an edit made between two failing runs
+        // counts as much as one made just before the pass.
+        const codeFix = firstFailure.code !== event.code;
+        const testFix = firstFailure.test !== event.test;
         if (!codeFix && !testFix) {
           // Same code, same test, different result: a flake, counted below.
         } else if (sameAsBefore) {
