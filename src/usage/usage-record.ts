@@ -156,6 +156,19 @@ const SHORT_RETRY_DELAY_MS = 25;
  * 75 ms would only have added to the queue before giving up.
  */
 const PLATFORM_RETRY_WINDOW_MS = 20_000;
+
+/**
+ * How long one attempt may take. The window above only bounds when the last
+ * attempt starts, and an attempt on a stalled D1 can hang far longer than the
+ * ten seconds the window leaves it, until the runtime cancels the task and
+ * nothing is logged. Past this, an attempt counts as the platform failing and
+ * is retried like one: the insert is idempotent, so an abandoned attempt that
+ * lands after all is a harmless duplicate. A last attempt that starts by 20 s
+ * so settles by 25 s, inside the 30 s the runtime allows.
+ *
+ * A field rather than a constant only so a test can shorten it.
+ */
+export const usageWriteAttempt = { timeoutMs: 5_000 };
 const PLATFORM_FIRST_DELAY_MS = 250;
 const PLATFORM_MAX_DELAY_MS = 4_000;
 
@@ -189,7 +202,7 @@ async function withRetry(operation: () => Promise<unknown>, patience: RetryPatie
   const started = Date.now();
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await operation();
+      await withinAttemptTimeout(operation);
       return { landed: true };
     } catch (error) {
       const delay = retryDelay(error, attempt, patience);
@@ -198,6 +211,31 @@ async function withRetry(operation: () => Promise<unknown>, patience: RetryPatie
       }
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
+  }
+}
+
+/**
+ * Runs one attempt, failing it as the platform's when it takes longer than
+ * {@link usageWriteAttempt}. Timed by the runtime's `scheduler.wait` rather
+ * than `setTimeout`, so the backoff between attempts stays the only timer a
+ * test's fake clock moves.
+ */
+async function withinAttemptTimeout(operation: () => Promise<unknown>): Promise<void> {
+  const attempt = Promise.resolve().then(operation);
+  const settled = new AbortController();
+  const timedOut = scheduler.wait(usageWriteAttempt.timeoutMs, { signal: settled.signal }).then(() => {
+    // An abandoned attempt keeps running; whatever it settles to is moot.
+    attempt.catch(() => undefined);
+    // Flagged the way a Durable Object marks a transient failure, so
+    // `platformFailure` classifies it and the long window applies.
+    throw Object.assign(new Error("Usage write attempt did not answer in time"), { retryable: true });
+  });
+  // Cancelling the wait rejects it; that rejection is not a failure of anything.
+  timedOut.catch(() => undefined);
+  try {
+    await Promise.race([attempt, timedOut]);
+  } finally {
+    settled.abort();
   }
 }
 

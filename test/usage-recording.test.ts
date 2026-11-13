@@ -4,6 +4,7 @@ import { observeUpstreamBody, type ObservedBody } from "../src/usage/body-observ
 import {
   persistUsageEvent,
   recordUsageEvent,
+  usageWriteAttempt,
   type UsageEvent,
 } from "../src/usage/usage-record";
 import { seedApp, testAttribution, testIdentity } from "./helpers";
@@ -269,6 +270,46 @@ describe("usage recording idempotency", () => {
       costUsd: 0.00007,
       error: { platform: "platform_overloaded", platformMessage: "D1 DB is overloaded." },
     });
+  });
+
+  /**
+   * The window bounds when the last attempt starts, not how long one takes. On
+   * a stalled D1 a single write can hang until the runtime cancels the task,
+   * and a cancelled task logs nothing, so each attempt is cut off and retried.
+   */
+  it("still logs a lost event when every write hangs instead of failing", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const timeoutMs = usageWriteAttempt.timeoutMs;
+    usageWriteAttempt.timeoutMs = 20;
+    try {
+      let attempts = 0;
+      const hanging = () => new Promise<never>(() => {});
+      const statement = { bind: () => statement, run: hanging, all: hanging, raw: hanging, first: hanging };
+      const stalled = {
+        prepare() {
+          attempts += 1;
+          return statement;
+        },
+        batch: hanging,
+        exec: hanging,
+      } as unknown as D1Database;
+      const event = usageEvent({ appId: "usage-record-hang", costUsd: 0.00001 });
+
+      const { waitedMs } = await withoutWaiting(() => persistUsageEvent(withDatabase(stalled), event));
+
+      expect(waitedMs).toBeLessThanOrEqual(20_000);
+      expect(attempts).toBeGreaterThan(1);
+      expect(errorEntries(errors, "usage_record_failed")).toEqual([
+        expect.objectContaining({
+          step: "usage_insert",
+          attempts,
+          eventId: event.eventId,
+          error: expect.objectContaining({ platform: "platform_unavailable" }),
+        }),
+      ]);
+    } finally {
+      usageWriteAttempt.timeoutMs = timeoutMs;
+    }
   });
 
   it("stops retrying within the twenty-second window, however slow each attempt is", async () => {
