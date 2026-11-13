@@ -48,6 +48,8 @@ export interface CallOptions<K extends OperationName> {
   key?: string | undefined;
   url?: string;
   headers?: Record<string, string>;
+  /** Overrides the transport's 30-second timeout. */
+  timeoutMs?: number;
 }
 
 export interface CallResult<T> {
@@ -107,7 +109,7 @@ export class GatewayClient {
    */
   async publicCall<K extends OperationName>(
     name: K,
-    { params, query, body, key, url, headers }: CallOptions<K> = {},
+    { params, query, body, key, url, headers, timeoutMs }: CallOptions<K> = {},
   ): Promise<CallResult<OperationResponse<K>>> {
     const wire = await this.transport.request(
       url ?? this.source.url(),
@@ -117,6 +119,7 @@ export class GatewayClient {
         ...(body === undefined ? {} : { body }),
         ...(key === undefined ? {} : { key }),
         ...(headers === undefined ? {} : { headers }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
       },
     );
     return parse(name, wire.data);

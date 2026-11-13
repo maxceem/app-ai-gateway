@@ -23,8 +23,13 @@ const LOOKUP_MS = 5_000;
  */
 const UNRELATED_STATUS = new Set([401, 403, 409, 429]);
 
-/** Commands whose failures come from Cloudflare or a release, not from the gateway. */
+/**
+ * Commands whose failures come from Cloudflare or a release, not from the
+ * gateway, and `deployment connect`, whose failure is about a gateway other
+ * than the selected one this lookup would ask.
+ */
 const NOT_GATEWAY: ReadonlySet<CommandName> = new Set([
+  "deployment connect",
   "deployment setup",
   "deployment update",
   "deployment domain",
@@ -48,9 +53,11 @@ export function compareVersions(a: string, b: string): number | undefined {
 /** Whether a failure is one a version difference could explain. */
 function gatewayAnswered(command: CommandName, error: CliError): boolean {
   if (NOT_GATEWAY.has(command)) return false;
-  if (error.code === "invalid_response") return true;
   const status = error.details?.status;
-  return status !== undefined && !UNRELATED_STATUS.has(status) && !error.code.startsWith("billing_");
+  if (status !== undefined && UNRELATED_STATUS.has(status)) return false;
+  // A body this release could not read is answered too, with or without a status.
+  if (error.code === "invalid_response") return true;
+  return status !== undefined && !error.code.startsWith("billing_");
 }
 
 /**
@@ -66,16 +73,13 @@ export async function versionNotice(
   if (!gatewayAnswered(command, error)) return undefined;
   let capabilities;
   try {
-    const lookup = ctx.client.publicCall("getCliCapabilities", { url: ctx.url });
-    lookup.catch(() => {});
-    capabilities = (await Promise.race([
-      lookup,
-      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), LOOKUP_MS).unref()),
-    ]))?.data;
+    ({ data: capabilities } = await ctx.client.publicCall("getCliCapabilities", {
+      url: ctx.url,
+      timeoutMs: LOOKUP_MS,
+    }));
   } catch {
     return undefined;
   }
-  if (!capabilities) return undefined;
   const api = capabilities.serverVersion;
   const order = compareVersions(VERSION, api);
   if (order === undefined || order === 0) return undefined;

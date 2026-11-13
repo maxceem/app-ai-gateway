@@ -8,6 +8,8 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   /** Answer a success with its raw bytes rather than parsed JSON; a refusal is still JSON. */
   binary?: true;
+  /** How long the request may take before it is aborted; 30 seconds unless given. */
+  timeoutMs?: number;
 }
 
 export interface WireResponse {
@@ -109,7 +111,7 @@ export class Transport {
   async request(
     url: string,
     path: string,
-    { key, method = "GET", body, headers = {}, binary }: RequestOptions = {},
+    { key, method = "GET", body, headers = {}, binary, timeoutMs = 30000 }: RequestOptions = {},
   ): Promise<WireResponse> {
     const base = origin(url);
     if (!path.startsWith("/") || path.startsWith("//"))
@@ -119,7 +121,7 @@ export class Transport {
       response = await this.fetch(base + path, {
         method,
         redirect: "manual",
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: {
           accept: binary ? "*/*" : "application/json",
           "user-agent": `agw/${VERSION}`,

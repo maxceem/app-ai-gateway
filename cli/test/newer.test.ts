@@ -21,6 +21,7 @@ import { CliError } from "../src/common.ts";
 import { main } from "../src/main.ts";
 import { tolerant } from "../src/tolerant.ts";
 import type { CliState } from "../src/state.ts";
+import type { Transport } from "../src/transport.ts";
 import { fresh, makeStore } from "./helpers.ts";
 
 /** An iOS application as the gateway stores it, before a newer release touched it. */
@@ -131,7 +132,7 @@ const signedIn = (): CliState => ({
 
 async function run(
   argv: string[],
-  transport: ReturnType<typeof deployment>["transport"],
+  transport: Pick<Transport, "request">,
   state: CliState = signedIn(),
 ) {
   let out = "";
@@ -491,11 +492,14 @@ const capabilities = (serverVersion: string, mode: "cloud" | "self_hosted") => (
 /** A gateway that refuses `getApp` as given, and reports its release when asked. */
 function refusing(refusal: CliError, serverVersion: string, mode: "cloud" | "self_hosted" = "cloud") {
   const asked: string[] = [];
+  const timeouts: (number | undefined)[] = [];
   return {
     asked,
+    timeouts,
     transport: {
-      request: async (_url: string, path: string) => {
+      request: async (_url: string, path: string, options: { timeoutMs?: number } = {}) => {
         asked.push(path);
+        timeouts.push(options.timeoutMs);
         if (path === operationPath("getCliCapabilities")) return { data: capabilities(serverVersion, mode) };
         throw refusal;
       },
@@ -514,6 +518,9 @@ test("a failure the gateway answered says when the CLI is older than the gateway
     human.err,
     /\nCode: invalid_request\n {2}status: 400\nNote: Your agw CLI \(\S+\) is older than the gateway API it talks to \(99\.0\.0\)\. Updating the CLI may fix this: npm install -g @maxceem\/agw\n$/,
   );
+  // The lookup has a short timeout of its own, so a stalled gateway cannot keep
+  // the failed command running.
+  assert.deepEqual(gateway.timeouts, [undefined, 5000]);
   const json = await run(["app", "show", "app-1", "--json"], gateway.transport);
   assert.equal(json.json().error.code, "invalid_request");
   assert.deepEqual(json.json().notices.map((n: { code: string; apiVersion: string }) => [n.code, n.apiVersion]), [["version_mismatch", "99.0.0"]]);
@@ -538,6 +545,15 @@ test("no version note where versions cannot be the cause", async () => {
     assert.doesNotMatch(result.err, /Note:/, String(status));
     assert.equal(gateway.asked.length, 1);
   }
+  // An unreadable body arriving with one of those statuses is the same refusal.
+  const unreadable = refusing(new CliError("invalid_response", "Not JSON.", "", 3, { status: 403 }), "99.0.0");
+  assert.doesNotMatch((await run(["app", "show", "app-1"], unreadable.transport)).err, /Note:/);
+  assert.equal(unreadable.asked.length, 1);
+  // A failed connect is about a gateway other than the selected one.
+  const connect = refusing(badRequest(), "99.0.0");
+  const connected = await run(["deployment", "connect", "--url", "https://other.example", "--no-open", "--no-input"], connect.transport);
+  assert.notEqual(connected.code, 0);
+  assert.doesNotMatch(connected.err, /Note:/);
   // Nothing reached the gateway at all.
   const unreachable = refusing(new CliError("connection_failed", "Could not reach.", "", 3), "99.0.0");
   assert.doesNotMatch((await run(["app", "show", "app-1"], unreachable.transport)).err, /Note:/);
