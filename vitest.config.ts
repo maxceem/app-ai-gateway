@@ -39,6 +39,9 @@ export default defineConfig({
     // reduced the suite to nine files: nine workers measured the same as six.
     maxWorkers: Math.max(2, Math.min(6, Math.floor(availableParallelism() / 2))),
     setupFiles: ["./test/apply-migrations.ts"],
+    // Records each run's results when a ledger directory is chosen, and does
+    // nothing otherwise; see scripts/test-ledger/README.md.
+    reporters: ["default", ["./scripts/test-ledger/reporter.mjs", { suite: "worker" }]],
     // The console is a browser app with its own jsdom Vitest project, run by
     // `pnpm run console:test`. Without this it is swept up by the default glob
     // and executed inside the Workers runtime, where there is no DOM.

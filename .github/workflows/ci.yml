@@ -45,7 +45,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # The test ledger records every test's result; a scheduled job outside
+      # this repository reads the artifacts to find flaky, slow and idle tests.
+      # See scripts/test-ledger/README.md.
       - run: pnpm run verify
+        env:
+          TEST_LEDGER_DIR: ${{ runner.temp }}/test-ledger
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-ledger
+          path: ${{ runner.temp }}/test-ledger
+          retention-days: 30
+          if-no-files-found: ignore
 
       # Builds the Worker exactly as a deployment would, without an account or a
       # token: `--dry-run` never contacts Cloudflare.
