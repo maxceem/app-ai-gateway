@@ -317,6 +317,17 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   assert.match(old.json().error.nextAction, /agw deployment update/);
 });
 
+test("help for a command the kept list does not have looks on the gateway once, as running it would", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway();
+  await run(["app", "list"], fake, cache);
+  fake.publish({ revision: "r2", tools: [LIST, cliTool("list_models", { command: "model list" })] });
+  const help = await run(["model", "list", "--help"], fake, cache);
+  assert.equal(help.code, 0, help.err);
+  assert.match(help.out, /^agw model list/);
+  assert.equal(fake.lists(), 2);
+});
+
 test("a flag the kept list does not know is looked up once on the gateway before it is refused", async () => {
   const cache = new MemoryCatalogCache();
   const fake = gateway();

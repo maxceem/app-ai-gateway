@@ -7,6 +7,7 @@ import {
   ToolCatalog,
   type CachedCatalog,
   type CatalogCache,
+  type CliTool,
 } from "./catalog.ts";
 import { conversationsCommand } from "./conversations.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
@@ -133,13 +134,19 @@ async function helpFor(scope: string, catalog: ToolCatalog | undefined, style: S
     list = undefined;
   }
   const words = scope ? scope.split(" ") : [];
+  const listed = (tools: readonly CliTool[]): HelpEntry[] =>
+    tools
+      .filter((entry) => !builtIn(entry.cli.command) && missingFeatures(entry).length === 0)
+      .filter((entry) => !scope || entry.cli.command === scope || entry.cli.command.startsWith(scope + " "))
+      .map((entry) => ({ usage: usageLine(entry), summary: clean(mentions(entry.cli.summary ?? entry.title, tools)) }));
+  // Help for a command the kept list does not have looks on the gateway once,
+  // as running it would.
+  if (list && catalog && words.length && !catalog.fresh && !findTool(list.tools, words, builtIn) && !listed(list.tools).length) {
+    list = await catalog.refresh().catch(() => list);
+  }
   const tool = list && words.length ? findTool(list.tools, words, builtIn) : undefined;
   if (tool && list) return toolHelp(tool, list.tools, style);
-  const gateway: HelpEntry[] = (list?.tools ?? [])
-    .filter((entry) => !builtIn(entry.cli.command) && missingFeatures(entry).length === 0)
-    .filter((entry) => !scope || entry.cli.command === scope || entry.cli.command.startsWith(scope + " "))
-    .map((entry) => ({ usage: usageLine(entry), summary: clean(mentions(entry.cli.summary ?? entry.title, list?.tools ?? [])) }));
-  const entries = [...builtInEntries(scope), ...gateway];
+  const entries = [...builtInEntries(scope), ...listed(list?.tools ?? [])];
   if (!entries.length)
     throw new CliError(
       "unknown_command",
