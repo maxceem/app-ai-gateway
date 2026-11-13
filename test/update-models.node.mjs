@@ -1147,14 +1147,15 @@ test("retirement: the lists date a model only when both mark it", () => {
 
 test("retirement: a retired model missing from its pricing page is expected", () => {
   const decision = decide({
-    catalog: { groq: { gone: { input: 1.0, output: 2.0 }, live: { input: 1.0, output: 2.0 }, lost: { input: 1.0, output: 2.0 } } },
+    catalog: { groq: { gone: { input: 1.0, output: 2.0, retirement_date: "2026-09-14" }, live: { input: 1.0, output: 2.0 }, lost: { input: 1.0, output: 2.0 } } },
     official: { groq: page({ live: { input: 1, output: 2 } }) },
     deprecations: { groq: dates({ gone: { date: "2026-09-14" } }) },
     lists: noLists,
     today: TODAY,
   });
-  assert.deepEqual(decision.retired.map((item) => [item.model, item.date]), [["gone", "2026-09-14"]]);
   assert.deepEqual(decision.attention.map((item) => item.key), ["groq/lost: not on official page"]);
+  assert.deepEqual(decision.retirements, []);
+  assert.doesNotMatch(renderReport(decision), /`groq\/gone`/u, "the retirement date is already in the price list");
 });
 
 test("retirement: retired models do not count against the half-found check", () => {
@@ -1235,7 +1236,7 @@ test("report: a price change is five boxes of 20% against today's price", () => 
 
 test("report: upcoming prices are grouped by date, earliest first", () => {
   const report = renderReport({
-    changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], noSource: [], newModels: [], sources: [],
+    changes: [], retirements: [], deprecationNotes: [], attention: [], acknowledged: [], noSource: [], newModels: [], sources: [],
     upcoming: [
       { provider: "p", model: "late", field: "input", from: 2, value: 1, date: "2027-02-01" },
       { provider: "p", model: "early", field: "output", from: 4, value: 5, date: "2027-01-01" },
@@ -1276,7 +1277,6 @@ test("report: fetched text is escaped", () => {
   const report = renderReport({
     changes: [{ provider: "p", model: "m`|<b>", field: "input", from: 1, to: 2, source: "official" }],
     retirements: [],
-    retired: [],
     deprecationNotes: [{ provider: "p", model: "m", text: "<script>alert(1)</script>" }],
     attention: [{ key: "p: parser failed", text: 'official parser failed: "<img src=x onerror=alert(1)>" | [link](https://evil) `x`' }],
     acknowledged: [],
