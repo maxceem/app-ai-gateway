@@ -4,7 +4,12 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { billingQuota, type BillingQuota } from "../src/billing/quota";
-import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS, requireActiveBilling } from "../src/billing/gateway";
+import { ALLOWANCE_ADMIT_DEADLINE_MS } from "../src/billing/allowance-admission";
+import {
+  APP_TRAFFIC_BILLING_DEADLINE_MS,
+  BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  requireActiveBilling,
+} from "../src/billing/gateway";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
 import { resolveDeployment } from "../src/policy/deployment";
 import { appUserBlocked, blockedUserCache, cachedAppUserBlocked, invalidateBlockedCache } from "../src/client-auth/user-status";
@@ -424,7 +429,7 @@ describe("organization monthly request quota", () => {
       expect(await used(organizationId)).toBe(0);
     });
 
-    it("still refuses while the counter is overloaded", async () => {
+    it("serves an overloaded counter uncounted too", async () => {
       const organizationId = "quota-counter-overloaded-org";
       await seedOrganization(organizationId);
       const key = await seedServerApp("quota-counter-overloaded", { organizationId });
@@ -436,10 +441,73 @@ describe("organization monthly request quota", () => {
         key,
         env: failingCounter({ retryable: true, overloaded: true }),
       });
-      expect(response.status).toBe(503);
-      await expect(response.json()).resolves.toMatchObject({ error: { code: "service_unavailable" } });
-      expect(upstream).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(await used(organizationId)).toBe(0);
     });
+
+    /**
+     * A counter that is merely slow throws nothing, which is how 2026-11-12's
+     * regional slowdown held requests for over a minute. The request is served
+     * at the deadline, and the abandoned call still counts it when it lands.
+     */
+    it("serves a slow counter at the deadline, and still counts the request when it answers", async () => {
+      const organizationId = "quota-counter-slow-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-slow", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+      const base = hosted({ maxRequestsPerMonth: 5 });
+      const slow = {
+        getByName: (name: string) => ({
+          admit: async (input: Parameters<ReturnType<Env["ORG_QUOTA"]["getByName"]>["admit"]>[0]) => {
+            await new Promise((resolve) => setTimeout(resolve, ALLOWANCE_ADMIT_DEADLINE_MS + 500));
+            return env.ORG_QUOTA.getByName(name).admit(input);
+          },
+        }),
+      };
+      const slowEnv = new Proxy(base, {
+        get: (target, property, receiver) =>
+          property === "ORG_QUOTA" ? slow : Reflect.get(target, property, receiver),
+      }) as Env;
+
+      const started = Date.now();
+      const response = await proxyRequest({ appId: "quota-counter-slow", key, env: slowEnv });
+      expect(response.status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(ALLOWANCE_ADMIT_DEADLINE_MS + 500);
+      expect(upstream).toHaveBeenCalledOnce();
+      await settle();
+      expect(await used(organizationId)).toBe(1);
+    });
+  });
+
+  /**
+   * Billing only tells app traffic what to count it against, so a billing
+   * service that is slow to answer is not waited on: the request is served the
+   * way an outage of billing serves it.
+   */
+  it("serves app traffic uncounted when billing is slow to answer", async () => {
+    const organizationId = "quota-billing-slow-org";
+    await seedOrganization(organizationId);
+    const key = await seedServerApp("quota-billing-slow", { organizationId });
+    const binding = billingStub(async () => {
+      await new Promise((resolve) => setTimeout(resolve, APP_TRAFFIC_BILLING_DEADLINE_MS + 500));
+      return onPlan({ maxRequestsPerMonth: 5 });
+    });
+    const slowBilling = new Proxy(env, {
+      get: (target, property, receiver) =>
+        property === "BILLING" ? binding : Reflect.get(target, property, receiver),
+    }) as Env;
+    const upstream = vi.fn(async () => ok());
+    vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const started = Date.now();
+    const response = await proxyRequest({ appId: "quota-billing-slow", key, env: slowBilling });
+    expect(response.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(APP_TRAFFIC_BILLING_DEADLINE_MS + 500);
+    expect(upstream).toHaveBeenCalledOnce();
+    expect(await used(organizationId)).toBe(0);
   });
 
   /**

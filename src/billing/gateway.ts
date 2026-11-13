@@ -43,6 +43,14 @@ export const BILLING_STALE_MAX_MS = 60 * 60_000;
 export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 /**
+ * How long traffic from an organization's applications waits for billing.
+ * Billing answers app traffic only with what to count it against, so a reply
+ * that is late is answered the way a failed one is, rather than holding the
+ * request; the management API keeps waiting.
+ */
+export const APP_TRAFFIC_BILLING_DEADLINE_MS = 1_000;
+
+/**
  * What a plan allows, read out of its opaque `limits` JSON — declared as
  * `PlanLimitsSchema` in `src/contracts/billing.ts`, because the billing status
  * endpoint publishes the same object the write path enforces, and read through
@@ -153,28 +161,32 @@ async function loadBillingAccess(
       billingErrorCode: code,
       error: errorFacts(error),
     }));
-    /*
-     * An organization this isolate has read before keeps the plan it had. One
-     * it has never seen is unavailable: its applications are served uncounted
-     * and its management calls wait, because either way the allowance is
-     * unknown.
-     * Still fresh here means still inside the stale window, which is exactly
-     * what that cache's TTL is.
-     */
-    const known = lastKnownAccess.get(organizationId);
-    if (known) {
-      const endsAt = entitlementEndsAt(known);
-      if (endsAt === null || endsAt > Date.now()) {
-        const ageMs = Date.now() - (lastKnownAccess.peek(organizationId)?.storedAt ?? 0);
-        log("warn", "billing_access_stale", { organizationId, ageMs, billingErrorCode: code });
-        return { ...known, stale: true, ...(code ? { billingErrorCode: code } : {}) };
-      }
-    }
-    return {
-      state: "unavailable",
-      ...(code ? { billingErrorCode: code } : {}),
-    };
+    return withoutBilling(organizationId, code);
   }
+}
+
+/**
+ * What to answer while billing cannot: an organization this isolate has read
+ * before keeps the plan it had. One it has never seen is unavailable: its
+ * applications are served uncounted and its management calls wait, because
+ * either way the allowance is unknown.
+ * Still fresh here means still inside the stale window, which is exactly
+ * what that cache's TTL is.
+ */
+function withoutBilling(organizationId: string, code?: string | null): GatewayBillingAccess {
+  const known = lastKnownAccess.get(organizationId);
+  if (known) {
+    const endsAt = entitlementEndsAt(known);
+    if (endsAt === null || endsAt > Date.now()) {
+      const ageMs = Date.now() - (lastKnownAccess.peek(organizationId)?.storedAt ?? 0);
+      log("warn", "billing_access_stale", { organizationId, ageMs, billingErrorCode: code });
+      return { ...known, stale: true, ...(code ? { billingErrorCode: code } : {}) };
+    }
+  }
+  return {
+    state: "unavailable",
+    ...(code ? { billingErrorCode: code } : {}),
+  };
 }
 
 /**
@@ -232,6 +244,40 @@ export function getBillingAccess(
   });
   cache?.set(organizationId, pending);
   return pending;
+}
+
+/**
+ * {@link getBillingAccess} for traffic from an organization's applications,
+ * which never waits on billing for longer than
+ * {@link APP_TRAFFIC_BILLING_DEADLINE_MS}. Past it, the request is answered as
+ * though billing had failed — the last known plan, or unavailable, which
+ * {@link admitAppTraffic} serves uncounted — and the rest of this request reads
+ * that answer too. The read itself keeps running, so its answer still reaches
+ * the isolate's caches.
+ */
+export async function getAppTrafficBillingAccess(
+  deployment: Deployment,
+  organizationId: string,
+  cache: BillingRequestCache | undefined,
+  waitUntil: (promise: Promise<unknown>) => void,
+  deadlineMs: number = APP_TRAFFIC_BILLING_DEADLINE_MS,
+): Promise<GatewayBillingAccess> {
+  const pending = getBillingAccess(deployment, organizationId, cache);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), deadlineMs);
+  });
+  try {
+    const access = await Promise.race([pending, late]);
+    if (access !== null) return access;
+  } finally {
+    clearTimeout(timer);
+  }
+  waitUntil(pending);
+  log("warn", "billing_access_slow", { organizationId, deadlineMs });
+  const fallback = withoutBilling(organizationId);
+  cache?.set(organizationId, Promise.resolve(fallback));
+  return fallback;
 }
 
 /**

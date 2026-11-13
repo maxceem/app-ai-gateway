@@ -1,18 +1,15 @@
-import { admitAppTraffic, type BillingRequestCache } from "../billing/gateway";
-import { billingQuota } from "../billing/quota";
+import { admitAllowance } from "../billing/allowance-admission";
+import { admitAppTraffic, getAppTrafficBillingAccess, type BillingRequestCache } from "../billing/gateway";
+import { billingQuotaFor } from "../billing/quota";
 import {
   hasAppLevelLimits,
   hasUserLevelLimits,
   monthlyBudgetMicrousd,
 } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
-import { errorFacts } from "../core/error-facts";
-import { log } from "../core/log";
-import { platformFailure } from "../core/platform-errors";
 import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
-import type { QuotaAdmission } from "../do/OrgQuota";
 import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
 import { attestLedger, type PerUserSpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
@@ -193,17 +190,20 @@ export async function admitRequest(input: AdmissionInput): Promise<number> {
    * Only the allowance *read* overlaps the block check. Claiming it cannot,
    * because it must not happen at all if an app limit refuses first.
    *
-   * A self-hosted deployment pays nothing for this: `billingQuota` answers
-   * `unmetered` without reading anything when there is no billing binding. In a
-   * hosted one a warm isolate answers the plan out of its own TTL cache, so
-   * this is not an RPC per request either.
+   * A self-hosted deployment pays nothing for this: billing access is
+   * `self_hosted` without reading anything when there is no billing binding. In
+   * a hosted one a warm isolate answers the plan out of its own TTL cache, so
+   * this is not an RPC per request either, and a billing service that is slow
+   * to answer is waited for only briefly before the request is answered as
+   * though it had failed.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
     // A userless request has no identified person whose status to read.
     identity.userId === null
       ? Promise.resolve(false)
       : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
-    billingQuota(input.deployment, env, app.organizationId, input.billingCache),
+    getAppTrafficBillingAccess(input.deployment, app.organizationId, input.billingCache, input.waitUntil)
+      .then((access) => billingQuotaFor(access, env, app.organizationId)),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -269,38 +269,31 @@ export async function admitRequest(input: AdmissionInput): Promise<number> {
   if (quota.kind === "unmetered") return finish();
 
   const { period } = quota;
-  let admission: QuotaAdmission;
-  try {
-    admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
-      periodId: period.periodId,
-      periodEnd: period.periodEnd,
-      limit: quota.limit,
-    });
-  } catch (error) {
-    /*
-     * The counter is billing, and billing errs towards the customer: a request
-     * the platform failed to count is served uncounted rather than refused.
-     * Retrying instead could count it twice, because the call may fail after
-     * the object has already counted it. An overloaded object stays a refusal,
-     * so heavy traffic cannot ride the overload past its allowance, and
-     * anything that is not the platform is still a fault in the gateway.
-     */
-    if (platformFailure(error) !== "platform_unavailable") throw error;
-    log("warn", "allowance_uncounted", { error: errorFacts(error) });
-    return finish();
-  }
+  /*
+   * The counter is billing, and billing errs towards the customer: a counter
+   * that cannot answer promptly, for whatever reason, never fails the request.
+   * It is served uncounted, unless this isolate last saw the plan used up.
+   */
+  const outcome = await admitAllowance(
+    env.ORG_QUOTA.getByName(app.organizationId),
+    app.organizationId,
+    { periodId: period.periodId, periodEnd: period.periodEnd, limit: quota.limit },
+    input.waitUntil,
+  );
   const durationMs = finish();
-  if (!admission.allowed) {
+  if (outcome.kind === "uncounted") return durationMs;
+  const refusal = outcome.kind === "exhausted" ? outcome : outcome.admission;
+  if (!refusal.allowed) {
     blockedEvent("blocked_billing", "account", durationMs);
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",
-      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${period.resetAt}`,
-      { "Retry-After": String(admission.retryAfterSeconds) },
+      `The plan's monthly request allowance of ${refusal.limit} is exhausted until ${period.resetAt}`,
+      { "Retry-After": String(refusal.retryAfterSeconds) },
       {
         data: {
-          limit: admission.limit,
-          used: admission.used,
+          limit: refusal.limit,
+          used: refusal.used,
           periodId: period.periodId,
           periodStart: period.periodStart,
           periodEnd: period.periodEnd,
