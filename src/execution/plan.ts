@@ -21,6 +21,13 @@ export interface ExecutionAttempt {
    * response is never sniffed for a shape the request already named.
    */
   readonly apiStyle: ApiStyle;
+  /**
+   * A passthrough path (`isPassthroughPath`), forwarded without being
+   * understood: never stored, and recorded with no model and only the cost the
+   * provider itself reports. Never true for a custom endpoint, which always
+   * speaks an API the gateway reads.
+   */
+  readonly passthrough: boolean;
   readonly buildRequest: () => ExecutionRequest;
 }
 
@@ -46,6 +53,7 @@ export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttributio
     pricing: resolved.pricing,
     model: attempt.model,
     apiStyle: attempt.apiStyle,
+    passthrough: attempt.passthrough,
     route: `${resolved.slug}/${attempt.providerPath}`,
   };
 }
@@ -70,6 +78,7 @@ export function preparedExecutionAttempt(
     providerPath: prepared.providerPath,
     model: prepared.model,
     apiStyle: prepared.apiStyle,
+    passthrough: prepared.passthrough,
     buildRequest: () => ({
       body: prepared.body,
       headers: prepared.headers,

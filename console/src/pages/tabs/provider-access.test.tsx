@@ -185,6 +185,70 @@ describe("ProviderAccessTab", () => {
       expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual(["v1/responses"]));
   });
 
+  it("shows a passthrough path with its methods, and keeps settings saved on it from before", async () => {
+    renderTab(selectedRouting({
+      "openai-dev": {
+        allowed_paths: [
+          "v1/responses",
+          { path: "v1/realtime/client_secrets", fixed_model: "gpt-live-transcribe", clamp: "none" },
+        ],
+        allowed_models: [],
+      },
+    }));
+
+    await screen.findByText("2 endpoints · all models · no output cap");
+    await expand("openai-dev");
+    // A model API keeps its model fields; the passthrough path takes methods instead.
+    // Marked by its note alone: "passthrough" is not a word the page uses.
+    expect(screen.queryByText("Passthrough")).toBeNull();
+    expect(screen.getAllByText(/^Non-standard path/u)).toHaveLength(1);
+    expect(screen.getAllByText("Fixed model")).toHaveLength(1);
+    expect(screen.getByText(/Its cost counts toward spending\s+limits only if the provider reports it/u)).toBeTruthy();
+    // POST, the default, comes first.
+    expect(screen.getAllByText(/^(GET|POST|PUT|PATCH|DELETE)$/u).map((label) => label.textContent))
+      .toEqual(["POST", "GET", "PUT", "PATCH", "DELETE"]);
+    const post = screen.getByRole("checkbox", { name: "POST" });
+    expect(post.getAttribute("aria-checked")).toBe("true");
+    // POST is the only method open, so it cannot be taken away.
+    expect(post.hasAttribute("disabled")).toBe(true);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "GET" }));
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual([
+        "v1/responses",
+        {
+          path: "v1/realtime/client_secrets",
+          fixed_model: "gpt-live-transcribe",
+          clamp: "none",
+          methods: ["POST", "GET"],
+        },
+      ]));
+
+    // Back to POST alone is the default, so the list is not stored.
+    await userEvent.click(screen.getByRole("checkbox", { name: "GET" }));
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths[1]).toEqual({
+        path: "v1/realtime/client_secrets",
+        fixed_model: "gpt-live-transcribe",
+        clamp: "none",
+      }));
+  });
+
+  it("drops a passthrough path's methods when it is edited into a model API", async () => {
+    renderTab(selectedRouting({
+      "openai-dev": { allowed_paths: [{ path: "v1/files", methods: ["GET", "POST"] }], allowed_models: [] },
+    }));
+
+    await screen.findByText("1 endpoint · all models · no output cap");
+    await expand("openai-dev");
+    const path = screen.getByDisplayValue("v1/files");
+    await userEvent.clear(path);
+    await userEvent.type(path, "v1/responses");
+
+    await waitFor(() =>
+      expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual(["v1/responses"]));
+  });
+
   it("asks for models the same way, and only shows the list once asked", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
 

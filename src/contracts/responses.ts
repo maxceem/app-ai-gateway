@@ -186,7 +186,9 @@ export const UsageEventSchema = z.object({
   served_model: z.string().nullable().meta({
     description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
   }),
-  model: z.string(),
+  model: z.string().meta({
+    description: "The model the request was priced and judged as. Empty on a passthrough path: a provider path outside the APIs the gateway reads and the provider's own inference operations, which the gateway forwards without reading a model.",
+  }),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
   input_tokens: z.number().int(),
@@ -198,7 +200,7 @@ export const UsageEventSchema = z.object({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
   cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed.",
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageTab } from "./usage";
 import { pivot } from "@/lib/usage-pivot";
@@ -46,13 +46,14 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
 function renderUsage(
   events: UsageEvent[],
   props: { identity?: "user" | "install"; showInstalls?: boolean } = {},
+  breakdownRows: Record<string, unknown>[] = [],
 ) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}/usage/timeseries`]: {
       body: { app_id: APP_ID, from: "2026-08-01", to: "2026-08-01", buckets: [] },
     },
     [`/v1/admin/apps/${APP_ID}/usage/breakdown`]: {
-      body: { app_id: APP_ID, by: "model", from: "2026-08-01", to: "2026-08-01", rows: [] },
+      body: { app_id: APP_ID, by: "model", from: "2026-08-01", to: "2026-08-01", rows: breakdownRows },
     },
     [`/v1/admin/apps/${APP_ID}/events`]: {
       body: { app_id: APP_ID, limit: 25, next_before_id: null, events },
@@ -168,6 +169,86 @@ describe("UsageTab event costs", () => {
     renderUsage([event({ cost_usd: 0.25, cost_source: "computed" })]);
 
     expect(await screen.findByText("$0.25")).toBeTruthy();
+    expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
+  it("shows a passthrough call with no model and no price, rather than a guess", async () => {
+    renderUsage([
+      event({
+        id: 2,
+        model: "",
+        model_author: null,
+        route: "openai/v1/realtime/client_secrets",
+        cost_source: null,
+      }),
+      event({
+        id: 1,
+        provider: "xai",
+        provider_slug: "xai",
+        model: "",
+        model_author: null,
+        route: "xai/v1/videos/generations",
+        cost_usd: 0.5,
+        reported_cost_usd: 0.5,
+        cost_source: "reported",
+      }),
+    ]);
+
+    // A cost the provider reported for a passthrough call is still its cost.
+    expect(await screen.findByText("$0.50")).toBeTruthy();
+    // No model and no tokens reported on either, and no price on the one the
+    // provider reported nothing for.
+    expect(screen.getAllByText("—")).toHaveLength(5);
+    expect(screen.queryByText("Passthrough")).toBeNull();
+    expect(screen.queryByText("$0.00")).toBeNull();
+
+    // Each dash says why, in the console's own tooltip.
+    const [model, tokens, cost] = screen.getAllByText("—");
+    const tooltipSays = (text: RegExp) =>
+      waitFor(() =>
+        expect(screen.getAllByRole("tooltip").some((tip) => text.test(tip.textContent ?? ""))).toBe(true));
+    await userEvent.hover(model!);
+    await tooltipSays(/reads no model/u);
+    await userEvent.hover(tokens!);
+    await tooltipSays(/tokens are counted only if the provider reports them/u);
+    await userEvent.hover(cost!);
+    await tooltipSays(/Request limits still apply/u);
+    expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
+  it("names passthrough requests' model as none in the breakdown, with dashes for what was never reported", async () => {
+    const row = { requests: 3, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, cost_usd: 0, errors: 0 };
+    renderUsage([], {}, [{ ...row, key: "" }, { ...row, key: "gpt-4o-mini" }]);
+
+    expect(await screen.findByText("none")).toBeTruthy();
+    expect(screen.getByText("gpt-4o-mini")).toBeTruthy();
+    // Input, cached input, cache write, output and cost on the passthrough row;
+    // the model's own zeros are real counts and stay numbers.
+    expect(screen.getAllByText("—")).toHaveLength(5);
+  });
+
+  it("shows what a provider did report for passthrough requests", async () => {
+    const row = { requests: 2, input_tokens: 120, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 30, cost_usd: 0.5, errors: 0 };
+    renderUsage([], {}, [{ ...row, key: "" }]);
+
+    expect(await screen.findByText("none")).toBeTruthy();
+    expect(screen.getByText("120")).toBeTruthy();
+    expect(screen.getByText("$0.50")).toBeTruthy();
+    expect(screen.queryByText("—")).toBeNull();
+  });
+
+  it("shows an event recorded on that path before passthrough the same way, not under the model it was labelled with", async () => {
+    renderUsage([
+      event({
+        model: "gpt-live-transcribe",
+        route: "openai/v1/realtime/client_secrets",
+        cost_source: "unresolved",
+      }),
+    ]);
+
+    // Model, tokens and cost: the stored model was never read from the request.
+    expect(await screen.findAllByText("—")).toHaveLength(3);
+    expect(screen.queryByText("gpt-live-transcribe")).toBeNull();
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 

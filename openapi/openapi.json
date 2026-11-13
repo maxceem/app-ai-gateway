@@ -718,6 +718,20 @@
                                           "anthropic",
                                           "none"
                                         ]
+                                      },
+                                      "methods": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "enum": [
+                                            "POST",
+                                            "GET",
+                                            "PUT",
+                                            "PATCH",
+                                            "DELETE"
+                                          ]
+                                        },
+                                        "minItems": 1
                                       }
                                     },
                                     "required": [
@@ -2317,7 +2331,8 @@
             "description": "The serving model the upstream named, canonicalized back to the provider's own model ID."
           },
           "model": {
-            "type": "string"
+            "type": "string",
+            "description": "The model the request was priced and judged as. Empty on a passthrough path: a provider path outside the APIs the gateway reads and the provider's own inference operations, which the gateway forwards without reading a model."
           },
           "route": {
             "type": "string"
@@ -2361,7 +2376,7 @@
               "unresolved",
               null
             ],
-            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed."
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed."
           },
           "app_version": {
             "type": [

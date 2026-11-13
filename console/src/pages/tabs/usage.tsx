@@ -32,6 +32,7 @@ import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
 import { isGatewayType } from "@/lib/config-types";
 import { isProviderType } from "@shared/providers";
+import { isPassthroughPath } from "@shared/app-config";
 import {
   cachedInputRate,
   daysAgo,
@@ -48,6 +49,52 @@ import {
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
 import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
 import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
+import { Hint } from "@/components/hint";
+
+/**
+ * Whether an event was a passthrough call, read off its route with the rule
+ * the gateway itself applies: the gateway forwarded it without reading a
+ * model, so there is no model to name and a cost only where the provider
+ * reported one. A custom endpoint is never one.
+ *
+ * By route alone, so an event recorded on such a path before passthrough
+ * existed reads the same way: the model it was stored with was a label from
+ * the configuration, never read from the request, and is not shown as if the
+ * request had used it.
+ */
+export function isPassthroughEvent(event: {
+  provider: string;
+  route: string;
+  endpoint_slug: string | null;
+}): boolean {
+  const slash = event.route.indexOf("/");
+  return event.endpoint_slug === null
+    && slash > 0
+    && isProviderType(event.provider)
+    && isPassthroughPath(event.provider, event.route.slice(slash + 1));
+}
+
+/** Why a passthrough request has no model, tokens or cost to show, one reason per column. */
+const UNREPORTED_REASON = {
+  model: "Non-standard path: forwarded as sent, so the gateway reads no model.",
+  tokens: "Non-standard path: tokens are counted only if the provider reports them, and it reported none.",
+  cost: "Non-standard path: its cost counts toward spending limits only if the provider reports it, and it reported none. Request limits still apply.",
+} as const;
+
+/**
+ * What a cell shows for something a passthrough request never reported. The
+ * gateway records a passthrough call's tokens and cost only where the provider
+ * said them, and stores nothing as 0, so a 0 there means "not reported", not
+ * "none used": a dash says that, and a number the provider did report still
+ * shows. Hovering it says why.
+ */
+function Unreported({ what, label = "—" }: { what: keyof typeof UNREPORTED_REASON; label?: string }) {
+  return (
+    <Hint content={<span className="block max-w-64">{UNREPORTED_REASON[what]}</span>}>
+      <span className="cursor-help font-sans text-muted-foreground">{label}</span>
+    </Hint>
+  );
+}
 
 /**
  * The categorical slots, in the fixed order they were validated in — see the
@@ -286,10 +333,19 @@ export function UsageTab({
                   </TableCell>
                 </TableRow>
               ) : (
-                breakdown.data?.rows.map((row) => (
+                breakdown.data?.rows.map((row) => {
+                  // The model breakdown's empty key is passthrough requests,
+                  // whose counts are only what a provider reported.
+                  const passthrough = dimension === "model" && row.key === "";
+                  const noTokens = passthrough
+                    && inputTokens(row) + row.cache_write_tokens + row.output_tokens === 0;
+                  return (
                   <TableRow key={row.key ?? "unknown"}>
                     <TableCell className="font-mono text-xs">
-                      {row.key === null ? (
+                      {/* Empty is a passthrough request's model: the gateway read none. */}
+                      {passthrough ? (
+                        <Unreported what="model" label="none" />
+                      ) : !row.key ? (
                         <span className="text-muted-foreground">none</span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
@@ -299,18 +355,31 @@ export function UsageTab({
                       )}
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(inputTokens(row))}</TableCell>
                     <TableCell className="tabular text-right">
-                      <span className="block">{formatCompact(row.cached_input_tokens)}</span>
-                      <span className="block text-[11px] text-muted-foreground">
-                        {formatPercent(cachedInputRate(row))} of input
-                      </span>
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(inputTokens(row))}
                     </TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(row.cache_write_tokens)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(row.output_tokens)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCost(row.cost_usd)}</TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? <Unreported what="tokens" /> : (
+                        <>
+                          <span className="block">{formatCompact(row.cached_input_tokens)}</span>
+                          <span className="block text-[11px] text-muted-foreground">
+                            {formatPercent(cachedInputRate(row))} of input
+                          </span>
+                        </>
+                      )}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(row.cache_write_tokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(row.output_tokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {passthrough && row.cost_usd === 0 ? <Unreported what="cost" /> : formatCost(row.cost_usd)}
+                    </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -398,7 +467,14 @@ export function UsageTab({
                         </span>
                       ) : null}
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{event.model}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {/* A passthrough call names no model: the gateway never read one. */}
+                      {isPassthroughEvent(event) ? (
+                        <Unreported what="model" />
+                      ) : (
+                        event.model
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
                       {/* The configured route, which is known with certainty;
@@ -424,13 +500,17 @@ export function UsageTab({
                       ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
-                      {formatCompact(totalTokens(event))}
+                      {isPassthroughEvent(event) && totalTokens(event) === 0
+                        ? <Unreported what="tokens" />
+                        : formatCompact(totalTokens(event))}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {/* An unresolved event was not billed because its usage
                           was unreadable, so showing $0.00 would be a claim the
                           gateway cannot make. */}
-                      {event.cost_source === "unresolved" ? (
+                      {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
+                        <Unreported what="cost" />
+                      ) : event.cost_source === "unresolved" ? (
                         <span
                           className="text-amber-600 dark:text-amber-400"
                           title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
@@ -444,7 +524,9 @@ export function UsageTab({
                           // saying, because the two can differ.
                           title={
                             event.cost_source === "reported"
-                              ? "Cost reported by the provider for this request."
+                              ? isPassthroughEvent(event)
+                                ? "Non-standard path: cost reported by the provider for this request."
+                                : "Cost reported by the provider for this request."
                               : undefined
                           }
                         >

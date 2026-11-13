@@ -36,6 +36,7 @@ export {
   endpointStyleKinds,
   HTTP_FIELD_NAME,
   ISSUER_PROVIDERS,
+  PASSTHROUGH_METHODS,
   PROVIDER_SLUG_PATTERN,
   identifiesEndUsers,
   scopeHasLimits,
@@ -64,6 +65,7 @@ export type {
   IssuerProvider,
   LimitScopeConfig,
   LimitsConfig,
+  PassthroughMethod,
   PerUserLimitScopeConfig,
   ProviderPolicy,
   RoutingConfig,
@@ -72,9 +74,14 @@ export type {
 import {
   scopeHasLimits,
   type BudgetScope,
+  type PassthroughMethod,
   type ProviderPolicy,
   type RoutingConfig,
 } from "../contracts/schemas.ts";
+import { classifyPath } from "./protocols.ts";
+
+/** One `allowed_paths` entry: a bare path, or a path with its settings. */
+type AllowedPath = ProviderPolicy["allowed_paths"][number];
 
 /** A configuration that does not parse, named so callers can answer for it. */
 export class ConfigError extends Error {
@@ -182,6 +189,26 @@ const INFERENCE_PATH_PATTERNS: ReadonlyMap<ProviderType, readonly RegExp[]> = ne
 /** True when a provider path is one of its type's own inference operations, as {@link defaultInferencePaths} lists them. */
 export function isInferencePath(provider: ProviderType, path: string): boolean {
   return (INFERENCE_PATH_PATTERNS.get(provider) ?? []).some((pattern) => pattern.test(path));
+}
+
+/**
+ * Whether a provider path is **passthrough**: neither an API the gateway reads
+ * nor one of the provider type's own inference operations — the two lists an
+ * app with no `allowed_paths` may reach. Such a path is reachable only because
+ * an app lists it, and the gateway forwards it without understanding it: no
+ * model is read or judged, nothing is priced unless the provider itself reports
+ * a cost, the body is never rewritten and the exchange is never stored.
+ *
+ * The one definition the proxy, conversation storage, configuration checks and
+ * the console all ask, so they can never disagree about which is which.
+ */
+export function isPassthroughPath(provider: ProviderType, path: string): boolean {
+  return classifyPath(path).protocol.style === "other" && !isInferencePath(provider, path);
+}
+
+/** The methods an `allowed_paths` entry opens a passthrough path for: its own list, or POST alone. */
+export function passthroughMethods(entry: AllowedPath): readonly PassthroughMethod[] {
+  return (typeof entry === "string" ? undefined : entry.methods) ?? ["POST"];
 }
 
 /**

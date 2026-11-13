@@ -55,6 +55,12 @@ export interface AttemptAttribution {
   model: string;
   /** The API this attempt spoke, which is what picks the response reader. */
   apiStyle: ApiStyle;
+  /**
+   * A passthrough path, which the gateway forwarded without reading: there is
+   * no model to price, so the event carries only a cost the provider itself
+   * reports, and the absence of one is expected rather than a failure.
+   */
+  passthrough: boolean;
   /** `slug/path`, the `route` column. */
   route: string;
 }
@@ -73,7 +79,7 @@ interface UsageEventInput {
   identity: GatewayIdentity;
   /** Which provider row served the attempt, and how it was reached. */
   attribution: AttemptAttribution;
-  /** Set for custom endpoint traffic; null for the passthrough proxy. */
+  /** Set for custom endpoint traffic; null for the proxy. */
   endpointSlug?: string | null;
   appVersion: string | null;
   status: "ok" | "provider_error";
@@ -380,11 +386,19 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // The fourth is a response that reported a measure, just not the one the
   // model is priced in: a duration for a token-priced model, or tokens for a
   // time-priced one. Its price would multiply counters that were never sent.
-  const unpriced = price === null && !reporting;
-  const mismeasured = observed !== null
+  //
+  // None of this applies to a passthrough path. The gateway read no model, so
+  // there is nothing to price and no measure to expect: its cost is whatever
+  // the provider itself reports, and the absence of a report is how such a call
+  // normally ends rather than a failure worth an alert.
+  const judged = !attribution.passthrough;
+  const unpriced = judged && price === null && !reporting;
+  const mismeasured = judged
+    && observed !== null
     && price !== null
     && !reportsPricedMeasure(attribution.provider, attribution.model, observed, attribution.pricing);
-  const unresolved = input.status === "ok"
+  const unresolved = judged
+    && input.status === "ok"
     && reportedCost === null
     && (observed === null || unpriced || mismeasured || (reporting && price === null));
   if (unresolved) {
@@ -436,12 +450,17 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // integration sums them before either column is written — `cost_usd` is what
   // debits budgets and `reported_cost_usd` is the same number, kept so a
   // reported event is distinguishable from a computed one at query time.
-  const cost = reportedCost ?? price ?? 0;
-  const costSource: CostSource = reportedCost !== null
+  //
+  // A passthrough call the provider reports no cost for has no source at all:
+  // null, never `computed` at a $0 nobody computed.
+  const cost = reportedCost ?? (judged ? price : null) ?? 0;
+  const costSource: CostSource | null = reportedCost !== null
     ? "reported"
-    : unresolved
-      ? "unresolved"
-      : "computed";
+    : !judged
+      ? null
+      : unresolved
+        ? "unresolved"
+        : "computed";
   const gateway = attribution.providerRoute.gateway;
   // Observed values come solely from the parsed report: nothing else is entitled
   // to claim who served a request, so there is no caller-supplied alternative.
@@ -469,7 +488,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       credentialSource: integration?.readsCredentialSource
         ? (report?.credentialSource ?? null)
         : attribution.providerRoute.adapter.credentialSource,
-      modelAuthor: resolveModelAuthor(attribution.provider, attribution.model),
+      // No model, no author: a passthrough call names nobody's model.
+      modelAuthor: judged ? resolveModelAuthor(attribution.provider, attribution.model) : null,
       servedProvider: report?.servedProvider ?? null,
       servedModel: servedModel
         ? routeCanonicalModel(attribution.providerRoute, attribution.provider, servedModel)

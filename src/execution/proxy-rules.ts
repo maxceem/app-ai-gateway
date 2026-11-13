@@ -19,6 +19,8 @@ import { isBillable } from "../usage/pricing";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
 import {
   defaultInferencePaths,
+  isPassthroughPath,
+  passthroughMethods,
   providerPolicyFor,
   DEFAULT_END_USER_HEADER,
   type ProviderPolicy,
@@ -32,8 +34,15 @@ export interface PreparedProxyRequest {
   /**
    * The canonical model: what was priced, what the allowlist judged, and what
    * the usage event records. The route may put a different string on the wire.
+   * Empty on a passthrough path, where the gateway reads no model at all.
    */
   model: string;
+  /**
+   * True for a passthrough path (`isPassthroughPath`): forwarded as the client
+   * sent it, with no model judged and nothing priced unless the provider itself
+   * reports a cost.
+   */
+  passthrough: boolean;
   /**
    * The API this request speaks, classified from the path here and carried
    * through to the attempt: the response reader is chosen by it, so the answer
@@ -450,11 +459,39 @@ export async function prepareProxyRequest(input: {
     provider,
     providerPath,
     model,
+    passthrough: false,
     apiStyle,
     body,
     headers,
     query: sanitizedQuery(input.request),
   });
+
+  if (isPassthroughPath(provider, input.providerPath)) {
+    // Only a listed path reaches here: the defaults name recognised APIs and
+    // inference operations alone. The entry's own settings for model calls —
+    // `fixed_model`, `clamp` — are not read, because there is no model call to
+    // apply them to; a stored entry keeps them and keeps working.
+    if (!(passthroughMethods(match.entry) as readonly string[]).includes(input.request.method)) {
+      throw new GatewayError(
+        403,
+        "path_not_allowed",
+        `Provider path is not allowed for ${input.request.method}`,
+      );
+    }
+    // The bytes the client sent, which App Attest has already verified: no
+    // model, price, rewrite or output cap applies to an API the gateway does
+    // not read. A GET carries no body upstream.
+    return {
+      provider,
+      providerPath: input.providerPath,
+      model: "",
+      passthrough: true,
+      apiStyle,
+      body: input.request.method === "GET" ? null : bytes,
+      headers,
+      query: sanitizedQuery(input.request),
+    };
+  }
 
   // The body's format is the client's, whatever the path: a classified
   // transcription is multipart, but so are provider-native uploads under

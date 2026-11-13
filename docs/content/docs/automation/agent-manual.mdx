@@ -433,7 +433,7 @@ Policy object for one provider:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none` |
+| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"?, "methods"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none`. A listed path outside the inference APIs and the provider's own endpoints (files, batches, realtime session keys) is passthrough: forwarded unread, with no model checked or priced, `POST` only unless `methods` lists more of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `methods` is refused on any other path. Allowing `GET` on a list endpoint such as `v1/files` shows the app's users the whole provider account's data, so add it only when the person asks |
 | `allowed_models` | string[] | Empty allows every priced model |
 | `max_output_tokens` | positive integer, optional | Requests above it are refused; requests without an output limit get it injected |
 
@@ -608,7 +608,8 @@ values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
 `install`, `apple_account`, `user`, `app` or `account`; `apple_account` is an
 end user's Apple Account budget, unrelated to `account`. Samples are limited to one per identity per minute, so
 sample counts are not exact request totals. Event
-`cost_source` values: `computed`, `reported`, `unresolved`.
+`cost_source` values: `computed`, `reported`, `unresolved`, or null on a
+passthrough call the provider reported no cost for, whose `model` is empty.
 
 ## What clients send
 
