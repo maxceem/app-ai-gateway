@@ -22,3 +22,21 @@ test("anything but an absolute http(s) URL is refused", () => {
   assert.throws(() => origin("probe.example.com", "SMOKE_GATEWAY_URL"), /SMOKE_GATEWAY_URL must be an absolute URL/u);
   assert.throws(() => origin("ftp://probe.example.com", "SMOKE_GATEWAY_URL"), /must be an http\(s\) URL/u);
 });
+
+test("the log reader needs both its token and its account, or neither", async () => {
+  const { smokeEnv } = await import("../src/env.ts");
+  const saved = { ...process.env };
+  try {
+    process.env.SMOKE_GATEWAY_URL = "https://ai.example.com";
+    delete process.env.SMOKE_CF_API_TOKEN;
+    delete process.env.SMOKE_CF_ACCOUNT_ID;
+    delete process.env.SMOKE_CF_WORKER;
+    assert.equal(smokeEnv().cloudflare, undefined);
+    process.env.SMOKE_CF_API_TOKEN = "token";
+    assert.throws(() => smokeEnv(), /Set both SMOKE_CF_API_TOKEN and SMOKE_CF_ACCOUNT_ID, or neither/u);
+    process.env.SMOKE_CF_ACCOUNT_ID = "account";
+    assert.deepEqual(smokeEnv().cloudflare, { apiToken: "token", accountId: "account", workerName: "app-ai-gateway" });
+  } finally {
+    process.env = saved;
+  }
+});

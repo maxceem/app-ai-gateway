@@ -27,9 +27,23 @@ export interface SmokeEnv {
   mockSecret: string | undefined;
   /** Private JWK (JSON) the test issuer signs end-user tokens with. */
   issuerKey: string | undefined;
+  /**
+   * Where the deployment's Worker logs are read, for the check that watches
+   * its fallbacks. Undefined unless both a token and an account are set, and
+   * that check is then skipped.
+   */
+  cloudflare: CloudflareLogs | undefined;
   /** Who runs these tests; names the application keys this runner owns. */
   runner: string;
   stateFile: string;
+}
+
+/** A read-only Cloudflare API token that can query Workers Observability, and where to look. */
+export interface CloudflareLogs {
+  apiToken: string;
+  accountId: string;
+  /** The deployment's Worker script name. */
+  workerName: string;
 }
 
 const SMOKE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -78,10 +92,19 @@ export function smokeEnv(): SmokeEnv {
     mockUrl: mock === undefined ? undefined : origin(mock, "SMOKE_MOCK_URL"),
     mockSecret: value("SMOKE_MOCK_SECRET"),
     issuerKey: value("SMOKE_ISSUER_KEY"),
+    cloudflare: cloudflareLogs(),
     runner: value("SMOKE_RUNNER") ?? "local",
     stateFile: value("SMOKE_STATE_FILE")
       ?? resolve(SMOKE_ROOT, ".state", `${new URL(gatewayUrl).host.replaceAll(":", "_")}.json`),
   };
+}
+
+function cloudflareLogs(): CloudflareLogs | undefined {
+  const apiToken = value("SMOKE_CF_API_TOKEN");
+  const accountId = value("SMOKE_CF_ACCOUNT_ID");
+  if (!apiToken && !accountId) return undefined;
+  if (!apiToken || !accountId) throw new Error("Set both SMOKE_CF_API_TOKEN and SMOKE_CF_ACCOUNT_ID, or neither");
+  return { apiToken, accountId, workerName: value("SMOKE_CF_WORKER") ?? "app-ai-gateway" };
 }
 
 /** A setting a step cannot do without, with the variable to set named in the failure. */
