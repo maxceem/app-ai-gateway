@@ -21,6 +21,7 @@ import {
   type OperationResponse,
 } from "../../src/contracts/catalog.ts";
 import { CliError, fail, MANAGEMENT_KEY_ENV } from "./common.ts";
+import { formatPath, tolerant } from "./tolerant.ts";
 import type { Transport } from "./transport.ts";
 
 export type { OperationName };
@@ -51,6 +52,12 @@ export interface CallOptions<K extends OperationName> {
 
 export interface CallResult<T> {
   data: T;
+  /**
+   * Where the answer carried settings this release does not know, which a
+   * newer deployment may send; absent when it carried none. They are kept in
+   * `data` as they were sent, so a command that writes them back loses none.
+   */
+  newer?: string[];
 }
 
 /**
@@ -94,7 +101,9 @@ export class GatewayClient {
    *
    * The parse is not a formality. zod drops what a schema does not declare, so
    * this is what keeps an undocumented server field — or anything an unexpected
-   * response carries — out of the values the commands go on to print.
+   * response carries — out of the values the commands go on to print. The one
+   * exception is the configuration grammar's own strict objects, whose
+   * unknown keys a newer deployment may have written: see `parse` below.
    */
   async publicCall<K extends OperationName>(
     name: K,
@@ -110,7 +119,7 @@ export class GatewayClient {
         ...(headers === undefined ? {} : { headers }),
       },
     );
-    return { data: parse(name, wire.data) };
+    return parse(name, wire.data);
   }
 
   /** The same call, with the connection's management credential attached. */
@@ -179,9 +188,19 @@ export class GatewayClient {
   }
 }
 
-function parse<K extends OperationName>(name: K, data: unknown): OperationResponse<K> {
-  const parsed = (CATALOG[name].response as z.ZodType).safeParse(data);
-  if (!parsed.success)
+/**
+ * An answer, parsed with its operation's own schema.
+ *
+ * A deployment is updated underneath the CLI that manages it, so an answer the
+ * strict parse refuses gets a second, tolerant reading: when everything wrong
+ * with it is something a newer release could have added — a key the
+ * configuration grammar does not declare, a value an enum does not list — it
+ * is accepted with those additions kept as sent, and `newer` names where they
+ * are. A missing field, a wrong type or a failed check is still refused.
+ */
+function parse<K extends OperationName>(name: K, data: unknown): CallResult<OperationResponse<K>> {
+  const read = tolerant(CATALOG[name].response as z.ZodType, data);
+  if (!read)
     fail(
       "invalid_response",
       `The deployment answered ${String(name)} with an unusable body.`,
@@ -190,6 +209,9 @@ function parse<K extends OperationName>(name: K, data: unknown): OperationRespon
     );
   // The schema really is the one this operation's response type is inferred
   // from; zod's own output type just cannot be resolved through the generic
-  // index into the catalog.
-  return parsed.data as OperationResponse<K>;
+  // index into the catalog. A tolerated answer is that type with additions
+  // the type does not name, which every reader of it ignores.
+  const result: CallResult<OperationResponse<K>> = { data: read.data as OperationResponse<K> };
+  if (read.unknown.length) result.newer = read.unknown.map((entry) => formatPath(entry.path));
+  return result;
 }

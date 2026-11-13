@@ -15,13 +15,14 @@ import type {
   AppSnippetResponse,
   AppValidateResponse,
 } from "../../src/contracts/responses.ts";
-import { CliError, fail, validate } from "./common.ts";
+import { CliError, describeIssues, fail, VERSION } from "./common.ts";
 import type { Context } from "./context.ts";
-import { confirm } from "./input.ts";
+import { canPrompt, confirm } from "./input.ts";
 import type { Flags } from "./parser.ts";
 import { flagList } from "./parser.ts";
 import { jsonFile, required } from "./resources.ts";
 import { reserveOutput, type StoredKeyMetadata } from "./state.ts";
+import { formatPath, sameJson, tolerant, valueAt, type Path, type Unknown } from "./tolerant.ts";
 import { shellQuote } from "../../src/shared/first-request.ts";
 import {
   selectedProviderPolicies,
@@ -56,9 +57,18 @@ export type AppResult =
   | { output: string }
   | AppSnippetResponse;
 
-/** The stored application as a write body. */
-export function documentOf(app: AppResponse["app"]): AppWrite {
-  return localApp({ name: app.name, config: app.config, status: app.status });
+/** A write body, and the settings in it this release does not know. */
+export interface AppDocument {
+  doc: AppWrite;
+  unknown: Unknown[];
+}
+
+/**
+ * The stored application as a write body, with every setting a newer gateway
+ * wrote into it kept as it was read: an edit sends them back unchanged.
+ */
+export function documentOf(app: AppResponse["app"]): AppDocument {
+  return checkedApp({ name: app.name, config: app.config, status: app.status }, "any");
 }
 
 /**
@@ -70,10 +80,55 @@ export function documentOf(app: AppResponse["app"]): AppWrite {
  * and says it in the same words.
  */
 export function localApp(value: unknown): AppWrite {
-  return validate(AppWriteSchema, value);
+  return checkedApp(value).doc;
 }
 
-export async function appDocument(flags: Flags, current?: AppWrite): Promise<AppWrite> {
+/**
+ * Which settings this release does not know a document may carry: `any` for a
+ * file, which the gateway judges in full when it is sent, or exactly the ones
+ * an application was read with, each with the value it was read with.
+ */
+type Tolerance = "any" | readonly Unknown[];
+
+const tolerated = (entry: { path: Path; value?: unknown }, tolerance: Tolerance, valued = true): boolean =>
+  tolerance === "any" ||
+  tolerance.some((known) =>
+    sameJson(known.path, entry.path) && (!valued || sameJson(known.value, entry.value)));
+
+/**
+ * A write body checked against what this release knows of the grammar.
+ *
+ * A setting it does not know — a key it has no field for, a value its enum
+ * does not list — is passed through untouched where `tolerance` allows it,
+ * and the gateway, which does know it, has the final say when the body is
+ * sent. Everything else is checked here as it always was. A setting that is
+ * new here and not allowed is refused in the schema's own words.
+ */
+export function checkedApp(value: unknown, tolerance: Tolerance = []): AppDocument {
+  const read = tolerant(AppWriteSchema, value);
+  if (read && read.unknown.every((entry) => tolerated(entry, tolerance)))
+    return { doc: read.data, unknown: read.unknown };
+  const parsed = AppWriteSchema.safeParse(value);
+  const issues = parsed.success ? [] : parsed.error.issues;
+  // The settings that were allowed are not what is wrong, so they are not named.
+  const reported = issues.filter((issue) => {
+    if (issue.code === "unrecognized_keys")
+      return !issue.keys.every((key) => tolerated({ path: [...issue.path, key] }, tolerance, false));
+    if (issue.code === "invalid_value" || issue.code === "invalid_union")
+      return !tolerated({ path: issue.path, value: valueAt(value, issue.path) }, tolerance);
+    return true;
+  });
+  fail("invalid_input", describeIssues(reported.length ? reported : issues));
+}
+
+/** The type names this release can edit; a newer gateway may store others. */
+const KNOWN_TYPES: readonly string[] = ["api_key", "apple_app_attest"];
+
+export async function appDocument(
+  flags: Flags,
+  current?: AppWrite,
+  unknown: readonly Unknown[] = [],
+): Promise<AppWrite> {
   if (flags.file) {
     const permitted = new Set([
       "file",
@@ -81,13 +136,16 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
       "no-input",
       "dry-run",
       "key-output",
+      "yes",
     ]);
     if (Object.keys(flags).some((k) => !permitted.has(k)))
       fail(
         "conflicting_flags",
         "--file replaces all application configuration flags.",
       );
-    const doc = localApp(await jsonFile(flags.file));
+    // A file may use settings newer than this release; the gateway checks
+    // those when it is sent.
+    const { doc } = checkedApp(await jsonFile(flags.file), "any");
     if (
       current &&
       doc.config.authentication.type !== current.config.authentication.type
@@ -140,6 +198,17 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   if (flags.name) doc.name = flags.name;
   if (flags.status) doc.status = flags.status === "disabled" ? "disabled" : "active";
   const auth = doc.config.authentication;
+  // An application of a type this release has never heard of keeps its
+  // authentication as it is, and an edit of it is refused rather than guessed.
+  if (
+    !KNOWN_TYPES.includes(auth.type) &&
+    ([...IOS_FLAGS, "key-output"] as const).some((k) => flags[k])
+  )
+    fail(
+      "cli_outdated",
+      `This app uses authentication type ${auth.type}, which agw ${VERSION} does not know.`,
+      "Update agw: npm install -g @maxceem/agw",
+    );
   if (
     auth.type === "api_key" &&
     IOS_FLAGS.some((k) => flags[k])
@@ -168,7 +237,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     };
   }
   if (flags["all-providers"]) doc.config.routing.providers = { mode: "all" };
-  return localApp(doc);
+  return checkedApp(doc, unknown).doc;
 }
 
 /** The flags only an iOS (App Attest) application takes. */
@@ -219,11 +288,18 @@ export async function appCommand(
   const action = command.slice(4);
   if (action === "list") return (await ctx.call("listApps")).data;
   if (action === "validate") {
-    const doc = localApp(await jsonFile(await required(flags, "file")));
-    return { definition: doc, validation: await remoteValidation(ctx, doc) };
+    const { doc, unknown } = checkedApp(await jsonFile(await required(flags, "file")), "any");
+    const validation = await remoteValidation(ctx, doc);
+    // Checked here only as far as this release knows the grammar, which a
+    // local verdict has to say.
+    if (!validation.remote && unknown.length)
+      validation.skipped.push(
+        `Settings agw ${VERSION} does not know were not checked: ${unknown.map((entry) => formatPath(entry.path)).join(", ")}.`,
+      );
+    return { definition: doc, validation };
   }
   if (action === "add" || action === "update") {
-    let current: AppWrite | undefined;
+    let current: AppDocument | undefined;
     // The revision the edit is made against, read from the application itself.
     // It travels back in the write body: a deployment sits behind a CDN that
     // rewrites response headers, so the resource is the only channel that
@@ -243,12 +319,13 @@ export async function appCommand(
         );
       if (
         !Object.keys(flags).some(
-          (k) => !["json", "no-input", "dry-run"].includes(k),
+          (k) => !["json", "no-input", "dry-run", "yes"].includes(k),
         )
       )
         fail("invalid_input", "Provide at least one application change.");
     }
-    const doc = await appDocument(flags, current);
+    const doc = await appDocument(flags, current?.doc, current?.unknown);
+    if (flags.file && current) await replacing(ctx, appId, current.unknown, doc, flags);
     if (flags["key-output"] && doc.config.authentication.type !== "api_key")
       fail("invalid_input", "--key-output only applies to server apps.");
     if (flags["dry-run"])
@@ -307,7 +384,7 @@ export async function appCommand(
     const sub = action.slice(4);
     const appId = args[0] ?? "";
     const { data: app } = await ctx.call("getApp", { params: { app: appId } });
-    if (documentOf(app.app).config.authentication.type !== "api_key")
+    if (app.app.config.authentication.type !== "api_key")
       fail(
         "invalid_input",
         "Only server applications support application keys.",
@@ -343,6 +420,40 @@ export async function appCommand(
     return (await ctx.call("deleteApp", { params: { app: appId }, query: { confirm: appId } })).data;
   }
   fail("unknown_command", "Unknown command.");
+}
+
+/**
+ * `app update --file` replaces the whole configuration, so a setting the
+ * application has and this release does not know survives only if the file
+ * carries it as it is — which it does when it was saved from `app show
+ * --json`, and does not when it was written by hand or saved by an older
+ * release. Losing or changing one is said by path and needs `--yes`, because
+ * nothing on this side can describe what it did.
+ */
+async function replacing(
+  ctx: Context,
+  appId: string,
+  unknown: readonly Unknown[],
+  doc: AppWrite,
+  flags: Flags,
+): Promise<void> {
+  const removed = unknown
+    .filter((entry) => !sameJson(valueAt(doc, entry.path), entry.value))
+    .map((entry) => formatPath(entry.path));
+  if (!removed.length) return;
+  ctx.notice({
+    code: "unknown_settings_replaced",
+    message: `The file leaves out or changes settings ${appId} has that agw ${VERSION} does not understand; saving it replaces them.`,
+    paths: removed,
+  });
+  if (flags["dry-run"] || flags.yes) return;
+  if (!canPrompt(flags))
+    fail(
+      "confirmation_required",
+      `Saving the file replaces settings agw ${VERSION} does not understand in ${appId}: ${removed.join(", ")}.`,
+      "Copy them into the file from agw app show --json, or run the same command with --yes to replace them.",
+    );
+  await confirm("Save the file and replace them?", flags);
 }
 
 /**

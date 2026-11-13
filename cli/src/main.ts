@@ -2,7 +2,7 @@ import { Writable } from "node:stream";
 import { appCommand } from "./apps.ts";
 import { conversationsCommand } from "./conversations.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
-import { Context, type ContextIo } from "./context.ts";
+import { Context, type ContextIo, type Notice } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
 import { CliErrorDetailsSchema } from "./errors.ts";
 import { humanResult, type OutputContext } from "./human.ts";
@@ -84,6 +84,8 @@ export async function main(
   }: MainOptions = {},
 ): Promise<number> {
   const json = argv.includes("--json");
+  // What the run noticed, which either envelope carries; empty until a command runs.
+  let notices: readonly Notice[] = [];
   try {
     const parsed = parse(argv);
     if (parsed.help) {
@@ -97,6 +99,7 @@ export async function main(
     const run = async (): Promise<number> => {
       const state = await store.read((line) => stderr.write(line + "\n"));
       const ctx = new Context(store, state, transport, parsed.flags, { ...io, stderr });
+      notices = ctx.notices;
       const result = await execute(parsed, ctx);
       const context: OutputContext = {
         url: ctx.url,
@@ -108,7 +111,15 @@ export async function main(
       const rendered: RenderedResult = ctx.onboarding
         ? { ...result, ...ctx.onboarding }
         : result;
-      const output = { schemaVersion: 1, ok: true, context, result: rendered };
+      // `notices` only when there is one, so the envelope of an ordinary run is
+      // what it has always been.
+      const output = {
+        schemaVersion: 1,
+        ok: true,
+        context,
+        result: rendered,
+        ...(notices.length ? { notices } : {}),
+      };
       const text = json
         ? JSON.stringify(output) + "\n"
         : humanResult(parsed.command, rendered, context, styleFor(stdout));
@@ -151,7 +162,12 @@ export async function main(
     };
     if (json) {
       stdout.write(
-        JSON.stringify({ schemaVersion: 1, ok: false, error: reported }) + "\n",
+        JSON.stringify({
+          schemaVersion: 1,
+          ok: false,
+          error: reported,
+          ...(notices.length ? { notices } : {}),
+        }) + "\n",
       );
       return e.exitCode;
     }

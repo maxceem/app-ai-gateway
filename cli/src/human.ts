@@ -1,4 +1,3 @@
-import { AppConfigSchema } from "../../src/contracts/schemas.ts";
 import type { CommandName } from "./parser.ts";
 import type { GatewayCapability, ProviderCapability } from "./resources.ts";
 import type { RenderedResult } from "./results.ts";
@@ -65,6 +64,13 @@ function table(
 }
 
 const yesNo = (value: boolean): string => (value ? "yes" : "no");
+
+/**
+ * A deployment's mode as a person says it. A newer gateway may name a mode
+ * this release has no words for, which is then shown as it was sent.
+ */
+const deploymentMode = (mode: string): string =>
+  mode === "cloud" ? "cloud" : mode === "self_hosted" ? "self-hosted" : mode;
 
 /**
  * The human rendering of one command's result.
@@ -232,7 +238,7 @@ function status(
           ["Gateway", context.url],
           ["Account", `${result.account.name} (${result.account.id})`],
           ["Claimed", yesNo(result.account.claimed)],
-          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Deployment", deploymentMode(result.deployment.mode)],
           ["Console", result.deployment.consoleOrigin],
         ],
         style,
@@ -248,7 +254,7 @@ function status(
           ["Authenticated", yesNo(result.authenticated)],
           ["Version", result.serverVersion],
           ["Prices", result.prices ? `${result.prices.revision} (${result.prices.updated ?? "date unknown"})` : undefined],
-          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Deployment", deploymentMode(result.deployment.mode)],
           ["Console", result.consoleOrigin],
           ["Provider types", result.providers.length],
           ["Provider gateway types", result.providerGateways.length],
@@ -558,6 +564,9 @@ const ACCOUNT_REFUSALS = {
   account_expired: "refuses requests: its recovery deadline has passed (account_expired)",
 } as const;
 
+const accountRefusal = (code: string): string =>
+  Object.hasOwn(ACCOUNT_REFUSALS, code) ? ACCOUNT_REFUSALS[code as keyof typeof ACCOUNT_REFUSALS] : code;
+
 function app(
   command: CommandName,
   result: RenderedResult,
@@ -576,8 +585,9 @@ function app(
           ["Providers", result.providers.length],
           ["Active providers", result.providers.filter((p) => p.status === "active").length],
           // Absent from a gateway older than the field, which reports none.
+          // A reason newer than this release is shown by its code alone.
           ...(result.accountRefusal
-            ? [["Account", ACCOUNT_REFUSALS[result.accountRefusal]] as [string, string]]
+            ? [["Account", accountRefusal(result.accountRefusal)] as [string, string]]
             : []),
         ],
         style,
@@ -647,39 +657,45 @@ function written(
   context: OutputContext,
   style: Style,
 ): string[] {
-  const parsed = AppConfigSchema.safeParse(result.app.config);
+  // Read as the gateway answered, which a newer gateway may have filled with
+  // types and sources this release does not know: those are shown as sent,
+  // never described as one this release does know.
+  const config = result.app.config;
+  const type: string = config.authentication.type;
   const details: [string, Cell][] = [];
   let language = "shell";
-  if (parsed.success) {
-    const config = parsed.data;
-    if (config.authentication.type === "apple_app_attest") {
-      language = "swift";
-      const endUser = config.authentication.end_user;
-      details.push(
-        [
-          "App Attest",
-          (config.authentication.app_attest.environments ?? ["production"]).join(" + "),
-        ],
-        [
-          "User identity",
-          endUser.source === "app_install"
-            ? "per installation; sign-in not required"
-            : "verified issuer; integrate your sign-in SDK",
-        ],
-        [
-          "Paid subscription check",
-          endUser.source === "issuer" && endUser.issuer.required_claims.length
-            ? "configured claim requirements"
-            : "off",
-        ],
-      );
-    } else details.push(["Authentication", "server application API key"]);
-    const limits = config.limits?.per_user;
+  if (config.authentication.type === "apple_app_attest") {
+    language = "swift";
+    const endUser = config.authentication.end_user;
+    const source: string = endUser.source;
+    details.push(
+      [
+        "App Attest",
+        (config.authentication.app_attest.environments ?? ["production"]).join(" + "),
+      ],
+      [
+        "User identity",
+        endUser.source === "app_install"
+          ? "per installation; sign-in not required"
+          : endUser.source === "issuer"
+            ? "verified issuer; integrate your sign-in SDK"
+            : source,
+      ],
+      [
+        "Paid subscription check",
+        endUser.source === "issuer"
+          ? endUser.issuer.required_claims.length ? "configured claim requirements" : "off"
+          : endUser.source === "app_install" ? "off" : undefined,
+      ],
+    );
+  } else if (type === "api_key") details.push(["Authentication", "server application API key"]);
+  else details.push(["Authentication", type]);
+  const limits = config.limits?.per_user;
+  if (limits)
     details.push([
       "Per-user limits",
-      `${limits?.requests.per_minute ?? "unlimited"} requests/minute, ${limits?.requests.per_day ?? "unlimited"}/day`,
+      `${limits.requests?.per_minute ?? "unlimited"} requests/minute, ${limits.requests?.per_day ?? "unlimited"}/day`,
     ]);
-  }
   if (result.applicationKey)
     details.push(["Key saved", result.applicationKey.storagePath]);
   return [

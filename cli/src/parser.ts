@@ -69,7 +69,7 @@ export const commands = {
   "app update": {
     args: 1,
     flags:
-      "name team-id bundle-id attest-environments verify-on provider* all-providers! status file dry-run!",
+      "name team-id bundle-id attest-environments verify-on provider* all-providers! status file dry-run! yes!",
   },
   "app validate": { args: 0, flags: "file" },
   "app check": { args: 1, flags: "" },
