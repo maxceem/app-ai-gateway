@@ -37,7 +37,7 @@ import { supportInbox } from "../management/support";
 import { parseRequest } from "../management/validation";
 import { applyAppPatch } from "../management/app-patch";
 import { runToolOperation } from "./run";
-import { isSecretFieldName, secretField, type ResultPath } from "./secret-fields";
+import { isSecretFieldName, REDACTED, secretField, type ResultPath } from "./secret-fields";
 import { APP_SHORTCUTS, shortcutInput, shortcutOperations, usedShortcuts } from "./shortcuts";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
@@ -422,11 +422,30 @@ function refuseSecret(input: Record<string, unknown>, tool: string): void {
 function refuseCredential(input: Record<string, unknown>, remedy: string): void {
   const field = secretField(input);
   if (field === null) return;
+  // A value get_app hid, sent back as it was shown: say that, rather than
+  // that a credential was passed.
+  if (valueAtPath(input, field) === REDACTED) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `${field}: still ${REDACTED}, as it was shown. A value named like a credential never passes through a tool, so this document cannot be sent back whole. Make the change with patch_app, which leaves this setting as it is; change the setting itself in the console or through the API.`,
+    );
+  }
   throw new GatewayError(
     400,
     "invalid_request",
     `${field}: a provider key or gateway token is never a tool argument. ${remedy}`,
   );
+}
+
+/** The value at a dotted path `secretField` reported. */
+function valueAtPath(value: unknown, path: string): unknown {
+  let current: unknown = value;
+  for (const key of path.split(".")) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }
 
 /**

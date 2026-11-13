@@ -96,8 +96,11 @@ test("a command line is read by the schema: numbers, lists, switches, JSON and p
   assert.equal(read.json, true);
   // A value that is not a number is sent as typed, for the gateway to refuse in its words.
   assert.equal((await readInvocation(PATCH, ["app-1", "--revision", "three"], noStdin)).input.revision, "three");
-  // A JSON array is the whole list at once.
+  // A JSON array is the whole list at once; otherwise values may be comma-separated.
   assert.deepEqual((await readInvocation(PATCH, ["app-1", "--providers", '["a","b"]'], noStdin)).input.providers, ["a", "b"]);
+  assert.deepEqual((await readInvocation(PATCH, ["app-1", "--providers", "a, b", "--providers", "c"], noStdin)).input.providers, ["a", "b", "c"]);
+  // A value starting with a bracket that is not JSON is a value.
+  assert.deepEqual((await readInvocation(PATCH, ["app-1", "--providers", "[beta]"], noStdin)).input.providers, ["[beta]"]);
   // --input gives every argument at once; flags and arguments override it.
   const merged = await readInvocation(PATCH, ["app-2", "--input", '{"app":"app-1","name":"From input","revision":2}', "--name", "From flag"], noStdin);
   assert.deepEqual(merged.input, { app: "app-2", name: "From flag", revision: 2 });
@@ -390,7 +393,7 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
   assert.match(one.out, /^agw app update <app> \[flags\]\n/);
   assert.match(one.out, /\nShortcuts\n {2}--name <value>/);
   assert.match(one.out, /\n {2}--all-providers\n/);
-  assert.match(one.out, /--providers <value>… +Repeat the flag for each value\./);
+  assert.match(one.out, /--providers <value>… +Repeat the flag, or separate values with commas\./);
   // A tool named in a description reads as the command it is.
   assert.match(one.out, /as agw app list returns it/);
   assert.equal(fake.asked.some((entry) => entry.method === "POST"), false);

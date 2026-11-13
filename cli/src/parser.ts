@@ -74,7 +74,7 @@ export const commands = {
   "app add": {
     args: 0,
     flags:
-      "type name team-id bundle-id attest-environments verify-on provider* status file key-output dry-run!",
+      "type name team-id bundle-id attest-environments* verify-on providers* status file key-output dry-run!",
     summary: "Add an iOS or server app; a server app's key goes to a private file",
   },
   "app snippet": { args: 1, flags: "language provider endpoint output", summary: "Print a first request for an app" },
@@ -132,7 +132,7 @@ export interface Flags {
   route?: string;
   "team-id"?: string;
   "bundle-id"?: string;
-  "attest-environments"?: string;
+  "attest-environments"?: string | string[];
   "verify-on"?: string;
   file?: string;
   "key-output"?: string;
@@ -142,7 +142,10 @@ export interface Flags {
   from?: string;
   to?: string;
   timeout?: string;
-  provider?: string | string[];
+  /** One provider, as `app snippet` names it. */
+  provider?: string;
+  /** Every provider an app may use, as `app add` and the gateway's `app update` name them. */
+  providers?: string | string[];
 }
 
 export type ParseResult =

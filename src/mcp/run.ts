@@ -1,6 +1,6 @@
 import { runOperation, type OperationCaller, type OperationRequest } from "../management/executor";
 import { OPERATION_HANDLERS } from "../management/handlers";
-import { redactSecrets } from "./secret-fields";
+import { REDACTED, redactSecrets } from "./secret-fields";
 import type { McpTool, ToolOperation } from "./tools";
 
 /**
@@ -20,8 +20,21 @@ export async function runTool(
   caller: OperationCaller,
 ): Promise<{ result: unknown; summary: string }> {
   const body = tool.perform ? await tool.perform(input, caller) : await callOperation(tool, input, caller);
-  const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt);
-  return { result, summary: tool.summary(result, redactSecrets(input)) };
+  const hidden: string[] = [];
+  const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt, [], hidden);
+  const summary = tool.summary(result, redactSecrets(input));
+  return { result, summary: hidden.length === 0 ? summary : `${summary} ${hiddenNote(hidden)}` };
+}
+
+/**
+ * What a reader is told when a result hides values: which, why, and what
+ * still works, so an agent does not take `[redacted]` for the stored value
+ * and send it back.
+ */
+export function hiddenNote(hidden: readonly string[]): string {
+  const shown = hidden.slice(0, 3).join(", ");
+  const more = hidden.length > 3 ? ` and ${hidden.length - 3} more` : "";
+  return `${hidden.length === 1 ? "A value" : `${hidden.length} values`} named like a credential ${hidden.length === 1 ? "is" : "are"} shown as ${REDACTED} (${shown}${more}): no tool ever returns one. patch_app changes other settings and leaves ${hidden.length === 1 ? "it" : "them"} as ${hidden.length === 1 ? "it is" : "they are"}; update_app refuses a document that still carries ${REDACTED}.`;
 }
 
 function callOperation(tool: McpTool, input: Record<string, unknown>, caller: OperationCaller): Promise<unknown> {

@@ -50,11 +50,16 @@ function attest(doc: AppWrite) {
   return auth.app_attest;
 }
 
-test("quickstart and JSON defaults remain distinct, and --provider selects with no restrictions", async () => {
+test("quickstart and JSON defaults remain distinct, and --providers selects with no restrictions", async () => {
   const ios = await appDocument(iosFlags);
   assert.deepEqual(attest(ios).environments, ["production", "development"]);
   assert.equal(ios.config.limits?.per_user.requests.per_day, 10000);
-  const selected = await appDocument({ ...serverFlags, provider: ["openai", "other"] });
+  // Repeated or comma-separated, as every list flag takes them.
+  const selected = await appDocument({ ...serverFlags, providers: ["openai", "other"] });
+  assert.deepEqual(
+    selectedProviderPolicies((await appDocument({ ...serverFlags, providers: "openai, other" })).config.routing),
+    selectedProviderPolicies(selected.config.routing),
+  );
   const policies = selectedProviderPolicies(selected.config.routing);
   // Unrestricted is the empty list: the gateway has no wildcard, and a literal
   // "*" both fails the save-time price check and matches no request.

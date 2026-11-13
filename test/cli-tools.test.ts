@@ -4,6 +4,8 @@ import worker from "../src/index";
 import { CliToolCatalogResponseSchema } from "../src/contracts/cli";
 import { CLI_HINTS } from "../src/mcp/cli-hints";
 import { APP_SHORTCUTS } from "../src/mcp/shortcuts";
+import { hiddenNote } from "../src/mcp/run";
+import { REDACTED, redactSecrets } from "../src/mcp/secret-fields";
 import { MCP_TOOLS } from "../src/mcp/tools";
 import { seedAllProviders, seedApp, seedHuman, seedServerApp } from "./helpers";
 
@@ -151,6 +153,36 @@ describe("a tool run for the CLI", () => {
     expect(response.status).toBe(404);
     expect(json.error.code).toBe("app_not_found");
     expect(response.headers.get("agw-tools-revision")).toBe(revision);
+  });
+});
+
+describe("values a tool hides", () => {
+  it("are named in the summary, with what still works", () => {
+    const hidden: string[] = [];
+    const shown = redactSecrets({ app: { config: { endpoints: { chat: { params: { api_key: "sk-1", temperature: 0 } } } } } }, [], [], hidden);
+    expect(shown.app.config.endpoints.chat.params).toEqual({ api_key: REDACTED, temperature: 0 });
+    expect(hidden).toEqual(["app.config.endpoints.chat.params.api_key"]);
+    const note = hiddenNote(hidden);
+    expect(note).toContain("app.config.endpoints.chat.params.api_key");
+    expect(note).toContain("patch_app");
+    expect(note).toContain("update_app refuses");
+  });
+
+  it("sent back as shown are refused with what to do instead", async () => {
+    await seedServerApp("cli_tools_redacted", { organizationId: await organization() });
+    const { app } = (await call("get_app", { app: "cli_tools_redacted" })).json.result;
+    const { response, json } = await call("update_app", {
+      app: "cli_tools_redacted",
+      config: {
+        name: app.name,
+        status: app.status,
+        revision: app.revision,
+        config: { ...app.config, endpoints: { chat: { provider: "openai", model: "gpt-x", api_style: "responses", params: { api_key: REDACTED } } } },
+      },
+    });
+    expect(response.status).toBe(400);
+    expect(json.error.message).toMatch(/still \[redacted\], as it was shown/u);
+    expect(json.error.message).toContain("patch_app");
   });
 });
 

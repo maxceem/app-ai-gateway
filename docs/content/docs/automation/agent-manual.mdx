@@ -69,7 +69,8 @@ or approve the claim yourself. Claiming preserves the agent's access.
 4. To change an existing app, prefer `agw app update <app-id>` with the flags
    that name the change, such as `--name`, `--status`, `--team-id`,
    `--verify-on` or `--providers`: they change nothing else and need no
-   revision. For any other setting, pass `--operations @patch.json` with the
+   revision. A list flag takes repeated values or commas
+   (`--providers openai,anthropic`). For any other setting, pass `--operations @patch.json` with the
    `--revision` from `app show`; the file is a list of operations, each `add`,
    `replace` or `remove` at a path such as
    `/config/limits/per_app/requests/per_minute`, and the result is checked as a
@@ -79,7 +80,10 @@ or approve the claim yourself. Claiming preserves the agent's access.
    @app.json --json`, with `name`, `config`, `status` and `revision` from
    `result.app` of `app show`. Keep every existing configuration field,
    including ones you do not recognize. A stale revision is refused with
-   `app_revision_conflict`: reread, merge and repeat. Then reread the app.
+   `app_revision_conflict`: reread, merge and repeat. Then reread the app. A
+   value shown as `[redacted]` is hidden, not stored that way: never send it
+   back. Use `app update` for such an app, and tell the person that setting
+   itself is changed in the console.
 6. Run `agw app check <app-id> --json` and
    `agw app snippet <app-id> --json`. Resolve any placeholders named in
    `result.notes`. The check reads configuration only: no provider key,

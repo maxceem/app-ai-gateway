@@ -149,7 +149,7 @@ export async function jsonValue(flag: string, text: string, stdin: () => Promise
   }
 }
 
-function scalarValue(field: Field, kind: Exclude<FieldKind, "list" | "json">, text: string): unknown {
+function scalarValue(field: Pick<Field, "flag">, kind: Exclude<FieldKind, "list" | "json">, text: string): unknown {
   if (kind === "number" || kind === "integer") {
     const number = Number(text);
     // Sent as typed when it is not a number, so the gateway refuses it in its own words.
@@ -161,6 +161,27 @@ function scalarValue(field: Field, kind: Exclude<FieldKind, "list" | "json">, te
     fail("invalid_input", `--${field.flag} is true or false.`);
   }
   return text;
+}
+
+/**
+ * The values one list flag gives: a JSON array as the whole list, otherwise
+ * comma-separated values, so `--providers a,b` and `--providers a --providers
+ * b` say the same. A value holding a comma is written in a JSON array.
+ */
+export function listValues(field: Pick<Field, "flag" | "item">, text: string): unknown[] {
+  if (text.trimStart().startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Not JSON after all: a value that starts with a bracket.
+    }
+  }
+  return text
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => scalarValue(field, field.item ?? "string", part));
 }
 
 /**
@@ -224,11 +245,8 @@ export async function readInvocation(
     const field = byFlag.get(name);
     if (!field) fail("unknown_flag", `Unknown flag --${name} for agw ${tool.cli.command}.`, `Run agw ${tool.cli.command} --help.`);
     if (field.kind === "list") {
-      const text = value();
       const list = (given[field.name] ??= []) as unknown[];
-      // A JSON array is the whole list at once.
-      if (text.startsWith("[")) list.push(...(await jsonValue(field.flag, text, stdin)) as unknown[]);
-      else list.push(scalarValue(field, field.item ?? "string", text));
+      list.push(...listValues(field, value()));
       continue;
     }
     if (Object.hasOwn(given, field.name)) fail("duplicate_flag", `--${field.flag} may only be supplied once.`);

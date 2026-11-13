@@ -248,7 +248,7 @@ export function toolHelp(tool: CliTool, tools: readonly CliTool[], style: Style)
     ];
   };
   const describe = (field: Field) =>
-    [field.description ? text(field.description) : "", field.kind === "list" ? "Repeat the flag for each value." : "", field.required && !field.positional ? "Required." : ""]
+    [field.description ? text(field.description) : "", field.kind === "list" ? "Repeat the flag, or separate values with commas." : "", field.required && !field.positional ? "Required." : ""]
       .filter(Boolean)
       .join(" ");
   const flagEntry = (field: Field): [string, string] => [`--${field.flag}${placeholder(field)}`, describe(field)];

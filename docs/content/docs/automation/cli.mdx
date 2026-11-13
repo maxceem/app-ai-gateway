@@ -129,9 +129,10 @@ Most commands come from the gateway you are connected to rather than from
 `agw` itself. `agw` reads the list of commands your gateway offers, keeps it
 for a day, and reads it again as soon as the gateway changes, so a command a
 newer gateway adds works without updating `agw`, and `agw --help` lists it.
-Their flags are the gateway's own arguments: `team_id` is `--team-id`, a value
-given more than once is repeated, and a structured value is JSON, inline or as
-`@file`. `--input` takes every argument as one JSON object. Use a command's
+Their flags are the gateway's own arguments: `team_id` is `--team-id`, a list
+is given by repeating its flag or with commas (`--providers openai,anthropic`),
+and a structured value is JSON, inline or as `@file`. Every command, built in or
+not, names a flag the same way. `--input` takes every argument as one JSON object. Use a command's
 `--help` for its exact flags. The commands that need your machine — signing
 in, deploying, adding a provider or an app, and anything that writes a key to
 a file — are built into `agw` and change with it.
@@ -142,12 +143,13 @@ name, and leaves everything else as it is:
 ```sh
 agw app update <app-id> --name "Production" --status active
 agw app update <app-id> --team-id ABCDE12345 --verify-on every_request
-agw app update <app-id> --providers openai --providers anthropic
+agw app update <app-id> --providers openai,anthropic
 ```
 
 `--name` and `--status` apply to any app; `--team-id`, `--bundle-id`,
-`--attest-environments` and `--verify-on` to an iOS app; `--providers`, given
-once per provider, or `--all-providers` choose which providers it may use. A
+`--attest-environments` and `--verify-on` to an iOS app; `--providers` or
+`--all-providers` choose which providers it may use, as `--providers` does on
+`agw app add`. A
 provider it already selected keeps its allowed paths and models. These apply
 to the app as it is when the command runs.
 
@@ -176,6 +178,12 @@ read it again and repeat.
 Build the file from `agw app show <app-id> --json`, keeping `name`, `config`,
 `status` and `revision` from `result.app`; it does not transfer credentials or
 usage to another deployment.
+
+A setting named like a credential, such as a provider parameter called
+`api_key`, is never shown: `app show` prints `[redacted]` in its place and its
+summary says which settings it hid. Such an app cannot be sent back whole with
+`app replace`, which says so; change its other settings with `app update`, which
+leaves the hidden one as it is, and change that one in the console or the API.
 
 `agw app snippet <app-id>` prints a request that app can send: curl for a
 server app, Swift for an iOS one. Creating an app prints it too. It is built

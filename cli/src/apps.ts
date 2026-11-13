@@ -157,9 +157,7 @@ export async function appDocument(flags: Flags): Promise<AppWrite> {
            * hand. Passed through unmapped, so `localApp` below is what
            * refuses a name that is neither.
            */
-          environments: attestEnvironments(
-            flags["attest-environments"] ?? "production,development",
-          ),
+          environments: attestEnvironments(flags["attest-environments"] ?? "production,development"),
         })
       : newAppConfig({ type: "api_key", endUser: { source: "none" } }),
   });
@@ -168,7 +166,7 @@ export async function appDocument(flags: Flags): Promise<AppWrite> {
   // every_request or token_exchange.
   if (auth.type === "apple_app_attest" && flags["verify-on"])
     auth.app_attest.verify_on = flags["verify-on"].trim() as AppAttestVerifyOn;
-  const selectedProviders = flagList(flags.provider);
+  const selectedProviders = listOf(flags.providers);
   if (selectedProviders.length)
     doc.config.routing.providers = {
       mode: "selected",
@@ -186,11 +184,19 @@ const IOS_FLAGS = ["team-id", "bundle-id", "attest-environments", "verify-on"] a
  * neither `production` nor `development` instead of this flag quietly
  * widening a misspelling into production.
  */
-function attestEnvironments(value: string): AppAttestEnvironment[] {
-  return value
-    .split(",")
+function attestEnvironments(value: string | string[]): AppAttestEnvironment[] {
+  return listOf(value) as AppAttestEnvironment[];
+}
+
+/**
+ * A list flag's values, given once per value or separated by commas, as every
+ * list flag of `agw` takes them, the gateway's commands included.
+ */
+function listOf(value: string | string[] | undefined): string[] {
+  return flagList(value)
+    .flatMap((entry) => entry.split(","))
     .map((name) => name.trim())
-    .filter((name) => name.length > 0) as AppAttestEnvironment[];
+    .filter((name) => name.length > 0);
 }
 
 /** The gateway's own verdict on a new application's document. */
@@ -295,7 +301,7 @@ async function appSnippet(ctx: Context, appId: string, flags: Flags): Promise<Ap
   const language = flags.language;
   if (language !== undefined && !(SNIPPET_LANGUAGES as readonly string[]).includes(language))
     fail("invalid_input", "--language must be swift or curl.");
-  const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+  const provider = flags.provider;
   let data: AppSnippetResponse;
   try {
     ({ data } = await ctx.call("getAppSnippet", {
