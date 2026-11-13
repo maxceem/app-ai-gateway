@@ -12795,6 +12795,9 @@
                             "required": [
                               "command"
                             ]
+                          },
+                          "guard": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -12846,6 +12849,16 @@
             "description": "The tool's name, as listCliTools returns it.",
             "name": "tool",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared."
+            },
+            "required": false,
+            "description": "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared.",
+            "name": "agw-tool-guard",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -12928,7 +12941,7 @@
             }
           },
           "409": {
-            "description": "The change conflicts with the current state.",
+            "description": "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran, so fetch the list and decide again. Otherwise the change conflicts with the current state.",
             "content": {
               "application/json": {
                 "schema": {

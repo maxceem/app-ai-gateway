@@ -56,11 +56,26 @@ export function cliToolCatalog(scope: ManagementScope): Promise<CliToolCatalogRe
   return catalog;
 }
 
+async function hex(text: string, bytes: number): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest).slice(0, bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The part of a tool a CLI must not hold an outdated copy of when it runs it:
+ * whether it destroys, and what it needs of the CLI. A description, an added
+ * optional argument or a new view leaves it as it is.
+ */
+function guardOf(tool: CliTool): string {
+  return JSON.stringify({ destructive: tool.annotations.destructiveHint === true, requires: [...(tool.cli.requires ?? [])].sort() });
+}
+
 async function build(tools: readonly McpTool[]): Promise<CliToolCatalogResponse> {
-  const described = tools.map(describe);
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(described)));
-  const revision = [...new Uint8Array(digest).slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return { revision, tools: described };
+  const described = await Promise.all(tools.map(async (tool) => {
+    const entry = describe(tool);
+    return { ...entry, guard: await hex(guardOf(entry), 6) };
+  }));
+  return { revision: await hex(JSON.stringify(described), 8), tools: described };
 }
 
 /**
@@ -73,11 +88,17 @@ export async function callCliTool(
   name: string,
   input: Record<string, unknown>,
   caller: OperationCaller,
+  /** The tool's `guard` in the caller's list, when it sent one. */
+  guard?: string,
 ): Promise<{ response: CliToolCallResponse; revision: string }> {
-  const { revision } = await cliToolCatalog(caller.scope);
+  const { revision, tools } = await cliToolCatalog(caller.scope);
   try {
     const tool = offered(caller.scope).find((candidate) => candidate.name === name);
     if (!tool) throw new GatewayError(404, "tool_not_found", `This deployment has no tool named ${name}`);
+    const current = tools.find((entry) => entry.name === name)?.guard;
+    if (guard !== undefined && current !== undefined && guard !== current) {
+      throw new GatewayError(409, "tool_changed", `${name} has changed in a way that needs a fresh look before it runs; nothing ran`);
+    }
     const { result, summary } = await runTool(tool, input, caller);
     return { response: { tool: tool.name, summary, result: result as Record<string, unknown> }, revision };
   } catch (error) {

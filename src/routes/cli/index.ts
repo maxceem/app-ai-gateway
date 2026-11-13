@@ -55,7 +55,12 @@ routes.handle("listCliTools", async (_c, { scope }) =>
   (await import("../../mcp/cli-catalog")).cliToolCatalog(scope));
 routes.handle("callCliTool", async (c, { params, body, scope, actor, state }) => {
   const { callCliTool, TOOLS_REVISION_HEADER } = await import("../../mcp/cli-catalog");
-  const { response, revision } = await callCliTool(params.tool, body, { scope, auth: { state, actor } });
+  const { response, revision } = await callCliTool(
+    params.tool,
+    body,
+    { scope, auth: { state, actor } },
+    c.req.header("agw-tool-guard"),
+  );
   c.header(TOOLS_REVISION_HEADER, revision);
   return response;
 });

@@ -140,6 +140,13 @@ as its own release: against an older one, the gateway's commands answer
 `gateway_outdated`, and `agw deployment update` brings a self-hosted gateway up
 to date.
 
+A release of your gateway that changes no command costs `agw` nothing. When a
+command has changed since `agw` last read the list, the next run reads it
+again first, which takes one extra request. If the command has since come to
+delete something or to need a newer `agw`, the gateway refuses the old
+description before running anything: `agw` then asks you to confirm, or to
+update `agw`, instead of running it as it was.
+
 Read an app before editing it. `agw app update <app-id>` changes only what you
 name, and leaves everything else as it is:
 

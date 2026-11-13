@@ -52,6 +52,13 @@ export type ErrorCode =
    * so a CLI can tell its own list is out of date.
    */
   | "tool_not_found"
+  /**
+   * A CLI ran a tool by a description in which it was safer than it is now:
+   * it has become destructive, or needs a feature of the CLI it did not. The
+   * call is refused before anything runs; the CLI fetches the list again and
+   * decides anew.
+   */
+  | "tool_changed"
   | "not_a_member"
   | "last_owner"
   /**

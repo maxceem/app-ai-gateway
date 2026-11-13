@@ -156,6 +156,38 @@ describe("a tool run for the CLI", () => {
   });
 });
 
+describe("a tool's guard", () => {
+  it("is listed for every tool, and stays the same while what makes it safe does", async () => {
+    const first = await catalog();
+    for (const tool of first.tools) expect(tool.guard, tool.name).toMatch(/^[0-9a-f]{12}$/u);
+    const guards = (list: typeof first) => Object.fromEntries(list.tools.map((tool) => [tool.name, tool.guard]));
+    expect(guards(await catalog())).toEqual(guards(first));
+    const remove = first.tools.find((tool) => tool.name === "remove_app")!;
+    const list = first.tools.find((tool) => tool.name === "list_apps")!;
+    expect(remove.guard).not.toBe(list.guard);
+  });
+
+  it("that the caller holds is compared before the tool runs", async () => {
+    await seedServerApp("cli_tools_guarded", { organizationId: await organization() });
+    const { tools, revision } = await catalog();
+    const guard = tools.find((tool) => tool.name === "patch_app")!.guard!;
+    owner ??= await account("cli-tools-owner@example.com");
+    const sendGuarded = (sent: string) => worker.request(`${ORIGIN}/v1/cli/tools/patch_app`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner!.key}`, "content-type": "application/json", "agw-tool-guard": sent },
+      body: JSON.stringify({ app: "cli_tools_guarded", name: "Guarded" }),
+    }, env);
+    const stale = await sendGuarded("000000000000");
+    expect(stale.status).toBe(409);
+    expect((await stale.json<{ error: { code: string } }>()).error.code).toBe("tool_changed");
+    expect(stale.headers.get("agw-tools-revision")).toBe(revision);
+    // Refused before it ran: the app is as it was.
+    expect((await call("get_app", { app: "cli_tools_guarded" })).json.result.app.name).not.toBe("Guarded");
+    const current = await sendGuarded(guard);
+    expect(current.status).toBe(200);
+  });
+});
+
 describe("values a tool hides", () => {
   it("are named in the summary, with what still works", () => {
     const hidden: string[] = [];

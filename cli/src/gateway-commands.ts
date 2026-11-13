@@ -16,6 +16,9 @@ import { clean, usageLine } from "./tool-output.ts";
 /** The header a tool call answers with the gateway's tool list revision in. */
 const REVISION_HEADER = "agw-tools-revision";
 
+/** The header a tool call sends the tool's guard in. */
+const GUARD_HEADER = "agw-tool-guard";
+
 const builtIn = (command: string): boolean => Object.hasOwn(commands, command);
 
 /** Everything standard input holds, for an `@-` value. */
@@ -130,8 +133,16 @@ async function invocationOf(
 /**
  * Runs one gateway command. `argv` is the command line after the command's
  * words; the help it asks for is returned as text instead of a result. The
- * tool is answered with too, since a list fetched to read the line may hold a
- * newer description of it.
+ * tool is answered with too, since a list fetched on the way may hold a newer
+ * description of it.
+ *
+ * A call carries the tool's guard, and the gateway refuses it with
+ * `tool_changed`, before anything runs, when the tool has since become
+ * destructive or come to need more of this CLI. That is the one refusal
+ * answered here rather than reported: the line is read again against the
+ * gateway's current description, what it needs and whether to ask are decided
+ * again, and the call is sent once more. A release that changes neither
+ * leaves the guard as it was, so nothing about it costs a request.
  */
 export async function runGatewayCommand(
   ctx: Context,
@@ -140,8 +151,31 @@ export async function runGatewayCommand(
   argv: readonly string[],
   stdin: () => Promise<string> = readStdin,
 ): Promise<GatewayCommandResult | { help: true; tool: CliTool }> {
-  const { tool, invocation } = await invocationOf(catalog, given, argv, once(stdin));
+  const read = once(stdin);
+  let { tool, invocation } = await invocationOf(catalog, given, argv, read);
   if (invocation.help) return { help: true, tool };
+  let answer;
+  try {
+    answer = await send(ctx, catalog, tool, invocation);
+  } catch (error) {
+    if (!(error instanceof CliError) || error.code !== "tool_changed") throw error;
+    const current = (await catalog.refresh()).tools.find((entry) => entry.name === tool.name);
+    if (!current) throw error;
+    supported(current);
+    tool = current;
+    invocation = await readInvocation(tool, argv, read);
+    answer = await send(ctx, catalog, tool, invocation);
+  }
+  await catalog.observe(answer.headers?.get(REVISION_HEADER));
+  return { tool, summary: answer.data.summary, result: answer.data.result };
+}
+
+/**
+ * One call of a tool: its arguments completed and checked, the person's
+ * consent where it destroys, and its guard sent beside it. A refusal is read
+ * for the revision it carries, and said with the flags a person typed.
+ */
+async function send(ctx: Context, catalog: ToolCatalog, tool: CliTool, invocation: ToolInvocation) {
   const input = { ...invocation.input };
   // A deletion names what it deletes twice; once the person has agreed, the
   // CLI says it the second time for them.
@@ -150,9 +184,12 @@ export async function runGatewayCommand(
   // What is missing is said before anybody is asked to agree to it.
   requireFields(tool, input);
   await consent(tool, invocation, ctx.flags);
-  let answer;
   try {
-    answer = await ctx.call("callCliTool", { params: { tool: tool.name }, body: input });
+    return await ctx.call("callCliTool", {
+      params: { tool: tool.name },
+      body: input,
+      ...(tool.guard === undefined ? {} : { headers: { [GUARD_HEADER]: tool.guard } }),
+    });
   } catch (error) {
     if (!(error instanceof CliError)) throw error;
     error.message = flagsIn(tool, error.message);
@@ -171,8 +208,6 @@ export async function runGatewayCommand(
     }
     throw error;
   }
-  await catalog.observe(answer.headers?.get(REVISION_HEADER));
-  return { tool, summary: answer.data.summary, result: answer.data.result };
 }
 
 /**

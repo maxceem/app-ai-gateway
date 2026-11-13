@@ -1389,12 +1389,17 @@ export const CATALOG = {
     // Any key may ask; the tool's own operation then applies its policy.
     policy: { role: "member", access: "read", grant: "read" },
     params: { tool: { description: "The tool's name, as listCliTools returns it.", example: "list_apps" } },
+    headers: z.object({
+      "agw-tool-guard": z.string().optional().meta({
+        description: "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared.",
+      }),
+    }),
     request: CliToolCallRequestSchema,
     response: CliToolCallResponseSchema,
     responseDescription: "The tool's structured result and its one-line summary.",
     errors: {
       404: "`tool_not_found`: this deployment has no tool of that name; fetch the list again. Any other code: what the tool names does not exist.",
-      409: "The change conflicts with the current state.",
+      409: "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran, so fetch the list and decide again. Otherwise the change conflicts with the current state.",
     },
   },
 

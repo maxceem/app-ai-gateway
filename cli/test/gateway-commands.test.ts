@@ -165,9 +165,13 @@ function gateway(options: {
         }
         const call = /^\/v1\/cli\/tools\/([a-z_]+)$/u.exec(path);
         if (call && method === "POST") {
-          const refusal = !tools.some((tool) => tool.name === call[1])
+          const sent = request.headers?.["agw-tool-guard"];
+          const current = tools.find((tool) => tool.name === call[1]);
+          const refusal = !current
             ? new CliError("tool_not_found", `This deployment has no tool named ${call[1]}`, "", 3, { status: 404 })
-            : options.refuse?.(call[1]!, request.body as Record<string, unknown>);
+            : sent !== undefined && current.guard !== undefined && sent !== current.guard
+              ? new CliError("tool_changed", `${call[1]} has changed; nothing ran`, "", 3, { status: 409 })
+              : options.refuse?.(call[1]!, request.body as Record<string, unknown>);
           if (refusal) {
             refusal.headers = new Headers({ "agw-tools-revision": options.callRevision ?? revision });
             throw refusal;
@@ -362,6 +366,52 @@ test("a result's own keys are cleaned before they label a table or a field", () 
   assert.equal(out.includes("\u001b"), false, JSON.stringify(out));
   const record = cliTool("get_app", { command: "app show", view: { record: "app" } });
   assert.equal(humanToolResult(record, "App.", { app: { [hostile]: "x" } }, [record], plain).includes("\u001b"), false);
+});
+
+test("a release that leaves a command's guard alone runs it with the list kept, at once", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ tools: [{ ...LIST, guard: "g1" }] });
+  await run(["app", "list"], fake, cache);
+  // Reworded and given a new view, but no safer or less safe to run.
+  fake.publish({ revision: "r2", tools: [{ ...LIST, description: "Lists apps, reworded.", guard: "g1" }] });
+  const posts = () => fake.asked.filter((entry) => entry.method === "POST").length;
+  const before = posts();
+  const result = await run(["app", "list", "--json"], fake, cache);
+  assert.equal(result.code, 0, result.out);
+  assert.equal(posts() - before, 1);
+});
+
+test("a command that has become destructive since the list was kept is asked about again before it runs", async () => {
+  const update = { ...PATCH, guard: "g1" };
+  const destructive = { ...PATCH, guard: "g2", annotations: { ...PATCH.annotations, destructiveHint: true } };
+  const posts = (fake: ReturnType<typeof gateway>) =>
+    fake.asked.filter((entry) => entry.method === "POST" && entry.path.endsWith("patch_app"));
+
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ tools: [LIST, update] });
+  await run(["app", "list"], fake, cache);
+  fake.publish({ revision: "r2", tools: [LIST, destructive] });
+  const refused = await run(["app", "update", "app-1", "--name", "x", "--json"], fake, cache);
+  assert.equal(refused.json().error.code, "confirmation_required");
+  // One call, refused before it ran, and none after it.
+  assert.equal(posts(fake).length, 1);
+
+  const agreed = new MemoryCatalogCache();
+  const again = gateway({ tools: [LIST, update] });
+  await run(["app", "list"], again, agreed);
+  again.publish({ revision: "r2", tools: [LIST, destructive] });
+  const ran = await run(["app", "update", "app-1", "--name", "x", "--yes", "--json"], again, agreed);
+  assert.equal(ran.code, 0, ran.out);
+  assert.deepEqual(posts(again).map((entry) => entry.body), [{ app: "app-1", name: "x" }, { app: "app-1", name: "x" }]);
+});
+
+test("a command that has come to need a newer agw is refused by name, having run nothing", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ tools: [LIST, { ...PATCH, guard: "g1" }] });
+  await run(["app", "list"], fake, cache);
+  fake.publish({ revision: "r2", tools: [LIST, { ...PATCH, guard: "g2", cli: { ...PATCH.cli, requires: ["teleport"] } }] });
+  const refused = await run(["app", "update", "app-1", "--name", "x", "--json"], fake, cache);
+  assert.equal(refused.json().error.code, "cli_outdated");
 });
 
 test("a refusal about what a tool names is not mistaken for the tool being gone", async () => {

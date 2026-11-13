@@ -543,6 +543,13 @@ export const CliToolSchema = z.object({
     openWorldHint: z.boolean(),
   }),
   cli: CliToolHintSchema,
+  /**
+   * What the gateway compares before it runs the tool for a CLI: a digest of
+   * what makes running it safe — whether it is destructive, and what it
+   * requires of the CLI. It changes only when one of those does, never with a
+   * release that leaves them alone. Sent back in `Agw-Tool-Guard`.
+   */
+  guard: z.string().optional(),
 });
 
 export const CliToolCatalogResponseSchema = z.object({
