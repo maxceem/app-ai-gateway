@@ -12675,6 +12675,253 @@
         }
       }
     },
+    "/v1/cli/tools": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "listCliTools",
+        "summary": "List the tools the CLI builds its commands from",
+        "description": "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI caches this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+        "responses": {
+          "200": {
+            "description": "The tools and the revision that identifies this list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string"
+                    },
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": {}
+                          },
+                          "annotations": {
+                            "type": "object",
+                            "properties": {
+                              "readOnlyHint": {
+                                "type": "boolean"
+                              },
+                              "destructiveHint": {
+                                "type": "boolean"
+                              },
+                              "idempotentHint": {
+                                "type": "boolean"
+                              },
+                              "openWorldHint": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "readOnlyHint",
+                              "idempotentHint",
+                              "openWorldHint"
+                            ]
+                          },
+                          "cli": {
+                            "type": "object",
+                            "properties": {
+                              "command": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "args": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "confirm": {
+                                "type": "string"
+                              },
+                              "shortcuts": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "view": {
+                                "type": "object",
+                                "properties": {
+                                  "rows": {
+                                    "type": "string"
+                                  },
+                                  "record": {
+                                    "type": "string"
+                                  },
+                                  "columns": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "required": [
+                              "command"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "title",
+                          "description",
+                          "inputSchema",
+                          "annotations",
+                          "cli"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "tools"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/tools/{tool}": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "callCliTool",
+        "summary": "Run one tool, as the CLI does",
+        "description": "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The tool's name, as listCliTools returns it.",
+              "example": "list_apps"
+            },
+            "required": true,
+            "description": "The tool's name, as listCliTools returns it.",
+            "name": "tool",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tool's structured result and its one-line summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tool": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "result": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "tool",
+                    "summary",
+                    "result"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No tool of that name, or what the tool names does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The change conflicts with the current state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/bootstrap": {
       "post": {
         "tags": [

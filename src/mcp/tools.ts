@@ -35,7 +35,9 @@ import {
 import type { ManagementScope } from "../management/scope";
 import { supportInbox } from "../management/support";
 import { parseRequest } from "../management/validation";
+import { runToolOperation } from "./run";
 import { isSecretFieldName, secretField, type ResultPath } from "./secret-fields";
+import { APP_SHORTCUTS, shortcutInput, shortcutOperations, usedShortcuts } from "./shortcuts";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
 
@@ -159,6 +161,11 @@ export interface McpTool {
    * redacted. See `redactSecrets`.
    */
   readonly keyMetadataAt?: readonly ResultPath[];
+  /**
+   * Its input fields that are shorthands for a deeper setting, declared in
+   * `./shortcuts`: listed first by `agw`'s help.
+   */
+  readonly shortcuts?: readonly string[];
   /** What to do after a refusal, where this tool knows better than {@link nextAction}. */
   readonly next?: Partial<Record<ErrorCode, string>>;
   /** The catalog operation to run for one call's arguments, and its request. */
@@ -1291,25 +1298,50 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "patch_app",
     title: "Change part of an app",
     description:
-      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. add writes a new key, an array position or - to append; replace overwrites what is there; remove deletes it. A value is written as given, so null means unlimited for a limit; only remove deletes. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted. Pass the revision get_app returned.",
+      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. The common settings have shortcut arguments — name, status, team_id, bundle_id, attest_environments, verify_on, providers and all_providers — which may be sent without a revision: they apply to the app as it is now. For anything else, operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. add writes a new key, an array position or - to append; replace overwrites what is there; remove deletes it. A value is written as given, so null means unlimited for a limit; only remove deletes. Operations need the revision get_app returned; shortcuts sent beside them apply after them. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted.",
     operation: "patchApp",
     input: z.object({
       app: PATH_ARGUMENTS.app!,
       revision: CATALOG.patchApp.request.shape.revision,
-      operations: CATALOG.patchApp.request.shape.operations,
-    }),
+      operations: CATALOG.patchApp.request.shape.operations.optional(),
+    }).extend(shortcutInput(APP_SHORTCUTS)),
     annotations: writing("patch_app", "patchApp", { destructive: false, idempotent: false }),
+    shortcuts: Object.keys(APP_SHORTCUTS),
     next: {
       app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
-      app_revision_required: "Send the revision get_app returned.",
+      app_revision_required: "Send the revision get_app returned, or make the change with shortcut arguments alone.",
       invalid_request: "The message names the operation by index, or the setting the result got wrong. Call get_app to see what is at each path, fix that operation and send the patch again; nothing was saved.",
     },
-    call: (input) => withCheck(
-      operationCall("patchApp", { app: input.app }, { revision: input.revision, operations: input.operations }),
-      // A value's own key is the last segment of its path, so the credential
-      // check reads each written value under the name it is written as.
-      () => refuseAppCredential({ operations: patchValues(input.operations) }),
-    ),
+    perform: async (input, caller) => {
+      const app = String(input.app ?? "");
+      const used = usedShortcuts(APP_SHORTCUTS, input);
+      let { revision, operations } = input;
+      if (used.length > 0) {
+        if (used.includes("providers") && used.includes("all_providers")) {
+          throw new GatewayError(400, "invalid_request", "providers: pass providers or all_providers, not both");
+        }
+        // Read first, as the patch itself would: an app that is not the
+        // caller's is not there, and the shortcuts need what is there now.
+        const { app: current } = await runToolOperation("getApp", { params: { app }, query: {} }, caller) as OperationResponse<"getApp">;
+        const shortcutOps = shortcutOperations(APP_SHORTCUTS, input, current);
+        // Shortcuts alone are leaves the table names in full, so they apply to
+        // the app as it is now; operations still need the revision they were
+        // written against.
+        if (revision === undefined && operations === undefined) revision = current.revision;
+        operations = [...(Array.isArray(operations) ? operations : []), ...shortcutOps];
+        if ((operations as unknown[]).length === 0) {
+          return { app: current };
+        }
+      }
+      return runToolOperation(
+        "patchApp",
+        { params: { app }, query: {}, body: async () => ({ revision, operations }) },
+        caller,
+        // A value's own key is the last segment of its path, so the credential
+        // check reads each written value under the name it is written as.
+        () => refuseAppCredential({ operations: patchValues(operations) }),
+      ) as Promise<Record<string, unknown>>;
+    },
     summary: (result) => {
       const { app } = result as OperationResponse<"patchApp">;
       return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
