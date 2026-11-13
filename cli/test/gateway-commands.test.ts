@@ -370,7 +370,7 @@ test("a refusal by a changed guard that no newer list explains is not sent again
   assert.equal(fake.asked.filter((entry) => entry.path.endsWith("patch_app")).length, 1);
 });
 
-test("help for a built-in group does not fetch the list", async () => {
+test("help for a built-in group does not look the list up again when it is kept", async () => {
   const cache = new MemoryCatalogCache();
   const fake = gateway();
   await run(["app", "list"], fake, cache);
