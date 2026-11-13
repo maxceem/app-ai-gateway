@@ -240,6 +240,7 @@ about one app take its id as `app`.
 | `remove_provider`, `remove_provider_gateway` | Delete one for good, with its id repeated as `confirm` |
 | `add_app` | Create an app; a server app's key is shown to you on a page, never to the agent |
 | `update_app` | Replace an app's document, at the revision it was read at |
+| `patch_app` | Change only the settings named (`add`, `replace` or `remove` at a path), at the revision it was read at |
 | `remove_app` | Delete an app for good, with its id repeated as `confirm` |
 | `add_app_key` | Create another key for a server app, shown to you on a page |
 | `revoke_app_key` | Revoke one of a server app's keys |
@@ -290,8 +291,9 @@ and `-` removed, is one of `secret`, `token`, `apikey`, `password`, `passwd`, `p
 `apiKey` and `Token` match, and `secretHint`, `tokenHint` and `max_tokens` do
 not.
 
-- **Arguments.** The four browser-step tools above, and `add_app`,
-  `update_app` and `validate_app` for the app document they take, refuse a
+- **Arguments.** The four browser-step tools above, `add_app`, `update_app`
+  and `validate_app` for the app document they take, and `patch_app` for each
+  value it writes, read under the key its path ends with, refuse a
   call with a field of such a name anywhere in its arguments: at any depth,
   inside a list, beside the documented arguments or inside them. The refusal
   names the field and never its value, and nothing is stored.

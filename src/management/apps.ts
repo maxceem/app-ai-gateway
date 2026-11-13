@@ -1,7 +1,7 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { requirePlanFeature } from "../billing/features";
 import { getBillingAccess, requireActiveBilling } from "../billing/gateway";
-import type { AppUpdate, AppWrite } from "../contracts/schemas";
+import { AppWriteSchema, type AppPatch, type AppUpdate, type AppWrite } from "../contracts/schemas";
 import type {
   AppDeleteResponse,
   AppListResponse,
@@ -44,7 +44,8 @@ import type { Actor } from "./actor";
 import { appInsertStatement, updateApp as writeAppRow } from "./app-writes";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { databaseErrorMatches } from "./validation";
+import { applyAppPatch } from "./app-patch";
+import { databaseErrorMatches, parseRequest } from "./validation";
 import { assertMonth, EMPTY_USAGE_TOTALS, organizationMonthUsage } from "./usage-queries";
 import { endUserCounts } from "./users";
 import { commitResourceWrite, type ResourceWriteBoundary } from "./write-boundary";
@@ -435,14 +436,7 @@ export async function updateApp(
   await requireEntitlement(scope, actor.organizationId);
   const appId = existing.id;
   const organizationId = actor.organizationId;
-  // Optional in the shape only so that its absence has a code of its own; see
-  // `AppUpdateSchema`.
-  if (body.revision === undefined) {
-    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
-  }
-  if (body.revision !== existing.revision) {
-    throw new GatewayError(409, "app_revision_conflict", "The application changed; reload it before saving your changes");
-  }
+  requireRevision(existing, body.revision);
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
   const current = appRecordFromRow(existing).config;
@@ -468,6 +462,41 @@ export async function updateApp(
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
   return { app: serializeApp(written) };
+}
+
+/**
+ * Optional in the shape only so that its absence has a code of its own; see
+ * `AppUpdateSchema`. A stale one is refused before anything is judged.
+ */
+function requireRevision(existing: AppRow, revision: number | undefined): void {
+  if (revision === undefined) {
+    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
+  }
+  if (revision !== existing.revision) {
+    throw new GatewayError(409, "app_revision_conflict", "The application changed; reload it before saving your changes");
+  }
+}
+
+/**
+ * A partial update: the operations applied to the application as stored, and
+ * the resulting whole document then written exactly as `updateApp` writes one
+ * — the same schema, references, storage and revision checks, in the same
+ * words. A patch is therefore never more permissive than a full update, and
+ * a refused one writes nothing.
+ */
+export async function patchApp(
+  scope: ManagementScope,
+  actor: Actor,
+  existing: AppRow,
+  body: AppPatch,
+): Promise<AppResponse> {
+  requireRevision(existing, body.revision);
+  const stored = storedAppFromRow(existing);
+  const patched = applyAppPatch(
+    { name: stored.name, config: stored.config, status: stored.status },
+    body.operations,
+  );
+  return updateApp(scope, actor, existing, { ...parseRequest(AppWriteSchema, patched), revision: body.revision });
 }
 
 export async function deleteApp(

@@ -1,4 +1,5 @@
 import {
+  AppPatchSchema,
   AppWriteSchema,
   SNIPPET_LANGUAGES,
   type AppWrite,
@@ -15,7 +16,7 @@ import type {
   AppSnippetResponse,
   AppValidateResponse,
 } from "../../src/contracts/responses.ts";
-import { CliError, describeIssues, fail, VERSION } from "./common.ts";
+import { CliError, describeIssues, fail, validate, VERSION } from "./common.ts";
 import type { Context } from "./context.ts";
 import { canPrompt, confirm } from "./input.ts";
 import type { Flags } from "./parser.ts";
@@ -297,6 +298,7 @@ export async function appCommand(
 ): Promise<AppResult> {
   const action = command.slice(4);
   if (action === "list") return (await ctx.call("listApps")).data;
+  if (action === "patch") return appPatch(ctx, args[0] ?? "", flags);
   if (action === "validate") {
     const { doc, unknown } = checkedApp(await jsonFile(await required(flags, "file")), "any");
     const validation = await remoteValidation(ctx, doc);
@@ -430,6 +432,25 @@ export async function appCommand(
     return (await ctx.call("deleteApp", { params: { app: appId }, query: { confirm: appId } })).data;
   }
   fail("unknown_command", "Unknown command.");
+}
+
+/**
+ * `app patch`: the operations in `--file` — a list, or `{operations}` — sent
+ * as one partial update against the revision the application has now. Only
+ * the settings they name change, so nothing this release does not know is at
+ * stake, and the gateway judges the result as it judges a whole update.
+ */
+async function appPatch(ctx: Context, appId: string, flags: Flags): Promise<AppResponse> {
+  const file = await jsonFile(await required(flags, "file"));
+  const operations = validate(
+    AppPatchSchema.shape.operations,
+    Array.isArray(file) ? file : (file as { operations?: unknown } | null)?.operations,
+  );
+  const { data: read } = await ctx.call("getApp", { params: { app: appId } });
+  return (await ctx.call("patchApp", {
+    params: { app: appId },
+    body: { revision: read.app.revision, operations },
+  })).data;
 }
 
 /**

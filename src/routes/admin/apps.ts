@@ -13,4 +13,5 @@ routes.handle("validateAppDraft");
 routes.handle("checkApp");
 routes.handle("getAppSnippet");
 routes.handle("updateApp");
+routes.handle("patchApp");
 routes.handle("deleteApp");

@@ -89,6 +89,7 @@ export type ReadOperation = {
  */
 export const MCP_WRITE_OPERATIONS = [
   "updateApp",
+  "patchApp",
   "deleteApp",
   "revokeAppKey",
   "blockAppUser",
@@ -426,6 +427,16 @@ function refuseCredential(input: Record<string, unknown>, remedy: string): void 
  * parameters stay open for the API, where a caller may hold a credential, but
  * nothing an agent sends is one.
  */
+/** Each written value of a patch under the key its path ends with, for {@link refuseAppCredential}. */
+function patchValues(operations: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(operations)) return [];
+  return operations.flatMap((operation: unknown) => {
+    if (!isObject(operation) || typeof operation.path !== "string" || !("value" in operation)) return [];
+    const key = operation.path.split("/").at(-1)!.replaceAll("~1", "/").replaceAll("~0", "~");
+    return [{ [key]: operation.value }];
+  });
+}
+
 function refuseAppCredential(input: Record<string, unknown>): void {
   refuseCredential(
     input,
@@ -1257,7 +1268,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "update_app",
     title: "Update an app",
     description:
-      "Replaces an app's whole document {name, config, status?} with the one given, which carries the revision get_app returned: start from get_app's document, change it, check it with validate_app, then send it. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app reversibly.",
+      "Replaces an app's whole document {name, config, status?} with the one given, which carries the revision get_app returned: start from get_app's document, change it, check it with validate_app, then send it. To change a few settings, patch_app is shorter and cannot touch anything else. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app reversibly.",
     operation: "updateApp",
     input: z.object({
       app: PATH_ARGUMENTS.app!,
@@ -1273,6 +1284,34 @@ export const MCP_TOOLS: readonly McpTool[] = [
     call: (input) => withCheck(operationCall("updateApp", { app: input.app }, input.config), () => refuseAppCredential(input)),
     summary: (result) => {
       const { app } = result as OperationResponse<"updateApp">;
+      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+    },
+  },
+  {
+    name: "patch_app",
+    title: "Change part of an app",
+    description:
+      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. add writes a new key, an array position or - to append; replace overwrites what is there; remove deletes it. A value is written as given, so null means unlimited for a limit; only remove deletes. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted. Pass the revision get_app returned.",
+    operation: "patchApp",
+    input: z.object({
+      app: PATH_ARGUMENTS.app!,
+      revision: CATALOG.patchApp.request.shape.revision,
+      operations: CATALOG.patchApp.request.shape.operations,
+    }),
+    annotations: writing("patch_app", "patchApp", { destructive: false, idempotent: false }),
+    next: {
+      app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
+      app_revision_required: "Send the revision get_app returned.",
+      invalid_request: "The message names the operation by index, or the setting the result got wrong. Call get_app to see what is at each path, fix that operation and send the patch again; nothing was saved.",
+    },
+    call: (input) => withCheck(
+      operationCall("patchApp", { app: input.app }, { revision: input.revision, operations: input.operations }),
+      // A value's own key is the last segment of its path, so the credential
+      // check reads each written value under the name it is written as.
+      () => refuseAppCredential({ operations: patchValues(input.operations) }),
+    ),
+    summary: (result) => {
+      const { app } = result as OperationResponse<"patchApp">;
       return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
     },
   },

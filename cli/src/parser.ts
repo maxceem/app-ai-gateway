@@ -71,6 +71,7 @@ export const commands = {
     flags:
       "name team-id bundle-id attest-environments verify-on provider* all-providers! status file dry-run! yes!",
   },
+  "app patch": { args: 1, flags: "file" },
   "app validate": { args: 0, flags: "file" },
   "app check": { args: 1, flags: "" },
   "app snippet": { args: 1, flags: "language provider endpoint output" },

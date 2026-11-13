@@ -152,7 +152,10 @@ an older export first. `app validate --file` checks a new app document;
 `app update <id> --file app.json --dry-run` validates an existing app's update.
 Flags change only the settings they name. A file replaces the whole config,
 so when it would drop or change a setting this `agw` does not understand,
-the CLI names it and needs `--yes`.
+the CLI names it and needs `--yes`. For a few settings, `app patch <id>
+--file patch.json` sends only a list of `add`, `replace` or `remove`
+operations at paths such as `/config/limits/per_app/requests/per_minute`,
+and leaves everything else as it is.
 Finish with `app check <id>` and `app snippet <id>`, which send no inference.
 
 **State.** Connection, credentials and pending operations live in

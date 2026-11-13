@@ -27,6 +27,33 @@ test("an app can be created, renamed and deleted", async () => {
   await expect(admin(env, "GET", path)).rejects.toSatisfy((error) => error instanceof GatewayFailure && error.status === 404);
 });
 
+test("an app can be patched, changing only the settings named", async () => {
+  const name = temporaryName();
+  const config = { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { mode: "all" }, model_rewrites: {} } };
+  const { app } = await admin<{ app: { id: string } }>(env, "POST", "/v1/admin/apps", { name, config });
+  const path = `/v1/admin/apps/${encodeURIComponent(app.id)}`;
+  try {
+    type Read = { app: { revision: number; name: string; config: { limits: { per_app: { requests: { per_minute: number | null } } } } } };
+    const { app: before } = await admin<Read>(env, "GET", path);
+    const { app: patched } = await admin<Read>(env, "PATCH", path, {
+      revision: before.revision,
+      operations: [{ op: "replace", path: "/config/limits/per_app/requests/per_minute", value: 120 }],
+    });
+    expect(patched.revision).toBe(before.revision + 1);
+    expect(patched.name).toBe(name);
+    const expected = structuredClone(before.config);
+    expected.limits.per_app.requests.per_minute = 120;
+    expect(patched.config).toEqual(expected);
+    // Nothing is written when an operation cannot apply.
+    await expect(admin(env, "PATCH", path, {
+      revision: patched.revision,
+      operations: [{ op: "replace", path: "/config/no_such_setting", value: 1 }],
+    })).rejects.toSatisfy((error) => error instanceof GatewayFailure && error.status === 400 && error.code === "invalid_request");
+  } finally {
+    await admin(env, "DELETE", `${path}?confirm=${encodeURIComponent(app.id)}`);
+  }
+});
+
 test("a provider can be added and removed, and its key is never echoed back", async () => {
   const secret = need(env, "mockSecret", "SMOKE_MOCK_SECRET");
   const slug = temporaryName();

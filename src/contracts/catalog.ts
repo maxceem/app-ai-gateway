@@ -55,6 +55,7 @@ import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   AppSnippetQuerySchema,
+  AppPatchSchema,
   AppUpdateSchema,
   AppWriteSchema,
   CLIENT_TRACE_ID_PATTERN,
@@ -738,6 +739,20 @@ export const CATALOG = {
     request: AppUpdateSchema,
     response: AppResponseSchema,
     responseDescription: "Application state.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED, 409: "The application changed since it was read." },
+  },
+
+  patchApp: {
+    method: "PATCH",
+    path: "/v1/admin/apps/{app}",
+    tags: ["Admin applications"],
+    summary: "Change part of an application",
+    description: "Applies `operations` in order to the application as `getApp` answers it under `app`, then saves the result exactly as `PUT` would save that whole document: the same validation, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Requires `revision`, as `PUT` does. An operation that cannot apply, such as a `replace` of a key that is not there, answers `400 invalid_request` naming its index.",
+    security: "management",
+    params: APP_PARAM,
+    request: AppPatchSchema,
+    response: AppResponseSchema,
+    responseDescription: "Application state after the change.",
     errors: { 403: CONVERSATIONS_NOT_INCLUDED, 409: "The application changed since it was read." },
   },
 

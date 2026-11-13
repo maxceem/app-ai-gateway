@@ -1005,6 +1005,53 @@ describe("MCP direct changes", () => {
     );
   });
 
+  it("patches only the settings named, against the revision it was read at", async () => {
+    const owner = await withApp("mcp-patch-app@example.test");
+    const read = await callTool(owner.key, "get_app", { app: owner.app });
+    const { revision, config } = read.structuredContent.app;
+    const operations = [
+      { op: "replace", path: "/name", value: "Patched" },
+      { op: "replace", path: "/config/limits/per_app/requests/per_day", value: 5000 },
+    ];
+    const patched = await callTool(owner.key, "patch_app", { app: owner.app, revision, operations });
+    expect(patched.isError, patched.content[0]?.text).toBeFalsy();
+    expect(patched.structuredContent.app).toMatchObject({ name: "Patched", revision: revision + 1 });
+    const expected = structuredClone(config);
+    expected.limits.per_app.requests.per_day = 5000;
+    expect(patched.structuredContent.app.config).toEqual(expected);
+
+    const stale = await callTool(owner.key, "patch_app", { app: owner.app, revision, operations });
+    expectRefusal(stale, "app_revision_conflict");
+    expect(stale.structuredContent.next).toContain("get_app");
+    const missing = await callTool(owner.key, "patch_app", {
+      app: owner.app,
+      revision: revision + 1,
+      operations: [{ op: "replace", path: "/config/nothing", value: 1 }],
+    });
+    expectRefusal(missing, "invalid_request");
+    expect(missing.structuredContent.message).toMatch(/^operations\[0\]/u);
+    expectRefusal(
+      await callTool(owner.read, "patch_app", { app: owner.app, revision: revision + 1, operations }),
+      "grant_insufficient",
+    );
+  });
+
+  it("refuses a patch that writes a credential, under the name the path gives it", async () => {
+    const owner = await withApp("mcp-patch-credential@example.test");
+    const leaked = "sk-proj-SENTINELPATCHVALUE000000";
+    for (const operation of [
+      { op: "add", path: "/config/endpoints/chat/params/api_key", value: leaked },
+      { op: "add", path: "/config/endpoints/chat/params", value: { credentials: { token: leaked } } },
+    ]) {
+      const refused = await callTool(owner.key, "patch_app", { app: owner.app, revision: 1, operations: [operation] });
+      expectRefusal(refused, "invalid_request");
+      expect(refused.structuredContent.message).toMatch(/never a tool argument/u);
+      expect(JSON.stringify(refused)).not.toContain(leaked);
+    }
+    const row = await env.DB.prepare("SELECT revision FROM app WHERE id = ?").bind(owner.app).first<{ revision: number }>();
+    expect(row!.revision).toBe(1);
+  });
+
   it("removes an app only with confirm equal to its id", async () => {
     const owner = await withApp("mcp-remove-app@example.test");
     expectRefusal(await callTool(owner.key, "remove_app", { app: owner.app }), "invalid_request");
@@ -1365,6 +1412,17 @@ describe("MCP every change tool", () => {
         args: () => ({
           app: state.app.id,
           config: { name: "Every app, renamed", config: state.app.config, status: state.app.status, revision: state.app.revision },
+        }),
+        after: (result) => {
+          state.app = result.structuredContent.app;
+        },
+      },
+      {
+        tool: "patch_app",
+        args: () => ({
+          app: state.app.id,
+          revision: state.app.revision,
+          operations: [{ op: "replace", path: "/name", value: "Every app, patched" }],
         }),
         after: (result) => {
           state.app = result.structuredContent.app;
