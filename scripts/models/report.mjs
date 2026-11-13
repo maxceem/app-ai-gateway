@@ -183,13 +183,6 @@ export function renderReport(decision) {
       "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
 
-  if (decision.retired.length > 0) {
-    sections.push(
-      "### Retired models gone from pricing pages\n\n" +
-        list(decision.retired, (item) => `${code(`${item.provider}/${item.model}`)} ${escape(item.text)}`),
-    );
-  }
-
   if (decision.sources.length > 0) {
     sections.push(
       details(

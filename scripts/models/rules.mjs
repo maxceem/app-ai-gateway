@@ -223,7 +223,6 @@ export function compareLists(ours, modelsDev, litellm) {
 export function decide({ catalog, official, deprecations = {}, lists, acknowledged = [], today }) {
   const changes = [];
   const retirements = [];
-  const retired = [];
   const deprecationNotes = [];
   const attention = [];
   const upcoming = [];
@@ -333,10 +332,9 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
         // longer lists the model at all.
         price = page.prices.get(sourceId(source.official, model));
         if (!price) {
-          const date = retiresOn.get(model);
-          if (date !== undefined) {
-            retired.push({ provider, model, date, text: `not on the pricing page; ${date <= today ? "retired" : "retires"} on ${date}` });
-          } else {
+          // A model with a retirement date in the catalog is expected to
+          // leave its page; that date is already what the catalog says.
+          if (!retiresOn.has(model)) {
             flag(`${where}: not on official page`, provider, model, "not on official page (renamed or retired?)");
           }
           continue;
@@ -422,7 +420,6 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
   return {
     changes,
     retirements,
-    retired,
     deprecationNotes,
     attention: open,
     acknowledged: seen,

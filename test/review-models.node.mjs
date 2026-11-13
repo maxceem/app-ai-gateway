@@ -254,7 +254,7 @@ test("PR state: loads only the bot's fixed review JSON at its immutable head SHA
 });
 
 test("report: proposal reasons are visible and inert; informative changes stay separate", () => {
-  const report = renderReport({ changes: [], retirements: [], retired: [{ provider: "openai", model: "old", date: "2027-01-01", text: "not on the pricing page; retires on 2027-01-01" }], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [], noSource: [], sources: [], newModels: [{ provider: "openai", ids: ["new"] }], modelChoices: [choice("new", "skip", "ai", "<script>[evil](url) | text")] });
+  const report = renderReport({ changes: [], retirements: [], deprecationNotes: [{ provider: "openai", model: "old", text: "deprecated on 2027-01-01" }], attention: [], acknowledged: [], upcoming: [], noSource: [], sources: [], newModels: [{ provider: "openai", ids: ["new"] }], modelChoices: [choice("new", "skip", "ai", "<script>[evil](url) | text")] });
   assert.doesNotMatch(report, /<script>|(?<!\\)\[evil\]/u);
   const [trigger, additional] = report.split("## ℹ️ Additional information");
   assert.match(trigger, /\*\*⏭️ Skip\*\*[\s\S]*gpt-6-luna/u);
