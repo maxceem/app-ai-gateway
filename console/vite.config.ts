@@ -113,6 +113,9 @@ export default defineConfig(({ command, mode, isPreview }) => {
       // read the attribute the component actually sets instead.
       environment: "happy-dom",
       setupFiles: ["./src/test/setup.ts"],
+      // Records each run's results when a ledger directory is chosen, and does
+      // nothing otherwise; see scripts/test-ledger/README.md.
+      reporters: ["default", ["../scripts/test-ledger/reporter.mjs", { suite: "console" }]],
       restoreMocks: true,
       // Building the window is what this suite actually spends its time on —
       // far more than running the tests inside it — so both knobs here aim at

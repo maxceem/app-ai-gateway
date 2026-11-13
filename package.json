@@ -43,6 +43,7 @@
     "test:prices-deploy": "node --test test/prices-deploy.node.mjs",
     "test:indexnow": "node --test test/indexnow.node.mjs",
     "test:update-models": "node --test test/update-models.node.mjs test/review-models.node.mjs",
+    "test:test-ledger": "node --test test/test-ledger.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:dev": "node cli/scripts/dev.mjs",

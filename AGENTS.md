@@ -106,4 +106,9 @@ never break an older CLI's work.
   holds: it contains application keys.
 - In tests, use `seedHuman` from `test/helpers.ts` rather than signing up, which
   costs about two and a half seconds.
+- Vitest runs can record their results in a ledger (`scripts/test-ledger/`),
+  which finds flaky, slow and never-failing tests over time. It writes nothing
+  unless `TEST_LEDGER_DIR` is set or `~/.local/state/test-ledger/` exists. A
+  test that stays on purpose although it never fails belongs in
+  `scripts/test-ledger/keep.json`, with its reason.
 - Do not verify a change by driving the app in a browser unless explicitly asked.

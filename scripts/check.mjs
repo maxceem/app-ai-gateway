@@ -37,6 +37,7 @@ const steps = [
   { name: "test:prices-deploy", tier: "test" },
   { name: "test:indexnow", tier: "test" },
   { name: "test:update-models", tier: "test" },
+  { name: "test:test-ledger", tier: "test" },
   { name: "smoke:check", tier: "check" },
   { name: "smoke:test", tier: "test" },
 ];
