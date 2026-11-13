@@ -183,11 +183,6 @@ export function renderReport(decision) {
       "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.";
   }
 
-  const unchanged = decision.upcoming.filter(({ provider, model }) => !rescheduled.has(`${provider}/${model}`));
-  if (unchanged.length > 0) {
-    sections.push(`### Scheduled price changes already in the price list\n\n${upcomingTables(unchanged)}`);
-  }
-
   if (decision.retired.length > 0) {
     sections.push(
       "### Retired models gone from pricing pages\n\n" +

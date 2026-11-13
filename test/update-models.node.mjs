@@ -890,7 +890,7 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   // is folded into the rates and the schedule leaves the entry.
   catalog.gemini["gemini-3.6-flash"].price_changes = scheduled;
   assert.deepEqual(catalogEdits(run("2026-12-31")), []);
-  assert.match(renderReport(run("2026-12-31")), /### Scheduled price changes already in the price list/u);
+  assert.doesNotMatch(renderReport(run("2026-12-31")), /Scheduled price changes/u, "the price list already says it");
   const folded = run("2027-01-01");
   assert.deepEqual(catalogEdits(folded).slice(3), [
     { provider: "gemini", model: "gemini-3.6-flash", field: "price_changes", to: undefined },
@@ -1183,7 +1183,7 @@ test("retirement: a failed deprecation parser needs a person and falls back to t
 // Report --------------------------------------------------------------------
 
 for (const written of [false, true]) {
-  test(`report: ${written ? "dates already in the catalog are information only" : "a scheduled change or a retirement date alone opens a pull request"}`, () => {
+  test(`report: ${written ? "dates already in the catalog are not reported again" : "a scheduled change or a retirement date alone opens a pull request"}`, () => {
     const scheduled = [{ from: "2027-01-01", input: 1.5 }];
     const decision = decide({
       catalog: { openai: {
@@ -1203,7 +1203,7 @@ for (const written of [false, true]) {
     if (written) {
       assert.deepEqual(report.match(/^## .+$/gmu), ["## ℹ️ Additional information"]);
       assert.match(trigger, /Nothing in the price list changes and no new models were found\. No pull request is needed\./u);
-      assert.match(additional, /### Scheduled price changes already in the price list[\s\S]*2027-01-01/u);
+      assert.doesNotMatch(report, /Scheduled price changes|Retirement dates|2027-01-01|2027-02-26/u);
       assert.deepEqual(catalogEdits(decision), []);
     } else {
       assert.deepEqual(report.match(/^## .+$/gmu), [
@@ -1241,8 +1241,10 @@ test("report: upcoming prices are grouped by date, earliest first", () => {
       { provider: "p", model: "early", field: "output", from: 4, value: 5, date: "2027-01-01" },
       { provider: "p", model: "unknown", field: "input", value: 3, date: "2027-01-01" },
     ],
+    schedules: ["late", "early", "unknown"].map((model) => ({ provider: "p", model, field: "price_changes", to: [] })),
   });
-  const section = report.slice(report.indexOf("### Scheduled price changes already in the price list"));
+  const section = report.slice(report.indexOf("## ✅ Scheduled price changes"));
+  assert.ok(section.length < report.length);
   assert.ok(section.indexOf("**From 2027-01-01**") < section.indexOf("**From 2027-02-01**"));
   assert.match(section, /\| `p\/late` \| input \| \$2\u00a0→\u00a0\*\*\$1\*\* \| 🟩\u2060🟩\u2060🟩\u2060⬜\u2060⬜\u00a0\*\*−50%\*\* \|/u);
   assert.match(section, /\| `p\/early` \| output \| \$4\u00a0→\u00a0\*\*\$5\*\* \| 🟥\u2060⬜\u2060⬜\u2060⬜\u2060⬜\u00a0\*\*\+25%\*\* \|/u);
