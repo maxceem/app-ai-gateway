@@ -175,6 +175,24 @@ describe("patch_app shortcuts", () => {
     }
   });
 
+  it("apply after explicit operations, reading the document those leave", async () => {
+    await seedServerApp("cli_tools_after", { organizationId: await organization() });
+    const all = await call("patch_app", { app: "cli_tools_after", all_providers: true });
+    expect(all.response.status, JSON.stringify(all.json)).toBe(200);
+    const { response, json } = await call("patch_app", {
+      app: "cli_tools_after",
+      revision: all.json.result.app.revision,
+      operations: [{
+        op: "replace",
+        path: "/config/routing/providers",
+        value: { mode: "selected", selected: { openai: { allowed_paths: [], allowed_models: [] } } },
+      }],
+      all_providers: true,
+    });
+    expect(response.status, JSON.stringify(json)).toBe(200);
+    expect(json.result.app.config.routing.providers).toEqual({ mode: "all" });
+  });
+
   it("refuse an iOS setting on a server app by its argument's name", async () => {
     await seedServerApp("cli_tools_server", { organizationId: await organization() });
     const { response, json } = await call("patch_app", { app: "cli_tools_server", team_id: "BBBBBBBBBB" });

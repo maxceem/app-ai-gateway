@@ -35,6 +35,7 @@ import {
 import type { ManagementScope } from "../management/scope";
 import { supportInbox } from "../management/support";
 import { parseRequest } from "../management/validation";
+import { applyAppPatch } from "../management/app-patch";
 import { runToolOperation } from "./run";
 import { isSecretFieldName, secretField, type ResultPath } from "./secret-fields";
 import { APP_SHORTCUTS, shortcutInput, shortcutOperations, usedShortcuts } from "./shortcuts";
@@ -1327,7 +1328,15 @@ export const MCP_TOOLS: readonly McpTool[] = [
         // Read first, as the patch itself would: an app that is not the
         // caller's is not there, and the shortcuts need what is there now.
         const { app: current } = await runToolOperation("getApp", { params: { app }, query: {} }, caller) as OperationResponse<"getApp">;
-        const shortcutOps = shortcutOperations(APP_SHORTCUTS, input, current);
+        // Shortcuts apply after any explicit operations, so they read the
+        // document those leave, refused in the patch's own words.
+        const explicit = operations === undefined
+          ? []
+          : parseRequest(CATALOG.patchApp.request.shape.operations, operations);
+        const patched = explicit.length === 0
+          ? current
+          : { ...current, ...applyAppPatch({ name: current.name, config: current.config, status: current.status }, explicit) } as typeof current;
+        const shortcutOps = shortcutOperations(APP_SHORTCUTS, input, patched);
         // Shortcuts alone are leaves the table names in full, so they apply to
         // the app as it is now; operations still need the revision they were
         // written against.

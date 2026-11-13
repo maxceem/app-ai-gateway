@@ -335,6 +335,20 @@ test("everything the gateway says is cleaned of control characters before a term
   assert.equal(toolHelp({ ...tool, description: hostile, title: hostile }, [tool], plain).includes("\u001b"), false);
 });
 
+test("a tool list's own labels, flags and commands are made printable before anything shows them", async () => {
+  const hostile = cliTool(
+    "list_apps",
+    { command: "app list", view: { rows: "apps", columns: ["id=ID\u001b[2J"] } },
+    { properties: { "bad\u001b[2Jname": { type: "string", enum: ["a\u001b]8;;x\u0007"] } } },
+  );
+  const fake = gateway({ tools: [hostile], answer: () => ({ apps: [{ id: "app-1" }] }) });
+  const listed = await run(["app", "list"], fake);
+  assert.equal(listed.code, 0, listed.err);
+  assert.equal(listed.out.includes("\u001b"), false, JSON.stringify(listed.out));
+  const help = await run(["app", "list", "--help"], fake);
+  assert.equal(help.out.includes("\u001b") || help.out.includes("\u0007"), false, JSON.stringify(help.out));
+});
+
 test("views lay out records, notes, documents and rows a wildcard reaches", () => {
   const models = cliTool("list_models", {
     command: "model list",

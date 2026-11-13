@@ -84,6 +84,20 @@ export class FileCatalogCache implements CatalogCache {
   }
 }
 
+/**
+ * The list with every control character — escape sequences, bidirectional
+ * overrides — in every string and key replaced by a space, so nothing in it
+ * can rewrite a terminal wherever it is printed: a label, a flag, a command
+ * word or an error that quotes one. Applied once, where the list is read.
+ */
+export function printable<T>(value: T): T {
+  if (typeof value === "string") return value.replace(/[\p{Cc}\p{Cf}]/gu, " ") as T;
+  if (Array.isArray(value)) return value.map(printable) as T;
+  if (typeof value === "object" && value !== null)
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [printable(key), printable(entry)])) as T;
+  return value;
+}
+
 /** Command words a tool is offered as, and whether `words` starts with them. */
 export function commandWords(tool: CliTool): string[] {
   return tool.cli.command.trim().split(/\s+/u);
@@ -131,7 +145,8 @@ export class ToolCatalog {
    */
   async load(): Promise<CachedCatalog> {
     if (this.current) return this.current;
-    const kept = await this.cache.read(this.ctx.url);
+    const read = await this.cache.read(this.ctx.url);
+    const kept = read && printable(read);
     if (kept && this.now() - kept.fetchedAt < CATALOG_TTL_MS) return (this.current = kept);
     try {
       return await this.refresh();
@@ -159,7 +174,7 @@ export class ToolCatalog {
         );
       throw error;
     }
-    const catalog: CachedCatalog = { ...data, url: this.ctx.url, fetchedAt: this.now() };
+    const catalog: CachedCatalog = { ...printable(data), url: this.ctx.url, fetchedAt: this.now() };
     this.current = catalog;
     // Keeping it is a convenience: a list that cannot be written is fetched again next run.
     await this.cache.write(catalog).catch(() => {});
