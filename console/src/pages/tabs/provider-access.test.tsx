@@ -203,7 +203,7 @@ describe("ProviderAccessTab", () => {
     expect(screen.queryByText("Passthrough")).toBeNull();
     expect(screen.getAllByText(/^Non-standard path/u)).toHaveLength(1);
     expect(screen.getAllByText("Fixed model")).toHaveLength(1);
-    expect(screen.getByText(/Spending limits apply only if the provider reports a cost/u)).toBeTruthy();
+    expect(screen.getByText(/Its cost counts toward spending\s+limits only if the provider reports it/u)).toBeTruthy();
     // POST, the default, comes first.
     expect(screen.getAllByText(/^(GET|POST|PUT|PATCH|DELETE)$/u).map((label) => label.textContent))
       .toEqual(["POST", "GET", "PUT", "PATCH", "DELETE"]);

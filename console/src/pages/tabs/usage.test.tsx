@@ -237,6 +237,20 @@ describe("UsageTab event costs", () => {
     expect(screen.queryByText("—")).toBeNull();
   });
 
+  it("keeps the model and cost source an event on that path was recorded with before passthrough", async () => {
+    renderUsage([
+      event({
+        model: "gpt-live-transcribe",
+        route: "openai/v1/realtime/client_secrets",
+        cost_source: "unresolved",
+      }),
+    ]);
+
+    expect(await screen.findByText("gpt-live-transcribe")).toBeTruthy();
+    expect(screen.getByText("unresolved")).toBeTruthy();
+    expect(screen.queryByText("—")).toBeNull();
+  });
+
   it("names the gateway a request was routed through", async () => {
     renderUsage([event({ provider_gateway_type: "cf_aig", credential_source: "byok" })]);
     expect(await screen.findByText(/via cf_aig/u)).toBeTruthy();
