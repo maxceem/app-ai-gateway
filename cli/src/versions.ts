@@ -51,8 +51,8 @@ export function compareVersions(a: string, b: string): number | undefined {
 }
 
 /** Whether a failure is one a version difference could explain. */
-function gatewayAnswered(command: CommandName, error: CliError): boolean {
-  if (NOT_GATEWAY.has(command)) return false;
+function gatewayAnswered(command: string, error: CliError): boolean {
+  if (NOT_GATEWAY.has(command as CommandName)) return false;
   const status = error.details?.status;
   if (status !== undefined && UNRELATED_STATUS.has(status)) return false;
   // A body this release could not read is answered too, with or without a status.
@@ -67,7 +67,7 @@ function gatewayAnswered(command: CommandName, error: CliError): boolean {
  */
 export async function versionNotice(
   ctx: Context,
-  command: CommandName,
+  command: string,
   error: CliError,
 ): Promise<Notice | undefined> {
   if (!gatewayAnswered(command, error)) return undefined;

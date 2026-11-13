@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import { Writable } from "node:stream";
 import type { CliAccountResponse, CliDeployment } from "../../src/contracts/cli.ts";
 import type {
-  ApiKey,
   AppResponse,
   ProviderGatewaySummary,
   ProviderSummary,
-  UsageTotals,
 } from "../../src/contracts/responses.ts";
 import { parseAppConfig } from "../../src/shared/app-config.ts";
 import { CliError } from "../src/common.ts";
@@ -27,16 +25,6 @@ const deployment: CliDeployment = {
   mode: "cloud",
   apiUrl: "https://api.example",
   consoleOrigin: "https://console.example",
-};
-
-const totals: UsageTotals = {
-  requests: 12,
-  input_tokens: 100,
-  cached_input_tokens: 10,
-  cache_write_tokens: 5,
-  output_tokens: 50,
-  cost_usd: 1.5,
-  errors: 1,
 };
 
 const provider: ProviderSummary = {
@@ -71,15 +59,6 @@ const gateway: ProviderGatewaySummary = {
   config: { accountId: "cf_acct", gatewayId: "gw_1" },
 };
 
-const key: ApiKey = {
-  id: "key_1",
-  name: "server",
-  key_prefix: "agw_abc",
-  status: "active",
-  created_at: "2026-01-01T00:00:00Z",
-  last_used_at: null,
-};
-
 const stored = {
   id: "key_1",
   name: "server",
@@ -108,14 +87,6 @@ const app: AppResponse = {
   },
 };
 
-// Nothing produces a warning today; the rendering is for whatever does.
-const warning = {
-  code: "example_change",
-  message: "Example: this behaviour stops on 2027-01-31T00:00:00Z. Update the app before then.",
-  until: "2027-01-31T00:00:00Z",
-  docs_url: "https://docs.appaigateway.com/integrate/ios",
-};
-
 const account: CliAccountResponse = {
   deployment,
   account: {
@@ -140,15 +111,6 @@ interface Case {
 }
 
 const cases: Case[] = [
-  {
-    name: "account status names the gateway and the account",
-    command: "account status",
-    result: account,
-    context: owned,
-    includes: ["Gateway:", "https://gw.example", "Account:", "Example (acct_1)", "Claimed:", "no"],
-    // The account is named once: the trailer is for the commands that do not.
-    excludes: ["{", "Account ID:"],
-  },
   {
     name: "deployment status reports the version and what it supports",
     command: "deployment status",
@@ -203,83 +165,6 @@ const cases: Case[] = [
     includes: ["TYPE", "openai", "https://api.openai.com/v1/"],
   },
   {
-    name: "an empty provider list says so rather than printing an empty table",
-    command: "provider list",
-    result: { providers: [] },
-    includes: ["No providers."],
-    excludes: ["["],
-  },
-  {
-    name: "provider list is one row per provider",
-    command: "provider list",
-    result: { providers: [provider] },
-    includes: ["ID", "SLUG", "prv_1", "openai", "active"],
-    excludes: ["ab12"],
-  },
-  {
-    name: "provider-gateway list counts the providers behind each gateway",
-    command: "provider-gateway list",
-    result: { gateways: [gateway] },
-    includes: ["pgw_1", "cf_aig", "PROVIDERS"],
-  },
-  {
-    name: "app list is one row per app",
-    command: "app list",
-    result: { month: "2026-09", has_proxied_requests: true, apps: [
-      {
-        id: "app_1",
-        name: "Example",
-        status: "active",
-        authentication_type: "api_key",
-        apple_bundle_id: null,
-        created_at: "2026-01-01T00:00:00Z",
-        providers: ["openai"],
-        referenced_providers: [],
-        allowed_model_count: 0,
-        monthly_budget_usd: null,
-        users: { total: 0, blocked: 0 },
-        usage: totals,
-      },
-    ] },
-    includes: ["app_1", "Example", "api_key"],
-  },
-  {
-    name: "app key list shows prefixes, never keys",
-    command: "app key list",
-    result: { app_id: "app_1", keys: [key] },
-    includes: ["key_1", "agw_abc", "never"],
-  },
-  {
-    name: "an empty key list names the app",
-    command: "app key list",
-    result: { app_id: "app_1", keys: [] },
-    includes: ["No keys for app_1."],
-  },
-  {
-    name: "provider show heads the stored document with a readable line",
-    command: "provider show",
-    result: provider,
-    includes: ["OpenAI (prv_1)", '"slug": "openai"'],
-  },
-  {
-    name: "app show keeps the document people are told to save and edit",
-    command: "app show",
-    result: app,
-    includes: ["Example (app_1)", '"revision": 1'],
-    excludes: ["Warnings"],
-  },
-  {
-    name: "app show heads the document with the app's warnings",
-    command: "app show",
-    result: { app: { ...app.app, warnings: [warning] } },
-    includes: [
-      "Warnings",
-      "- Example: this behaviour stops on 2027-01-31T00:00:00Z.",
-      "See https://docs.appaigateway.com/integrate/ios",
-      '"warnings": [',
-    ],
-  },
-  {
     name: "provider update confirms in one line and prints only the hint",
     command: "provider update",
     result: { provider },
@@ -305,17 +190,6 @@ const cases: Case[] = [
     includes: ["Removed provider prv_1."],
   },
   {
-    name: "app remove reports the users it removed",
-    command: "app remove",
-    result: {
-      deleted: true,
-      app_id: "app_1",
-      removed_users: 3,
-      usage_events_retained: true,
-    },
-    includes: ["Removed app app_1.", "3 users removed"],
-  },
-  {
     name: "app key add names the file the key was written to",
     command: "app key add",
     result: { appId: "app_1", applicationKey: stored },
@@ -323,108 +197,10 @@ const cases: Case[] = [
     excludes: ["hash"],
   },
   {
-    name: "app key revoke confirms the key it revoked",
-    command: "app key revoke",
-    result: { app_id: "app_1", key },
-    includes: ["Revoked key server (key_1) for app app_1."],
-  },
-  {
     name: "logout says which gateway the credential was removed for",
     command: "account logout",
     result: { loggedOut: true },
     includes: ["Signed out of https://gw.example."],
-  },
-  {
-    name: "usage show is key and value lines",
-    command: "usage show",
-    result: {
-      app_id: "app_1",
-      month: "2026-09",
-      requests: 12,
-      input_tokens: 100,
-      cached_input_tokens: 10,
-      cache_write_tokens: 5,
-      output_tokens: 50,
-      cost_usd: 1.5,
-    },
-    includes: ["Month:", "2026-09", "Cost USD:", "1.5000"],
-    excludes: ["{"],
-  },
-  {
-    name: "account-wide usage reports totals and how far they reach",
-    command: "usage show",
-    result: {
-      accountId: "acct_1",
-      month: "2026-09",
-      totals,
-      apps: [],
-      coverage: {
-        scope: "retained_account_usage",
-        firstRecord: null,
-      },
-    },
-    includes: ["Requests:", "12", "No app usage recorded."],
-  },
-  {
-    name: "account-wide usage lists the apps the totals came from",
-    command: "usage show",
-    result: {
-      accountId: "acct_1",
-      month: "2026-09",
-      totals,
-      apps: [
-        { ...totals, appId: "app_1", deleted: false, firstRecord: "2026-09-01" },
-        { ...totals, appId: "app_2", deleted: true, firstRecord: "2026-09-02" },
-      ],
-      coverage: {
-        scope: "retained_account_usage",
-        firstRecord: "2026-09-01",
-      },
-    },
-    includes: ["APP", "COST USD", "app_1", "app_2 (deleted)", "1.5000"],
-  },
-  {
-    name: "usage breakdown is a table under its period, with the coverage note",
-    command: "usage breakdown",
-    result: {
-      app_id: "app_1",
-      by: "model",
-      from: "2026-09-01",
-      to: "2026-09-17",
-      rows: [{ ...totals, key: "gpt-5" }],
-      coverage: {
-        from: "2026-09-01",
-        to: "2026-09-17",
-        source: "Raw events and retained daily aggregates.",
-      },
-    },
-    includes: ["Grouped by:", "KEY", "gpt-5", "Raw events and retained daily aggregates."],
-  },
-  {
-    name: "a breakdown names passthrough requests' empty model as none, not a blank key",
-    command: "usage breakdown",
-    result: {
-      app_id: "app_1",
-      by: "model",
-      from: "2026-09-01",
-      to: "2026-09-17",
-      rows: [{ ...totals, key: "" }],
-      coverage: { from: "2026-09-01", to: "2026-09-17", source: "Raw events." },
-    },
-    includes: ["(none)"],
-  },
-  {
-    name: "an empty breakdown says so",
-    command: "usage breakdown",
-    result: {
-      app_id: "app_1",
-      by: "model",
-      from: "2026-09-01",
-      to: "2026-09-17",
-      rows: [],
-      coverage: { from: "2026-09-01", to: "2026-09-17", source: "Raw events." },
-    },
-    includes: ["No usage in this period."],
   },
   {
     name: "a pending handoff keeps its URL and the command that resumes it",
@@ -455,65 +231,6 @@ const cases: Case[] = [
     },
     includes: ["Operation:", "State:", "completed", "Provider:", "OpenAI (prv_1)"],
     excludes: ["{"],
-  },
-  {
-    name: "app check gives a verdict and then the issues",
-    command: "app check",
-    result: {
-      appId: "app_1",
-      validation: { valid: true, app_id: "app_1" },
-      status: "active",
-      providers: [{ id: "prv_1", slug: "openai", status: "active" }],
-      ready: true,
-      accountRefusal: null,
-      limitations: ["No inference was sent."],
-      warnings: [],
-    },
-    includes: ["app_1 is ready to serve requests.", "Active providers:", "- No inference was sent."],
-    excludes: ["Warnings"],
-  },
-  {
-    name: "app check reports warnings beside a ready verdict, not as a failure",
-    command: "app check",
-    result: {
-      appId: "app_1",
-      validation: { valid: true, app_id: "app_1" },
-      status: "active",
-      providers: [{ id: "prv_1", slug: "openai", status: "active" }],
-      ready: true,
-      accountRefusal: null,
-      limitations: ["No inference was sent."],
-      warnings: [warning],
-    },
-    includes: ["app_1 is ready to serve requests.", "Warnings", "stops on 2027-01-31T00:00:00Z"],
-  },
-  {
-    name: "app check names the account's refusal beside a not-ready verdict",
-    command: "app check",
-    result: {
-      appId: "app_1",
-      validation: { valid: true, app_id: "app_1" },
-      status: "active",
-      providers: [{ id: "prv_1", slug: "openai", status: "active" }],
-      ready: false,
-      accountRefusal: "email_unverified",
-      limitations: ["No inference was sent."],
-      warnings: [],
-    },
-    includes: ["app_1 is not ready to serve requests.", "until its owner verifies their email (email_unverified)"],
-  },
-  {
-    name: "app validate reports what it could and could not check",
-    command: "app validate",
-    result: {
-      definition: {
-        name: "Example",
-        status: "active",
-        config: UNLIMITED_SERVER_CONFIG,
-      },
-      validation: { local: true, remote: false, skipped: ["Provider references need login."] },
-    },
-    includes: ["Example is valid locally.", "- Provider references need login."],
   },
   {
     name: "a dry-run application write says nothing was written",
@@ -659,11 +376,19 @@ test("colour is decided by the destination, and NO_COLOR and FORCE_COLOR settle 
 });
 
 test("colour marks the headline, the labels and the state words, and nothing else", () => {
-  const painted = humanResult("provider list", { providers: [provider] }, context, style(true));
-  // Dim table header, green state, and an id left in the terminal's own colour.
-  assert.ok(painted.includes("\u001b[2mID"), painted);
-  assert.ok(painted.includes("\u001b[32mactive\u001b[39m"), painted);
-  assert.ok(!painted.includes("\u001b[32mprv_1"), painted);
+  const types = humanResult(
+    "provider types",
+    [{ type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1/", apiStyles: [], endpointStyles: [] }],
+    context,
+    style(true),
+  );
+  // Dim table header, and a value left in the terminal's own colour.
+  assert.ok(types.includes("\u001b[2mTYPE"), types);
+  assert.ok(!types.includes("\u001b[32mopenai"), types);
+  const updated = humanResult("provider update", { provider }, context, style(true));
+  // Green state, and an id left in the terminal's own colour.
+  assert.ok(updated.includes("\u001b[32mactive\u001b[39m"), updated);
+  assert.ok(!updated.includes("\u001b[32mprv_1"), updated);
   const removed = humanResult(
     "provider remove",
     { deleted: true, provider_id: "prv_1" },
@@ -673,25 +398,13 @@ test("colour marks the headline, the labels and the state words, and nothing els
   assert.equal(removed, "\u001b[1mRemoved provider prv_1.\u001b[22m\n");
   const status = humanResult("account logout", { loggedOut: true }, context, style(true));
   assert.ok(status.startsWith("\u001b[1mSigned out of https://gw.example.\u001b[22m"), status);
-  const disabled = humanResult(
-    "app check",
-    {
-      appId: "app_1",
-      validation: { valid: true, app_id: "app_1" },
-      status: "disabled",
-      providers: [],
-      ready: false,
-      limitations: [],
-    },
-    context,
-    style(true),
-  );
+  const disabled = humanResult("provider update", { provider: { ...provider, status: "disabled" } }, context, style(true));
   assert.ok(disabled.includes("\u001b[31mdisabled\u001b[39m"), disabled);
 });
 
 test("the JSON document is highlighted on a terminal and exact everywhere else", () => {
   const document = { app_id: "app_1", revision: 1, enabled: true, note: null };
-  const off = humanResult("provider show", { ...provider }, context);
+  const off = humanResult("provider-gateway show", { ...gateway }, context);
   assert.equal(off.includes("\u001b["), false);
   const on = style(true).json(document);
   assert.equal(stripped(on), JSON.stringify(document, null, 2));
@@ -739,11 +452,11 @@ test("a hidden prompt acknowledges every character it accepts, up to a line of t
 test("a plain-text failure goes to stderr, leaving stdout empty, and keeps its exit code", async () => {
   let out = "";
   let err = "";
-  const code = await main(["usage", "show", "--month", "2026-13"], {
+  const code = await main(["operation", "wait", "op_1", "--timeout", "0"], {
     store: { ...makeStore(), read: async () => fresh() },
     transport: {
       request: async () => {
-        throw new Error("no request is made for a refused month");
+        throw new Error("no request is made for a refused timeout");
       },
     },
     stdout: { write: (text: string) => void (out += text) },
@@ -751,7 +464,7 @@ test("a plain-text failure goes to stderr, leaving stdout empty, and keeps its e
   });
   assert.equal(code, 2);
   assert.equal(out, "");
-  assert.match(err, /^Error: Month must use YYYY-MM/);
+  assert.match(err, /^Error: Supply an integer between 1 and 3600\./);
   assert.match(err, /\nNext: /);
   assert.match(err, /\nCode: invalid_input\n$/);
 });
@@ -759,7 +472,7 @@ test("a plain-text failure goes to stderr, leaving stdout empty, and keeps its e
 test("the same failure with --json stays one document on stdout", async () => {
   let out = "";
   let err = "";
-  const code = await main(["usage", "show", "--month", "2026-13", "--json"], {
+  const code = await main(["operation", "wait", "op_1", "--timeout", "0", "--json"], {
     store: { ...makeStore(), read: async () => fresh() },
     transport: { request: async () => assert.fail("no request") },
     stdout: { write: (text: string) => void (out += text) },
@@ -774,7 +487,7 @@ test("the same failure with --json stays one document on stdout", async () => {
     ok: false,
     error: {
       code: "invalid_input",
-      message: "Month must use YYYY-MM with a valid calendar month.",
+      message: "Supply an integer between 1 and 3600.",
       nextAction: "Run agw --help for usage.",
     },
   });

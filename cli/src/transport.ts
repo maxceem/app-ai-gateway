@@ -1,4 +1,4 @@
-import { fail, origin, VERSION } from "./common.ts";
+import { CliError, fail, origin, VERSION } from "./common.ts";
 import type { CliErrorDetails } from "./errors.ts";
 
 export interface RequestOptions {
@@ -14,6 +14,8 @@ export interface RequestOptions {
 
 export interface WireResponse {
   data: unknown;
+  /** The success's headers; a test transport may leave them out. */
+  headers?: Headers;
 }
 
 /** The HTTP surface a `Transport` is built on; swapped out wholesale in tests. */
@@ -146,7 +148,7 @@ export class Transport {
         "Connect explicitly to the intended deployment.",
         3,
       );
-    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()) };
+    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()), headers: response.headers };
     let data: unknown;
     try {
       data = await response.json();
@@ -183,7 +185,7 @@ export class Transport {
         }
       }
       const explanation = reported(wire.error?.message ?? wire.message, body);
-      fail(
+      const refusal = new CliError(
         code,
         `Deployment rejected the request (HTTP ${response.status})` +
           (explanation ? `: ${explanation}` : "."),
@@ -191,7 +193,9 @@ export class Transport {
         3,
         details,
       );
+      refusal.headers = response.headers;
+      throw refusal;
     }
-    return { data };
+    return { data, headers: response.headers };
   }
 }

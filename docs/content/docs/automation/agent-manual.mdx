@@ -66,23 +66,24 @@ or approve the claim yourself. Claiming preserves the agent's access.
    for a production-only app: CLI flag-based creation otherwise enables both
    production and development. For server keys, use `--key-output` with an
    unused private path, or retain the CLI's managed private output file.
-4. For a new app file, use `agw app validate --file app.json --json`. For an
-   existing app, use `agw app update <app-id> --file app.json --dry-run --json`
-   so validation is performed as an update of that app. The file contains only
-   `name`, `config` and `status` from `result.app`; exclude metadata such as
-   `id`, `revision` and timestamps. Keep every existing configuration field,
-   including ones you do not recognize. If the update fails with
-   `confirmation_required`, the file drops settings this `agw` does not
-   understand: copy them back from `app show --json` rather than adding `--yes`.
-5. For a change to a few settings, prefer `agw app patch <app-id> --file
-   patch.json --json`. The file is a list of operations, each `add`,
+4. To change an existing app, prefer `agw app update <app-id>` with the flags
+   that name the change, such as `--name`, `--status`, `--team-id`,
+   `--verify-on` or `--providers`: they change nothing else and need no
+   revision. A list flag takes repeated values or commas
+   (`--providers openai,anthropic`). For any other setting, pass `--operations @patch.json` with the
+   `--revision` from `app show`; the file is a list of operations, each `add`,
    `replace` or `remove` at a path such as
-   `/config/limits/per_app/requests/per_minute`. Only those settings change,
-   and the result is checked as a whole update would be. Otherwise apply the
-   requested update. Then reread the app. File updates replace the
-   whole document. The CLI reads a revision when the update command starts;
-   this protects against a competing write during that command, not edits
-   made since an earlier file export. Refresh and merge an old file first.
+   `/config/limits/per_app/requests/per_minute`, and the result is checked as a
+   whole update would be. Check a document first with `agw app validate
+   [app-id] --config @app.json --json`.
+5. To replace an app's whole document, use `agw app replace <app-id> --config
+   @app.json --json`, with `name`, `config`, `status` and `revision` from
+   `result.app` of `app show`. Keep every existing configuration field,
+   including ones you do not recognize. A stale revision is refused with
+   `app_revision_conflict`: reread, merge and repeat. Then reread the app. A
+   value shown as `[redacted]` is hidden, not stored that way: never send it
+   back. Use `app update` for such an app, and tell the person that setting
+   itself is changed in the console.
 6. Run `agw app check <app-id> --json` and
    `agw app snippet <app-id> --json`. Resolve any placeholders named in
    `result.notes`. The check reads configuration only: no provider key,
@@ -91,7 +92,11 @@ or approve the claim yourself. Claiming preserves the agent's access.
 7. Report the app ID, provider slugs, API base URL, key file location, checks
    and remaining work. Report pending handoffs as pending, never completed.
 
-For every unattended command, use `--json --no-input`; for browser handoffs,
+Commands other than sign-in, deployment, adding providers, apps and keys, and
+browser steps come from the connected gateway: `agw --help` lists them and
+`agw <command> --help` gives their flags. A deletion runs only with `--yes`
+once the person has agreed. For every unattended command, use
+`--json --no-input`; for browser handoffs,
 add `--no-open`. `--json` returns `{schemaVersion:1,ok:true,context,result}` or
 `{schemaVersion:1,ok:false,error}`, either with optional `notices`. A
 `newer_deployment` notice means the gateway has settings this `agw` does not

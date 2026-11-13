@@ -10,7 +10,6 @@ import type { Onboarding } from "./context.ts";
 import type { DeploymentResult } from "./deployment.ts";
 import type { ResourceResult } from "./resources.ts";
 import type { SupportResult } from "./support.ts";
-import type { UsageResult } from "./usage.ts";
 
 /** What `agw deployment status` reports about the selected connection. */
 export type DeploymentStatusResult = CliCapabilitiesResponse & {
@@ -24,7 +23,6 @@ export type CommandResult =
   | ResourceResult
   | AppResult
   | ConversationsExportResult
-  | UsageResult
   | SupportResult
   | DeploymentResult
   | DeploymentStatusResult

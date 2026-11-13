@@ -11,80 +11,78 @@ export interface CommandSpec {
   args: number;
   /** Space-separated flag names; `!` marks a boolean, `*` a repeatable value. */
   flags: string;
+  /** One line for `agw --help`. */
+  summary: string;
 }
 
+/**
+ * The commands this CLI implements itself: the ones that need this machine —
+ * a browser, a hidden prompt, a private file, Wrangler, a wait — or that run
+ * before there is a gateway to ask. Every other command is the gateway's,
+ * built from the tool list it serves (see `./catalog.ts`), and one named here
+ * always wins over a tool offered under the same words.
+ */
 export const commands = {
   "deployment setup": {
     args: 0,
     flags:
       "name cloudflare-account-id domain no-domain! version release-archive dry-run! yes!",
+    summary: "Deploy your own gateway to your Cloudflare account",
   },
   "deployment connect": {
     args: 0,
     flags: `url cloud! ${managementKey}`,
+    summary: "Connect this CLI to a gateway and sign in",
   },
-  "deployment status": { args: 0, flags: "" },
+  "deployment status": { args: 0, flags: "", summary: "Show the connected gateway" },
   "deployment update": {
     args: 0,
     flags: "version release-archive dry-run! yes!",
+    summary: "Update your self-hosted gateway to this CLI's release",
   },
   "deployment domain": {
     args: 0,
     flags: "hostname release-archive dry-run! yes!",
+    summary: "Move your self-hosted gateway to a custom domain",
   },
-  "account status": { args: 0, flags: "" },
-  "account claim": { args: 0, flags: browser },
-  "account login": { args: 0, flags: managementKey },
-  "account logout": { args: 0, flags: "" },
-  "provider types": { args: 0, flags: "" },
-  "provider list": { args: 0, flags: "" },
-  "provider show": { args: 1, flags: "" },
+  "account claim": { args: 0, flags: browser, summary: "Claim this account as a person, in a browser" },
+  "account login": { args: 0, flags: managementKey, summary: "Sign in through a browser" },
+  "account logout": { args: 0, flags: "", summary: "Revoke this CLI's key and forget it" },
+  "provider types": { args: 0, flags: "", summary: "List the provider types this gateway supports" },
   "provider add": {
     args: 0,
     flags: `type name slug provider-gateway base-url pricing route ${secret}`,
+    summary: "Add a provider; its key goes in a hidden prompt or a browser",
   },
   "provider update": {
     args: 1,
     flags: `name status base-url clear-base-url! pricing clear-pricing! route clear-route! ${secret}`,
+    summary: "Change a provider, by id or slug",
   },
-  "provider rotate-key": { args: 1, flags: secret },
-  "provider remove": { args: 1, flags: "yes!" },
-  "provider-gateway types": { args: 0, flags: "" },
-  "provider-gateway list": { args: 0, flags: "" },
-  "provider-gateway show": { args: 1, flags: "" },
+  "provider rotate-key": { args: 1, flags: secret, summary: "Replace a provider's key" },
+  "provider remove": { args: 1, flags: "yes!", summary: "Delete a provider, by id or slug" },
+  "provider-gateway types": { args: 0, flags: "", summary: "List the provider gateway types this gateway supports" },
+  "provider-gateway show": { args: 1, flags: "", summary: "Show a provider gateway, by id or name" },
   "provider-gateway add": {
     args: 0,
     flags: `type name cloudflare-account-id gateway-id ${secret}`,
+    summary: "Add a provider gateway, such as a Cloudflare AI Gateway",
   },
-  "provider-gateway update": { args: 1, flags: "name" },
-  "provider-gateway rotate-key": { args: 1, flags: secret },
-  "provider-gateway remove": { args: 1, flags: "yes!" },
+  "provider-gateway update": { args: 1, flags: "name", summary: "Rename a provider gateway" },
+  "provider-gateway rotate-key": { args: 1, flags: secret, summary: "Replace a provider gateway's token" },
+  "provider-gateway remove": { args: 1, flags: "yes!", summary: "Delete a provider gateway" },
   "app add": {
     args: 0,
     flags:
-      "type name team-id bundle-id attest-environments verify-on provider* status file key-output dry-run!",
+      "type name team-id bundle-id attest-environments* verify-on providers* status file key-output dry-run!",
+    summary: "Add an iOS or server app; a server app's key goes to a private file",
   },
-  "app list": { args: 0, flags: "" },
-  "app show": { args: 1, flags: "" },
-  "app update": {
-    args: 1,
-    flags:
-      "name team-id bundle-id attest-environments verify-on provider* all-providers! status file dry-run! yes!",
-  },
-  "app patch": { args: 1, flags: "file" },
-  "app validate": { args: 0, flags: "file" },
-  "app check": { args: 1, flags: "" },
-  "app snippet": { args: 1, flags: "language provider endpoint output" },
-  "app conversations": { args: 1, flags: "from to output media!" },
-  "app remove": { args: 1, flags: "yes!" },
-  "app key list": { args: 1, flags: "" },
-  "app key add": { args: 1, flags: "name key-output" },
-  "app key revoke": { args: 2, flags: "yes!" },
-  "usage show": { args: 0, flags: "app month" },
-  "usage breakdown": { args: 0, flags: "app by from to limit" },
-  "operation status": { args: 1, flags: "" },
-  "operation wait": { args: 1, flags: "timeout" },
-  "support send": { args: 0, flags: "type message message-stdin! context* yes!" },
+  "app snippet": { args: 1, flags: "language provider endpoint output", summary: "Print a first request for an app" },
+  "app conversations": { args: 1, flags: "from to output media!", summary: "Download an app's stored conversations" },
+  "app key add": { args: 1, flags: "name key-output", summary: "Create a server app key, written to a private file" },
+  "operation status": { args: 1, flags: "", summary: "Check a browser step this CLI opened" },
+  "operation wait": { args: 1, flags: "timeout", summary: "Wait for a browser step this CLI opened" },
+  "support send": { args: 0, flags: "type message message-stdin! context* yes!", summary: "Email human support" },
 } as const satisfies Record<string, CommandSpec>;
 
 export type CommandName = keyof typeof commands;
@@ -134,27 +132,31 @@ export interface Flags {
   route?: string;
   "team-id"?: string;
   "bundle-id"?: string;
-  "attest-environments"?: string;
+  "attest-environments"?: string | string[];
   "verify-on"?: string;
   file?: string;
   "key-output"?: string;
   output?: string;
   language?: string;
   endpoint?: string;
-  app?: string;
-  month?: string;
-  by?: string;
   from?: string;
   to?: string;
-  limit?: string;
   timeout?: string;
-  provider?: string | string[];
+  /** One provider, as `app snippet` names it. */
+  provider?: string;
+  /** Every provider an app may use, as `app add` and the gateway's `app update` name them. */
+  providers?: string | string[];
 }
 
 export type ParseResult =
-  | { help: true; scope: string; version?: never; command?: never; flags?: never; args?: never }
-  | { version: true; help?: never; command?: never; flags?: never; args?: never }
-  | { command: CommandName; flags: Flags; args: string[]; help?: never; version?: never };
+  | { help: true; scope: string; version?: never; command?: never; flags?: never; args?: never; words?: never }
+  | { version: true; help?: never; command?: never; flags?: never; args?: never; words?: never }
+  | { command: CommandName; flags: Flags; args: string[]; help?: never; version?: never; words?: never }
+  /**
+   * No built-in command: the words a command of the gateway's may be, which
+   * only its tool list can resolve.
+   */
+  | { words: string[]; help?: never; version?: never; command?: never; flags?: never; args?: never };
 
 /** A repeatable flag's values, whichever way this command declared it. */
 export function flagList(value: string | string[] | undefined): string[] {
@@ -177,7 +179,7 @@ export function parse(argv: string[]): ParseResult {
   if (!command) {
     if (argv.length === 1 && argv[0] === "--version") return { version: true };
     if (help || !argv.length) return { help: true, scope: words.join(" ") };
-    fail("unknown_command", "Unknown command.");
+    return { words };
   }
   const spec: CommandSpec = commands[command];
   const types: Record<string, FlagType> = Object.fromEntries(
@@ -275,27 +277,60 @@ export function parse(argv: string[]): ParseResult {
   return { command, flags, args };
 }
 
-export function helpText(scope = ""): string {
-  const matches = Object.entries(commands).filter(
-    ([c]) => !scope || c === scope || c.startsWith(scope + " "),
-  );
-  if (!matches.length) fail("unknown_command", "Unknown help topic.");
-  return `agw ${VERSION} — App AI Gateway\n\n${matches
+/** One line of `agw --help`: a command as it is typed, and what it does. */
+export interface HelpEntry {
+  usage: string;
+  summary: string;
+}
+
+/** A built-in command's flags, as its help lists them. */
+function flagLine(spec: CommandSpec): string {
+  return spec.flags
+    .split(" ")
+    .filter(Boolean)
     .map(
-      ([c, s]) =>
-        `agw ${c}${" <id>".repeat(s.args)}\n  ${s.flags
-          .split(" ")
-          .filter(Boolean)
-          .map(
-            (f) =>
-              "--" +
-              f.replace(/[!*]$/, "") +
-              (f.endsWith("!") ? "" : " <value>") +
-              (f.endsWith("*") ? " (repeatable)" : ""),
-          )
-          .join(" ")}`,
+      (f) =>
+        "--" +
+        f.replace(/[!*]$/, "") +
+        (f.endsWith("!") ? "" : " <value>") +
+        (f.endsWith("*") ? " (repeatable)" : ""),
     )
-    .join(
-      "\n\n",
-    )}\n\n--json: structured stdout; --no-input: never prompt; --help, -h: this help.\nLogin: account login and deployment connect open the browser; check that it shows the pairing code the terminal prints. --no-open prints the URL instead; --key-stdin or --key-prompt takes a management key.\nCredentials: ${MANAGEMENT_KEY_ENV}, when set, is the management key for every command and overrides the saved login. account logout revokes the saved key.\nSecrets: hidden prompt by default; --key-stdin reads one line. Provider --browser submits credentials directly to your gateway.\nBrowser operations: --json or --no-input returns pending; operation wait resumes.\nSupport: support send emails human support for the signed-in person, who gets the reply by email. Without a terminal it needs --yes: show the person the message first. Never put a key or token in it.\nNo account is created by help, status, list, validation or dry runs.\n`;
+    .join(" ");
+}
+
+/** The built-in commands under `scope`, all of them for an empty one. */
+export function builtInEntries(scope = ""): HelpEntry[] {
+  return Object.entries(commands)
+    .filter(([c]) => !scope || c === scope || c.startsWith(scope + " "))
+    .map(([c, s]) => ({ usage: `agw ${c}${" <id>".repeat(s.args)}`, summary: s.summary }));
+}
+
+/** `agw <command> --help` for a built-in command. */
+export function builtInHelp(command: CommandName): string {
+  const spec: CommandSpec = commands[command];
+  const flags = flagLine(spec);
+  return `agw ${command}${" <id>".repeat(spec.args)}${flags ? " [flags]" : ""}\n${spec.summary}\n${flags ? `\n  ${flags}\n` : ""}\n${HELP_NOTES}`;
+}
+
+/** What every command shares, said once at the end of `agw --help`. */
+export const HELP_NOTES = `--json: one JSON document on stdout; --no-input: never prompt; --help, -h: help for any command.
+Login: account login and deployment connect open the browser; check that it shows the pairing code the terminal prints. --no-open prints the URL instead; --key-stdin or --key-prompt takes a management key.
+Credentials: ${MANAGEMENT_KEY_ENV}, when set, is the management key for every command and overrides the saved login. account logout revokes the saved key.
+Secrets: hidden prompt by default; --key-stdin reads one line. Provider --browser submits credentials directly to your gateway.
+Browser operations: --json or --no-input returns pending; operation wait resumes.
+Support: support send emails human support for the signed-in person, who gets the reply by email. Without a terminal it needs --yes: show the person the message first. Never put a key or token in it.
+Gateway commands: every command not built into agw comes from the connected gateway, so a new gateway release brings its commands without an agw update. Their flags follow the gateway's arguments; JSON values are inline or @file.
+No account is created by help, status, list, validation or dry runs.
+`;
+
+/** `agw --help`, or the help for every command under `scope`, as an aligned list. */
+export function commandList(entries: readonly HelpEntry[], heading = `agw ${VERSION} — App AI Gateway`): string {
+  const sorted = [...entries].sort((a, b) => a.usage.localeCompare(b.usage));
+  const width = Math.min(44, Math.max(0, ...sorted.map((entry) => entry.usage.length)) + 2);
+  const lines = sorted.map((entry) =>
+    entry.usage.length + 2 > width
+      ? `  ${entry.usage}\n  ${" ".repeat(width)}${entry.summary}`
+      : `  ${entry.usage.padEnd(width)}${entry.summary}`,
+  );
+  return `${heading}\n\n${lines.join("\n")}\n\nRun agw <command> --help for its arguments and flags.\n\n${HELP_NOTES}`;
 }

@@ -39,6 +39,9 @@ import {
   CliBrowserLookupRequestSchema,
   CliBrowserLookupResponseSchema,
   CliCapabilitiesResponseSchema,
+  CliToolCallRequestSchema,
+  CliToolCallResponseSchema,
+  CliToolCatalogResponseSchema,
   CliCredentialRevokeResponseSchema,
   CliLoginRedeemRequestSchema,
   CliLoginRedeemResponseSchema,
@@ -1362,6 +1365,42 @@ export const CATALOG = {
     response: CliCapabilitiesResponseSchema,
     responseDescription: "Public deployment capabilities. No credentials or inference calls.",
     errors: "none",
+  },
+
+  listCliTools: {
+    method: "GET",
+    path: "/v1/cli/tools",
+    tags: ["CLI"],
+    summary: "List the tools the CLI builds its commands from",
+    description: "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI caches this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+    security: "public",
+    response: CliToolCatalogResponseSchema,
+    responseDescription: "The tools and the revision that identifies this list.",
+    errors: "none",
+  },
+
+  callCliTool: {
+    method: "POST",
+    path: "/v1/cli/tools/{tool}",
+    tags: ["CLI"],
+    summary: "Run one tool, as the CLI does",
+    description: "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer, a refusal included, carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
+    security: "management",
+    // Any key may ask; the tool's own operation then applies its policy.
+    policy: { role: "member", access: "read", grant: "read" },
+    params: { tool: { description: "The tool's name, as listCliTools returns it.", example: "list_apps" } },
+    headers: z.object({
+      "agw-tool-guard": z.string().optional().meta({
+        description: "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared.",
+      }),
+    }),
+    request: CliToolCallRequestSchema,
+    response: CliToolCallResponseSchema,
+    responseDescription: "The tool's structured result and its one-line summary.",
+    errors: {
+      404: "`tool_not_found`: this deployment has no tool of that name; fetch the list again. Any other code: what the tool names does not exist.",
+      409: "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran, so fetch the list and decide again. Otherwise the change conflicts with the current state.",
+    },
   },
 
   bootstrapCliAccount: {

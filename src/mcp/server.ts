@@ -16,15 +16,11 @@ import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
 import { requestIdOf } from "../core/request-id";
 import { SERVER_VERSION } from "../core/version";
-import {
-  runOperation,
-  type OperationCaller,
-  type OperationRequest,
-} from "../management/executor";
-import { OPERATION_HANDLERS } from "../management/handlers";
+import type { OperationCaller } from "../management/executor";
 import { MCP_GUIDE, MCP_GUIDE_URI, MCP_INSTRUCTIONS } from "./guide";
 import { redactSecrets } from "./secret-fields";
-import { MCP_TOOLS, nextAction, type McpTool, type ToolOperation } from "./tools";
+import { runTool } from "./run";
+import { MCP_TOOLS, nextAction, type McpTool } from "./tools";
 
 type Sdk = typeof import("@modelcontextprotocol/server");
 
@@ -228,13 +224,9 @@ async function callTool(
 ): Promise<CallToolResult> {
   const started = Date.now();
   try {
-    const body = tool.perform ? await tool.perform(input, caller) : await call(tool, input, caller);
-    // Redacted before the summary is written from it: what a tool answers may
-    // have been stored by any transport, and an app document stored through
-    // the API may hold provider-native parameters of any name.
-    const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt);
+    const { result, summary } = await runTool(tool, input, caller);
     const answer: CallToolResult = {
-      content: [{ type: "text", text: tool.summary(result, redactSecrets(input)) }],
+      content: [{ type: "text", text: summary }],
       structuredContent: result as Record<string, unknown>,
     };
     recordToolCall(tool, caller, client, requestId, started, endingOf(200));
@@ -320,22 +312,6 @@ function recordToolCall(
     requestId,
     durationMs: Date.now() - started,
   });
-}
-
-function call(tool: McpTool, input: Record<string, unknown>, caller: OperationCaller): Promise<unknown> {
-  if (!tool.call) throw new Error(`MCP tool ${tool.name} has neither an operation nor a perform`);
-  const { operation, request, before } = tool.call(input);
-  return run(operation, request as never, caller, before);
-}
-
-/** One operation, run with its own registered handler and the tool's own check. */
-function run<K extends ToolOperation>(
-  operation: K,
-  request: OperationRequest<K>,
-  caller: OperationCaller,
-  before: (() => void) | undefined,
-): Promise<unknown> {
-  return runOperation(operation, caller, request, OPERATION_HANDLERS[operation], before ? { before } : {});
 }
 
 /**
