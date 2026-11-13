@@ -199,7 +199,9 @@ describe("ProviderAccessTab", () => {
     await screen.findByText("2 endpoints · all models · no output cap");
     await expand("openai-dev");
     // A model API keeps its model fields; the passthrough path takes methods instead.
-    expect(screen.getAllByText("Passthrough")).toHaveLength(1);
+    // Marked by its note alone: "passthrough" is not a word the page uses.
+    expect(screen.queryByText("Passthrough")).toBeNull();
+    expect(screen.getAllByText(/^Non-standard path/u)).toHaveLength(1);
     expect(screen.getAllByText("Fixed model")).toHaveLength(1);
     expect(screen.getByText(/Spending limits apply only if the provider reports a cost/u)).toBeTruthy();
     // POST, the default, comes first.

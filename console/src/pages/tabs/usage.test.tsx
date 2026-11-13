@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageTab } from "./usage";
 import { pivot } from "@/lib/usage-pivot";
@@ -201,6 +201,18 @@ describe("UsageTab event costs", () => {
     expect(screen.getAllByText("—")).toHaveLength(5);
     expect(screen.queryByText("Passthrough")).toBeNull();
     expect(screen.queryByText("$0.00")).toBeNull();
+
+    // Each dash says why, in the console's own tooltip.
+    const [model, tokens, cost] = screen.getAllByText("—");
+    const tooltipSays = (text: RegExp) =>
+      waitFor(() =>
+        expect(screen.getAllByRole("tooltip").some((tip) => text.test(tip.textContent ?? ""))).toBe(true));
+    await userEvent.hover(model!);
+    await tooltipSays(/reads no model/u);
+    await userEvent.hover(tokens!);
+    await tooltipSays(/tokens are counted only if the provider reports them/u);
+    await userEvent.hover(cost!);
+    await tooltipSays(/Request limits still apply/u);
     expect(screen.queryByText("unresolved")).toBeNull();
   });
 

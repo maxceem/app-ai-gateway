@@ -49,6 +49,7 @@ import {
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
 import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
 import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
+import { Hint } from "@/components/hint";
 
 /**
  * Whether an event was a passthrough call, read off its route with the rule
@@ -68,14 +69,27 @@ export function isPassthroughEvent(event: {
     && isPassthroughPath(event.provider, event.route.slice(slash + 1));
 }
 
+/** Why a passthrough request has no model, tokens or cost to show, one reason per column. */
+const UNREPORTED_REASON = {
+  model: "Non-standard path: forwarded as sent, so the gateway reads no model.",
+  tokens: "Non-standard path: tokens are counted only if the provider reports them, and it reported none.",
+  cost: "Non-standard path: cost is counted only if the provider reports it, and it reported none, so spending limits don't apply. Request limits still apply.",
+} as const;
+
 /**
- * What a cell shows for a count a passthrough request never reported. The
+ * What a cell shows for something a passthrough request never reported. The
  * gateway records a passthrough call's tokens and cost only where the provider
  * said them, and stores nothing as 0, so a 0 there means "not reported", not
  * "none used": a dash says that, and a number the provider did report still
- * shows.
+ * shows. Hovering it says why.
  */
-const UNREPORTED = <span className="text-muted-foreground">—</span>;
+function Unreported({ what, label = "—" }: { what: keyof typeof UNREPORTED_REASON; label?: string }) {
+  return (
+    <Hint content={<span className="block max-w-64">{UNREPORTED_REASON[what]}</span>}>
+      <span className="cursor-help font-sans text-muted-foreground">{label}</span>
+    </Hint>
+  );
+}
 
 /**
  * The categorical slots, in the fixed order they were validated in — see the
@@ -324,7 +338,9 @@ export function UsageTab({
                   <TableRow key={row.key ?? "unknown"}>
                     <TableCell className="font-mono text-xs">
                       {/* Empty is a passthrough request's model: the gateway read none. */}
-                      {!row.key ? (
+                      {passthrough ? (
+                        <Unreported what="model" label="none" />
+                      ) : !row.key ? (
                         <span className="text-muted-foreground">none</span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
@@ -335,10 +351,10 @@ export function UsageTab({
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
                     <TableCell className="tabular text-right">
-                      {noTokens ? UNREPORTED : formatCompact(inputTokens(row))}
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(inputTokens(row))}
                     </TableCell>
                     <TableCell className="tabular text-right">
-                      {noTokens ? UNREPORTED : (
+                      {noTokens ? <Unreported what="tokens" /> : (
                         <>
                           <span className="block">{formatCompact(row.cached_input_tokens)}</span>
                           <span className="block text-[11px] text-muted-foreground">
@@ -348,13 +364,13 @@ export function UsageTab({
                       )}
                     </TableCell>
                     <TableCell className="tabular text-right">
-                      {noTokens ? UNREPORTED : formatCompact(row.cache_write_tokens)}
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(row.cache_write_tokens)}
                     </TableCell>
                     <TableCell className="tabular text-right">
-                      {noTokens ? UNREPORTED : formatCompact(row.output_tokens)}
+                      {noTokens ? <Unreported what="tokens" /> : formatCompact(row.output_tokens)}
                     </TableCell>
                     <TableCell className="tabular text-right">
-                      {passthrough && row.cost_usd === 0 ? UNREPORTED : formatCost(row.cost_usd)}
+                      {passthrough && row.cost_usd === 0 ? <Unreported what="cost" /> : formatCost(row.cost_usd)}
                     </TableCell>
                   </TableRow>
                   );
@@ -449,7 +465,7 @@ export function UsageTab({
                     <TableCell className="font-mono text-xs">
                       {/* A passthrough call names no model: the gateway never read one. */}
                       {isPassthroughEvent(event) ? (
-                        <span className="font-sans text-muted-foreground">—</span>
+                        <Unreported what="model" />
                       ) : (
                         event.model
                       )}
@@ -480,7 +496,7 @@ export function UsageTab({
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {isPassthroughEvent(event) && totalTokens(event) === 0
-                        ? UNREPORTED
+                        ? <Unreported what="tokens" />
                         : formatCompact(totalTokens(event))}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
@@ -488,12 +504,7 @@ export function UsageTab({
                           was unreadable, so showing $0.00 would be a claim the
                           gateway cannot make. */}
                       {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
-                        <span
-                          className="text-muted-foreground"
-                          title="Passthrough: forwarded as sent and not priced, because the provider reported no cost. Request limits still apply."
-                        >
-                          —
-                        </span>
+                        <Unreported what="cost" />
                       ) : event.cost_source === "unresolved" ? (
                         <span
                           className="text-amber-600 dark:text-amber-400"
@@ -509,7 +520,7 @@ export function UsageTab({
                           title={
                             event.cost_source === "reported"
                               ? isPassthroughEvent(event)
-                                ? "Passthrough: cost reported by the provider for this request."
+                                ? "Non-standard path: cost reported by the provider for this request."
                                 : "Cost reported by the provider for this request."
                               : undefined
                           }

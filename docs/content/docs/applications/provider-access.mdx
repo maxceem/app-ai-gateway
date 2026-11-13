@@ -95,9 +95,9 @@ A request for a path not in the list answers `403 path_not_allowed`.
 
 A listed path that is neither one of the APIs above nor one of the provider's
 own inference endpoints is a **passthrough** path, for example OpenAI's
-`v1/files`, `v1/batches` or `v1/realtime/client_secrets`. The console marks
-these rows **Passthrough**. The gateway forwards such a request without
-reading it:
+`v1/files`, `v1/batches` or `v1/realtime/client_secrets`. In the console such
+a row takes methods instead of a fixed model, under a note that it is a
+non-standard path. The gateway forwards such a request without reading it:
 
 - Your app's authentication, the endpoint list and its per-user and app
   request limits still apply, and a user or app over its spending limit is

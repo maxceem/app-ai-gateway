@@ -221,14 +221,7 @@ function PathRow({
     <div className="space-y-1.5">
       <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_170px_auto]">
         <div className="min-w-0">
-          <Label className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-            Path
-            {passthrough ? (
-              <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
-                Passthrough
-              </Badge>
-            ) : null}
-          </Label>
+          <Label className="mb-1.5 text-xs text-muted-foreground">Path</Label>
           <Input
             value={entry.path}
             placeholder="v1/responses"
