@@ -2,63 +2,36 @@
 
 ## Upcoming deprecations
 
-### 2026-11-05: GPT-5.5-Cyber
+| Shutdown date    | Affected model or feature                                                                                             | Status                                                                     | Recommended replacement                                                                                                                                                                          | Notice date  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------ |
+| **Nov 30, 2026** | `/v1/prompts` and reusable prompt objects                               | Deprecated               | Move prompt content into your application code. [Migration guide](https://developers.openai.com/api/docs/guides/prompting/migrate-from-prompt-object)                                                                         | Jun 3, 2026  |
+| **Dec 1, 2026**  | `gpt-image-1.5`, `gpt-image-1.5-2025-12-16`                                                                           | Deprecated               | `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare`                                                                                                                                                | Jun 2, 2026  |
+| **Dec 11, 2026** | `gpt-5`, `gpt-5-2025-08-07`                              | Deprecated               | `gpt-6.1-sol`                                                                                                                                                                                    | Jun 11, 2026 |
+| **Dec 11, 2026** | `o3-pro`, `o3-pro-2025-06-10`                                                                                         | Deprecated               | `gpt-6.1-sol` (`reasoning.mode: pro`) in the Responses API                                                                                                                                       | Jun 11, 2026 |
+| **Jan 6, 2027**  | Self-serve fine-tuning job creation                                                                                   | Restricted access | See the [fine-tuning timeline](#update-to-openais-self-serve-fine-tuning).                                                                                                                       | May 7, 2026  |
+| **Jan 14, 2027** | GPT-4o (`gpt-4o-2024-08-06`, `gpt-4o-2024-11-20`)        | Deprecated               | `gpt-6-luna`                                                                                                                                                                                     | Oct 14, 2026 |
+| **Feb 1, 2027**  | `gpt-5.5-cyber-preview`                                                     | Deprecated               | The most capable cyber model available to you.                                                                                                                                                   | Nov 5, 2026  |
+| **Feb 26, 2027** | `whisper-1`                                                         | Deprecated               | `gpt-live-transcribe` or `gpt-transcribe`                                                                                                                                                        | Aug 26, 2026 |
+| **Feb 26, 2027** | `gpt-4o-transcribe`                                                                                                   | Deprecated               | `gpt-live-transcribe` or `gpt-transcribe`                                                                                                                                                        | Aug 26, 2026 |
 
-The `gpt-5.5-cyber-preview` model is deprecated and will be removed from the API on February 1, 2027. Migrate to the most capable cyber model available to you before the shutdown date.
+## Update to OpenAI’s self-serve fine-tuning
 
-| Shutdown date    | Model / system          | Recommended replacement                        |
-| ---------------- | ----------------------- | ---------------------------------------------- |
-| February 1, 2027 | `gpt-5.5-cyber-preview` | The most capable cyber model available to you. |
-
-### 2026-08-26: Transcription models
-
-On August 26, 2026, we notified developers using `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe-diarize` of their deprecation and removal from the API on February 26, 2027.
-
-For information about the recommended replacements, see the [transcription guide](https://developers.openai.com/api/docs/guides/transcription).
-
-| Shutdown date | Model / system              | Recommended replacement                   |
-| ------------- | --------------------------- | ----------------------------------------- |
-| Feb 26, 2027  | `whisper-1`                 | `gpt-live-transcribe` or `gpt-transcribe` |
-| Feb 26, 2027  | `gpt-4o-transcribe`         | `gpt-live-transcribe` or `gpt-transcribe` |
-| Feb 26, 2027  | `gpt-4o-mini-transcribe`    | `gpt-live-transcribe` or `gpt-transcribe` |
-| Feb 26, 2027  | `gpt-4o-transcribe-diarize` | `gpt-live-transcribe` or `gpt-transcribe` |
-
-### 2026-06-11: GPT-5 and o3 model deprecations
-
-On June 11, 2026, we notified developers using older GPT-5 and o3 model snapshots of their deprecation and removal from the API on December 11, 2026.
-
-| Shutdown date | Model / system          | Recommended replacement               |
-| ------------- | ----------------------- | ------------------------------------- |
-| Dec 11, 2026  | `gpt-5-2025-08-07`      | `gpt-5.6-sol`                         |
-| Dec 11, 2026  | `gpt-5-mini-2025-08-07` | `gpt-5.6-terra`                       |
-| Dec 11, 2026  | `o3-pro-2025-06-10`     | `gpt-5.6-sol` (`reasoning.mode: pro`) |
-
-### 2026-06-03: Reusable prompts
-
-On June 3, 2026, we notified developers using reusable prompts in the dashboard and API that reusable prompt objects are being deprecated.
-
-| Date         | Update                                                                       |
-| ------------ | ---------------------------------------------------------------------------- |
-| June 3, 2026 | Deprecation announced and prompt creation de-emphasized in the platform.     |
-| Nov 30, 2026 | The `v1/prompts` API and reusable prompt objects are scheduled to shut down. |
-
-To migrate, move reusable prompt content into your application code. See [Migrate from prompt objects](https://developers.openai.com/api/docs/guides/prompting/migrate-from-prompt-object).
+| Date         | Update                                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| May 7, 2026  | Creating fine-tuning jobs or training is not available to organizations that have not previously run fine-tuning.                                                                                |
+| July 2, 2026 | Creating fine-tuning jobs is no longer available to organizations that have not run inference on a fine-tuned model in the past 60 days.                                                         |
+| Jan 6, 2027  | Active existing customers will no longer be able to create new fine-tuning jobs on this date. Inference on fine-tuned models will be disabled only when the underlying base model is deprecated. |
 
 ## Past deprecations
 
-### 2026-04-22: Legacy GPT model snapshots
-
-To improve reliability and make it easier for developers to choose the right models, we are deprecating a set of older OpenAI models. Access to these models will be shut down on the dates below.
-
-| Shutdown date    | Model snapshot                                                         | Substitute model                                  |
-| ---------------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
-| October 23, 2026 | `gpt-4-1106-preview`                                                   | `gpt-5.6-sol`                                     |
-
-### 2025-09-26: Legacy GPT model snapshots (March 2026 shutdown)
-
-To improve reliability and make it easier for developers to choose the right models, we deprecated a set of older OpenAI models with declining usage. Access to these models was shut down on March 26, 2026.
-
-| Shutdown date | Model / system                                                                                                             | Recommended replacement |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| 2026‑03‑26    | `gpt-4-0314`                                                                                                               | `gpt-5` or `gpt-4.1*`   |
-| 2026‑03‑26    | `gpt-4-1106-preview`                                                                                                       | `gpt-5` or `gpt-4.1*`   |
+| Shutdown date                                                                                | Affected model or feature                                                                                                                                                                             | Listed replacement                                                                                    | Notice date  |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------ |
+| **Oct 23, 2026**                                                                             | `gpt-4-1106-preview`                                                                                                                                                                                  | `gpt-5.6-sol`                                                                                         | Apr 22, 2026 |
+| **Oct 23, 2026**                                                                             | `gpt-image-1`                                                                                                                                                                                         | `gpt-image-2.5-sunburst` or `gpt-image-2.5-flare`                                                     | Apr 22, 2026 |
+| **Sep 28, 2026**                                                                             | `babbage-002`                                                                                                                                                                                         | `gpt-5.6-terra`                                                                                       | Sep 26, 2025 |
+| **Aug 26, 2026**                                                                             | Assistants API                                                                                                                                            | Responses API and Conversations API ([migration guide](https://developers.openai.com/api/docs/assistants/migration))               | Aug 26, 2025 |
+| **Mar 26, 2026**                                                                             | `gpt-4-0314`                                                                                                              | `gpt-5`, or `gpt-4.1` for latency-sensitive tasks that don't require reasoning                        | Sep 26, 2025 |
+| **Oct 28, 2024**                                                                             | New fine-tuning training on `babbage-002`                                                                     | `gpt-4o-mini`                                                                                         | Aug 29, 2024 |
+| **Oct 28, 2024**                                                                             | New fine-tuning training on `davinci-002`                                                                                                                                                             | `gpt-4o-mini`                                                                                         | Aug 29, 2024 |
+| **Jun 13, 2024** Earliest estimate | `gpt-4-0314` Historical price $30.00 / 1M input tokens + $60.00 / 1M output tokens              | `gpt-4o`                                                                                              | Jun 13, 2023 |
+| **Jan 4, 2024**                                                                              | Fine-tuning on `davinci` Training price $30.00 / 1M tokens. Usage price $120.00 / 1K tokens                                                      | `davinci-002`, `gpt-3.5-turbo`, `gpt-4o`                                                              | Jul 6, 2023  |

@@ -542,20 +542,35 @@ test("dates: every written form the deprecation pages use", () => {
   }
 });
 
-test("openai deprecations: every id in a model cell, and the newest date for one named twice", () => {
+test("openai deprecations: every id in a model cell, the current date for one named twice, and no fine-tuning shutdowns", () => {
   const text = fixture("openai-deprecations.md");
-  const dates = parse(parseOpenaiDeprecations, text, ["whisper-1", "gpt-4o-transcribe", "gpt-5", "gpt-4-1106-preview", "gpt-4-0314", "gpt-5.5-cyber-preview"]);
+  const wanted = [
+    "whisper-1", "gpt-4o-transcribe", "gpt-5", "gpt-5-2025-08-07", "gpt-4o", "gpt-4o-2024-11-20", "gpt-image-1",
+    "gpt-4-1106-preview", "gpt-4-0314", "gpt-5.5-cyber-preview", "babbage-002", "davinci-002", "davinci",
+  ];
+  const dates = parse(parseOpenaiDeprecations, text, wanted);
+  // Upcoming and past shutdowns alike, their dates in bold.
   assert.deepEqual(dates.get("whisper-1"), { date: "2027-02-26" });
   assert.deepEqual(dates.get("gpt-4o-transcribe"), { date: "2027-02-26" });
-  // A snapshot shutting down says nothing about its alias.
-  assert.equal(dates.has("gpt-5"), false);
-  // Moved from 2026-03-26 to October 23, announced again above the first.
+  assert.deepEqual(dates.get("gpt-5"), { date: "2026-12-11" });
+  assert.deepEqual(dates.get("gpt-5-2025-08-07"), { date: "2026-12-11" });
+  assert.deepEqual(dates.get("gpt-image-1"), { date: "2026-10-23" });
   assert.deepEqual(dates.get("gpt-4-1106-preview"), { date: "2026-10-23" });
+  // An id behind a family name counts; the alias it names does not.
+  assert.deepEqual(dates.get("gpt-4o-2024-11-20"), { date: "2027-01-14" });
+  assert.equal(dates.has("gpt-4o"), false);
+  // Named again further down with an older estimate; the first date is current.
   assert.deepEqual(dates.get("gpt-4-0314"), { date: "2026-03-26" });
+  // Ending fine-tuning on a model does not retire it.
+  assert.deepEqual(dates.get("babbage-002"), { date: "2026-09-28" });
+  assert.equal(dates.has("davinci-002"), false);
+  assert.equal(dates.has("davinci"), false);
   // The catalog's gpt-5.5-cyber retires under the page's preview id.
   assert.deepEqual(dates.get(sourceId(SOURCES.openai.deprecations, "gpt-5.5-cyber")), { date: "2027-02-01" });
-  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Shutdown date | Model / system              |", "| Shutdown date | Model name                  |"), ["whisper-1"], /unknown model column/);
-  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Feb 26, 2027  | `whisper-1`", "| Early 2027    | `whisper-1`"), ["whisper-1"], /not a date/);
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Shutdown date    | Affected model or feature ", "| Shutdown date    | Model name                "), ["whisper-1"], /unknown model column/);
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| **Feb 26, 2027** | `whisper-1`", "| **Early 2027**   | `whisper-1`"), ["whisper-1"], /not a date/);
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| **Feb 26, 2027** | `whisper-1`", "| **Feb 26, 2027 | `whisper-1`"), ["whisper-1"], /not a date/);
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| **Feb 26, 2027** | `whisper-1`", "| Feb 26, 2027 soon | `whisper-1`"), ["whisper-1"], /not a date/);
 });
 
 test("anthropic deprecations: a promise is not a date, a retirement is", () => {
