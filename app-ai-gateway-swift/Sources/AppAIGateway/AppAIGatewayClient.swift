@@ -64,7 +64,15 @@ public enum GatewayAuthMode: Sendable {
 public actor AppAIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
+        /// When to replace it: well before it expires, so a refresh that fails
+        /// or is slow is ridden out with this one.
         let refreshAt: Date
+        /// Until when it is still sent: its expiry, less a margin for the
+        /// request to reach the gateway. Past this, the next request waits for
+        /// a new token.
+        let usableUntil: Date
+        /// How long a failed refresh waits before it is tried again.
+        let retryInterval: TimeInterval
         /// The App Attest key the token is bound to, in the App Attest modes:
         /// the key that signs the requests it is sent with, where any are.
         let keyID: String?
@@ -112,6 +120,9 @@ public actor AppAIGatewayClient {
     /// came in between: a discarded exchange may answer an older `verify_on`.
     private var tokenGeneration = 0
     private var refreshTask: Task<Void, Never>?
+    /// Set when a refresh behind a still-usable token failed: no request starts
+    /// another before then, so an outage does not cost each request an exchange.
+    private var nextRefreshAttempt: Date?
     private var rateLimitHold: RateLimitHold?
 
     /// A refusal the gateway timed, and the instant its window closes.
@@ -165,10 +176,62 @@ public actor AppAIGatewayClient {
     /// token returned rather than reading the cache afterwards: an exchange
     /// that a discard overtook returns its token without caching it.
     private func currentAccessToken() async throws -> AccessToken {
-        if let accessToken, accessToken.refreshAt.timeIntervalSinceNow > 0 {
-            return accessToken
+        if let accessToken {
+            if accessToken.refreshAt.timeIntervalSinceNow > 0 { return accessToken }
+            // Due for replacement but still accepted: refresh behind it rather
+            // than in front of it, so neither a slow exchange nor a failed one
+            // holds the request. Only a token about to expire is waited for.
+            if accessToken.usableUntil.timeIntervalSinceNow > 0 {
+                refreshBehind()
+                return accessToken
+            }
         }
         return try await refreshGatewayAccessToken()
+    }
+
+    /// Starts a refresh without waiting for it, unless one is in flight or a
+    /// failed one is waiting to be tried again.
+    private func refreshBehind() {
+        guard tokenExchangeTask == nil else { return }
+        if let nextRefreshAttempt, nextRefreshAttempt.timeIntervalSinceNow > 0 { return }
+        Task { await self.attemptRefresh() }
+    }
+
+    /// One refresh that fails nobody. When it fails, the current token stays
+    /// in use for as long as the gateway still accepts it. A failure that may
+    /// pass — the gateway or the network unavailable — is tried again after the
+    /// token's retry interval, so an outage shorter than the time left on the
+    /// token goes unnoticed by the app. Any other is not tried again behind the
+    /// token: retrying would only repeat it, and some of its recoveries cost
+    /// the app a purchase sync or an Apple attestation each. The next exchange
+    /// is then the one a request waits for once the token runs out, as before.
+    /// The gateway still judges every request the token is sent with.
+    private func attemptRefresh() async {
+        let generation = tokenGeneration
+        do {
+            _ = try await refreshGatewayAccessToken()
+            nextRefreshAttempt = nil
+        } catch {
+            // A discard since this began has settled what the client holds.
+            guard tokenGeneration == generation,
+                  let accessToken,
+                  accessToken.usableUntil.timeIntervalSinceNow > 0
+            else { return }
+            guard Self.mayPass(error) else {
+                nextRefreshAttempt = accessToken.usableUntil
+                return
+            }
+            let next = Date().addingTimeInterval(accessToken.retryInterval)
+            nextRefreshAttempt = next
+            scheduleRefresh(at: next)
+        }
+    }
+
+    /// Whether a failed refresh is worth trying again shortly: the gateway said
+    /// so, or the network failed before it could say anything.
+    static func mayPass(_ error: Error) -> Bool {
+        if let error = error as? GatewayError { return error.isRetryable }
+        return error is URLError
     }
 
     /// Refuses, without a request, while a window the gateway timed is still
@@ -210,7 +273,7 @@ public actor AppAIGatewayClient {
             let token = try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
             if self.tokenGeneration == generation {
                 self.accessToken = token
-                self.scheduleRefresh(for: token)
+                self.scheduleRefresh(at: token.refreshAt)
             }
             return token
         }
@@ -465,6 +528,7 @@ public actor AppAIGatewayClient {
     /// it, and its token is never cached.
     public func discardAccessToken() {
         accessToken = nil
+        nextRefreshAttempt = nil
         tokenGeneration += 1
         tokenExchangeTask = nil
         refreshTask?.cancel()
@@ -688,6 +752,10 @@ public actor AppAIGatewayClient {
 
     /// Mints a token; `refreshGatewayAccessToken` decides whether it is cached.
     private func exchangeToken(forceIssuerRefresh: Bool, retryIssuerOnce: Bool) async throws -> AccessToken {
+        // The gateway counts the token's lifetime from when it mints it, so it
+        // is measured here from before the request: a slow exchange then never
+        // lets the token be sent past the gateway's own expiry.
+        let started = Date()
         do {
             let response: TokenResponse
             var keyID: String?
@@ -700,14 +768,23 @@ public actor AppAIGatewayClient {
                 )
             case .apiKey(let key, nil):
                 // Never reached: `gatewayAccessToken` returns the key itself.
-                return AccessToken(value: key, refreshAt: .distantFuture, keyID: nil, signsEveryRequest: false)
+                return AccessToken(
+                    value: key,
+                    refreshAt: .distantFuture,
+                    usableUntil: .distantFuture,
+                    retryInterval: 0,
+                    keyID: nil,
+                    signsEveryRequest: false
+                )
             case .appAttest, .appAttestInstall:
                 (response, keyID) = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
-            let now = Date()
+            let leeway = Self.refreshLeeway(for: response.expires_in)
             let token = AccessToken(
                 value: response.access_token,
-                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in)),
+                refreshAt: started.addingTimeInterval(Self.refreshDelay(for: response.expires_in)),
+                usableUntil: started.addingTimeInterval(response.expires_in - Self.usableMargin(forLeeway: leeway)),
+                retryInterval: Self.refreshRetryInterval(forLeeway: leeway),
                 keyID: keyID,
                 signsEveryRequest: keyID != nil && response.verify_on == Self.verifyOnEveryRequest
             )
@@ -977,19 +1054,38 @@ public actor AppAIGatewayClient {
         return try JSONDecoder().decode(Response.self, from: data)
     }
 
-    private func scheduleRefresh(for token: AccessToken) {
+    private func scheduleRefresh(at date: Date) {
         refreshTask?.cancel()
-        let delay = max(1, token.refreshAt.timeIntervalSinceNow)
+        let delay = max(1, date.timeIntervalSinceNow)
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            _ = try? await self?.refreshGatewayAccessToken()
+            await self?.attemptRefresh()
         }
     }
 
+    /// How long before expiry a token is replaced: a quarter of its lifetime,
+    /// at least 15 seconds and at most 15 minutes. For the gateway's one-hour
+    /// token that is fifteen minutes, which a regional outage of the gateway's
+    /// storage rarely outlasts.
+    static func refreshLeeway(for lifetime: TimeInterval) -> TimeInterval {
+        min(900, max(15, lifetime * 0.25))
+    }
+
     static func refreshDelay(for lifetime: TimeInterval) -> TimeInterval {
-        let leeway = min(300, max(15, lifetime * 0.2))
-        return max(1, lifetime - leeway)
+        max(1, lifetime - refreshLeeway(for: lifetime))
+    }
+
+    /// How long a failed refresh waits before the next try: a minute for a
+    /// one-hour token, proportionally less for a shorter one.
+    static func refreshRetryInterval(forLeeway leeway: TimeInterval) -> TimeInterval {
+        min(60, max(1, leeway / 15))
+    }
+
+    /// How close to expiry a token is still sent: thirty seconds for a
+    /// one-hour token, proportionally less for a shorter one.
+    static func usableMargin(forLeeway leeway: TimeInterval) -> TimeInterval {
+        min(30, leeway / 30)
     }
 
     /// What the token exchange's assertion is signed over: JSON written by

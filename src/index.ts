@@ -33,7 +33,7 @@ import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/ser
 import { serverTiming } from "./execution/timing";
 import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import { authRoutes } from "./routes/auth";
+import { appAuthRateLimit, authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
@@ -139,7 +139,13 @@ app.all(
 // schemas, drizzle, the app configuration parser) is on every request's path
 // already. So it needs no wrapper app of its own, and its failures reach the
 // one `onError` below without one.
-app.use("/v1/apps/:app/auth/*", clientCallDeadline, billingEntitlementGate);
+// In this order: the deadline, then each endpoint's flood limit, then the
+// account gate, which reads D1, so a refused flood costs no read.
+app.use("/v1/apps/:app/auth/*", clientCallDeadline);
+app.use("/v1/apps/:app/auth/challenge", appAuthRateLimit("app_auth_challenge"));
+app.use("/v1/apps/:app/auth/register", appAuthRateLimit("app_auth_register"));
+app.use("/v1/apps/:app/auth/token", appAuthRateLimit("app_auth_token"));
+app.use("/v1/apps/:app/auth/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
 // A served request is one handler that runs its own sequence — account,

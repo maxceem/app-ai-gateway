@@ -309,8 +309,12 @@ prove themselves.
   the mode has one and, from 1.7, the app's App Store transaction; see
   [Budgets per Apple Account](#budgets-per-apple-account). Concurrent
   callers share one exchange.
-- **Refresh.** It refreshes the token five minutes before expiry in a
-  background task, so a request rarely waits for an exchange.
+- **Refresh.** It refreshes the token in a background task well before it
+  expires, so a request rarely waits for an exchange. From 1.8 it starts
+  fifteen minutes early, never makes a request wait while the current token
+  is still accepted, and when a refresh fails it keeps using the current token
+  and tries again about once a minute. A short outage of the gateway's token
+  endpoints then goes unnoticed by your app.
 - **Request signing.** When the app verifies App Attest on every request, it
   signs every request it builds, `/me` included, with the key the gateway
   token is bound to; see [Per-request proof](#per-request-proof).
