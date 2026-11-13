@@ -45,13 +45,24 @@ export async function resolveTool(
       `Unknown command: agw ${clean(words.join(" "))}.`,
       "Run agw --help to list every command this gateway offers.",
     );
+  supported(tool);
+  return { tool, list };
+}
+
+/** Refuses a tool that needs a feature of `agw` this release does not have. */
+function supported(tool: CliTool): void {
   if (missingFeatures(tool).length > 0)
     fail(
       "cli_outdated",
       `agw ${tool.cli.command} needs a newer agw than ${VERSION}.`,
       "Update agw: npm install -g @maxceem/agw",
     );
-  return { tool, list };
+}
+
+/** Standard input, read at most once however many times a command line is read. */
+function once(read: () => Promise<string>): () => Promise<string> {
+  let text: Promise<string> | undefined;
+  return () => (text ??= read());
 }
 
 /** The flags a context reads, from a command line no built-in command parsed. */
@@ -110,6 +121,8 @@ async function invocationOf(
     if (!(error instanceof CliError) || !STALE_LINE.has(error.code) || catalog.fresh) throw error;
     const current = (await catalog.refresh().catch(() => undefined))?.tools.find((entry) => entry.name === tool.name);
     if (!current || current.cli.command !== tool.cli.command) throw error;
+    // The newer description may need what this release lacks.
+    supported(current);
     return { tool: current, invocation: await readInvocation(current, argv, stdin) };
   }
 }
@@ -127,7 +140,7 @@ export async function runGatewayCommand(
   argv: readonly string[],
   stdin: () => Promise<string> = readStdin,
 ): Promise<GatewayCommandResult | { help: true; tool: CliTool }> {
-  const { tool, invocation } = await invocationOf(catalog, given, argv, stdin);
+  const { tool, invocation } = await invocationOf(catalog, given, argv, once(stdin));
   if (invocation.help) return { help: true, tool };
   const input = { ...invocation.input };
   // A deletion names what it deletes twice; once the person has agreed, the

@@ -112,14 +112,21 @@ function column(spec: string): { key: string; label: string } {
   return { key: spec, label: label.charAt(0).toUpperCase() + label.slice(1) };
 }
 
-function table(headers: string[], rows: string[][], style: Style): string[] {
+/**
+ * Headers and labels are cleaned here, where they are drawn, because some come
+ * from a result's own keys rather than from the tool list: an app's endpoint
+ * names, say, which anybody with access to the app chose.
+ */
+function table(given: string[], rows: string[][], style: Style): string[] {
+  const headers = given.map((header) => cut(clean(header), 48));
   const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]!.length)));
   const line = (cells: string[], tone: (text: string) => string) =>
     cells.map((text, index) => tone(text) + (index === cells.length - 1 ? "" : " ".repeat(widths[index]! + 2 - text.length))).join("").trimEnd();
   return [line(headers, style.dim), ...rows.map((row) => line(row, style.state))];
 }
 
-function kv(entries: [string, string][], style: Style): string[] {
+function kv(given: [string, string][], style: Style): string[] {
+  const entries = given.map(([label, value]): [string, string] => [cut(clean(label), 48), value]);
   const width = Math.max(0, ...entries.map(([label]) => label.length + 1));
   return entries.map(([label, value]) => style.dim(`${label}:`.padEnd(width + 1)) + style.state(value));
 }

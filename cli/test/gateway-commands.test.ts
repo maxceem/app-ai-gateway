@@ -326,6 +326,44 @@ test("a flag the kept list does not know is looked up once on the gateway before
   assert.equal(unknown.json().error.code, "unknown_flag");
 });
 
+test("a newer description fetched for a flag is checked for what it needs, and reads standard input once", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway();
+  await run(["app", "list"], fake, cache);
+  const widened = { ...PATCH, inputSchema: { ...PATCH.inputSchema, properties: { ...(PATCH.inputSchema.properties as object), new_setting: { type: "string" } } } };
+  fake.publish({ revision: "r2", tools: [LIST, { ...widened, cli: { ...widened.cli, requires: ["teleport"] } }, REMOVE] });
+  const refused = await run(["app", "update", "app-1", "--new-setting", "x", "--json"], fake, cache);
+  assert.equal(refused.json().error.code, "cli_outdated");
+  assert.equal(fake.asked.some((entry) => entry.method === "POST" && entry.path.endsWith("patch_app")), false);
+
+  const later = new MemoryCatalogCache();
+  const next = gateway();
+  await run(["app", "list"], next, later);
+  next.publish({ revision: "r2", tools: [LIST, widened, REMOVE] });
+  let reads = 0;
+  let out = "";
+  const code = await main(["app", "update", "--input", "@-", "--new-setting", "x", "--json"], {
+    store: { ...makeStore(), read: async () => signedIn() },
+    transport: next.transport,
+    stdout: { write: (text: string) => void (out += text) },
+    stderr: { write: () => {} },
+    io: { env: {} },
+    catalogCache: later,
+    stdin: async () => (reads++ === 0 ? '{"app":"app-1"}' : ""),
+  });
+  assert.equal(code, 0, out);
+  assert.deepEqual(next.asked.find((entry) => entry.method === "POST" && entry.path.endsWith("patch_app"))?.body, { app: "app-1", new_setting: "x" });
+});
+
+test("a result's own keys are cleaned before they label a table or a field", () => {
+  const bare = cliTool("get_thing", { command: "thing show" });
+  const hostile = "name\u001b[2J";
+  const out = humanToolResult(bare, "A thing.", { [hostile]: "x", items: [{ [hostile]: 1 }] }, [bare], plain);
+  assert.equal(out.includes("\u001b"), false, JSON.stringify(out));
+  const record = cliTool("get_app", { command: "app show", view: { record: "app" } });
+  assert.equal(humanToolResult(record, "App.", { app: { [hostile]: "x" } }, [record], plain).includes("\u001b"), false);
+});
+
 test("a refusal about what a tool names is not mistaken for the tool being gone", async () => {
   const cache = new MemoryCatalogCache();
   const fake = gateway({ refuse: () => new CliError("not_found", "Key is not registered", "", 3, { status: 404 }) });

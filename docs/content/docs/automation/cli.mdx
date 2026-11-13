@@ -135,7 +135,10 @@ and a structured value is JSON, inline or as `@file`. Every command, built in or
 not, names a flag the same way. `--input` takes every argument as one JSON object. Use a command's
 `--help` for its exact flags. The commands that need your machine — signing
 in, deploying, adding a provider or an app, and anything that writes a key to
-a file — are built into `agw` and change with it.
+a file — are built into `agw` and change with it. An `agw` needs a gateway at least as new
+as its own release: against an older one, the gateway's commands answer
+`gateway_outdated`, and `agw deployment update` brings a self-hosted gateway up
+to date.
 
 Read an app before editing it. `agw app update <app-id>` changes only what you
 name, and leaves everything else as it is:
