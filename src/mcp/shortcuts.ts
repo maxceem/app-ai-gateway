@@ -26,7 +26,11 @@ import { APP_STATUSES } from "../shared/app-status";
 export interface Shortcut<Doc> {
   /** The value it takes, with the description `tools/list` and `agw --help` show. */
   schema: z.ZodType;
-  /** The patch operations it stands for, given its parsed value and the document as it is now. */
+  /**
+   * The patch operations it stands for, given its parsed value and the
+   * document as the explicit operations before it leave it — not yet judged,
+   * so read defensively: the whole result is judged once it is written.
+   */
   operations(value: never, current: Doc): AppPatchOperation[];
 }
 
@@ -71,7 +75,7 @@ const replace = (path: string, value: unknown): AppPatchOperation => ({ op: "rep
 /** A setting only an iOS app has, refused by name for any other. */
 function appAttest(argument: string, setting: string): Shortcut<AppDocument>["operations"] {
   return (value: never, app) => {
-    if (app.config.authentication.type !== "apple_app_attest") {
+    if (app.config?.authentication?.type !== "apple_app_attest") {
       throw new GatewayError(400, "invalid_request", `${argument}: only an iOS (App Attest) app has this setting`);
     }
     return [replace(`/config/authentication/app_attest/${setting}`, value)];
@@ -118,11 +122,11 @@ export const APP_SHORTCUTS: Shortcuts<AppDocument> = {
       description: "The slugs of the only providers the app may use. A provider it already selected keeps its allowed paths and models.",
     }),
     operations: (value: string[], app) => {
-      const routing = app.config.routing.providers;
-      const previous: Record<string, unknown> = routing.mode === "selected" ? routing.selected : {};
+      const routing = app.config?.routing?.providers;
+      const previous: Record<string, unknown> = routing?.mode === "selected" ? routing.selected ?? {} : {};
       return [replace("/config/routing/providers", {
         // Within the mode it already has, the block keeps whatever else is in it.
-        ...(routing.mode === "selected" ? routing : {}),
+        ...(routing?.mode === "selected" ? routing : {}),
         mode: "selected",
         selected: Object.fromEntries(
           value.map((slug) => [slug, previous[slug] ?? { allowed_paths: [], allowed_models: [] }]),
@@ -133,6 +137,6 @@ export const APP_SHORTCUTS: Shortcuts<AppDocument> = {
   all_providers: {
     schema: z.literal(true).meta({ description: "Let the app use every provider of the account." }),
     operations: (_value: true, app) =>
-      app.config.routing.providers.mode === "all" ? [] : [replace("/config/routing/providers", { mode: "all" })],
+      app.config?.routing?.providers?.mode === "all" ? [] : [replace("/config/routing/providers", { mode: "all" })],
   },
 };

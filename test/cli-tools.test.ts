@@ -193,6 +193,19 @@ describe("patch_app shortcuts", () => {
     expect(json.result.app.config.routing.providers).toEqual({ mode: "all" });
   });
 
+  it("read a document the operations left unfinished without failing", async () => {
+    await seedServerApp("cli_tools_unfinished", { organizationId: await organization() });
+    const before = (await call("get_app", { app: "cli_tools_unfinished" })).json.result.app;
+    const { response, json } = await call("patch_app", {
+      app: "cli_tools_unfinished",
+      revision: before.revision,
+      operations: [{ op: "replace", path: "/config/routing/providers", value: null }],
+      all_providers: true,
+    });
+    expect(response.status, JSON.stringify(json)).toBe(200);
+    expect(json.result.app.config.routing.providers).toEqual({ mode: "all" });
+  });
+
   it("refuse an iOS setting on a server app by its argument's name", async () => {
     await seedServerApp("cli_tools_server", { organizationId: await organization() });
     const { response, json } = await call("patch_app", { app: "cli_tools_server", team_id: "BBBBBBBBBB" });
