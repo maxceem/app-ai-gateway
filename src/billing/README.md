@@ -183,10 +183,23 @@ An unreachable billing service says nothing about the subscription, and is
 answered by who is asking. Traffic from an organization's applications and
 their end users — served requests, the application token exchange and `/me` —
 is admitted through `admitAppTraffic`: served, counted against nothing, and
-logged as `billing_unavailable_admitted`, as admission treats a platform
-failure of the allowance counter. An outage of ours must not take every
-customer's apps down with it, and an organization this isolate has read in the
-last hour is still counted against its last known plan. The management API
+logged as `billing_unavailable_admitted`. An outage of ours must not take
+every customer's apps down with it, and an organization this isolate has read
+in the last hour is still counted against its last known plan. App traffic
+waits for billing at most `APP_TRAFFIC_BILLING_DEADLINE_MS` (1 s); a slower
+answer is treated as a failed one and logged as `billing_access_slow`.
+
+The allowance counter never fails app traffic either
+(`allowance-admission.ts`). When it does not answer within
+`ALLOWANCE_ADMIT_DEADLINE_MS` (2 s), or fails for any reason — the platform
+lost it, it is overloaded, or it threw — the request is served uncounted and
+logged as `allowance_uncounted` with the reason; a fault in the gateway is
+also logged as the error `allowance_counter_fault`, even when it comes after
+the deadline. The one exception is a plan this isolate last saw used
+up, counting what it has since served uncounted: that stays a `429`. A call
+abandoned at the deadline keeps running and usually still counts its request;
+nothing is retried, so nothing is counted twice. Requests are cheap and an
+app's users failing is not, so the allowance undercounts rather than refuses. The management API
 fails closed instead, with `503 billing_unavailable` and a short `Retry-After`,
 because a write against an unknown plan would be a guess. Plan features keep
 their own policy above, so an app that stores conversations is served and
