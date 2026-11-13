@@ -141,11 +141,19 @@ async function helpFor(scope: string, catalog: ToolCatalog | undefined, style: S
       .map((entry) => ({ usage: usageLine(entry), summary: clean(mentions(entry.cli.summary ?? entry.title, tools)) }));
   // Help for a command the kept list does not have looks on the gateway once,
   // as running it would.
-  if (list && catalog && words.length && !catalog.fresh && !findTool(list.tools, words, builtIn) && !listed(list.tools).length) {
+  if (
+    list && catalog && words.length && !catalog.fresh &&
+    !findTool(list.tools, words, builtIn) && !listed(list.tools).length && !builtInEntries(scope).length
+  ) {
     list = await catalog.refresh().catch(() => list);
   }
   const tool = list && words.length ? findTool(list.tools, words, builtIn) : undefined;
-  if (tool && list) return toolHelp(tool, list.tools, style);
+  if (tool && list) {
+    const help = toolHelp(tool, list.tools, style);
+    return missingFeatures(tool).length === 0
+      ? help
+      : `${style.warn(`This command needs a newer agw than ${VERSION}: npm install -g @maxceem/agw`)}\n\n${help}`;
+  }
   const entries = [...builtInEntries(scope), ...listed(list?.tools ?? [])];
   if (!entries.length)
     throw new CliError(
@@ -245,6 +253,10 @@ export async function main(
         return 0;
       }
       const context = outputContext(ctx);
+      // The result is printed as the gateway answered it, with no schema of
+      // this release's to drop fields by: what keeps a credential out of it is
+      // the gateway, which redacts every value named like one before any tool
+      // answers (`src/mcp/run.ts`).
       const text = json
         ? JSON.stringify({
             schemaVersion: 1,
@@ -256,6 +268,9 @@ export async function main(
           }) + "\n"
         : humanToolResult(tool, outcome.summary, outcome.result, list.tools, styleFor(stdout));
       await write(stdout, text);
+      // Only now, with the result written: a gateway that changed costs the
+      // next run a fresh list, never this run its output.
+      await catalog.observe(outcome.revision);
       return 0;
     }
     command = parsed.command;

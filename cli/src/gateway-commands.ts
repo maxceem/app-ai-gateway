@@ -38,7 +38,9 @@ export async function resolveTool(
 ): Promise<{ tool: CliTool; list: CachedCatalog }> {
   let list = await catalog.load();
   let tool = findTool(list.tools, words, builtIn);
-  if (!tool && !catalog.fresh) {
+  // A command missing from the kept list, or kept as needing a newer agw, is
+  // looked up on the gateway once before it is refused: the list may be old.
+  if ((!tool || missingFeatures(tool).length > 0) && !catalog.fresh) {
     list = await catalog.refresh();
     tool = findTool(list.tools, words, builtIn);
   }
@@ -81,6 +83,11 @@ export interface GatewayCommandResult {
   tool: CliTool;
   summary: string;
   result: Record<string, unknown>;
+  /**
+   * The revision the answer carried: for the caller to compare with the list
+   * once the result is written, so a list that changed delays no output.
+   */
+  revision?: string;
 }
 
 /**
@@ -101,7 +108,9 @@ async function consent(tool: CliTool, invocation: ToolInvocation, flags: Flags):
     .map((name) => invocation.input[name])
     .filter((value) => typeof value === "string")
     .join(" ");
-  await confirm(`${clean(tool.title)}${subject ? ` ${clean(subject)}` : ""}? This cannot be undone.`, flags);
+  // Asked for whatever the flags say: `--yes` is the command line's, read above.
+  const { yes: _yes, ...asked } = flags;
+  await confirm(`${clean(tool.title)}${subject ? ` ${clean(subject)}` : ""}? This cannot be undone.`, asked);
 }
 
 /** Refusals of a command line that a newer list of the same tool may not make. */
@@ -161,13 +170,26 @@ export async function runGatewayCommand(
     if (!(error instanceof CliError) || error.code !== "tool_changed") throw error;
     const current = (await catalog.refresh()).tools.find((entry) => entry.name === tool.name);
     if (!current) throw error;
+    // No newer description to decide by: the list could not be read again.
+    if (current.guard === tool.guard)
+      throw new CliError(
+        error.code,
+        error.message,
+        "Nothing ran. Run the same command again once the gateway can be reached.",
+        error.exitCode,
+        error.details,
+      );
     supported(current);
     tool = current;
     invocation = await readInvocation(tool, argv, read);
     answer = await send(ctx, catalog, tool, invocation);
   }
-  await catalog.observe(answer.headers?.get(REVISION_HEADER));
-  return { tool, summary: answer.data.summary, result: answer.data.result };
+  return {
+    tool,
+    summary: answer.data.summary,
+    result: answer.data.result,
+    revision: answer.headers?.get(REVISION_HEADER) ?? undefined,
+  };
 }
 
 /**

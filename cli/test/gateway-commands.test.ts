@@ -317,6 +317,67 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   assert.match(old.json().error.nextAction, /agw deployment update/);
 });
 
+test("a command kept as needing a newer agw is looked up again before it is refused", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ tools: [LIST, cliTool("list_models", { command: "model list", requires: ["teleport"] })] });
+  await run(["app", "list"], fake, cache);
+  // The release that added the requirement was reverted.
+  fake.publish({ revision: "r2", tools: [LIST, cliTool("list_models", { command: "model list" })] });
+  const ran = await run(["model", "list"], fake, cache);
+  assert.equal(ran.code, 0, ran.err);
+  assert.equal(fake.lists(), 2);
+});
+
+test("a result is written before the list is read again for a changed gateway", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ answer: () => ({ apps: [] }) });
+  await run(["app", "list"], fake, cache);
+  fake.publish({ revision: "r2", tools: [LIST, PATCH, REMOVE] });
+  const order: string[] = [];
+  await main(["app", "list", "--json"], {
+    store: { ...makeStore(), read: async () => signedIn() },
+    transport: {
+      request: async (url: string, path: string, options: RequestOptions = {}) => {
+        if (path === "/v1/cli/tools") order.push("list");
+        return fake.transport.request(url, path, options);
+      },
+    },
+    stdout: { write: () => void order.push("output") },
+    stderr: { write: () => {} },
+    io: { env: {} },
+    catalogCache: cache,
+    stdin: noStdin,
+  });
+  assert.deepEqual(order, ["output", "list"]);
+});
+
+test("a refusal by a changed guard that no newer list explains is not sent again", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ tools: [LIST, { ...PATCH, guard: "g1" }] });
+  await run(["app", "list"], fake, cache);
+  // The gateway refuses by a guard its list does not show yet.
+  fake.publish({ revision: "r1", tools: [LIST, { ...PATCH, guard: "g1" }] });
+  const refusing = { ...fake, transport: { request: async (url: string, path: string, options: RequestOptions = {}) => {
+    if (path.endsWith("patch_app")) {
+      fake.asked.push({ path, method: "POST" });
+      throw new CliError("tool_changed", "patch_app has changed", "", 3, { status: 409 });
+    }
+    return fake.transport.request(url, path, options);
+  } } };
+  const result = await run(["app", "update", "app-1", "--name", "x", "--json"], refusing, cache);
+  assert.equal(result.json().error.code, "tool_changed");
+  assert.match(result.json().error.nextAction, /Nothing ran/);
+  assert.equal(fake.asked.filter((entry) => entry.path.endsWith("patch_app")).length, 1);
+});
+
+test("help for a built-in group does not fetch the list", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway();
+  await run(["app", "list"], fake, cache);
+  await run(["support", "--help"], fake, cache);
+  assert.equal(fake.lists(), 1);
+});
+
 test("help for a command the kept list does not have looks on the gateway once, as running it would", async () => {
   const cache = new MemoryCatalogCache();
   const fake = gateway();

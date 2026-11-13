@@ -99,6 +99,13 @@ export async function callCliTool(
     if (guard !== undefined && current !== undefined && guard !== current) {
       throw new GatewayError(409, "tool_changed", `${name} has changed in a way that needs a fresh look before it runs; nothing ran`);
     }
+    // An argument the tool no longer takes would otherwise be dropped on the
+    // way to its operation, and the call run without it: a renamed filter,
+    // say. Refused instead, and the revision tells the CLI to read the list.
+    const unknown = Object.keys(input).find((key) => !Object.hasOwn(tool.input.shape, key));
+    if (unknown !== undefined) {
+      throw new GatewayError(400, "invalid_request", `${unknown}: not an argument of ${name}; nothing ran`);
+    }
     const { result, summary } = await runTool(tool, input, caller);
     return { response: { tool: tool.name, summary, result: result as Record<string, unknown> }, revision };
   } catch (error) {

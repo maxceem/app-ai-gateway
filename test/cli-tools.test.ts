@@ -162,9 +162,18 @@ describe("a tool's guard", () => {
     for (const tool of first.tools) expect(tool.guard, tool.name).toMatch(/^[0-9a-f]{12}$/u);
     const guards = (list: typeof first) => Object.fromEntries(list.tools.map((tool) => [tool.name, tool.guard]));
     expect(guards(await catalog())).toEqual(guards(first));
-    const remove = first.tools.find((tool) => tool.name === "remove_app")!;
-    const list = first.tools.find((tool) => tool.name === "list_apps")!;
-    expect(remove.guard).not.toBe(list.guard);
+    // What a guard is made of, pinned: changing it refuses every installed
+    // CLI's next call of every tool once, and putting a description or a
+    // schema in it would refuse one on every release that touches either.
+    const byGuard = new Set(first.tools.map((tool) => `${tool.annotations.destructiveHint === true}:${tool.guard}`));
+    expect([...byGuard].sort()).toEqual(["false:4e56689673c0", "true:731e8557f869"]);
+  });
+
+  it("is not the only check: an argument the tool does not take is refused, not dropped", async () => {
+    await seedServerApp("cli_tools_renamed", { organizationId: await organization() });
+    const { response, json } = await call("list_app_events", { app: "cli_tools_renamed", renamed_filter: "x" });
+    expect(response.status).toBe(400);
+    expect(json.error.message).toMatch(/^renamed_filter: not an argument of list_app_events/u);
   });
 
   it("that the caller holds is compared before the tool runs", async () => {
@@ -189,6 +198,18 @@ describe("a tool's guard", () => {
 });
 
 describe("values a tool hides", () => {
+  it("never reach what the CLI prints, whatever the app stores", async () => {
+    await seedServerApp("cli_tools_stored_secret", {
+      organizationId: await organization(),
+      endpoints: { chat: { provider: "openai", model: "gpt-x", api_style: "responses", params: { api_key: "sk-stored-secret" } } },
+    });
+    const { response, json } = await call("get_app", { app: "cli_tools_stored_secret" });
+    expect(response.status, JSON.stringify(json)).toBe(200);
+    expect(JSON.stringify(json)).not.toContain("sk-stored-secret");
+    expect(json.result.app.config.endpoints.chat.params.api_key).toBe(REDACTED);
+    expect(json.summary).toContain("app.config.endpoints.chat.params.api_key");
+  });
+
   it("are named in the summary, with what still works", () => {
     const hidden: string[] = [];
     const shown = redactSecrets({ app: { config: { endpoints: { chat: { params: { api_key: "sk-1", temperature: 0 } } } } } }, [], [], hidden);
