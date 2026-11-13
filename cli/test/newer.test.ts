@@ -477,3 +477,69 @@ test("usage event cost sources newer than this release are kept as sent", () => 
   assert.deepEqual(read?.data, event);
   assert.deepEqual(read?.unknown, [{ path: ["cost_source"], value: "estimated" }]);
 });
+
+/** What `/v1/cli/capabilities` answers for a gateway of this release and mode. */
+const capabilities = (serverVersion: string, mode: "cloud" | "self_hosted") => ({
+  protocolVersion: 1,
+  serverVersion,
+  deployment: { id: "dep-1", mode, apiUrl: "https://gw.example", consoleOrigin: "https://console.example" },
+  consoleOrigin: "https://console.example",
+  providers: [],
+  providerGateways: [],
+});
+
+/** A gateway that refuses `getApp` as given, and reports its release when asked. */
+function refusing(refusal: CliError, serverVersion: string, mode: "cloud" | "self_hosted" = "cloud") {
+  const asked: string[] = [];
+  return {
+    asked,
+    transport: {
+      request: async (_url: string, path: string) => {
+        asked.push(path);
+        if (path === operationPath("getCliCapabilities")) return { data: capabilities(serverVersion, mode) };
+        throw refusal;
+      },
+    },
+  };
+}
+
+const badRequest = () => new CliError("invalid_request", "Deployment rejected the request (HTTP 400).", "Review.", 3, { status: 400 });
+
+test("a failure the gateway answered says when the CLI is older than the gateway API", async () => {
+  const gateway = refusing(badRequest(), "99.0.0");
+  const human = await run(["app", "show", "app-1"], gateway.transport);
+  assert.equal(human.code, 3);
+  // After the failure, never instead of it.
+  assert.match(
+    human.err,
+    /\nCode: invalid_request\n {2}status: 400\nNote: Your agw CLI \(\S+\) is older than the gateway API it talks to \(99\.0\.0\)\. Updating the CLI may fix this: npm install -g @maxceem\/agw\n$/,
+  );
+  const json = await run(["app", "show", "app-1", "--json"], gateway.transport);
+  assert.equal(json.json().error.code, "invalid_request");
+  assert.deepEqual(json.json().notices.map((n: { code: string; apiVersion: string }) => [n.code, n.apiVersion]), [["version_mismatch", "99.0.0"]]);
+});
+
+test("a self-hosted gateway older than the CLI is named as the one to update", async () => {
+  const human = await run(["app", "show", "app-1"], refusing(badRequest(), "0.1.0", "self_hosted").transport);
+  assert.match(human.err, /Note: Your self-hosted gateway API \(0\.1\.0\) is older than this agw CLI \(\S+\)\. Updating the gateway may fix this: agw deployment update\n$/);
+  // The hosted gateway is not the user's to update, so nothing is said.
+  const hosted = await run(["app", "show", "app-1"], refusing(badRequest(), "0.1.0", "cloud").transport);
+  assert.doesNotMatch(hosted.err, /Note:/);
+});
+
+test("no version note where versions cannot be the cause", async () => {
+  const { VERSION } = await import("../src/common.ts");
+  // The same release.
+  assert.doesNotMatch((await run(["app", "show", "app-1"], refusing(badRequest(), VERSION).transport)).err, /Note:/);
+  // A refusal with a cause of its own: the gateway is not even asked.
+  for (const status of [401, 403, 409, 429]) {
+    const gateway = refusing(new CliError("refused", "No.", "", 3, { status }), "99.0.0");
+    const result = await run(["app", "show", "app-1"], gateway.transport);
+    assert.doesNotMatch(result.err, /Note:/, String(status));
+    assert.equal(gateway.asked.length, 1);
+  }
+  // Nothing reached the gateway at all.
+  const unreachable = refusing(new CliError("connection_failed", "Could not reach.", "", 3), "99.0.0");
+  assert.doesNotMatch((await run(["app", "show", "app-1"], unreachable.transport)).err, /Note:/);
+  assert.equal(unreachable.asked.length, 1);
+});

@@ -104,14 +104,25 @@ export interface KeyedOperation {
  * `--json` envelope as `notices`.
  */
 export interface Notice {
-  code: "newer_deployment" | "unknown_settings_replaced";
+  code: "newer_deployment" | "unknown_settings_replaced" | "version_mismatch";
   message: string;
-  /** Where in the documents involved the notice applies. */
-  paths: string[];
+  /** Where in the documents involved the notice applies, for the notices about settings. */
+  paths?: string[];
+  /** The two releases, for `version_mismatch`. */
+  cliVersion?: string;
+  apiVersion?: string;
 }
 
 /** At most this many paths are named on a terminal; `--json` carries all of them. */
 const NOTICE_PATHS = 5;
+
+/** A notice as a terminal shows it: the message, then the settings it names. */
+export function noticeText(notice: Notice, style: Pick<ReturnType<typeof styleFor>, "warn" | "dim">): string {
+  const paths = notice.paths ?? [];
+  const shown = paths.slice(0, NOTICE_PATHS).join(", ");
+  const more = paths.length > NOTICE_PATHS ? ` and ${paths.length - NOTICE_PATHS} more` : "";
+  return `${style.warn(`Note: ${notice.message}`)}\n${paths.length ? `${style.dim(`  Settings: ${shown}${more}`)}\n` : ""}`;
+}
 
 export interface Onboarding {
   account: OrganizationSummary;
@@ -274,7 +285,8 @@ export class Context {
     if (!result.newer?.length) return result;
     const existing = this.notices.find((notice) => notice.code === "newer_deployment");
     if (existing) {
-      for (const path of result.newer) if (!existing.paths.includes(path)) existing.paths.push(path);
+      const paths = (existing.paths ??= []);
+      for (const path of result.newer) if (!paths.includes(path)) paths.push(path);
       return result;
     }
     this.notice({
@@ -289,12 +301,7 @@ export class Context {
   notice(notice: Notice): void {
     this.notices.push(notice);
     if (this.flags.json) return;
-    const style = styleFor(this.io.stderr);
-    const shown = notice.paths.slice(0, NOTICE_PATHS).join(", ");
-    const more = notice.paths.length > NOTICE_PATHS ? ` and ${notice.paths.length - NOTICE_PATHS} more` : "";
-    this.io.stderr.write(
-      `${style.warn(`Note: ${notice.message}`)}\n${notice.paths.length ? `${style.dim(`  Settings: ${shown}${more}`)}\n` : ""}`,
-    );
+    this.io.stderr.write(noticeText(notice, styleFor(this.io.stderr)));
   }
 
   /**

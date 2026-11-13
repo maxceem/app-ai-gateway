@@ -111,7 +111,9 @@ answer, each with a `code`, a `message` and the `paths` it applies to. The
 CLI prints them to stderr without `--json`. `newer_deployment` means the
 gateway is newer than this `agw` and has settings it does not understand: they
 are shown and kept unchanged when it saves, but not checked. Update `agw` to
-manage them.
+manage them. `version_mismatch` follows a failure the gateway answered when
+the CLI and the gateway API are different releases, and says which one to
+update.
 
 Every error names a `code` and a `nextAction`. Follow the `nextAction`.
 

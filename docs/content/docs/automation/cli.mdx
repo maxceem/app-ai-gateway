@@ -206,7 +206,8 @@ carries a reference such as `SUP-7F3K2Q` to quote when you follow up.
 
 `--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
 `result` or `error`, plus `notices` when there is something to know that is
-not the answer. Progress goes to stderr. Without `--json` the same result is
+not the answer. When a request fails and the CLI and the gateway API are
+different releases, a `version_mismatch` notice says which one to update. Progress goes to stderr. Without `--json` the same result is
 printed as plain text to read, and a failure is printed to stderr instead of
 stdout. A successful result with `state: "pending"` still needs its browser
 step and `operation wait`; it does not mean the change finished. Exit codes are

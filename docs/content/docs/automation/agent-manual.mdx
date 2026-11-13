@@ -91,7 +91,9 @@ add `--no-open`. `--json` returns `{schemaVersion:1,ok:true,context,result}` or
 `{schemaVersion:1,ok:false,error}`, either with optional `notices`. A
 `newer_deployment` notice means the gateway has settings this `agw` does not
 understand: they are kept when it saves, so tell the person to update `agw`
-before changing them. Inspect both `ok` and the result: a successful
+before changing them. A `version_mismatch` notice after a failure means the
+CLI and the gateway API are different releases; tell the person which one to
+update. Inspect both `ok` and the result: a successful
 pending operation still needs the browser step and polling. Exit codes are
 0 success, 2 invalid input, 3 remote failure, 4 state/authentication recovery
 and 5 wait timeout. A timeout does not cancel the operation. Follow
