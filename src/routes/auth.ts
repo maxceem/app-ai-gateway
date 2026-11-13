@@ -166,13 +166,6 @@ async function recorded(
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
 
-/** The limit each application authentication endpoint is counted under. */
-const APP_AUTH_LIMITS: Partial<Record<string, "app_auth_challenge" | "app_auth_register" | "app_auth_token">> = {
-  challenge: "app_auth_challenge",
-  register: "app_auth_register",
-  token: "app_auth_token",
-};
-
 /**
  * Bounds flooding of one application's unauthenticated authentication routes
  * from one network address.
@@ -185,16 +178,24 @@ const APP_AUTH_LIMITS: Partial<Record<string, "app_auth_challenge" | "app_auth_r
  * attempt, and it is the one request that must not write an `app_auth_event`
  * row. Recording it would give a flood a database write per request, which is
  * exactly the cost this limit exists to refuse, and would bury the app's real
- * failures under rows nobody acted on. For the same reason it runs before the
- * app is loaded, so a flood aimed at an invented app id costs no read either:
- * it is mounted ahead of the billing gate, which loads the app and its account,
- * not inside the routes.
+ * failures under rows nobody acted on. For the same reason it is mounted ahead
+ * of the billing gate, which loads the app and its account, so a flood at an
+ * invented app id on these three routes costs no read either.
+ *
+ * Mounted on each route's own pattern rather than by reading the path here, so
+ * it matches exactly what the router hands to the route: a percent-encoded
+ * spelling of the endpoint reaches the same handler, and is counted the same.
  */
-export const appAuthRateLimit: MiddlewareHandler<{ Bindings: Env; Variables: RequestVariables }> = async (c, next) => {
-  const policy = c.req.method === "POST" ? APP_AUTH_LIMITS[new URL(c.req.url).pathname.split("/").at(-1) ?? ""] : undefined;
-  if (policy) await enforceEndpointRateLimit(c.env, policy, `${c.req.param("app") ?? ""}:${clientAddress(c.req.raw)}`);
-  await next();
-};
+export function appAuthRateLimit(
+  policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
+): MiddlewareHandler<{ Bindings: Env; Variables: RequestVariables }> {
+  return async (c, next) => {
+    if (c.req.method === "POST") {
+      await enforceEndpointRateLimit(c.env, policy, `${c.req.param("app") ?? ""}:${clientAddress(c.req.raw)}`);
+    }
+    await next();
+  };
+}
 
 authRoutes.post("/challenge", async (c) => {
   const appId = c.req.param("app");

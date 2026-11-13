@@ -874,6 +874,19 @@ describe("application authentication throttling", () => {
     expect(rows!.n).toBe(0);
   });
 
+  it("counts an endpoint spelled with percent-encoding the same as its plain spelling", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-encoded-path";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+
+    // The router decodes `%74oken` to `token`, so it reaches the token
+    // handler, and the limit counted on the route's own pattern refuses it.
+    expect((await appAuthRequest(appId, "%74oken", address)).status).toBe(429);
+  });
+
   it("counts a flood at an invented app before the billing gate reads anything", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(RATE_WINDOW_ANCHOR);
