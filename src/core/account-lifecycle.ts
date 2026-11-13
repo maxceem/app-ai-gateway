@@ -1,4 +1,5 @@
 import { GatewayError } from "./errors";
+import { readOrKnown } from "./stale-read";
 import { ttlCache } from "./ttl-cache";
 import { QueryBudget } from "./query-budget";
 import {
@@ -69,6 +70,12 @@ export async function accountLifecycle(
 ): Promise<AccountLifecycle> {
   const cached = accountLifecycleCache.get(id);
   if (cached) return cached;
+  // An expired row still rides out a D1 stall; see `./stale-read`. That widens
+  // nothing, for the reason above: a stale row can only refuse for longer.
+  return readOrKnown("account", accountLifecycleCache.peek(id), () => readAccountLifecycle(env, id));
+}
+
+async function readAccountLifecycle(env: Env, id: string): Promise<AccountLifecycle> {
   // Fill from the authoritative primary. The ten-second TTL is the entire
   // intentional lifecycle staleness window.
   const row = await prepared(env.DB, sql`SELECT o.id, o.name, o.created_at AS createdAt,

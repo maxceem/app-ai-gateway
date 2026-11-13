@@ -22,6 +22,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { GatewayError } from "../core/errors";
+import { readOrKnown, STALE_READ_MAX_MS } from "../core/stale-read";
 import { ttlCache } from "../core/ttl-cache";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import { database } from "../db";
@@ -121,26 +122,48 @@ const keyCache = ttlCache<string, Promise<RegisteredKey | null>>({
   maxEntries: 50_000,
 });
 
+/**
+ * The last registered key D1 actually answered, kept past the cache's TTL so a
+ * D1 stall can be ridden out with it; see `../core/stale-read`. Only a key that
+ * was found: an unknown one is always looked up again.
+ */
+const lastKnownKey = ttlCache<string, RegisteredKey>({
+  name: "app-attest-key-last-known",
+  ttlMs: STALE_READ_MAX_MS,
+  maxEntries: 50_000,
+});
+
 const keyCacheKey = (appId: string, keyId: string): string => JSON.stringify([appId, keyId]);
 
 /** Forgets one key in this isolate, for the registration that just replaced it. */
 export function invalidateRegisteredKey(appId: string, keyId: string): void {
   keyCache.delete(keyCacheKey(appId, keyId));
+  lastKnownKey.delete(keyCacheKey(appId, keyId));
 }
 
 function registeredKey(env: Env, appId: string, keyId: string): Promise<RegisteredKey | null> {
   const cacheKey = keyCacheKey(appId, keyId);
   const cached = keyCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  const pending = database(env.DB).query.appAttestKey.findFirst({
-    columns: { publicKey: true, environment: true },
-    where: and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, keyId)),
-  }).then((row) => row ?? null);
-  keyCache.set(cacheKey, pending);
-  void pending.catch(() => {
-    if (keyCache.peek(cacheKey)?.value === pending) keyCache.delete(cacheKey);
+  return readOrKnown<RegisteredKey | null>("app_attest_key", lastKnownKey.peek(cacheKey), () => {
+    const startedAt = Date.now();
+    const pending = database(env.DB).query.appAttestKey.findFirst({
+      columns: { publicKey: true, environment: true },
+      where: and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, keyId)),
+    }).then((row) => row ?? null);
+    keyCache.set(cacheKey, pending, { storedAt: startedAt });
+    void pending.then(
+      (key) => {
+        if (key !== null && keyCache.peek(cacheKey)?.value === pending) {
+          lastKnownKey.set(cacheKey, key, { storedAt: startedAt });
+        }
+      },
+      () => {
+        if (keyCache.peek(cacheKey)?.value === pending) keyCache.delete(cacheKey);
+      },
+    );
+    return pending;
   });
-  return pending;
 }
 
 /**
