@@ -17,10 +17,13 @@ import type { CliToolHint } from "../contracts/cli";
  *
  * `view.columns` are dotted keys into each row or the record; `key=Label`
  * names the column, and `$1`, `$2` are the keys a `*` in `rows` matched.
+ * `view.notes` are lists printed one entry per line, and `view.document` an
+ * object printed whole as JSON, both after the rest.
  */
 export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
   get_account: {
     command: "account status",
+    summary: "Show the account, its deadlines and its request allowance",
     view: {
       record: "",
       columns: [
@@ -38,6 +41,7 @@ export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
   },
   get_capabilities: {
     command: "deployment capabilities",
+    summary: "List what this gateway supports: provider types and their API styles",
     view: { rows: "providers", columns: ["type", "name", "baseUrl=Base URL", "apiStyles=API styles"] },
   },
   list_models: {
@@ -76,13 +80,15 @@ export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
     view: {
       record: "app",
       columns: ["name", "id", "status", "config.authentication.type=Type", "config.routing.providers.mode=Providers", "revision", "updated_at=Updated"],
+      notes: ["app.warnings"],
+      document: "app.config",
     },
   },
   validate_app: { command: "app validate", args: ["app"] },
   check_app: {
     command: "app check",
     args: ["app"],
-    view: { rows: "providers", columns: ["slug=Provider", "status", "id"] },
+    view: { rows: "providers", columns: ["slug=Provider", "status", "id"], notes: ["warnings", "limitations"] },
   },
   get_app_snippet: { command: "app snippet", args: ["app"] },
   list_app_keys: {
@@ -167,6 +173,7 @@ export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
   add_app: { command: "app add" },
   update_app: {
     command: "app replace",
+    summary: "Replace an app's whole document",
     args: ["app"],
     view: { record: "app", columns: ["name", "id", "status", "revision"] },
   },

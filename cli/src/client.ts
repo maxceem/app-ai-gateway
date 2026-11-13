@@ -29,6 +29,8 @@ export type { OperationName };
 /** The `/v1/cli` half of the table, which a deployment connection cannot reach. */
 const CLI_OPERATIONS = new Set<OperationName>([
   "getCliCapabilities",
+  "listCliTools",
+  "callCliTool",
   "bootstrapCliAccount",
   "createCliOperation",
   "pollCliOperation",
@@ -60,6 +62,8 @@ export interface CallResult<T> {
    * `data` as they were sent, so a command that writes them back loses none.
    */
   newer?: string[];
+  /** The headers the answer came with, where the transport kept them. */
+  headers?: Headers;
 }
 
 /**
@@ -122,7 +126,9 @@ export class GatewayClient {
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
       },
     );
-    return parse(name, wire.data);
+    const result = parse(name, wire.data);
+    if (wire.headers) result.headers = wire.headers;
+    return result;
   }
 
   /** The same call, with the connection's management credential attached. */

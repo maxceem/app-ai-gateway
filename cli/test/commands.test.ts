@@ -5,7 +5,6 @@ import { mkdtemp, rm, readFile, stat, writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
-import { operationPath } from "../../src/contracts/catalog.ts";
 import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-config.ts";
 import { CliErrorDetailsSchema } from "../src/errors.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
@@ -35,6 +34,7 @@ const server: AppWrite = {
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   }),
 };
+const serverFlags: Flags = { type: "server", name: "Server", "no-input": true };
 const iosFlags: Flags = {
   type: "ios",
   "team-id": "ABCDE12345",
@@ -50,29 +50,18 @@ function attest(doc: AppWrite) {
   return auth.app_attest;
 }
 
-test("quickstart and JSON defaults remain distinct, and retained provider policies survive updates", async () => {
+test("quickstart and JSON defaults remain distinct, and --provider selects with no restrictions", async () => {
   const ios = await appDocument(iosFlags);
   assert.deepEqual(attest(ios).environments, ["production", "development"]);
   assert.equal(ios.config.limits?.per_user.requests.per_day, 10000);
-  const previous = structuredClone(server);
-  previous.config.routing.providers = {
-    mode: "selected",
-    selected: {
-      openai: {
-        allowed_paths: ["v1/responses"],
-        allowed_models: ["restricted-model"],
-      },
-    },
-  };
-  const updated = await appDocument({ provider: ["openai", "other"] }, previous);
-  const policies = selectedProviderPolicies(updated.config.routing);
-  assert.deepEqual(
-    policies["openai"],
-    selectedProviderPolicies(previous.config.routing)["openai"],
-  );
+  const selected = await appDocument({ ...serverFlags, provider: ["openai", "other"] });
+  const policies = selectedProviderPolicies(selected.config.routing);
   // Unrestricted is the empty list: the gateway has no wildcard, and a literal
   // "*" both fails the save-time price check and matches no request.
-  assert.deepEqual(policies["other"], { allowed_paths: [], allowed_models: [] });
+  assert.deepEqual(policies, {
+    openai: { allowed_paths: [], allowed_models: [] },
+    other: { allowed_paths: [], allowed_models: [] },
+  });
   await assert.rejects(() =>
     appDocument({
       type: "server",
@@ -97,30 +86,21 @@ test("file mode defaults omitted environments and refuses type conversion", asyn
   }));
   assert.deepEqual(attest(await appDocument({ file: path })).environments, ["production"]);
   await assert.rejects(
-    () => appDocument({ file: path }, server),
-    hasCode("app_type_immutable"),
-  );
-  await assert.rejects(
     () => appDocument({ file: path, name: "bad" }),
     hasCode("conflicting_flags"),
   );
 });
 
 test("--attest-environments passes names through for the schema to judge", async () => {
-  // Both on creation and on update: an unknown name is refused rather than
+  // An unknown name is refused rather than
   // being widened into production, which would silently admit a key the
   // operator meant to keep out.
   await assert.rejects(
     () => appDocument({ ...iosFlags, "attest-environments": "dev" }),
     hasCode("invalid_input"),
   );
-  const ios = await appDocument(iosFlags);
-  await assert.rejects(
-    () => appDocument({ "attest-environments": "production,dev" }, ios),
-    hasCode("invalid_input"),
-  );
   assert.deepEqual(
-    attest(await appDocument({ "attest-environments": " development " }, ios)).environments,
+    attest(await appDocument({ ...iosFlags, "attest-environments": " development " })).environments,
     ["development"],
   );
 });
@@ -134,44 +114,17 @@ test("--verify-on sets when App Attest is verified, and the schema judges the va
     "token_exchange",
   );
   assert.equal(
-    attest(await appDocument({ "verify-on": " token_exchange " }, ios)).verify_on,
+    attest(await appDocument({ ...iosFlags, "verify-on": " token_exchange " })).verify_on,
     "token_exchange",
   );
   await assert.rejects(
-    () => appDocument({ "verify-on": "sometimes" }, ios),
+    () => appDocument({ ...iosFlags, "verify-on": "sometimes" }),
     hasCode("invalid_input"),
   );
   await assert.rejects(
     () => appDocument({ type: "server", name: "Server", "verify-on": "every_request", "no-input": true }),
     hasCode("invalid_input"),
   );
-});
-
-test("app remove supplies required confirmation query and full writes supply the revision", async () => {
-  const calls: { name: string; options?: Record<string, unknown> }[] = [];
-  const ctx = stubContext({
-    call: async (name: string, options?: Record<string, unknown>) => {
-      calls.push({ name, ...(options ? { options } : {}) });
-      return {
-        data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null },
-      };
-    },
-  });
-  await appCommand(ctx, "app remove", ["app-1"], { yes: true });
-  assert.equal(calls[1]?.name, "deleteApp");
-  // The confirmation query is the catalog's, so it is asserted there.
-  assert.equal(
-    operationPath("deleteApp", { app: "app-1" }, { confirm: "app-1" }),
-    "/v1/admin/apps/app-1?confirm=app-1",
-  );
-  calls.length = 0;
-  await appCommand(ctx, "app update", ["app-1"], { name: "Renamed" });
-  assert.equal(calls[1]?.name, "updateApp");
-  const options = calls[1]?.options as { body: AppWrite & { revision: number } };
-  // The revision the edit was made against, read from the application and sent
-  // back in the body — no header is involved.
-  assert.equal(options.body.revision, 1);
-  assert.equal(options.body.name, "Renamed");
 });
 
 /** The example a command answered with, refused as a string by the union's other members. */
@@ -226,20 +179,6 @@ test("app snippet writes the example to --output and reports only the path", asy
   const result = await appCommand(ctx, "app snippet", ["app-1"], { output: path });
   assert.deepEqual(result, { output: path });
   assert.equal(await readFile(path, "utf8"), serverExample.snippet);
-});
-
-test("app check is the gateway's own verdict", async () => {
-  const verdict = {
-    appId: "app-1",
-    validation: { valid: true, app_id: "app-1" },
-    status: "active",
-    providers: [{ id: "p-openai", slug: "openai", status: "active" }],
-    ready: true,
-    limitations: ["No inference was sent."],
-  };
-  const { ctx, calls } = snippetContext(() => verdict);
-  assert.deepEqual(await appCommand(ctx, "app check", ["app-1"], {}), verdict);
-  assert.deepEqual(calls, [{ name: "checkApp", options: { params: { app: "app-1" } } }]);
 });
 
 test("creating a server app hands back the request to send, keyed from the file it just wrote", async (t) => {

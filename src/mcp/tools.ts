@@ -1302,8 +1302,12 @@ export const MCP_TOOLS: readonly McpTool[] = [
     operation: "patchApp",
     input: z.object({
       app: PATH_ARGUMENTS.app!,
-      revision: CATALOG.patchApp.request.shape.revision,
-      operations: CATALOG.patchApp.request.shape.operations.optional(),
+      revision: CATALOG.patchApp.request.shape.revision.meta({
+        description: "The revision get_app returned. Needed with operations; shortcuts alone apply to the app as it is now.",
+      }),
+      operations: CATALOG.patchApp.request.shape.operations.optional().meta({
+        description: "RFC 6902 add, replace or remove operations at JSON Pointers into get_app's app document, applied in order.",
+      }),
     }).extend(shortcutInput(APP_SHORTCUTS)),
     annotations: writing("patch_app", "patchApp", { destructive: false, idempotent: false }),
     shortcuts: Object.keys(APP_SHORTCUTS),

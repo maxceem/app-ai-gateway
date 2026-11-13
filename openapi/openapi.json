@@ -12741,6 +12741,9 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "summary": {
+                                "type": "string"
+                              },
                               "args": {
                                 "type": "array",
                                 "items": {
@@ -12770,6 +12773,15 @@
                                     "items": {
                                       "type": "string"
                                     }
+                                  },
+                                  "notes": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "document": {
+                                    "type": "string"
                                   }
                                 }
                               }

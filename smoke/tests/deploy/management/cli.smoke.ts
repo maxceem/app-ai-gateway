@@ -69,6 +69,14 @@ function keepsUnknownSettings(version: string): boolean {
 }
 
 /**
+ * Whether a release builds its commands from the gateway's tool list, which
+ * every release after 0.17.1, and this checkout's, does.
+ */
+function buildsCommandsFromGateway(version: string): boolean {
+  return keepsUnknownSettings(version);
+}
+
+/**
  * An application that sets the optional configuration fields, each away from
  * its default. A release that adds an optional field adds it here too: this is
  * the configuration published CLIs are asked to read and write back intact.
@@ -165,6 +173,30 @@ for (const version of versions) {
           await agw("app", "update", app.id, "--name", `${name}-renamed`, "--json", "--no-input");
           const { app: after } = await admin<{ app: { name: string; config: unknown } }>(env, "GET", path);
           expect(after.name).toBe(`${name}-renamed`);
+          expect(after.config).toEqual(before.config);
+        } finally {
+          await admin(env, "DELETE", `${path}?confirm=${encodeURIComponent(app.id)}`);
+        }
+      },
+    );
+
+    test.skipIf(!buildsCommandsFromGateway(version))(
+      "runs commands from the gateway's tool list, and changes an app with its shortcuts alone",
+      { timeout: 180_000 },
+      async () => {
+        const name = `${TEMPORARY_PREFIX}${randomBytes(4).toString("hex")}`;
+        const { app } = await admin<{ app: { id: string } }>(env, "POST", "/v1/admin/apps", { name, config: EVERY_OPTION });
+        const path = `/v1/admin/apps/${encodeURIComponent(app.id)}`;
+        try {
+          await agw("deployment", "connect", "--url", cliUrl, "--json");
+          // A command no release of agw implements itself: it exists because the gateway lists it.
+          const models = JSON.parse(await agw("model", "list", "--json")) as { ok: boolean; result: { prices: object } };
+          expect(models.ok).toBe(true);
+          expect(typeof models.result.prices).toBe("object");
+          const { app: before } = await admin<{ app: { config: { authentication: unknown } } }>(env, "GET", path);
+          await agw("app", "update", app.id, "--status", "disabled", "--json", "--no-input");
+          const { app: after } = await admin<{ app: { status: string; config: unknown } }>(env, "GET", path);
+          expect(after.status).toBe("disabled");
           expect(after.config).toEqual(before.config);
         } finally {
           await admin(env, "DELETE", `${path}?confirm=${encodeURIComponent(app.id)}`);

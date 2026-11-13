@@ -14,6 +14,8 @@ export interface RequestOptions {
 
 export interface WireResponse {
   data: unknown;
+  /** The success's headers; a test transport may leave them out. */
+  headers?: Headers;
 }
 
 /** The HTTP surface a `Transport` is built on; swapped out wholesale in tests. */
@@ -146,7 +148,7 @@ export class Transport {
         "Connect explicitly to the intended deployment.",
         3,
       );
-    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()) };
+    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()), headers: response.headers };
     let data: unknown;
     try {
       data = await response.json();
@@ -192,6 +194,6 @@ export class Transport {
         details,
       );
     }
-    return { data };
+    return { data, headers: response.headers };
   }
 }

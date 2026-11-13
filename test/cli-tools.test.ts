@@ -5,8 +5,7 @@ import { CliToolCatalogResponseSchema } from "../src/contracts/cli";
 import { CLI_HINTS } from "../src/mcp/cli-hints";
 import { APP_SHORTCUTS } from "../src/mcp/shortcuts";
 import { MCP_TOOLS } from "../src/mcp/tools";
-import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
-import { seedApp, seedServerApp } from "./helpers";
+import { seedAllProviders, seedApp, seedHuman, seedServerApp } from "./helpers";
 
 /**
  * The MCP tools as `agw` builds its commands from them: the catalog at
@@ -33,9 +32,35 @@ async function catalog() {
   return CliToolCatalogResponseSchema.parse(await response.json());
 }
 
-async function call(tool: string, body: Record<string, unknown>, key = TEST_MANAGEMENT_KEY) {
-  const response = await send(`/v1/cli/tools/${tool}`, { key, body });
+/**
+ * An account of its own, with its providers and a management key made in the
+ * console: other files share the test account, and leave apps in it this
+ * file's listings must not depend on.
+ */
+async function account(email: string, grant: "manage" | "read" = "manage") {
+  const human = await seedHuman(email);
+  await seedAllProviders(human.organizationId);
+  const created = await worker.request(`${ORIGIN}/v1/admin/keys`, {
+    method: "POST",
+    headers: { cookie: human.cookie, "x-console-request": "1", "content-type": "application/json" },
+    body: JSON.stringify({ name: "CLI tools", grant }),
+  }, env);
+  expect(created.status).toBe(201);
+  const { key } = await created.json<{ key: { plaintext: string } }>();
+  return { organizationId: human.organizationId, key: key.plaintext, cookie: human.cookie };
+}
+
+let owner: Awaited<ReturnType<typeof account>> | undefined;
+
+async function call(tool: string, body: Record<string, unknown>, key?: string) {
+  owner ??= await account("cli-tools-owner@example.com");
+  const response = await send(`/v1/cli/tools/${tool}`, { key: key ?? owner.key, body });
   return { response, json: (await response.json()) as any };
+}
+
+async function organization(): Promise<string> {
+  owner ??= await account("cli-tools-owner@example.com");
+  return owner.organizationId;
 }
 
 describe("the CLI tool catalog", () => {
@@ -77,7 +102,7 @@ describe("the CLI tool catalog", () => {
 
 describe("a tool run for the CLI", () => {
   it("answers the tool's result and summary, and the catalog's revision", async () => {
-    await seedServerApp("cli_tools_listed");
+    await seedServerApp("cli_tools_listed", { organizationId: await organization() });
     const { revision } = await catalog();
     const { response, json } = await call("list_apps", {});
     expect(response.status).toBe(200);
@@ -98,6 +123,16 @@ describe("a tool run for the CLI", () => {
     expect(json.error.code).toBe("not_found");
   });
 
+  it("applies the tool's own operation policy to the key", async () => {
+    const reader = await account("cli-tools-reader@example.com", "read");
+    await seedServerApp("cli_tools_readable", { organizationId: reader.organizationId });
+    const listed = await call("list_apps", {}, reader.key);
+    expect(listed.response.status).toBe(200);
+    const refused = await call("patch_app", { app: "cli_tools_readable", name: "Not allowed" }, reader.key);
+    expect(refused.response.status).toBe(403);
+    expect(refused.json.error.code).toBe("grant_insufficient");
+  });
+
   it("refuses with the operation's own error over HTTP", async () => {
     const { response, json } = await call("get_app", { app: "cli_tools_missing" });
     expect(response.status).toBe(404);
@@ -107,7 +142,7 @@ describe("a tool run for the CLI", () => {
 
 describe("patch_app shortcuts", () => {
   it("change the settings they name without a revision, and nothing else", async () => {
-    await seedApp("clitoolsios");
+    await seedApp("clitoolsios", { organizationId: await organization() });
     const before = (await call("get_app", { app: "clitoolsios" })).json.result.app;
     const { response, json } = await call("patch_app", {
       app: "clitoolsios",
@@ -126,7 +161,7 @@ describe("patch_app shortcuts", () => {
   });
 
   it("select providers, keeping what a provider already selected allows", async () => {
-    await seedApp("clitoolsselect");
+    await seedApp("clitoolsselect", { organizationId: await organization() });
     const before = (await call("get_app", { app: "clitoolsselect" })).json.result.app;
     const selected = Object.keys(before.config.routing.providers.selected ?? {});
     const kept = selected[0] ?? "openai";
@@ -141,7 +176,7 @@ describe("patch_app shortcuts", () => {
   });
 
   it("refuse an iOS setting on a server app by its argument's name", async () => {
-    await seedServerApp("cli_tools_server");
+    await seedServerApp("cli_tools_server", { organizationId: await organization() });
     const { response, json } = await call("patch_app", { app: "cli_tools_server", team_id: "BBBBBBBBBB" });
     expect(response.status).toBe(400);
     expect(json.error.code).toBe("invalid_request");
@@ -149,21 +184,21 @@ describe("patch_app shortcuts", () => {
   });
 
   it("refuse providers and all_providers together", async () => {
-    await seedServerApp("cli_tools_both");
+    await seedServerApp("cli_tools_both", { organizationId: await organization() });
     const { response, json } = await call("patch_app", { app: "cli_tools_both", providers: ["openai"], all_providers: true });
     expect(response.status).toBe(400);
     expect(json.error.message).toMatch(/^providers: /u);
   });
 
   it("refuse a value their schema does not take", async () => {
-    await seedServerApp("cli_tools_value");
+    await seedServerApp("cli_tools_value", { organizationId: await organization() });
     const { response, json } = await call("patch_app", { app: "cli_tools_value", status: "paused" });
     expect(response.status).toBe(400);
     expect(json.error.code).toBe("invalid_request");
   });
 
   it("leave operations needing the revision they were written against", async () => {
-    await seedServerApp("cli_tools_operations");
+    await seedServerApp("cli_tools_operations", { organizationId: await organization() });
     const { response, json } = await call("patch_app", {
       app: "cli_tools_operations",
       operations: [{ op: "replace", path: "/name", value: "x" }],

@@ -493,6 +493,13 @@ export const CliToolViewSchema = z.object({
   record: z.string().optional(),
   /** The keys of each row, or of the record, shown in this order. */
   columns: z.array(z.string()).optional(),
+  /**
+   * Lists shown after the table or the fields, one line per entry: a string
+   * as it is, an object by its `message`. Empty lists are left out.
+   */
+  notes: z.array(z.string()).optional(),
+  /** An object shown whole, as indented JSON, after everything else. */
+  document: z.string().optional(),
 });
 
 /**
@@ -502,6 +509,8 @@ export const CliToolViewSchema = z.object({
 export const CliToolHintSchema = z.object({
   /** The command words, such as `app show`. */
   command: z.string().min(1),
+  /** One line for `agw --help`, where the tool's title would read wrong beside its command. */
+  summary: z.string().optional(),
   /** The input fields taken as positional arguments, in order. */
   args: z.array(z.string()).optional(),
   /**
