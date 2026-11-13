@@ -68,6 +68,14 @@ export async function admitAllowance(
 ): Promise<AllowanceOutcome> {
   let servedUncounted = false;
   const call = Promise.resolve().then(() => counter.admit(input));
+  // A fault is ours rather than the platform's, so it is logged as an error to
+  // be noticed and fixed, once and whenever it happens: in time, after the
+  // deadline, or behind a plan already known to be used up.
+  call.catch((error: unknown) => {
+    if (platformFailure(error) === null) {
+      log("error", "allowance_counter_fault", { organizationId, error: errorFacts(error) });
+    }
+  });
   // Whenever the counter answers, in time or not, its figure becomes the
   // reading. A late answer counted a request this isolate has already served
   // uncounted, so that one is no longer uncounted.
@@ -117,9 +125,7 @@ export async function admitAllowance(
   if (reading?.periodId === input.periodId) {
     lastReadings.set(organizationId, { ...reading, uncounted: reading.uncounted + 1 });
   }
-  // A fault is ours rather than the platform's, so it is logged as an error to
-  // be noticed and fixed; the request is still served.
-  log(failure === "fault" ? "error" : "warn", "allowance_uncounted", {
+  log("warn", "allowance_uncounted", {
     organizationId,
     reason: failure,
     ...(error === undefined ? {} : { error: errorFacts(error) }),

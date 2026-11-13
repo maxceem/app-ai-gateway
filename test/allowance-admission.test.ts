@@ -60,7 +60,7 @@ describe("admitAllowance", () => {
     const error = vi.spyOn(console, "error");
     const { outcome } = admit("org-fault", counter({ error: new TypeError("bug") }));
     await expect(outcome).resolves.toEqual({ kind: "uncounted" });
-    expect(error.mock.calls.flat().join("\n")).toContain("allowance_uncounted");
+    expect(error.mock.calls.flat().join("\n")).toContain("allowance_counter_fault");
 
     const overloaded = Object.assign(new Error("overloaded"), { overloaded: true });
     await expect(admit("org-over", counter({ error: overloaded })).outcome)
@@ -90,6 +90,21 @@ describe("admitAllowance", () => {
     const nextMonth = { ...PERIOD, periodId: "month:2026-12" };
     await expect(admit("org-done", counter({ error: new Error("gone") }), nextMonth).outcome)
       .resolves.toEqual({ kind: "uncounted" });
+  });
+
+  it("logs a fault that comes after the deadline, or behind a used-up plan", async () => {
+    const error = vi.spyOn(console, "error");
+    const late = admit("org-late-fault", counter({ delayMs: DEADLINE_MS * 5, error: new TypeError("late bug") }));
+    await expect(late.outcome).resolves.toEqual({ kind: "uncounted" });
+    await late.settled();
+    expect(error.mock.calls.flat().join("\n")).toContain("allowance_counter_fault");
+
+    error.mockClear();
+    await admit("org-done-fault", counter({ admission: { ...allowed(3), allowed: false, retryAfterSeconds: 1 } })).outcome;
+    await expect(admit("org-done-fault", counter({ error: new TypeError("bug") })).outcome)
+      .resolves.toMatchObject({ kind: "exhausted" });
+    await Promise.resolve();
+    expect(error.mock.calls.flat().join("\n")).toContain("allowance_counter_fault");
   });
 
   it("serves an organization it has no reading for", async () => {

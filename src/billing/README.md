@@ -193,8 +193,9 @@ The allowance counter never fails app traffic either
 (`allowance-admission.ts`). When it does not answer within
 `ALLOWANCE_ADMIT_DEADLINE_MS` (2 s), or fails for any reason — the platform
 lost it, it is overloaded, or it threw — the request is served uncounted and
-logged as `allowance_uncounted` with the reason (an error-level log when the
-fault is the gateway's). The one exception is a plan this isolate last saw used
+logged as `allowance_uncounted` with the reason; a fault in the gateway is
+also logged as the error `allowance_counter_fault`, even when it comes after
+the deadline. The one exception is a plan this isolate last saw used
 up, counting what it has since served uncounted: that stays a `429`. A call
 abandoned at the deadline keeps running and usually still counts its request;
 nothing is retried, so nothing is counted twice. Requests are cheap and an
