@@ -237,7 +237,7 @@ describe("UsageTab event costs", () => {
     expect(screen.queryByText("—")).toBeNull();
   });
 
-  it("keeps the model and cost source an event on that path was recorded with before passthrough", async () => {
+  it("shows an event recorded on that path before passthrough the same way, not under the model it was labelled with", async () => {
     renderUsage([
       event({
         model: "gpt-live-transcribe",
@@ -246,9 +246,10 @@ describe("UsageTab event costs", () => {
       }),
     ]);
 
-    expect(await screen.findByText("gpt-live-transcribe")).toBeTruthy();
-    expect(screen.getByText("unresolved")).toBeTruthy();
-    expect(screen.queryByText("—")).toBeNull();
+    // Model, tokens and cost: the stored model was never read from the request.
+    expect(await screen.findAllByText("—")).toHaveLength(3);
+    expect(screen.queryByText("gpt-live-transcribe")).toBeNull();
+    expect(screen.queryByText("unresolved")).toBeNull();
   });
 
   it("names the gateway a request was routed through", async () => {

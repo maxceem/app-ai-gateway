@@ -55,19 +55,20 @@ import { Hint } from "@/components/hint";
  * Whether an event was a passthrough call, read off its route with the rule
  * the gateway itself applies: the gateway forwarded it without reading a
  * model, so there is no model to name and a cost only where the provider
- * reported one. A custom endpoint is never one, and neither is an event
- * recorded with a model: one from before passthrough existed keeps the model
- * and cost source it was recorded with.
+ * reported one. A custom endpoint is never one.
+ *
+ * By route alone, so an event recorded on such a path before passthrough
+ * existed reads the same way: the model it was stored with was a label from
+ * the configuration, never read from the request, and is not shown as if the
+ * request had used it.
  */
 export function isPassthroughEvent(event: {
   provider: string;
   route: string;
   endpoint_slug: string | null;
-  model: string;
 }): boolean {
   const slash = event.route.indexOf("/");
-  return event.model === ""
-    && event.endpoint_slug === null
+  return event.endpoint_slug === null
     && slash > 0
     && isProviderType(event.provider)
     && isPassthroughPath(event.provider, event.route.slice(slash + 1));
