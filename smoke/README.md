@@ -25,8 +25,8 @@ covers a part that can fail on its own, without any change of yours:
 - `usage`: a proxied call shows up in usage, which is recorded in the background.
 - `management`: a management key is accepted and the account's apps read back.
 - `console`: the console page, its script and its capabilities load.
-- `fallbacks`: the gateway served apps without falling back in the last ten
-  minutes. When D1, the plan allowance's counter or billing is slow or failing,
+- `fallbacks`: the gateway served apps without falling back in the last four
+  and a half minutes; run it every five minutes, so a blip fails one run only. When D1, the plan allowance's counter or billing is slow or failing,
   apps are still served, from records the gateway already knew or uncounted, so
   every other check stays green; this one reads the deployment's Worker logs
   for the lines that say so. It needs a read-only Cloudflare token and is
