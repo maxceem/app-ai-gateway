@@ -1384,7 +1384,7 @@ export const CATALOG = {
     path: "/v1/cli/tools/{tool}",
     tags: ["CLI"],
     summary: "Run one tool, as the CLI does",
-    description: "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
+    description: "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer, a refusal included, carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
     security: "management",
     // Any key may ask; the tool's own operation then applies its policy.
     policy: { role: "member", access: "read", grant: "read" },
@@ -1392,7 +1392,10 @@ export const CATALOG = {
     request: CliToolCallRequestSchema,
     response: CliToolCallResponseSchema,
     responseDescription: "The tool's structured result and its one-line summary.",
-    errors: { 404: "No tool of that name, or what the tool names does not exist.", 409: "The change conflicts with the current state." },
+    errors: {
+      404: "`tool_not_found`: this deployment has no tool of that name; fetch the list again. Any other code: what the tool names does not exist.",
+      409: "The change conflicts with the current state.",
+    },
   },
 
   bootstrapCliAccount: {

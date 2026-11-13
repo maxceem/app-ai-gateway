@@ -133,6 +133,12 @@ function gateway(options: {
   callRevision?: string;
   missing?: boolean;
   offline?: boolean;
+  /** A refusal for one call, sent with the list's revision as every answer is. */
+  refuse?: (tool: string, body: Record<string, unknown>) => CliError | undefined;
+  /** The list request fails as a broken gateway's would. */
+  broken?: boolean;
+  /** Entries listed beside the tools, as a newer gateway might write them. */
+  extra?: unknown[];
 } = {}) {
   const asked: { path: string; method: string; body?: unknown; key?: string }[] = [];
   let revision = options.revision ?? "r1";
@@ -151,12 +157,18 @@ function gateway(options: {
         if (options.offline) throw new CliError("connection_failed", "Could not reach the selected deployment.", "", 3);
         if (path === "/v1/cli/tools") {
           if (options.missing) throw new CliError("invalid_request", "Route not found", "", 3, { status: 404 });
-          return { data: { revision, tools } };
+          if (options.broken) throw new CliError("http_502", "Bad gateway", "", 3, { status: 502 });
+          return { data: { revision, tools: [...(options.extra ?? []), ...tools] } };
         }
         const call = /^\/v1\/cli\/tools\/([a-z_]+)$/u.exec(path);
         if (call && method === "POST") {
-          if (!tools.some((tool) => tool.name === call[1]))
-            throw new CliError("not_found", `This deployment has no tool named ${call[1]}`, "", 3, { status: 404 });
+          const refusal = !tools.some((tool) => tool.name === call[1])
+            ? new CliError("tool_not_found", `This deployment has no tool named ${call[1]}`, "", 3, { status: 404 })
+            : options.refuse?.(call[1]!, request.body as Record<string, unknown>);
+          if (refusal) {
+            refusal.headers = new Headers({ "agw-tools-revision": options.callRevision ?? revision });
+            throw refusal;
+          }
           const result = options.answer?.(call[1]!, request.body as Record<string, unknown>) ?? { ok: true };
           return {
             data: { tool: call[1], summary: `Ran ${call[1]}.`, result },
@@ -273,7 +285,7 @@ test("a tool the gateway no longer has refreshes the list and says the commands 
   await run(["app", "list"], fake, cache);
   fake.publish({ revision: "r2", tools: [PATCH] });
   const result = await run(["app", "list", "--json"], fake, cache);
-  assert.equal(result.json().error.code, "not_found");
+  assert.equal(result.json().error.code, "tool_not_found");
   assert.match(result.json().error.nextAction, /commands changed/);
   assert.equal((await cache.read("https://gw.example"))?.revision, "r2");
 });
@@ -286,16 +298,86 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   const unreachable = async (): Promise<never> => {
     throw new CliError("connection_failed", "Could not reach the selected deployment.", "", 3);
   };
-  const list: CachedCatalog = await new ToolCatalog({ url: "https://gw.example", publicCall: unreachable }, cache).load();
+  const list: CachedCatalog = await new ToolCatalog({ url: "https://gw.example", fetchList: unreachable }, cache).load();
   assert.equal(list.revision, "r1");
   // Nothing kept and nothing reachable is the connection's own failure.
   await assert.rejects(
-    () => new ToolCatalog({ url: "https://gw.example", publicCall: unreachable }, new MemoryCatalogCache()).load(),
+    () => new ToolCatalog({ url: "https://gw.example", fetchList: unreachable }, new MemoryCatalogCache()).load(),
     hasCode("connection_failed"),
   );
   const old = await run(["app", "list", "--json"], gateway({ missing: true }), new MemoryCatalogCache());
   assert.equal(old.json().error.code, "gateway_outdated");
   assert.match(old.json().error.nextAction, /agw deployment update/);
+});
+
+test("a flag the kept list does not know is looked up once on the gateway before it is refused", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway();
+  await run(["app", "list"], fake, cache);
+  const widened = { ...PATCH, inputSchema: { ...PATCH.inputSchema, properties: { ...(PATCH.inputSchema.properties as object), new_setting: { type: "string" } } } };
+  fake.publish({ revision: "r2", tools: [LIST, widened, REMOVE] });
+  const changed = await run(["app", "update", "app-1", "--new-setting", "x", "--json"], fake, cache);
+  assert.equal(changed.code, 0, changed.out);
+  assert.deepEqual(fake.asked.find((entry) => entry.method === "POST" && entry.path.endsWith("patch_app"))?.body, { app: "app-1", new_setting: "x" });
+  const unknown = await run(["app", "update", "app-1", "--nonsense", "x", "--json"], fake, cache);
+  assert.equal(unknown.json().error.code, "unknown_flag");
+});
+
+test("a refusal about what a tool names is not mistaken for the tool being gone", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ refuse: () => new CliError("not_found", "Key is not registered", "", 3, { status: 404 }) });
+  await run(["app", "list"], fake, cache);
+  const result = await run(["app", "list", "--json"], fake, cache);
+  assert.equal(result.json().error.code, "not_found");
+  assert.doesNotMatch(result.json().error.nextAction, /commands changed/);
+  assert.equal(fake.lists(), 1);
+});
+
+test("a refusal carrying another revision refreshes the list for the next run", async () => {
+  const cache = new MemoryCatalogCache();
+  const fake = gateway({ refuse: () => new CliError("invalid_request", "No.", "", 3, { status: 400 }) });
+  await run(["app", "list"], fake, cache);
+  fake.publish({ revision: "r2", tools: [LIST, PATCH, REMOVE] });
+  const refused = await run(["app", "list", "--json"], fake, cache);
+  assert.equal(refused.json().error.code, "invalid_request");
+  assert.equal((await cache.read("https://gw.example"))?.revision, "r2");
+});
+
+test("a gateway that fails to give its list leaves an old kept one in use", async () => {
+  const cache = new MemoryCatalogCache();
+  await run(["app", "list"], gateway(), cache);
+  await cache.write({ ...(await cache.read("https://gw.example"))!, fetchedAt: 0 });
+  const broken = gateway({ broken: true });
+  // Listing fails, the kept list stands in, and the call itself still goes through.
+  const result = await run(["app", "list"], { ...broken, transport: { request: async (url: string, path: string, options: RequestOptions = {}) => {
+    if (path === "/v1/cli/tools") return broken.transport.request(url, path, options);
+    return gateway().transport.request(url, path, options);
+  } } }, cache);
+  assert.equal(result.code, 0, result.err);
+});
+
+test("a tool this release cannot read is left out, and the rest still work", async () => {
+  const fake = gateway({ extra: [{ name: "future_tool", cli: { command: "future", args: [{ name: "x" }] } }] });
+  const listed = await run(["app", "list"], fake);
+  assert.equal(listed.code, 0, listed.err);
+  const help = await run(["--help"], fake);
+  assert.doesNotMatch(help.out, /future/);
+});
+
+test("a tool needing a feature this release lacks is hidden from help and refused by name", async () => {
+  const future = cliTool("future_tool", { command: "future thing", requires: ["teleport"] });
+  const fake = gateway({ tools: [LIST, future] });
+  assert.doesNotMatch((await run(["--help"], fake)).out, /future thing/);
+  const refused = await run(["future", "thing", "--json"], fake);
+  assert.equal(refused.json().error.code, "cli_outdated");
+  assert.match(refused.json().error.nextAction, /npm install -g @maxceem\/agw/);
+  assert.equal(fake.asked.some((entry) => entry.method === "POST"), false);
+});
+
+test("a deletion missing what it deletes says so before asking for confirmation", async () => {
+  const result = await run(["app", "remove", "--json"], gateway());
+  assert.equal(result.json().error.code, "missing_value");
+  assert.match(result.json().error.message, /<app>/);
 });
 
 test("help lists the gateway's commands beside the built-in ones, and explains one from its schema", async () => {

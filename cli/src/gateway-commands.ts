@@ -5,8 +5,8 @@
  */
 
 import { stdin as processStdin } from "node:process";
-import { commandWords, findTool, type CachedCatalog, type CliTool, type ToolCatalog } from "./catalog.ts";
-import { CliError, fail } from "./common.ts";
+import { commandWords, findTool, missingFeatures, type CachedCatalog, type CliTool, type ToolCatalog } from "./catalog.ts";
+import { CliError, fail, VERSION } from "./common.ts";
 import type { Context } from "./context.ts";
 import { canPrompt, confirm } from "./input.ts";
 import { commands, type Flags } from "./parser.ts";
@@ -44,6 +44,12 @@ export async function resolveTool(
       "unknown_command",
       `Unknown command: agw ${clean(words.join(" "))}.`,
       "Run agw --help to list every command this gateway offers.",
+    );
+  if (missingFeatures(tool).length > 0)
+    fail(
+      "cli_outdated",
+      `agw ${tool.cli.command} needs a newer agw than ${VERSION}.`,
+      "Update agw: npm install -g @maxceem/agw",
     );
   return { tool, list };
 }
@@ -84,33 +90,63 @@ async function consent(tool: CliTool, invocation: ToolInvocation, flags: Flags):
   await confirm(`${clean(tool.title)}${subject ? ` ${clean(subject)}` : ""}? This cannot be undone.`, flags);
 }
 
+/** Refusals of a command line that a newer list of the same tool may not make. */
+const STALE_LINE = new Set(["unknown_flag", "invalid_arguments"]);
+
+/**
+ * The command line read against the tool, or — when the list kept here does
+ * not know a flag or an argument and was not fetched in this run — against the
+ * same tool in the gateway's current list, once.
+ */
+async function invocationOf(
+  catalog: ToolCatalog,
+  tool: CliTool,
+  argv: readonly string[],
+  stdin: () => Promise<string>,
+): Promise<{ tool: CliTool; invocation: ToolInvocation }> {
+  try {
+    return { tool, invocation: await readInvocation(tool, argv, stdin) };
+  } catch (error) {
+    if (!(error instanceof CliError) || !STALE_LINE.has(error.code) || catalog.fresh) throw error;
+    const current = (await catalog.refresh().catch(() => undefined))?.tools.find((entry) => entry.name === tool.name);
+    if (!current || current.cli.command !== tool.cli.command) throw error;
+    return { tool: current, invocation: await readInvocation(current, argv, stdin) };
+  }
+}
+
 /**
  * Runs one gateway command. `argv` is the command line after the command's
- * words; the help it asks for is returned as text instead of a result.
+ * words; the help it asks for is returned as text instead of a result. The
+ * tool is answered with too, since a list fetched to read the line may hold a
+ * newer description of it.
  */
 export async function runGatewayCommand(
   ctx: Context,
   catalog: ToolCatalog,
-  tool: CliTool,
+  given: CliTool,
   argv: readonly string[],
   stdin: () => Promise<string> = readStdin,
-): Promise<GatewayCommandResult | { help: true }> {
-  const invocation = await readInvocation(tool, argv, stdin);
-  if (invocation.help) return { help: true };
-  await consent(tool, invocation, ctx.flags);
+): Promise<GatewayCommandResult | { help: true; tool: CliTool }> {
+  const { tool, invocation } = await invocationOf(catalog, given, argv, stdin);
+  if (invocation.help) return { help: true, tool };
   const input = { ...invocation.input };
   // A deletion names what it deletes twice; once the person has agreed, the
   // CLI says it the second time for them.
   const confirmField = tool.cli.confirm;
   if (confirmField && input.confirm === undefined && input[confirmField] !== undefined) input.confirm = input[confirmField];
+  // What is missing is said before anybody is asked to agree to it.
   requireFields(tool, input);
+  await consent(tool, invocation, ctx.flags);
   let answer;
   try {
     answer = await ctx.call("callCliTool", { params: { tool: tool.name }, body: input });
   } catch (error) {
-    if (error instanceof CliError) error.message = flagsIn(tool, error.message);
+    if (!(error instanceof CliError)) throw error;
+    error.message = flagsIn(tool, error.message);
+    await catalog.observe(error.headers?.get(REVISION_HEADER));
     // The gateway no longer has this tool: the list kept here is older than it.
-    if (error instanceof CliError && error.code === "not_found" && error.details?.status === 404 && !catalog.fresh) {
+    if (error.code === "tool_not_found") {
+      // At most once a run, and not at all when the revision already fetched it.
       await catalog.refresh().catch(() => {});
       throw new CliError(
         error.code,

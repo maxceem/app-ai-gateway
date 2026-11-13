@@ -81,6 +81,16 @@ describe("the CLI tool catalog", () => {
     }
   });
 
+  it("gives every argument a flag of its own that no flag of every command shadows", async () => {
+    const { tools } = await catalog();
+    const flag = (name: string) => name.replace(/([a-z0-9])([A-Z])/gu, "$1-$2").replace(/_/gu, "-").toLowerCase();
+    for (const tool of tools) {
+      const flags = Object.keys((tool.inputSchema as { properties?: object }).properties ?? {}).map(flag);
+      expect(new Set(flags).size, tool.name).toBe(flags.length);
+      for (const shared of ["json", "no-input", "yes", "help", "input"]) expect(flags, tool.name).not.toContain(shared);
+    }
+  });
+
   it("names a command for every tool, so none falls back to `tool <name>`", () => {
     for (const tool of MCP_TOOLS) expect(CLI_HINTS[tool.name], tool.name).toBeDefined();
     expect(Object.keys(CLI_HINTS).sort()).toEqual(MCP_TOOLS.map((tool) => tool.name).sort());
@@ -117,10 +127,12 @@ describe("a tool run for the CLI", () => {
     expect(response.status).toBe(401);
   });
 
-  it("refuses a tool the deployment does not have", async () => {
+  it("refuses a tool the deployment does not have, with a code of its own and the revision", async () => {
+    const { revision } = await catalog();
     const { response, json } = await call("no_such_tool", {});
     expect(response.status).toBe(404);
-    expect(json.error.code).toBe("not_found");
+    expect(json.error.code).toBe("tool_not_found");
+    expect(response.headers.get("agw-tools-revision")).toBe(revision);
   });
 
   it("applies the tool's own operation policy to the key", async () => {
@@ -133,10 +145,12 @@ describe("a tool run for the CLI", () => {
     expect(refused.json.error.code).toBe("grant_insufficient");
   });
 
-  it("refuses with the operation's own error over HTTP", async () => {
+  it("refuses with the operation's own error over HTTP, carrying the revision", async () => {
+    const { revision } = await catalog();
     const { response, json } = await call("get_app", { app: "cli_tools_missing" });
     expect(response.status).toBe(404);
     expect(json.error.code).toBe("app_not_found");
+    expect(response.headers.get("agw-tools-revision")).toBe(revision);
   });
 });
 

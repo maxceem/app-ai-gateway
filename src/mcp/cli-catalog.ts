@@ -74,14 +74,22 @@ export async function callCliTool(
   input: Record<string, unknown>,
   caller: OperationCaller,
 ): Promise<{ response: CliToolCallResponse; revision: string }> {
-  const tool = offered(caller.scope).find((candidate) => candidate.name === name);
-  if (!tool) throw new GatewayError(404, "not_found", `This deployment has no tool named ${name}`);
-  const [{ result, summary }, catalog] = await Promise.all([
-    runTool(tool, input, caller),
-    cliToolCatalog(caller.scope),
-  ]);
-  return {
-    response: { tool: tool.name, summary, result: result as Record<string, unknown> },
-    revision: catalog.revision,
-  };
+  const { revision } = await cliToolCatalog(caller.scope);
+  try {
+    const tool = offered(caller.scope).find((candidate) => candidate.name === name);
+    if (!tool) throw new GatewayError(404, "tool_not_found", `This deployment has no tool named ${name}`);
+    const { result, summary } = await runTool(tool, input, caller);
+    return { response: { tool: tool.name, summary, result: result as Record<string, unknown> }, revision };
+  } catch (error) {
+    // A refusal carries the revision too: one caused by an out-of-date list is
+    // exactly the answer that should make a CLI fetch it again.
+    if (!(error instanceof GatewayError)) throw error;
+    throw new GatewayError(
+      error.status,
+      error.code,
+      error.message,
+      { ...Object.fromEntries(new Headers(error.headers)), [TOOLS_REVISION_HEADER]: revision },
+      { reason: error.reason, userId: error.userId, data: error.data, field: error.field, cause: error.cause },
+    );
+  }
 }

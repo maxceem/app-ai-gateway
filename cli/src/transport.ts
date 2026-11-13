@@ -1,4 +1,4 @@
-import { fail, origin, VERSION } from "./common.ts";
+import { CliError, fail, origin, VERSION } from "./common.ts";
 import type { CliErrorDetails } from "./errors.ts";
 
 export interface RequestOptions {
@@ -185,7 +185,7 @@ export class Transport {
         }
       }
       const explanation = reported(wire.error?.message ?? wire.message, body);
-      fail(
+      const refusal = new CliError(
         code,
         `Deployment rejected the request (HTTP ${response.status})` +
           (explanation ? `: ${explanation}` : "."),
@@ -193,6 +193,8 @@ export class Transport {
         3,
         details,
       );
+      refusal.headers = response.headers;
+      throw refusal;
     }
     return { data, headers: response.headers };
   }

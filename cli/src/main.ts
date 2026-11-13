@@ -3,11 +3,13 @@ import { appCommand } from "./apps.ts";
 import {
   FileCatalogCache,
   findTool,
+  missingFeatures,
   ToolCatalog,
   type CachedCatalog,
   type CatalogCache,
 } from "./catalog.ts";
 import { conversationsCommand } from "./conversations.ts";
+import { operationPath } from "../../src/contracts/catalog.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context, noticeText, type ContextIo, type Notice } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
@@ -134,7 +136,7 @@ async function helpFor(scope: string, catalog: ToolCatalog | undefined, style: S
   const tool = list && words.length ? findTool(list.tools, words, builtIn) : undefined;
   if (tool && list) return toolHelp(tool, list.tools, style);
   const gateway: HelpEntry[] = (list?.tools ?? [])
-    .filter((entry) => !builtIn(entry.cli.command))
+    .filter((entry) => !builtIn(entry.cli.command) && missingFeatures(entry).length === 0)
     .filter((entry) => !scope || entry.cli.command === scope || entry.cli.command.startsWith(scope + " "))
     .map((entry) => ({ usage: usageLine(entry), summary: clean(mentions(entry.cli.summary ?? entry.title, list?.tools ?? [])) }));
   const entries = [...builtInEntries(scope), ...gateway];
@@ -146,6 +148,19 @@ async function helpFor(scope: string, catalog: ToolCatalog | undefined, style: S
     );
   const text = commandList(entries);
   return list ? text : `${text}\nThe gateway's own commands are listed once agw can reach it.\n`;
+}
+
+/** The selected gateway's tool list, asked for with the transport every other request takes. */
+function catalogFor(ctx: Context, cache: CatalogCache): ToolCatalog {
+  const url = ctx.url;
+  return new ToolCatalog(
+    {
+      url,
+      fetchList: async (timeoutMs) =>
+        (await ctx.client.transport.request(url, operationPath("listCliTools"), { timeoutMs })).data,
+    },
+    cache,
+  );
 }
 
 /** Writes the whole of `text`, waiting for a real stream to take it. */
@@ -206,16 +221,19 @@ export async function main(
     if (parsed.help) {
       // Help never fails for want of a readable state: it lists what it can.
       const context = await open().catch(() => undefined);
-      await write(stdout, await helpFor(parsed.scope, context && new ToolCatalog(context, cache), styleFor(stdout)));
+      await write(stdout, await helpFor(parsed.scope, context && catalogFor(context, cache), styleFor(stdout)));
       return 0;
     }
     ctx = await open();
     if (parsed.words) {
-      const catalog = new ToolCatalog(ctx, cache);
-      const { tool, list } = await resolveTool(catalog, parsed.words);
-      command = tool.cli.command;
-      const outcome = await runGatewayCommand(ctx, catalog, tool, argumentsAfter(tool, argv), stdin);
-      if (!("tool" in outcome)) {
+      const catalog = catalogFor(ctx, cache);
+      const { tool: resolved } = await resolveTool(catalog, parsed.words);
+      command = resolved.cli.command;
+      const outcome = await runGatewayCommand(ctx, catalog, resolved, argumentsAfter(resolved, argv), stdin);
+      const tool = outcome.tool;
+      // The list as it stands now: reading the line or the answer may have refreshed it.
+      const list = await catalog.load();
+      if ("help" in outcome) {
         await write(stdout, toolHelp(tool, list.tools, styleFor(stdout)));
         return 0;
       }

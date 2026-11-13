@@ -25,9 +25,8 @@ import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { CliToolCatalogResponseSchema, type CliTool } from "../../src/contracts/cli.ts";
+import { CliToolSchema, type CliTool } from "../../src/contracts/cli.ts";
 import { CliError, fail, randomToken } from "./common.ts";
-import type { Context } from "./context.ts";
 import { cacheDirectory, protectedDirectory } from "./state.ts";
 
 export type { CliTool };
@@ -38,14 +37,43 @@ export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 /** How long fetching the list may take. */
 const FETCH_MS = 10_000;
 
-export const CachedCatalogSchema = CliToolCatalogResponseSchema.extend({
-  /** The gateway it came from. */
-  url: z.string(),
-  /** When it was fetched, in milliseconds since the epoch. */
-  fetchedAt: z.number(),
-});
+/**
+ * The features of this CLI a tool may say it needs (`cli.requires`). A tool
+ * naming one this release does not know is a command for a newer `agw`.
+ */
+export const CLI_FEATURES: ReadonlySet<string> = new Set<string>([]);
 
-export type CachedCatalog = z.infer<typeof CachedCatalogSchema>;
+/** The features a tool needs that this release does not have. */
+export function missingFeatures(tool: CliTool): string[] {
+  return (tool.cli.requires ?? []).filter((feature) => !CLI_FEATURES.has(feature));
+}
+
+/** A tool list as the gateway sends it, read tool by tool. */
+const ListSchema = z.object({ revision: z.string(), tools: z.array(z.unknown()) });
+
+export interface CachedCatalog {
+  revision: string;
+  tools: CliTool[];
+  /** The gateway it came from. */
+  url: string;
+  /** When it was fetched, in milliseconds since the epoch. */
+  fetchedAt: number;
+}
+
+/**
+ * A list read the way an older CLI must read a newer gateway's: each tool on
+ * its own, so one this release cannot read is left out rather than taking
+ * every command down with it, and every string made printable.
+ */
+export function readList(value: unknown): Pick<CachedCatalog, "revision" | "tools"> | undefined {
+  const list = ListSchema.safeParse(value);
+  if (!list.success) return undefined;
+  const tools = list.data.tools.flatMap((entry) => {
+    const tool = CliToolSchema.safeParse(entry);
+    return tool.success ? [printable(tool.data)] : [];
+  });
+  return { revision: printable(list.data.revision), tools };
+}
 
 /** Where lists are kept between runs; swapped for an in-memory one in tests. */
 export interface CatalogCache {
@@ -67,9 +95,11 @@ export class FileCatalogCache implements CatalogCache {
 
   async read(url: string): Promise<CachedCatalog | undefined> {
     try {
-      const parsed = CachedCatalogSchema.safeParse(JSON.parse(await readFile(this.path(url), "utf8")));
+      const kept = JSON.parse(await readFile(this.path(url), "utf8")) as Partial<CachedCatalog>;
+      const list = readList(kept);
       // A file another gateway's list was written to is not this one's.
-      return parsed.success && parsed.data.url === url ? parsed.data : undefined;
+      if (!list || kept.url !== url || typeof kept.fetchedAt !== "number") return undefined;
+      return { ...list, url, fetchedAt: kept.fetchedAt };
     } catch {
       return undefined;
     }
@@ -123,35 +153,43 @@ export function findTool(
   return best;
 }
 
+/** Where a list comes from: the selected gateway, asked with a timeout. */
+export interface CatalogSource {
+  url: string;
+  /** The body of `GET /v1/cli/tools`, unparsed. */
+  fetchList(timeoutMs: number): Promise<unknown>;
+}
+
 export class ToolCatalog {
   private current: CachedCatalog | undefined;
   /** Whether this run has already asked the gateway, which it does at most once. */
   private fetched = false;
 
-  private readonly ctx: Pick<Context, "url" | "publicCall">;
+  private readonly source: CatalogSource;
   private readonly cache: CatalogCache;
   private readonly now: () => number;
 
-  constructor(ctx: Pick<Context, "url" | "publicCall">, cache: CatalogCache, now: () => number = Date.now) {
-    this.ctx = ctx;
+  constructor(source: CatalogSource, cache: CatalogCache, now: () => number = Date.now) {
+    this.source = source;
     this.cache = cache;
     this.now = now;
   }
 
   /**
    * The list for the selected gateway: the one kept while it is fresh,
-   * otherwise the gateway's, otherwise — when the gateway cannot be reached —
-   * the one kept, however old.
+   * otherwise the gateway's, otherwise — when the gateway cannot give one,
+   * for whatever reason but being too old to have one — the one kept, however
+   * old.
    */
   async load(): Promise<CachedCatalog> {
     if (this.current) return this.current;
-    const read = await this.cache.read(this.ctx.url);
-    const kept = read && printable(read);
+    const read = await this.cache.read(this.source.url);
+    const kept = read && { ...read, tools: read.tools.map(printable) };
     if (kept && this.now() - kept.fetchedAt < CATALOG_TTL_MS) return (this.current = kept);
     try {
       return await this.refresh();
     } catch (error) {
-      if (kept && error instanceof CliError && error.code === "connection_failed") return (this.current = kept);
+      if (kept && !(error instanceof CliError && error.code === "gateway_outdated")) return (this.current = kept);
       throw error;
     }
   }
@@ -160,9 +198,9 @@ export class ToolCatalog {
   async refresh(): Promise<CachedCatalog> {
     if (this.fetched && this.current) return this.current;
     this.fetched = true;
-    let data;
+    let data: unknown;
     try {
-      ({ data } = await this.ctx.publicCall("listCliTools", { timeoutMs: FETCH_MS }));
+      data = await this.source.fetchList(FETCH_MS);
     } catch (error) {
       // A gateway from before this list existed answers it as a route it does not have.
       if (error instanceof CliError && error.details?.status === 404)
@@ -174,7 +212,10 @@ export class ToolCatalog {
         );
       throw error;
     }
-    const catalog: CachedCatalog = { ...printable(data), url: this.ctx.url, fetchedAt: this.now() };
+    const list = readList(data);
+    if (!list)
+      fail("invalid_response", "The gateway answered its command list with an unusable body.", "Check the gateway and run the command again.", 3);
+    const catalog: CachedCatalog = { ...list, url: this.source.url, fetchedAt: this.now() };
     this.current = catalog;
     // Keeping it is a convenience: a list that cannot be written is fetched again next run.
     await this.cache.write(catalog).catch(() => {});

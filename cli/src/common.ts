@@ -24,6 +24,8 @@ export class CliError extends Error {
   readonly nextAction: string;
   readonly exitCode: number;
   readonly details: CliErrorDetails | undefined;
+  /** The headers the refusal arrived with, where the gateway answered one; never printed. */
+  headers?: Headers;
 
   constructor(
     code: string,

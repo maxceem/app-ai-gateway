@@ -520,6 +520,12 @@ export const CliToolHintSchema = z.object({
   confirm: z.string().optional(),
   /** Input fields that are shorthands for a deeper setting, listed first in help. */
   shortcuts: z.array(z.string()).optional(),
+  /**
+   * Features of the CLI the command cannot work without, by name. A CLI that
+   * does not know one of them leaves the command out rather than run it in a
+   * way it does not understand, and tells whoever types it to update.
+   */
+  requires: z.array(z.string()).optional(),
   view: CliToolViewSchema.optional(),
 });
 
