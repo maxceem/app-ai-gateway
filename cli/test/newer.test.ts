@@ -559,3 +559,49 @@ test("no version note where versions cannot be the cause", async () => {
   assert.doesNotMatch((await run(["app", "show", "app-1"], unreachable.transport)).err, /Note:/);
   assert.equal(unreachable.asked.length, 1);
 });
+
+test("app patch sends only the operations, against the revision the app has now", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-patch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const operations = [
+    { op: "replace", path: "/config/limits/per_app/requests/per_minute", value: null },
+    { op: "replace", path: "/name", value: "Patched" },
+  ];
+  const gateway = deployment({
+    getApp: () => newerApp(),
+    patchApp: () => ({ app: { ...newerApp().app, name: "Patched", revision: 8 } }),
+  });
+  for (const [label, content] of [["list", operations], ["object", { operations }]] as const) {
+    const path = join(dir, `${label}.json`);
+    await writeFile(path, JSON.stringify(content));
+    gateway.sent.length = 0;
+    const result = await run(["app", "patch", "app-1", "--file", path], gateway.transport);
+    assert.equal(result.code, 0, result.err);
+    assert.match(result.out, /^Updated app Patched \(app-1\), now at revision 8\./);
+    assert.deepEqual(gateway.sent.map((entry) => entry.name), ["getApp", "patchApp"]);
+    assert.deepEqual(gateway.sent[1]?.body, { revision: 7, operations });
+  }
+
+  // A malformed operation is refused before anything is sent.
+  const bad = join(dir, "bad.json");
+  await writeFile(bad, JSON.stringify([{ op: "move", path: "/name" }]));
+  gateway.sent.length = 0;
+  const refused = await run(["app", "patch", "app-1", "--file", bad, "--json"], gateway.transport);
+  assert.equal(refused.json().error.code, "invalid_input");
+  assert.equal(gateway.sent.length, 0);
+});
+
+test("app patch against a gateway older than PATCH says to update it", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-patch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "ops.json");
+  await writeFile(path, JSON.stringify([{ op: "replace", path: "/name", value: "Patched" }]));
+  // No PATCH route: the gateway answers 404, and reports an older release.
+  const gateway = deployment({
+    getApp: () => newerApp(),
+    getCliCapabilities: () => capabilities("0.1.0", "self_hosted"),
+  });
+  const result = await run(["app", "patch", "app-1", "--file", path], gateway.transport);
+  assert.equal(result.code, 3);
+  assert.match(result.err, /Note: Your self-hosted gateway API \(0\.1\.0\) is older than this agw CLI/);
+});

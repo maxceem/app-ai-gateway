@@ -112,8 +112,14 @@ approve. Poll \`get_operation\` with the answer's \`id\` until it is
 URL yourself.
 
 **Changes without a browser step**: \`update_provider\`,
-\`update_provider_gateway\` and \`update_app\` carry the revision you read, so a
-change someone made since is refused rather than overwritten;
+\`update_provider_gateway\`, \`update_app\` and \`patch_app\` carry the revision
+you read, so a change someone made since is refused rather than overwritten.
+To change a few settings of an app, prefer \`patch_app\`: it sends only the
+operations (RFC 6902 \`add\`, \`replace\` or \`remove\` at a path such as
+\`/config/limits/per_app/requests/per_minute\`), leaves every other setting as
+it is, and is judged as a whole update would be. \`null\` is written as
+\`null\`, which means unlimited for a limit; only \`remove\` deletes.
+\`update_app\` replaces the whole document;
 \`remove_provider\`, \`remove_provider_gateway\` and \`remove_app\` delete for
 good and need the id again as \`confirm\`; \`revoke_app_key\`,
 \`block_app_user\` and \`unblock_app_user\` need no browser handoff. App and
@@ -165,8 +171,9 @@ How the server holds to that:
   \`tokenHint\` and \`max_tokens\` do not.
 - **Refused arguments.** Every tool that answers a URL for a browser step
   (\`add_provider\`, \`add_provider_gateway\`, \`rotate_provider_key\`,
-  \`rotate_provider_gateway_key\`), and \`add_app\`, \`update_app\` and
-  \`validate_app\` for the app document they take, refuse a call carrying a
+  \`rotate_provider_gateway_key\`), \`add_app\`, \`update_app\` and
+  \`validate_app\` for the app document they take, and \`patch_app\` for each
+  value it writes, read under the key its path ends with, refuse a call carrying a
   field with such a name anywhere in its arguments: at any depth, inside a
   list, beside the documented arguments or inside them. The refusal names the
   field, never its value, and nothing is stored.
@@ -195,8 +202,9 @@ How the server holds to that:
   document included, is redacted. A field holding \`null\` stays \`null\`, and
   hint fields such as \`secretHint\` are shown as they are. Do not send a
   \`[redacted]\` value back in an update or omit the field from a full
-  replacement. Have the person make the change through the console or another
-  authorized client that can preserve the original values.
+  replacement. Change the other settings with \`patch_app\`, which leaves a
+  redacted field as it is stored; to change the redacted field itself, have the
+  person use the console or another authorized client.
 
 ## Errors
 

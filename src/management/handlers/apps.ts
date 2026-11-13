@@ -5,6 +5,7 @@ import {
   deleteApp,
   getApp,
   listApps,
+  patchApp,
   updateApp,
   validateApp,
   validateAppDraft,
@@ -21,5 +22,6 @@ export const appHandlers = {
   checkApp: ({ scope, actor, app }) => checkApp(scope, actor, app),
   getAppSnippet: ({ scope, actor, app, query }) => appSnippet(scope, actor, app, query),
   updateApp: ({ scope, actor, app, body }) => updateApp(scope, actor, app, body),
+  patchApp: ({ scope, actor, app, body }) => patchApp(scope, actor, app, body),
   deleteApp: ({ scope, actor, app, query }) => deleteApp(scope, actor, app, query.confirm),
 } satisfies OperationHandlerTable;

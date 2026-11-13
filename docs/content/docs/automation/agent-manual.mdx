@@ -74,7 +74,12 @@ or approve the claim yourself. Claiming preserves the agent's access.
    including ones you do not recognize. If the update fails with
    `confirmation_required`, the file drops settings this `agw` does not
    understand: copy them back from `app show --json` rather than adding `--yes`.
-5. Apply the requested update, then reread the app. File updates replace the
+5. For a change to a few settings, prefer `agw app patch <app-id> --file
+   patch.json --json`. The file is a list of operations, each `add`,
+   `replace` or `remove` at a path such as
+   `/config/limits/per_app/requests/per_minute`. Only those settings change,
+   and the result is checked as a whole update would be. Otherwise apply the
+   requested update. Then reread the app. File updates replace the
    whole document. The CLI reads a revision when the update command starts;
    this protects against a competing write during that command, not edits
    made since an earlier file export. Refresh and merge an old file first.
@@ -145,6 +150,10 @@ says so, call `claim_account` and give the person its URL. A management key as
 a bearer token works too. Use the tools:
 `get_account` first, then `list_providers`, `list_apps`, `get_app`,
 `validate_app`, `check_app`, usage and event tools, and the change tools.
+For a small change to an app, use `patch_app` rather than `update_app`: it
+sends only the settings you change, as `add`, `replace` or `remove` at a path
+such as `/config/limits/per_app/requests/per_minute`, and leaves the rest,
+including `[redacted]` fields, as stored.
 `add_app` and `add_app_key` take two calls: the first reserves and creates
 nothing, the second, with the same arguments and the answer's `handle`,
 creates it once, and repeating it is safe. An answer that names an operation

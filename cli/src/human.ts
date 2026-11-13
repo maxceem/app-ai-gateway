@@ -170,6 +170,7 @@ function render(
       return operation(result, style);
     case "app add":
     case "app update":
+    case "app patch":
     case "app validate":
     case "app check":
     case "app snippet":
@@ -575,6 +576,11 @@ function app(
   style: Style,
 ): string[] {
   if ("output" in result) return [style.headline(`Saved: ${result.output}`)];
+  if (command === "app patch" && "app" in result && "revision" in result.app)
+    return [
+      style.headline(`Updated app ${result.app.name} (${result.app.id}), now at revision ${result.app.revision}.`),
+      ...kv([["Gateway", context.url], ["Status", result.app.status]], style),
+    ];
   if ("ready" in result)
     return [
       style.headline(

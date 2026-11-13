@@ -702,6 +702,58 @@ export const AppUpdateSchema = AppWriteSchema.extend({
 }).meta({ id: "AppUpdate" });
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
 
+/** The most operations one patch may carry. */
+export const APP_PATCH_MAX_OPERATIONS = 100;
+
+/**
+ * Where an operation applies, as a JSON Pointer (RFC 6901) into the document
+ * `getApp` answers under `app`: `/name`, `/status`, or anything under
+ * `/config`. `~1` stands for `/` and `~0` for `~` inside a key, as the RFC
+ * spells them. The id, revision and timestamps are not the patch's to change.
+ */
+// Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
+const AppPatchPathSchema = z.string()
+  .regex(/^\/(?:name|status|config(?:\/(?:[^~/]|~[01])*)*)$/, {
+    error: "path must be /name, /status or a JSON Pointer under /config",
+  })
+  .meta({ example: "/config/limits/per_app/requests/per_minute" });
+
+/** What `add` and `replace` write: required even when it is `null`. */
+const AppPatchValueSchema = z.unknown().nonoptional({ error: "value is required; send null to write null" });
+
+/**
+ * One change, with the meaning RFC 6902 (JSON Patch) gives it, restricted to
+ * the three operations that change a document:
+ *
+ * - `add` writes `value` at `path`: a new or existing key of an object, or an
+ *   array position, `-` appending. The parent must exist.
+ * - `replace` writes `value` where something already is.
+ * - `remove` deletes what is at `path`, which must exist.
+ *
+ * A value is written as given, `null` included: `null` is how a limit says
+ * unlimited, so nothing here ever treats it as "delete".
+ */
+export const AppPatchOperationSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+  z.object({ op: z.literal("replace"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+  z.object({ op: z.literal("remove"), path: AppPatchPathSchema }).strict(),
+], { error: "op must be add, replace or remove" }).meta({ id: "AppPatchOperation" });
+export type AppPatchOperation = z.infer<typeof AppPatchOperationSchema>;
+
+/**
+ * A partial update: operations applied in order to the application as it is
+ * stored, then judged exactly as an update with the resulting whole document
+ * would be. Either every operation applies and the result is accepted, or
+ * nothing is written.
+ */
+export const AppPatchSchema = z.object({
+  revision: AppUpdateSchema.shape.revision,
+  operations: z.array(AppPatchOperationSchema)
+    .min(1, { error: "operations must name at least one change" })
+    .max(APP_PATCH_MAX_OPERATIONS, { error: `operations can name at most ${APP_PATCH_MAX_OPERATIONS} changes` }),
+}).strict().meta({ id: "AppPatch" });
+export type AppPatch = z.infer<typeof AppPatchSchema>;
+
 /**
  * The two languages an application's example is written in: Swift for an App
  * Attest application, whose callers hold an attestation rather than a key, and

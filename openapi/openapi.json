@@ -1429,6 +1429,99 @@
         ],
         "additionalProperties": false
       },
+      "AppPatch": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict."
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppPatchOperation"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "AppPatchOperation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "add"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "replace"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "remove"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "ManagementKeyCreateRequest": {
         "type": "object",
         "properties": {
@@ -6348,6 +6441,105 @@
         "responses": {
           "200": {
             "description": "Application state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The application changed since it was read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "patchApp",
+        "summary": "Change part of an application",
+        "description": "Applies `operations` in order to the application as `getApp` answers it under `app`, then saves the result exactly as `PUT` would save that whole document: the same validation, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Requires `revision`, as `PUT` does. An operation that cannot apply, such as a `replace` of a key that is not there, answers `400 invalid_request` naming its index.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Application state after the change.",
             "content": {
               "application/json": {
                 "schema": {

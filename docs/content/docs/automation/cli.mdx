@@ -140,6 +140,21 @@ understand are still shown, and an update with flags keeps them unchanged; a
 An update with `--file` that would drop or change one of them names it and
 needs `--yes`.
 
+To change a few settings, `agw app patch <app-id> --file patch.json` sends
+only those changes. The file is a list of operations, each `add`, `replace`
+or `remove` at a path into the app as `app show` returns it:
+
+```json
+[
+  { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
+  { "op": "replace", "path": "/status", "value": "disabled" }
+]
+```
+
+Everything you do not name stays as it is, and the result is checked as a
+whole update would be: either every operation applies and is saved, or
+nothing is. `null` is written as `null`, which means unlimited for a limit.
+
 `agw app snippet <app-id>` prints a request that app can send: curl for a
 server app, Swift for an iOS one. Creating an app prints it too. It is built
 from that app's own providers, allowed endpoints and priced models, and stands
