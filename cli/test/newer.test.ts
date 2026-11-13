@@ -306,6 +306,33 @@ test("an authentication type newer than this release is kept, and only its own f
   assert.equal(refused.json().error.code, "cli_outdated");
 });
 
+test("a selection made with --provider keeps what a newer gateway wrote beside it", async () => {
+  const config = newerConfig() as Record<string, any>;
+  config.routing.providers.fallback_order = ["openai"];
+  const gateway = deployment({
+    getApp: () => newerApp(config),
+    updateApp: (body) => ({ app: { ...newerApp(config).app, ...(body as object), revision: 8 } }),
+  });
+  const result = await run(["app", "update", "app-1", "--provider", "openai"], gateway.transport);
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual((gateway.sent[1]?.body as Record<string, any>).config, config);
+});
+
+test("a file that changes the inside of an authentication type this release does not know needs --yes", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-newer-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const config = structuredClone(known) as Record<string, any>;
+  config.authentication = { type: "passkey", relying_party: "example.com" };
+  const gateway = deployment({ getApp: () => newerApp(config), updateApp: () => assert.fail("not sent") });
+  const path = join(dir, "app.json");
+  const edited = structuredClone(config);
+  edited.authentication.relying_party = "other.example";
+  await writeFile(path, JSON.stringify({ name: "Newer", status: "active", config: edited }));
+  const refused = await run(["app", "update", "app-1", "--file", path, "--no-input", "--json"], gateway.transport);
+  assert.equal(refused.json().error.code, "confirmation_required");
+  assert.match(refused.json().error.message, /config\.authentication\.$/);
+});
+
 test("app update --file that would remove or change additions says which, and needs --yes", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-newer-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

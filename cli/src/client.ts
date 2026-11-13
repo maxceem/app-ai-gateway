@@ -196,7 +196,8 @@ export class GatewayClient {
  * with it is something a newer release could have added — a key the
  * configuration grammar does not declare, a value an enum does not list — it
  * is accepted with those additions kept as sent, and `newer` names where they
- * are. A missing field, a wrong type or a failed check is still refused.
+ * are. A missing field, a wrong type or a failed check on a part with no
+ * addition in it is still refused.
  */
 function parse<K extends OperationName>(name: K, data: unknown): CallResult<OperationResponse<K>> {
   const read = tolerant(CATALOG[name].response as z.ZodType, data);

@@ -21,10 +21,13 @@
  * - a discriminator value no option of a discriminated union names, when every
  *   option is a strict object. The whole variant is then kept as sent.
  *
- * Anything else — a missing required field, a wrong type, a failed check — is
- * a broken document and is refused as before. Every subtree that does parse is
- * the plain parse's own output, defaults and normalization included; only the
- * spine above each addition is copied as it was sent.
+ * Anything else — a missing required field, a wrong type, a failed check on a
+ * part with no addition in it — is a broken document and is refused as before.
+ * A check on an object that holds an addition is not run, as zod does not run
+ * it either: a newer field may be exactly what relaxes an older rule, and the
+ * gateway, which knows the field, checks every write in full. Every subtree
+ * that does parse is the plain parse's own output, defaults and normalization
+ * included; only the spine above each addition is copied as it was sent.
  */
 
 import type { z } from "zod";
@@ -175,7 +178,9 @@ function descend(schema: z.ZodType, value: unknown, path: Path, unknown: Unknown
           defOf(candidate).shape?.[tag]?.safeParse(value[tag]).success);
         if (option) return walk(option, value, path, unknown);
         if (typeof value[tag] !== "string" || !options.every(isStrict)) throw new Broken();
-        unknown.push({ path: [...path, tag], value: value[tag] });
+        // The whole variant is the addition: none of it can be read here, so a
+        // change anywhere in it is a change to something this release does not know.
+        unknown.push({ path, value });
         return structuredClone(value);
       }
       // The first option the document fits once its additions are set aside.

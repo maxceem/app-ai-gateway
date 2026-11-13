@@ -114,8 +114,14 @@ export function checkedApp(value: unknown, tolerance: Tolerance = []): AppDocume
   const reported = issues.filter((issue) => {
     if (issue.code === "unrecognized_keys")
       return !issue.keys.every((key) => tolerated({ path: [...issue.path, key] }, tolerance, false));
-    if (issue.code === "invalid_value" || issue.code === "invalid_union")
+    if (issue.code === "invalid_value")
       return !tolerated({ path: issue.path, value: valueAt(value, issue.path) }, tolerance);
+    // A variant no option names is reported at its discriminator, and kept as
+    // the whole variant.
+    if (issue.code === "invalid_union") {
+      const variant = issue.path.slice(0, -1);
+      return !tolerated({ path: variant, value: valueAt(value, variant) }, tolerance);
+    }
     return true;
   });
   fail("invalid_input", describeIssues(reported.length ? reported : issues));
@@ -227,16 +233,20 @@ export async function appDocument(
       auth.app_attest.verify_on = flags["verify-on"].trim() as AppAttestVerifyOn;
   }
   const selectedProviders = flagList(flags.provider);
+  // Within the mode it already has, the providers block keeps what else a
+  // newer gateway wrote beside the selection; a change of mode replaces it.
+  const providers = doc.config.routing.providers;
   if (selectedProviders.length) {
     const previous = selectedProviderPolicies(doc.config.routing);
     doc.config.routing.providers = {
+      ...(providers.mode === "selected" ? providers : {}),
       mode: "selected",
       selected: Object.fromEntries(
         selectedProviders.map((slug) => [slug, previous[slug] ?? emptyPolicy()]),
       ),
     };
   }
-  if (flags["all-providers"]) doc.config.routing.providers = { mode: "all" };
+  if (flags["all-providers"] && providers.mode !== "all") doc.config.routing.providers = { mode: "all" };
   return checkedApp(doc, unknown).doc;
 }
 
