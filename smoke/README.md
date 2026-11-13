@@ -25,6 +25,13 @@ covers a part that can fail on its own, without any change of yours:
 - `usage`: a proxied call shows up in usage, which is recorded in the background.
 - `management`: a management key is accepted and the account's apps read back.
 - `console`: the console page, its script and its capabilities load.
+- `fallbacks`: the gateway served apps without falling back in the last ten
+  minutes. When D1, the plan allowance's counter or billing is slow or failing,
+  apps are still served, from records the gateway already knew or uncounted, so
+  every other check stays green; this one reads the deployment's Worker logs
+  for the lines that say so. It needs a read-only Cloudflare token and is
+  skipped without one. Unlike the others it is not a contract with clients:
+  it watches the deployment's health.
 
 **`deploy` — did this deploy break something?** Everything that only changes
 when the code does, run once after each deploy together with `monitor`:
@@ -83,6 +90,8 @@ passed as arguments. Keep them in a private dotenv file and point
 | `SMOKE_MOCK_URL` | The mock provider's public HTTPS origin, with no path: a second mock needs a host of its own |
 | `SMOKE_MOCK_SECRET` | The fake provider key the mock accepts |
 | `SMOKE_ISSUER_KEY` | The private key the test identity provider signs tokens with |
+| `SMOKE_CF_API_TOKEN`, `SMOKE_CF_ACCOUNT_ID` | Optional. A read-only Cloudflare API token that can query Workers Observability, and its account, for the `fallbacks` check; without them it is skipped |
+| `SMOKE_CF_WORKER` | Optional. The deployment's Worker script name (default `app-ai-gateway`) |
 | `SMOKE_RUNNER` | Optional. Names this runner's app keys, so two runners never revoke each other's (default `local`) |
 | `SMOKE_CLI_URL` | Optional. Where the CLI connects, when that differs: the CLI accepts only HTTPS or a loopback address |
 | `SMOKE_CLI_VERSIONS` | Optional. CLI versions to check, comma-separated: `current` is this checkout's build, the rest published versions, such as `current,0.10.0` (default `current`) |
