@@ -80,7 +80,12 @@ const EVERY_OPTION = {
       mode: "selected",
       selected: {
         [PROVIDERS[0]!.slug]: {
-          allowed_paths: ["v1/responses", { path: "v1/chat/completions", fixed_model: MODEL, clamp: "chat_completions" }],
+          allowed_paths: [
+            "v1/responses",
+            { path: "v1/chat/completions", fixed_model: MODEL, clamp: "chat_completions" },
+            // A passthrough path, opened for a method beyond the default POST.
+            { path: "v1/files", methods: ["GET", "POST"] },
+          ],
           allowed_models: [MODEL],
           max_output_tokens: 512,
         },
