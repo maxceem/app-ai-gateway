@@ -17,9 +17,11 @@
  * spelling appears. Pricing, restrictions, usage records and reports then speak
  * these names, so nothing downstream branches on a provider.
  *
- * Import-free and erasable syntax only, like `token-rates.ts`, so the console
- * and the model sync can load it.
+ * Erasable syntax only, and it imports nothing but `./token-rates.ts` (by its
+ * full name), so the console and the price list's updates can load it as it is.
  */
+
+import { TOKEN_RATE_FIELDS, type ModePrice } from "./token-rates.ts";
 
 /** Each tier, cheapest first. `rank` orders them by what they cost against standard. */
 export const SERVICE_TIERS = {
@@ -103,6 +105,58 @@ export function serviceModeName(mode: ServiceMode): string {
     ...(mode.region === "global" ? [] : [mode.region]),
   ];
   return parts.length === 0 ? "standard" : parts.join("+");
+}
+
+export function isStandardMode(mode: ServiceMode): boolean {
+  return mode.tier === "standard" && mode.region === "global";
+}
+
+/** Every rate a mode's factor multiplies. */
+export const MODE_PRICE_FIELDS = [...TOKEN_RATE_FIELDS, "per_minute", "per_hour", "per_image"] as const;
+
+/** A price shaped like a price-list entry: its rates, and the modes it is sold in. */
+export type ModalPrice = Partial<Record<(typeof MODE_PRICE_FIELDS)[number], number>> & {
+  modes?: Readonly<Record<string, ModePrice>>;
+};
+
+/** `price` with one mode entry applied: every rate × `factor` (1 if left out), then the entry's own rates. */
+export function withModePrice<P extends ModalPrice>(price: P, entry: ModePrice): P {
+  const factor = typeof entry.factor === "number" && Number.isFinite(entry.factor) && entry.factor >= 0
+    ? entry.factor
+    : 1;
+  const next: P = { ...price };
+  for (const field of MODE_PRICE_FIELDS) {
+    const own = entry[field];
+    const rate = price[field];
+    if (typeof own === "number" && Number.isFinite(own) && own >= 0) next[field] = own as P[typeof field];
+    else if (typeof rate === "number") next[field] = rate * factor as P[typeof field];
+  }
+  return next;
+}
+
+/**
+ * A model's price in one service mode, or `undefined` where it has none.
+ *
+ * The standard mode is the entry itself. Any other is the entry's own
+ * `modes[name]`: an exact key wins, so a provider that prices a combination
+ * apart (Mistral's priority with regional inference, ×1.85 rather than
+ * 1.75 × 1.1) states it. Failing one, a tier in a region is the tier's entry
+ * and then the region's on top of it — Anthropic's fast mode in the US is
+ * 2 × 1.1. Everything downstream — the long-context threshold, cache-write
+ * variants, modality rates and every fallback in `bucketRates` — then reads
+ * the derived price exactly as it reads a standard one.
+ */
+export function priceInMode<P extends ModalPrice>(price: P, mode: ServiceMode): P | undefined {
+  if (isStandardMode(mode)) return price;
+  const modes = price.modes;
+  if (!modes) return undefined;
+  const entry = (name: string) => Object.hasOwn(modes, name) ? modes[name] : undefined;
+  const exact = entry(serviceModeName(mode));
+  if (exact) return withModePrice(price, exact);
+  if (mode.tier === "standard" || mode.region === "global") return undefined;
+  const tier = entry(mode.tier);
+  const region = entry(mode.region);
+  return tier && region ? withModePrice(withModePrice(price, tier), region) : undefined;
 }
 
 /**

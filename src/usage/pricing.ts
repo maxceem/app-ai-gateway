@@ -19,7 +19,9 @@ import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 import {
+  isStandardMode,
   parseServiceModeName,
+  priceInMode,
   readServiceMode,
   serviceModeName,
   STANDARD_MODE,
@@ -120,50 +122,12 @@ export interface PriceChange extends Partial<Record<TokenRateField, number>> {
   modes?: Record<string, ModePrice>;
 }
 
-/** Every rate a mode's factor multiplies. */
-const MODE_SCALED_FIELDS = [...TOKEN_RATE_FIELDS, "per_minute", "per_hour", "per_image"] as const;
-
-function isStandardMode(mode: ServiceMode): boolean {
-  return mode.tier === "standard" && mode.region === "global";
-}
-
-function withModePrice(price: Price, entry: ModePrice): Price {
-  const factor = typeof entry.factor === "number" && Number.isFinite(entry.factor) && entry.factor >= 0
-    ? entry.factor
-    : 1;
-  const next: Price = { ...price };
-  for (const field of MODE_SCALED_FIELDS) {
-    const own = entry[field];
-    const rate = price[field];
-    if (typeof own === "number" && Number.isFinite(own) && own >= 0) next[field] = own;
-    else if (typeof rate === "number") next[field] = rate * factor;
-  }
-  return next;
-}
-
 /**
- * A model's price in one service mode, or `undefined` where it has none.
- *
- * The standard mode is the entry itself. Any other is the entry's own
- * `modes[name]`: an exact key wins, so a provider that prices a combination
- * apart (Mistral's priority with regional inference, ×1.85 rather than
- * 1.75 × 1.1) states it. Failing one, a tier in a region is the tier's entry
- * and then the region's on top of it — Anthropic's fast mode in the US is
- * 2 × 1.1. Everything downstream — the long-context threshold, cache-write
- * variants, modality rates and every fallback in `bucketRates` — then reads
- * the derived price exactly as it reads a standard one.
+ * A model's price in one service mode, or `undefined` where it has none: the
+ * shared reading in `src/shared/service-modes.ts`, which the price list's
+ * updates compare prices by too.
  */
-export function priceInMode(price: Price, mode: ServiceMode): Price | undefined {
-  if (isStandardMode(mode)) return price;
-  const modes = price.modes;
-  if (!modes) return undefined;
-  const exact = lookup(modes, serviceModeName(mode));
-  if (exact) return withModePrice(price, exact);
-  if (mode.tier === "standard" || mode.region === "global") return undefined;
-  const tier = lookup(modes, mode.tier);
-  const region = lookup(modes, mode.region);
-  return tier && region ? withModePrice(withModePrice(price, tier), region) : undefined;
-}
+export { priceInMode };
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
