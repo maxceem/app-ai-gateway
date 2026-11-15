@@ -1941,7 +1941,7 @@
                 },
                 "additionalProperties": false
               },
-              "description": "Prices in service modes other than standard. A mode left out has no price, so a request for it is not billed at another mode's price."
+              "description": "Prices in service modes other than standard. Left out, the price list's mode factors for the model apply to these rates. A mode with no price is still served, billed at an estimate and marked estimated."
             }
           },
           "required": [
@@ -2587,18 +2587,10 @@
           },
           "service_mode": {
             "type": [
-              "object",
+              "string",
               "null"
             ],
-            "properties": {
-              "tier": {
-                "type": "string"
-              },
-              "region": {
-                "type": "string"
-              }
-            },
-            "description": "The service mode that served the request and that cost_usd was priced in: its tier (flex, priority, fast, ultrafast) and region (us, eu, …) where they differ from standard and global. Null or absent for the standard mode, and on events recorded before modes were recorded."
+            "description": "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded."
           },
           "cost_source": {
             "type": [

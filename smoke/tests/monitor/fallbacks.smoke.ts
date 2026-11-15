@@ -36,7 +36,10 @@ const FALLBACKS = [
   // A provider served a service mode the request did not ask for, such as an
   // account default, and the model has no price in it: billed at an estimate.
   // A request that asks for an unpriced mode itself is expected and is shown
-  // in the console as estimated instead (`service_mode_unpriced`).
+  // in the console as estimated instead (`service_mode_unpriced`). So is
+  // `service_mode_unknown`: any client can send a value the gateway does not
+  // know, so it would fail this check on a client's typo. Search the logs for
+  // it to learn a provider's new values.
   "served_mode_unpriced",
 ] as const;
 

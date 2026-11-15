@@ -14,8 +14,8 @@
  * (`service_tier`, `speed`, `inference_geo`), which the gateway forwards
  * unchanged; each provider type declares in `src/shared/providers.ts` what its
  * values mean in these terms, and that table is the only place a provider's
- * spelling appears. Pricing, restrictions, usage records and reports then speak
- * these names, so nothing downstream branches on a provider.
+ * spelling appears. Prices, usage records, logs and reports then speak these
+ * names, so nothing downstream branches on a provider.
  *
  * Erasable syntax only, and it imports nothing but `./token-rates.ts` (by its
  * full name), so the console and the price list's updates can load it as it is.
@@ -25,11 +25,11 @@ import { TOKEN_RATE_FIELDS, type ModePrice } from "./token-rates.ts";
 
 /** Each tier, cheapest first. `rank` orders them by what they cost against standard. */
 export const SERVICE_TIERS = {
-  flex: { label: "Flex", rank: 0 },
-  standard: { label: "Standard", rank: 1 },
-  priority: { label: "Priority", rank: 2 },
-  fast: { label: "Fast", rank: 2 },
-  ultrafast: { label: "Ultrafast", rank: 3 },
+  flex: { rank: 0 },
+  standard: { rank: 1 },
+  priority: { rank: 2 },
+  fast: { rank: 2 },
+  ultrafast: { rank: 3 },
 } as const;
 
 /**
@@ -37,22 +37,10 @@ export const SERVICE_TIERS = {
  * placement. The others are the regions a provider prices apart: Anthropic's
  * `inference_geo`, and the regional hosts of OpenAI, xAI, Mistral and Together.
  */
-export const SERVICE_REGIONS = {
-  global: { label: "Global" },
-  us: { label: "US" },
-  eu: { label: "EU" },
-  gb: { label: "UK" },
-  ca: { label: "Canada" },
-  au: { label: "Australia" },
-  jp: { label: "Japan" },
-  kr: { label: "South Korea" },
-  in: { label: "India" },
-  sg: { label: "Singapore" },
-  ae: { label: "UAE" },
-} as const;
+export const SERVICE_REGIONS = ["global", "us", "eu", "gb", "ca", "au", "jp", "kr", "in", "sg", "ae"] as const;
 
 export type ServiceTier = keyof typeof SERVICE_TIERS;
-export type ServiceRegion = keyof typeof SERVICE_REGIONS;
+export type ServiceRegion = (typeof SERVICE_REGIONS)[number];
 
 export interface ServiceMode {
   readonly tier: ServiceTier;
@@ -62,42 +50,11 @@ export interface ServiceMode {
 /** What a request that names no mode is served in, and what every price without a mode means. */
 export const STANDARD_MODE: ServiceMode = { tier: "standard", region: "global" };
 
-/** A mode as a usage row stores it: only the axes that differ from the default. */
-export interface StoredServiceMode {
-  readonly tier?: ServiceTier;
-  readonly region?: ServiceRegion;
-}
-
-/** The stored form of a mode, or `null` for the standard one. */
-export function storedServiceMode(mode: ServiceMode): StoredServiceMode | null {
-  if (mode.tier === "standard" && mode.region === "global") return null;
-  return {
-    ...(mode.tier !== "standard" && { tier: mode.tier }),
-    ...(mode.region !== "global" && { region: mode.region }),
-  };
-}
-
 /**
- * A stored mode read back, whatever a row holds: an axis it names that this
- * deployment does not know reads as the default, so an old row never fails
- * to reprice.
- */
-export function serviceModeFromStored(stored: unknown): ServiceMode {
-  if (typeof stored !== "object" || stored === null) return STANDARD_MODE;
-  const { tier, region } = stored as Record<string, unknown>;
-  const knownTier = typeof tier === "string" && Object.hasOwn(SERVICE_TIERS, tier) ? tier as ServiceTier : "standard";
-  const knownRegion = typeof region === "string" && Object.hasOwn(SERVICE_REGIONS, region)
-    ? region as ServiceRegion
-    : "global";
-  return knownTier === "standard" && knownRegion === "global"
-    ? STANDARD_MODE
-    : { tier: knownTier, region: knownRegion };
-}
-
-/**
- * A mode's name as prices, restrictions and messages spell it: the tier and the
- * region that differ from the default, joined by `+` — `fast`, `us`, `fast+us`,
- * or `standard` for the default itself.
+ * A mode's name, the one spelling prices, usage records, the usage API, logs
+ * and messages all use: the tier and the region that differ from the default,
+ * joined by `+` — `fast`, `us`, `fast+us`, or `standard` for the default
+ * itself. {@link parseServiceModeName} reads it back.
  */
 export function serviceModeName(mode: ServiceMode): string {
   const parts = [
@@ -172,7 +129,8 @@ export function parseServiceModeName(name: string): ServiceMode | null {
   const [first, second, ...rest] = name.split("+");
   if (first === undefined || rest.length > 0) return null;
   const isTier = (part: string): part is ServiceTier => Object.hasOwn(SERVICE_TIERS, part) && part !== "standard";
-  const isRegion = (part: string): part is ServiceRegion => Object.hasOwn(SERVICE_REGIONS, part) && part !== "global";
+  const isRegion = (part: string): part is ServiceRegion =>
+    (SERVICE_REGIONS as readonly string[]).includes(part) && part !== "global";
   if (second === undefined) {
     if (isTier(first)) return { tier: first, region: "global" };
     if (isRegion(first)) return { tier: "standard", region: first };
@@ -212,8 +170,8 @@ export type ServiceModeField =
     readonly as?: string;
   };
 
-/** A field value no entry of a provider's table names. */
-export interface UnknownServiceMode {
+/** One field's value, as a request or a response gave it: the field's name and the value, made safe to log. */
+export interface ServiceModeValue {
   readonly field: string;
   readonly value: string;
 }
@@ -232,9 +190,9 @@ export interface ServiceModeReading {
    * quotes back, so the client sees the field it sent rather than only the
    * gateway's name for it.
    */
-  readonly askedBy: readonly UnknownServiceMode[];
+  readonly askedBy: readonly ServiceModeValue[];
   /** The first value the table does not know, if any. */
-  readonly unknown?: UnknownServiceMode;
+  readonly unknown?: ServiceModeValue;
 }
 
 /**
@@ -255,11 +213,11 @@ export function readServiceMode(
   read: (name: string) => unknown,
 ): ServiceModeReading {
   let tier: ServiceTier | undefined;
-  let tierAskedBy: UnknownServiceMode | undefined;
+  let tierAskedBy: ServiceModeValue | undefined;
   let region: ServiceRegion = "global";
   let regionNamed = false;
-  let regionAskedBy: UnknownServiceMode | undefined;
-  let unknown: UnknownServiceMode | undefined;
+  let regionAskedBy: ServiceModeValue | undefined;
+  let unknown: ServiceModeValue | undefined;
   for (const field of fields) {
     for (const name of field.names) {
       const value = fieldValue(read, name);

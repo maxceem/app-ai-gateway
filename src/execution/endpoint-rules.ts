@@ -1,7 +1,7 @@
 import { publishesStylePaths, supportsEndpointStyle } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { catalogKind, isBillable, judgeServiceMode } from "../usage/pricing";
-import type { ServiceMode } from "../shared/service-modes";
+import { catalogKind, isBillable, requestedServiceMode } from "../usage/pricing";
+import type { ServiceMode, ServiceModeValue } from "../shared/service-modes";
 import {
   requireProvider,
   resolveProvider,
@@ -201,7 +201,7 @@ export async function resolveEndpointAttempts(
   prepared: PreparedEndpointRequest,
 ): Promise<[ExecutionAttempt, ...ExecutionAttempt[]]> {
   const resolvedProviders = new Map<string, ResolvedProvider>();
-  const usableTargets: (EndpointTarget & { serviceMode: ServiceMode; serviceModeEstimated: boolean })[] = [];
+  const usableTargets: (EndpointTarget & { serviceMode: ServiceMode; serviceModeUnknown?: ServiceModeValue })[] = [];
   let disabledPrimary: GatewayError | undefined;
   for (const [index, target] of prepared.targets.entries()) {
     const primary = index === 0;
@@ -269,17 +269,17 @@ export async function resolveEndpointAttempts(
     // Read per target, because each provider spells the mode its own way: the
     // body a fallback is sent may ask a different provider for something else.
     const json = prepared.json;
-    const judged = judgeServiceMode({
+    const requested = requestedServiceMode({
       type: entry.type,
       route: entry.route.kind,
       baseUrl: entry.baseUrl,
-      pricing: entry.pricing,
-      style: endpoint.api_style,
-      model: target.model,
       read: json ? (name) => json[name] : (name) => prepared.form?.get(name),
-      appId: app.id,
     });
-    usableTargets.push({ ...target, serviceMode: judged.mode, serviceModeEstimated: judged.estimated });
+    usableTargets.push({
+      ...target,
+      serviceMode: requested.mode,
+      ...(requested.unknown && { serviceModeUnknown: requested.unknown }),
+    });
   }
   // A skipped disabled primary is the only way the chain can end up empty: on
   // every other primary failure the loop threw above. With nothing left to try,
@@ -300,7 +300,7 @@ export async function resolveEndpointAttempts(
       apiStyle: endpoint.api_style,
       passthrough: false,
       serviceMode: target.serviceMode,
-      serviceModeEstimated: target.serviceModeEstimated,
+      ...(target.serviceModeUnknown && { serviceModeUnknown: target.serviceModeUnknown }),
       buildRequest,
     } satisfies ExecutionAttempt;
   });

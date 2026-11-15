@@ -47,7 +47,7 @@ async function recorded(appId: string) {
   return {
     cost: row?.cost_usd,
     source: row?.cost_source,
-    mode: row?.service_mode ? JSON.parse(row.service_mode) as unknown : null,
+    mode: row?.service_mode ?? null,
   };
 }
 
@@ -92,11 +92,11 @@ function openAiAnswer(serviceTier?: string) {
 
 describe("billing in the service mode that served the request", () => {
   it.each([
-    ["flex, as asked", { service_tier: "flex" }, "flex", 0.0025, { tier: "flex" }],
-    ["fast, as asked", { service_tier: "priority" }, "priority", 0.01, { tier: "fast" }],
+    ["flex, as asked", { service_tier: "flex" }, "flex", 0.0025, "flex"],
+    ["fast, as asked", { service_tier: "priority" }, "priority", 0.01, "fast"],
     ["standard, where fast was shed to it", { service_tier: "fast" }, "default", 0.005, null],
-    ["fast, from a project default the request never showed", {}, "priority", 0.01, { tier: "fast" }],
-    ["the requested mode, where the response names none", { service_tier: "flex" }, undefined, 0.0025, { tier: "flex" }],
+    ["fast, from a project default the request never showed", {}, "priority", 0.01, "fast"],
+    ["the requested mode, where the response names none", { service_tier: "flex" }, undefined, 0.0025, "flex"],
   ])("bills OpenAI %s", async (_label, fields, served, cost, mode) => {
     const { appId, slug } = await seeded("openai", OPENAI_PRICING);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer(served)));
@@ -130,7 +130,7 @@ describe("billing in the service mode that served the request", () => {
 
     const row = await recorded(appId);
     expect(row.cost).toBeCloseTo(0.00625, 10);
-    expect(row.mode).toEqual({ region: "us" });
+    expect(row.mode).toEqual("us");
   });
 
   it("bills an OpenAI data residency host as the global one", async () => {
@@ -155,7 +155,7 @@ describe("billing in the service mode that served the request", () => {
     // The dearest tier the model is priced in, fast, in the region it was
     // served in: 2 × $0.005, not fast in us.
     expect(row.cost).toBeCloseTo(0.01, 10);
-    expect(row.mode).toEqual({ tier: "ultrafast" });
+    expect(row.mode).toEqual("ultrafast");
     expect(row.source).toBe("estimated");
     expect(lines.filter((line) => line.message === "served_mode_unpriced"))
       .toEqual([expect.objectContaining({ appId, serviceMode: "ultrafast" })]);
@@ -181,7 +181,7 @@ describe("billing in the service mode that served the request", () => {
     const row = await recorded(appId);
     // $0.024 standard, × 2 × 1.1.
     expect(row.cost).toBeCloseTo(0.0528, 10);
-    expect(row.mode).toEqual({ tier: "fast", region: "us" });
+    expect(row.mode).toEqual("fast+us");
   });
 
   it("bills a Gemini priority request that its header says was served as standard at the standard rate", async () => {
@@ -231,9 +231,27 @@ describe("billing in the service mode that served the request", () => {
     const row = await recorded(appId);
     expect(row.cost).toBeCloseTo(0.005, 10);
     expect(row.source).toBe("estimated");
-    expect(row.mode).toEqual({ tier: "flex" });
+    expect(row.mode).toEqual("flex");
     expect(lines.filter((line) => line.message === "service_mode_unpriced"))
       .toEqual([expect.objectContaining({ appId, serviceMode: "flex" })]);
+  });
+
+  it("bills exactly where only the response names a value the gateway does not know, and logs it", async () => {
+    const { appId, slug } = await seeded("anthropic", { "claude-opus-5-5": { input: 4, output: 20 } });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
+      type: "message",
+      usage: { input_tokens: 1000, output_tokens: 1000, inference_geo: "not_available" },
+    }));
+    const lines = warnings();
+
+    await send(appId, `${slug}/v1/messages`, { model: "claude-opus-5-5", max_tokens: 16, messages: [] });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.024, 10);
+    expect(row.source).toBe("computed");
+    expect(row.mode).toBeNull();
+    expect(lines.filter((line) => line.message === "service_mode_unknown"))
+      .toEqual([expect.objectContaining({ appId, source: "response", field: "inference_geo", value: "not_available" })]);
   });
 
   it("records a value the gateway does not know as estimated, at the standard price", async () => {
@@ -292,6 +310,6 @@ describe("billing in the service mode that served the request", () => {
 
     const row = await recorded(appId);
     expect(row.cost).toBeCloseTo(0.03, 10);
-    expect(row.mode).toEqual({ tier: "ultrafast" });
+    expect(row.mode).toEqual("ultrafast");
   });
 });

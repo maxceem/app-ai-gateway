@@ -501,7 +501,7 @@ export function UsageTab({
                       {/* The mode that served it, where not the standard one. */}
                       {event.service_mode ? (
                         <span className="block">
-                          {[event.service_mode.tier, event.service_mode.region].filter(Boolean).join(" · ")}
+                          {event.service_mode}
                         </span>
                       ) : null}
                     </TableCell>
