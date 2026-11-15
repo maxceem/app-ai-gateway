@@ -127,6 +127,12 @@ export interface UsageObservation extends UsageCounts {
    */
   reportedModes?: Partial<Record<string, string>>;
   /**
+   * Set when a reported mode was read by scanning the text of a body too big
+   * to keep whole, rather than from a value parsed whole: the client may have
+   * written it, echoed back.
+   */
+  modesScanned?: true;
+  /**
    * Set when the response reported a duration and no token counts, so its
    * zeroed counters are absent rather than a measured zero. Only a transcription
    * can say this; a token reader always measured what it returns.

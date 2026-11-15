@@ -103,22 +103,35 @@ export const REPORTED_MODE_FIELDS = [
   "response_service_tier",
 ] as const;
 
-/** The strings `records` hold under `names`, the first record that has one winning, or undefined if none does. */
+/**
+ * The documents, and the objects in them, that were read by scanning text
+ * rather than by parsing a whole value: the end of a body too big to keep
+ * whole, and a stream event cut in half. A mode read from one may be text the
+ * client wrote, echoed back.
+ */
+const SCANNED = new WeakSet<object>();
+
+/**
+ * The strings `records` hold under `names`, the first record that has one
+ * winning, and whether any of them came from a scanned document.
+ */
 function reportedModes(
   records: readonly (Record<string, unknown> | null)[],
   names: readonly (typeof REPORTED_MODE_FIELDS)[number][],
-): Partial<Record<string, string>> | undefined {
+): Pick<UsageObservation, "reportedModes" | "modesScanned"> {
   let found: Partial<Record<string, string>> | undefined;
+  let scanned = false;
   for (const name of names) {
     for (const record of records) {
       const value = record?.[name];
       if (typeof value === "string" && value.length > 0) {
         (found ??= {})[name] = value;
+        if (record && SCANNED.has(record)) scanned = true;
         break;
       }
     }
   }
-  return found;
+  return found ? { reportedModes: found, ...(scanned && { modesScanned: true as const }) } : {};
 }
 
 function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
@@ -170,7 +183,7 @@ function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING
       modalityTokens: { ...(input && { input }), ...(output && { output }) },
     }),
     ...(tokenVariants && { tokenVariants }),
-    ...(modes && { reportedModes: modes }),
+    ...modes,
   };
 }
 
@@ -256,7 +269,7 @@ function anthropicUsage(value: unknown): UsageObservation | null {
     cacheWriteTokens: numberAt(usage, "cache_creation_input_tokens"),
     outputTokens: numberAt(usage, "output_tokens"),
     ...(tokenVariants && { tokenVariants }),
-    ...(modes && { reportedModes: modes }),
+    ...modes,
   };
 }
 
@@ -321,7 +334,7 @@ function geminiUsage(value: unknown): UsageObservation | null {
     ?? (thoughts > 0 ? { unknown: candidates } : undefined);
   const modes = reportedModes([usage], ["serviceTier"]);
   return {
-    ...(modes && { reportedModes: modes }),
+    ...modes,
     inputTokens: Math.max(0, promptTotal - cached),
     cachedInputTokens: cached,
     cacheWriteTokens: 0,
@@ -443,6 +456,7 @@ function mergeAnthropicUsage(left: UsageObservation, right: UsageObservation): U
     outputTokens: Math.max(left.outputTokens, right.outputTokens),
     ...(tokenVariants && { tokenVariants }),
     ...(modes && { reportedModes: modes }),
+    ...((left.modesScanned || right.modesScanned) && { modesScanned: true as const }),
   };
 }
 
@@ -586,7 +600,10 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
   // mention a duration is still priced from its tokens.
   const duration = [...tail.matchAll(TAIL_DURATION)].at(-1)?.[1];
   if (duration !== undefined) document.duration = Number(duration);
-  return Object.keys(document).length > 0 ? document : null;
+  if (Object.keys(document).length === 0) return null;
+  SCANNED.add(document);
+  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return document;
 }
 
 /**

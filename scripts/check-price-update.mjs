@@ -15,7 +15,9 @@
 //   - changes how it is billed (per token, per minute, per hour, per image);
 //   - drops one of its rates, which would bill those tokens at another rate;
 //   - moves a rate, in the standard mode or any service mode, by more than
-//     MAX_FACTOR, or to or from $0.
+//     MAX_FACTOR, or to or from $0. A tier in a region that no entry names is
+//     checked too, at the tier's rates times the region's factor, as it is
+//     billed.
 //
 // The prices bot applies the same rules itself and holds anything else for a
 // person; this is the independent check on its output. A legitimate change
@@ -32,6 +34,7 @@ import { pathToFileURL } from "node:url";
 export const MAX_FACTOR = 3;
 
 const UNITS = ["per_minute", "per_hour", "per_image"];
+const TIERS = new Set(["flex", "priority", "fast", "ultrafast"]);
 const NOT_RATES = new Set(["long_context_threshold", "factor"]);
 
 const own = (object, key) => object !== null && typeof object === "object" && Object.hasOwn(object, key);
@@ -62,12 +65,27 @@ function modeRates(entry, name) {
   return result;
 }
 
+/**
+ * What a mode bills for each rate, the way the gateway prices it: the mode's
+ * own entry where there is one, else a tier in a region at the tier's rates
+ * times the region's factor. `undefined` where the entry prices neither.
+ */
+function billedRates(entry, name) {
+  if (own(entry.modes, name)) return modeRates(entry, name);
+  const [tier, region] = name.split("+");
+  if (region === undefined || !own(entry.modes, tier) || !own(entry.modes, region)) return undefined;
+  const factor = typeof entry.modes[region].factor === "number" ? entry.modes[region].factor : 1;
+  return Object.fromEntries(Object.entries(modeRates(entry, tier)).map(([field, value]) => [field, value * factor]));
+}
+
 /** Why moving a rate from `from` to `to` needs a person, if it does. */
 function moved(from, to) {
   if (from === to) return null;
-  if (from === 0 || to === 0) return `$${from} → $${to}`;
+  // A derived rate carries float noise, such as 19.799999999999997.
+  const dollars = (value) => `$${Number(value.toPrecision(12))}`;
+  if (from === 0 || to === 0) return `${dollars(from)} → ${dollars(to)}`;
   const ratio = to / from;
-  return ratio > MAX_FACTOR || ratio < 1 / MAX_FACTOR ? `$${from} → $${to}, more than ${MAX_FACTOR}x` : null;
+  return ratio > MAX_FACTOR || ratio < 1 / MAX_FACTOR ? `${dollars(from)} → ${dollars(to)}, more than ${MAX_FACTOR}x` : null;
 }
 
 /** Every reason the update `after` could break what `before` priced; empty when there is none. */
@@ -96,15 +114,25 @@ export function priceUpdateProblems(before, after) {
         const problem = moved(value, theirs[field]);
         if (problem) problems.push(`${where}: ${field} ${problem}`);
       }
-      for (const name of Object.keys(entry.modes ?? {})) {
-        if (!own(next.modes, name)) {
+      const listed = Object.keys(entry.modes ?? {});
+      const tiers = listed.filter((name) => TIERS.has(name));
+      const regions = listed.filter((name) => !TIERS.has(name) && !name.includes("+"));
+      const pairs = tiers.flatMap((tier) => regions.map((region) => `${tier}+${region}`))
+        .filter((name) => !listed.includes(name));
+      for (const name of [...listed, ...pairs]) {
+        if (listed.includes(name) && !own(next.modes, name)) {
           problems.push(`${where}: service mode ${name} is gone`);
           continue;
         }
-        const was = modeRates(entry, name);
-        const is = modeRates(next, name);
+        const was = billedRates(entry, name);
+        const is = billedRates(next, name);
+        if (!was || !is) continue;
         for (const [field, value] of Object.entries(was)) {
-          if (is[field] === undefined) continue;
+          if (is[field] === undefined) {
+            // A rate the standard price dropped is reported above already.
+            if (ours[field] === undefined) problems.push(`${where}: ${name} ${field} is gone`);
+            continue;
+          }
           const problem = moved(value, is[field]);
           if (problem) problems.push(`${where}: ${name} ${field} ${problem}`);
         }
