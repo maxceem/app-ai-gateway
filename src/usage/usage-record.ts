@@ -20,7 +20,7 @@ import {
   resolveModelAuthor,
   type UsageObservation,
 } from "./pricing";
-import { isEventStream, observeResponse } from "./usage-readers";
+import { observeResponse } from "./usage-readers";
 import { providerDescriptor, type ProviderType, routeCostReport } from "../shared/providers";
 import { relaysProviderResponses } from "../shared/gateways";
 import {
@@ -372,7 +372,7 @@ function servedServiceMode(
   attribution: AttemptAttribution,
   reported: UsageObservation["reportedModes"],
   headers: Headers | undefined,
-  /** Whether the body was a document too big to keep whole, so its tier was found by a text scan. */
+  /** Whether the response's mode was found by scanning text; see `UsageObservation.modesScanned`. */
   scanned: boolean,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
   const requested = attribution.serviceMode ?? STANDARD_MODE;
@@ -382,10 +382,10 @@ function servedServiceMode(
   const header = (name: string) => name.startsWith("header:") ? headers?.get(name.slice("header:".length)) ?? undefined : undefined;
   const { named, unknown } = readServiceMode(fields, (name) => header(name) ?? reported?.[name]);
   let tier = named.tier ?? requested.tier;
-  // A scanned document's tier was found in text the client can have a hand in
-  // (its own `metadata`, echoed back), so it may say a dearer tier served the
-  // request, never a cheaper one than it asked for. A header, and every event
-  // of a stream, is parsed whole and believed.
+  // A scanned tier was found in text the client can have a hand in (its own
+  // `metadata`, echoed back), so it may say a dearer tier served the request,
+  // never a cheaper one than it asked for. A header, and a value parsed whole,
+  // is believed.
   if (
     scanned
     && SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank
@@ -408,12 +408,9 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // the request was served as far as the caller wanted it — but it is why a
   // stream can end without the usage the provider only sends at the end.
   let aborted = false;
-  // Whether the body was too big to keep whole, so its usage was read from its ends.
-  let truncated = false;
   if (input.observed) {
     const body = await input.observed;
     aborted = body.aborted;
-    truncated = body.truncated;
     if (body.truncated) {
       // The response was too big to keep whole, so usage was read from its two
       // ends. Nothing is wrong with that, but how often it happens is the only
@@ -458,7 +455,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
   const served: { mode: ServiceMode; unknown?: ServiceModeValue } = attribution.passthrough
     ? { mode: STANDARD_MODE }
-    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, truncated && !isEventStream(input.contentType));
+    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, usage.modesScanned === true);
   const servedMode = served.mode;
   const price = computeCost(
     attribution.provider,

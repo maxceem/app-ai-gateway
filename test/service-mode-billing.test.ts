@@ -313,6 +313,36 @@ describe("billing in the service mode that served the request", () => {
     expect(row.mode).toEqual("ultrafast");
   });
 
+  it("never bills below the asked tier from a stream event cut in half, which is scanned too", async () => {
+    const appId = `mode-billing-${crypto.randomUUID()}`;
+    const pricing: ProviderPricing = {
+      "gpt-5.6-sol": { input: 1, output: 4, modes: { flex: { factor: 0.5 }, ultrafast: { factor: 6 } } },
+    };
+    // The tail starts inside the final event, so it is scanned, not parsed,
+    // and its `usage` object can be text the client wrote.
+    await recordUsageEvent({
+      organizationId: "operator-test-organization",
+      env,
+      observed: Promise.resolve({
+        head: 'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n',
+        tail: 'x","usage":{"input_tokens":1000,"output_tokens":1000,"service_tier":"flex"}}}\n\n',
+        truncated: true,
+        totalBytes: 2_000_000,
+        aborted: false,
+      }),
+      contentType: "text/event-stream",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({ pricing, serviceMode: { tier: "ultrafast", region: "global" } }),
+      appVersion: null,
+      status: "ok",
+      latencyMs: 9,
+    });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.03, 10);
+    expect(row.mode).toEqual("ultrafast");
+  });
+
   // Only a scanned document is held to the requested tier: a whole stream
   // event and a response header are parsed, not scanned, so a downgrade they
   // report is billed even on a body too big to keep whole.
