@@ -641,6 +641,27 @@ describe("the application configuration grammar", () => {
         .toEqual({ chat: { ...chat, kind: "text" }, transcribe: { ...transcribe, kind: "transcription" } });
     });
 
+    it("judges a service mode the parameters set on every target, as a request would", () => {
+      const responses = { api_style: "responses", provider: "openai", model: "gpt-5.6-sol" };
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...responses, params: { service_tier: "flex" } } },
+      }))).not.toThrow();
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...responses, params: { service_tier: "priority" } } },
+      }))).toThrowError("endpoints.chat: openai has no price for gpt-5.6-sol in service mode fast");
+      // A value the gateway does not know is forwarded, as on a request.
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...responses, params: { service_tier: "scale" } } },
+      }))).not.toThrow();
+      // xAI reports what each Responses request cost, so it bills any tier; the
+      // same parameters sent to an OpenAI fallback cannot be billed.
+      const xai = { api_style: "responses", provider: "xai", model: "grok-4.7", params: { service_tier: "priority" } };
+      expect(() => validateConfig(serverConfig({ endpoints: { chat: xai } }))).not.toThrow();
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...xai, fallback: [{ provider: "openai", model: "gpt-5.6-sol" }] } },
+      }))).toThrowError("endpoints.chat.fallback[0]: openai has no price for gpt-5.6-sol in service mode fast");
+    });
+
     it("takes the kind a multi-kind style is told to serve, and refuses one it cannot", () => {
       const voice = { api_style: "gemini_native", provider: "gemini", model: "gemini-3.8-flash-tts" };
       expect(validateConfig(serverConfig({ endpoints: { voice: { ...voice, kind: "speech" } } })).endpoints.voice?.kind)

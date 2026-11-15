@@ -147,6 +147,43 @@ The gateway adds a `Server-Timing` header with the time spent on
 authentication, preparing the request, limits and the provider's time to first
 byte. A step the request never reached is left out.
 
+## Service tiers and regions
+
+Some providers serve a request faster, cheaper or in a pinned region for a
+different price, chosen by a field in the request body. Send that field in
+the provider's own format: the gateway forwards it unchanged and only reads
+it, so the request can be billed at the right price.
+
+Until the price list carries these prices, a request for a mode that costs
+more than standard is refused with `400 pricing_not_configured`, and
+`data.service_mode` names the mode. A value the gateway does not know, such
+as a tier a provider added recently, is forwarded and billed at the standard
+rate, so a new provider feature never breaks your app.
+
+These are refused for now:
+
+| Provider | Refused for now |
+| --- | --- |
+| OpenAI | `service_tier`: `priority` and `fast` (Fast mode), `ultrafast` |
+| Anthropic | `speed: "fast"`, `inference_geo: "us"` |
+| Gemini (Interactions API) | `service_tier` (or `serviceTier`): `priority` |
+| Mistral | `service_tier: "auto"` (Priority Tier) |
+| Perplexity | `service_tier`: `priority`, `fast` |
+| Baseten | `service_tier: "priority"` |
+
+Through Vercel AI Gateway, Vercel's own `providerOptions.gateway.serviceTier`
+and `speed`, and the OpenAI and Anthropic options it passes on, are judged the
+same way. Values are matched without regard to case.
+
+Every other value is forwarded, including flex, the providers' standard
+values, tiers paid for by contract (OpenAI `scale`, Groq `performance`), and
+any value on xAI Chat Completions and Responses and on OpenRouter, which
+report what each request cost.
+
+A flex request is billed at the standard rate for now, which is never less
+than the provider charges. A custom endpoint's parameters are judged the same
+way, when you save them and on every request.
+
 ## Limits on a request
 
 - Request bodies are limited to 20 MB. Larger ones answer

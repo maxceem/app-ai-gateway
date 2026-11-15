@@ -179,6 +179,89 @@ describe("custom endpoints", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["the client asks for", { input: "hello", service_tier: "fast" }, {}],
+    ["the endpoint's parameters ask for", { input: "hello" }, { service_tier: "priority" }],
+  ])("refuses a service mode %s that has no price", async (_label, body, params) => {
+    const appId = `endpoint-mode-${crypto.randomUUID()}`;
+    await seedApp(appId, {
+      endpoints: { chat: { ...CHAT_ENDPOINTS.chat, params: { ...CHAT_ENDPOINTS.chat.params, ...params } } },
+    });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "pricing_not_configured", data: { service_mode: "fast" } },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("drops a fallback that cannot bill the mode the body asks for", async () => {
+    const appId = "endpoint-mode-fallback";
+    // xAI reports each Responses request's cost, so it bills priority; OpenAI
+    // reads the same field as fast, which has no price yet.
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          api_style: "responses",
+          provider: "xai",
+          model: "grok-4.5",
+          fallback: [{ provider: "openai", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(() =>
+      Response.json({ error: { message: "upstream exploded" } }, { status: 500 }));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello", service_tier: "priority" }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(500);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.url).toBe("https://api.x.ai/v1/responses");
+    expect(JSON.parse(captured[0]!.body)).toMatchObject({ service_tier: "priority" });
+  });
+
+  it("sends flex to every target unchanged", async () => {
+    const appId = "endpoint-mode-flex";
+    await seedApp(appId, {
+      endpoints: { chat: { ...CHAT_ENDPOINTS.chat, fallback: [{ provider: "xai", model: "grok-4.5" }] } },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream((attempt) =>
+      attempt === 0
+        ? Response.json({ error: { message: "busy" } }, { status: 429 })
+        : usageResponse());
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello", service_tier: "flex" }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured.map((request) => JSON.parse(request.body).service_tier)).toEqual(["flex", "flex"]);
+  });
+
   it("overwrites the model, deep-merges configured params, and clamps output tokens", async () => {
     const appId = "endpoint-responses";
     await seedApp(appId, {

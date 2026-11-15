@@ -51,3 +51,16 @@ test("a server app gets a streamed Responses answer", async () => {
   expect(text).toContain("response.completed");
   await expectForwardedCleanly(id, "v1/responses");
 });
+
+// A tier that costs more than standard has no price yet, so it is refused
+// before it leaves rather than billed at the standard rate.
+test("a request for the fast tier is refused as unpriced", async () => {
+  const response = await call(env, proxy("v1/responses"), {
+    key,
+    body: { model: MODEL, input: smokeId(), service_tier: "fast" },
+  });
+  await expectStatus(response, 400, "Responses in the fast tier");
+  const body = await json<{ error: { code: string; data?: { service_mode?: string } } }>(response, "Fast tier refusal");
+  expect(body.error.code).toBe("pricing_not_configured");
+  expect(body.error.data?.service_mode).toBe("fast");
+});

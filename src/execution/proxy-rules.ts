@@ -15,7 +15,7 @@ import {
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
-import { isBillable } from "../usage/pricing";
+import { isBillable, serviceModeRefusal } from "../usage/pricing";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
 import {
   defaultInferencePaths,
@@ -348,9 +348,10 @@ export function clientResponseHeaders(upstream: Response): Headers {
  * The one model decision, for both shapes of proxied request.
  *
  * Which model a request is for, whether the app may ask for it, what the
- * organization rewrote it to, whether that can be billed, and what the route
- * puts on the wire — in that order, because each step judges the answer the one
- * before it settled. One function for both shapes, so the multipart path and
+ * organization rewrote it to, whether that can be billed, whether it can be
+ * billed in the service mode the body asks for, and what the route puts on the
+ * wire — in that order, because each step judges the answer the one before it
+ * settled. One function for both shapes, so the multipart path and
  * the JSON path cannot drift into two policies.
  */
 function resolveModel(input: {
@@ -362,6 +363,8 @@ function resolveModel(input: {
   resolved: ResolvedProvider;
   /** The API the request speaks, which decides whether a cost report covers it. */
   style: ApiStyle;
+  /** One body field, for the service mode; see {@link serviceModeRefusal}. */
+  read: (name: string) => unknown;
 }): { requestedModel: string; actualModel: string; wireModel: string } {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
@@ -377,6 +380,14 @@ function resolveModel(input: {
   if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
+  const refusal = serviceModeRefusal({
+    type: provider,
+    route: input.resolved.route.kind,
+    style: input.style,
+    model: actualModel,
+    read: input.read,
+  });
+  if (refusal) throw refusal;
   // Everything above judged the canonical model; only the outbound request
   // speaks the route's own namespace, and only where the adapter declares one.
   return {
@@ -512,6 +523,9 @@ export async function prepareProxyRequest(input: {
       rewrites: input.app.config.routing.model_rewrites,
       resolved,
       style: apiStyle,
+      // An upload left unparsed is a provider-native one whose path names the
+      // model; none of those takes a service tier.
+      read: (name) => parsed?.get(name),
     });
     const placement = modelPlacement(match, model);
     // A transcription is only forwarded in a format whose answer can be priced.
@@ -549,6 +563,7 @@ export async function prepareProxyRequest(input: {
     rewrites: input.app.config.routing.model_rewrites,
     resolved,
     style: apiStyle,
+    read: (name) => parsed[name],
   });
   const placement = modelPlacement(match, model);
   let bodyChanged = false;

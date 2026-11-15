@@ -1,6 +1,6 @@
 import { publishesStylePaths, supportsEndpointStyle } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { catalogKind, isBillable } from "../usage/pricing";
+import { catalogKind, isBillable, serviceModeRefusal } from "../usage/pricing";
 import {
   requireProvider,
   resolveProvider,
@@ -263,6 +263,20 @@ export async function resolveEndpointAttempts(
           unpricedMessage(entry.type, target.model),
         );
       }
+      continue;
+    }
+    // Read per target, because each provider spells the mode its own way: the
+    // body a fallback is sent may ask a different provider for something else.
+    const json = prepared.json;
+    const modeRefusal = serviceModeRefusal({
+      type: entry.type,
+      route: entry.route.kind,
+      style: endpoint.api_style,
+      model: target.model,
+      read: json ? (name) => json[name] : (name) => prepared.form?.get(name),
+    });
+    if (modeRefusal) {
+      if (primary) throw modeRefusal;
       continue;
     }
     usableTargets.push(target);

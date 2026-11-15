@@ -12,9 +12,13 @@ import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider
 import { lookup } from "../shared/records";
 import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
-import { type ProviderType, reportsCost } from "../shared/providers";
+import { type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
+import { GATEWAY_DESCRIPTORS } from "../shared/gateways";
+import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
+import { readServiceMode, serviceModeName, type ServiceMode, type ServiceModeField } from "../shared/service-modes";
 import {
   TOKEN_RATE_FIELDS,
   VARIANTS,
@@ -194,12 +198,27 @@ export function hasTokenModelPrice(
 }
 
 /**
+ * Whether a service mode can be billed, for a model priced in the standard one.
+ *
+ * Prices carry no modes yet, so this is the interim rule. Flex passes: it is
+ * billed at the standard rate, which never costs an app less than the provider
+ * charges. Priority, fast, ultrafast and a pinned region all cost more than
+ * standard, so a request for one is refused rather than billed below its cost —
+ * an app's end user could otherwise stretch their budget several times over
+ * with one request field.
+ */
+function hasModePrice(mode: ServiceMode): boolean {
+  return mode.region === "global" && (mode.tier === "standard" || mode.tier === "flex");
+}
+
+/**
  * Whether a request can be billed at all, which is the only reason it is
  * allowed to proxy. Two ways to know what it costs: a local price for the
  * canonical model, or a route that reports its own cost per request. Neither
  * means the spend would be invisible, and an invisible spend is a limit bypass.
  * `style` is the request's API, or `null` on a configuration write that has
- * none yet — see `routeCostReport`.
+ * none yet — see `routeCostReport`. The service mode is judged apart, by
+ * {@link serviceModeRefusal}.
  */
 export function isBillable(
   provider: ProviderType,
@@ -209,6 +228,58 @@ export function isBillable(
   overrides?: ProviderPricing | null,
 ): boolean {
   return reportsCost(provider, route, style) || hasModelPrice(provider, model, overrides);
+}
+
+/** The fields a request on this route names its service mode in: the provider's, and its gateway's own. */
+function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly ServiceModeField[] {
+  const own = providerDescriptor(type).serviceModes;
+  const gateway = route === "direct" ? [] : GATEWAY_DESCRIPTORS[route].serviceModes;
+  return gateway.length === 0 ? own : [...own, ...gateway];
+}
+
+/**
+ * Why a request's service mode cannot be billed on one target, or `null` when
+ * it can.
+ *
+ * `read` returns one field of the body as it will be sent — the client's JSON
+ * merged with anything the configuration adds, or a form field — and the
+ * target's own table says what its value means. A mode the table knows costs
+ * more than standard, and the model has no price in, is refused: never billed
+ * as standard. A value the table does not know is let through and billed at
+ * standard, so a tier a provider adds never breaks a client before the gateway
+ * learns it; it is logged as `service_mode_unknown` so it can be added. A route
+ * whose provider reports what each request cost needs no price, so nothing is
+ * read there.
+ *
+ * Judged after the model itself was found billable, so a refusal here is
+ * always about the mode.
+ */
+export function serviceModeRefusal(input: {
+  type: ProviderType;
+  route: ProviderRoute | null;
+  style: ApiStyle;
+  model: string;
+  read: (name: string) => unknown;
+}): GatewayError | null {
+  const { type, route } = input;
+  if (route === null || reportsCost(type, route, input.style)) return null;
+  const reading = readServiceMode(serviceModeFields(type, route), input.read);
+  if (reading.unknown) {
+    log("warn", "service_mode_unknown", {
+      provider: type,
+      field: reading.unknown.field,
+      value: reading.unknown.value,
+    });
+  }
+  if (hasModePrice(reading.mode)) return null;
+  const name = serviceModeName(reading.mode);
+  return new GatewayError(
+    400,
+    "pricing_not_configured",
+    `${type} has no price for ${input.model} in service mode ${name}`,
+    undefined,
+    { data: { service_mode: name } },
+  );
 }
 
 /**
