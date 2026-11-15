@@ -4,8 +4,7 @@ import { authenticatedAccess } from "../execution/authenticated-access";
 import { requireProvider } from "../providers/provider-store";
 import { GatewayError } from "../core/errors";
 import { enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
-import { billingQuota } from "../billing/quota";
-import { requireActiveBilling } from "../billing/gateway";
+import { requireRealtimeAllowance } from "./allowance";
 import { realtimePolicy } from "./policy";
 import type { Bootstrap } from "./types";
 import { activeRealtimeRelease, seamlessReleases } from "./releases";
@@ -93,14 +92,7 @@ export async function prepareRealtime(
   await enforceEndpointRateLimit(env, action, realtimeCaller(identity));
   const provider = await requireProvider(env, app.organizationId, providerSlug);
   const policy = realtimePolicy(app, provider, model);
-  const quota = await billingQuota(resolveDeployment(env, origin), env, app.organizationId, new Map());
-  requireActiveBilling(quota.access);
-  if (
-    quota.kind === "metered"
-    && await env.ORG_QUOTA.getByName(app.organizationId).usage(quota.period.periodId) >= quota.limit
-  ) {
-    throw new GatewayError(429, "billing_request_quota_exceeded", "Request allowance exhausted");
-  }
+  await requireRealtimeAllowance(env, resolveDeployment(env, origin), app.organizationId, waitUntil);
   const bootstrap: Bootstrap = {
     sessionId: crypto.randomUUID(),
     appId: app.id,

@@ -1361,3 +1361,31 @@ describe("release admission acknowledgement ordering", () => {
     }
   });
 });
+
+describe("realtime sessions during a billing outage", () => {
+  it("stay open when billing cannot be read or the allowance counter is down", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { bootstrap } = await setup();
+    const application = await loadApp(env, bootstrap.appId);
+    application.config.limits.per_app.requests.per_day = null;
+    const billingDown = {
+      ...hostedEnv(),
+      BILLING: { getTenantAccess: async () => { throw new Error("billing service unreachable"); } },
+    } as unknown as Env;
+    await expect(localSessionBackend(billingDown, () => {}).maintain(bootstrap, application, false))
+      .resolves.toBeUndefined();
+    const counterDown = hostedEnv();
+    counterDown.ORG_QUOTA = new Proxy(counterDown.ORG_QUOTA, {
+      get(target, property) {
+        if (property === "getByName") {
+          return () => ({ usage: async () => { throw new Error("counter unreachable"); } });
+        }
+        return passthrough(target, property);
+      },
+    });
+    await expect(localSessionBackend(counterDown, () => {}).maintain(bootstrap, application, false))
+      .resolves.toBeUndefined();
+    vi.restoreAllMocks();
+  });
+});

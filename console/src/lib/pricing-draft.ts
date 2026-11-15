@@ -11,18 +11,38 @@ import type { ProviderPricing } from "@/lib/types";
 
 type StoredPrice = ProviderPricing[string];
 
+/**
+ * The optional rates the form has a field for. Each one left blank is not
+ * sent, and its tokens bill at the matching text price: cached and cache-write
+ * tokens at the input price, audio at the input or output price, and cached
+ * audio at the cached price.
+ */
+export const OPTIONAL_RATES = [
+  "cached_input",
+  "cache_write",
+  "audio_input",
+  "audio_output",
+  "cached_input_audio",
+] as const;
+
+export type OptionalRate = (typeof OPTIONAL_RATES)[number];
+
+/** The audio rates. A realtime model needs all three, and a cached price too. */
+export const AUDIO_RATES = ["audio_input", "audio_output", "cached_input_audio"] as const satisfies
+  readonly OptionalRate[];
+
 /** The rates the form shows a field for; every other one rides along in `rest`. */
-type ShownRate = "input" | "output" | "cached_input" | "cache_write";
+type ShownRate = "input" | "output" | OptionalRate;
 
 /** A repeatable pricing row while it is still being typed. */
 export interface PricingDraft {
   model: string;
   input: string;
   output: string;
-  /** Optional: blank means it bills at the input price. */
-  cachedInput?: string;
-  /** Optional: blank means it bills at the input price. */
-  cacheWrite?: string;
+  /** The optional rates as typed. A missing or blank one is not sent. */
+  rates?: Partial<Record<OptionalRate, string>>;
+  /** Whether the row shows its audio fields, which most models never need. */
+  showAudio?: boolean;
   /**
    * Whatever else the stored price carries — a one-hour cache-write rate or
    * long-context rates set through the API — which the form has no field for
@@ -34,14 +54,21 @@ export interface PricingDraft {
 /** The stored prices as rows, which is how the form holds them. */
 export function toDrafts(pricing: ProviderPricing | null): PricingDraft[] {
   return Object.entries(pricing ?? {}).map(([model, entry]) => {
-    const { input, output, cached_input: cachedInput, cache_write: cacheWrite, ...rest } = entry;
+    const { input, output, ...others } = entry;
+    const rates: Partial<Record<OptionalRate, string>> = {};
+    const rest: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(others)) {
+      if (value === undefined) continue;
+      if ((OPTIONAL_RATES as readonly string[]).includes(name)) rates[name as OptionalRate] = String(value);
+      else rest[name] = value;
+    }
     return {
       model,
       input: String(input),
       output: String(output),
-      cachedInput: cachedInput === undefined ? "" : String(cachedInput),
-      cacheWrite: cacheWrite === undefined ? "" : String(cacheWrite),
-      ...(Object.keys(rest).length > 0 && { rest }),
+      rates,
+      showAudio: AUDIO_RATES.some((name) => rates[name] !== undefined),
+      ...(Object.keys(rest).length > 0 && { rest: rest as PricingDraft["rest"] }),
     };
   });
 }
@@ -58,9 +85,8 @@ function rate(text: string): number | null {
  * A row left entirely blank is dropped, so an operator can leave a spare one
  * lying around. Anything else must be complete: `Number("")` is 0, and a price
  * of $0 has to be a deliberate answer rather than an empty field, because
- * entering a price is what allows a model to be proxied at all. The cache
- * prices are the exception: left blank, they are simply not sent, and bill at
- * the input price.
+ * entering a price is what allows a model to be proxied at all. The optional
+ * prices are the exception: left blank, they are simply not sent.
  */
 export function draftsToPricing(
   drafts: PricingDraft[],
@@ -70,18 +96,18 @@ export function draftsToPricing(
     const model = draft.model.trim();
     const input = draft.input.trim();
     const output = draft.output.trim();
-    const cachedInput = draft.cachedInput?.trim() ?? "";
-    const cacheWrite = draft.cacheWrite?.trim() ?? "";
-    if (!model && !input && !output && !cachedInput && !cacheWrite && !draft.rest) continue;
+    const typed = OPTIONAL_RATES
+      .map((name) => [name, draft.rates?.[name]?.trim() ?? ""] as const)
+      .filter(([, text]) => text !== "");
+    if (!model && !input && !output && typed.length === 0 && !draft.rest) continue;
     if (!model) return { error: "Every pricing row needs a model name" };
     if (!input || !output) {
       return { error: `Enter both prices for ${model} — use 0 only if it is genuinely free` };
     }
     const inputPrice = rate(input);
     const outputPrice = rate(output);
-    const cachedPrice = cachedInput ? rate(cachedInput) : undefined;
-    const cacheWritePrice = cacheWrite ? rate(cacheWrite) : undefined;
-    if (inputPrice === null || outputPrice === null || cachedPrice === null || cacheWritePrice === null) {
+    const optional = typed.map(([name, text]) => [name, rate(text)] as const);
+    if (inputPrice === null || outputPrice === null || optional.some(([, value]) => value === null)) {
       return { error: `Prices for ${model} must be numbers of 0 or more` };
     }
     // Two rows for one model would otherwise let the last one win in silence.
@@ -92,8 +118,7 @@ export function draftsToPricing(
       ...draft.rest,
       input: inputPrice,
       output: outputPrice,
-      ...(cachedPrice !== undefined && { cached_input: cachedPrice }),
-      ...(cacheWritePrice !== undefined && { cache_write: cacheWritePrice }),
+      ...Object.fromEntries(optional),
     };
   }
   return { pricing };

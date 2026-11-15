@@ -3,8 +3,7 @@ import { admitGeneration } from "../execution/admission";
 import { requireProvider } from "../providers/provider-store";
 import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { resolveDeployment } from "../policy/deployment";
-import { billingQuota } from "../billing/quota";
-import { requireActiveBilling } from "../billing/gateway";
+import { requireRealtimeAllowance } from "./allowance";
 import { monthlyBudgetMicrousd } from "../shared/app-config";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 import { callerLimiter } from "../execution/admission";
@@ -82,15 +81,7 @@ export function localSessionBackend(env: Env, waitUntil: (promise: Promise<unkno
       if (result === "stored") waitUntil(markUsageApiKeyUsed(env, event));
     },
     async maintain(b, app, active) {
-      const quota = await billingQuota(resolveDeployment(env, b.origin), env, b.organizationId, new Map());
-      requireActiveBilling(quota.access);
-      if (
-        !active
-        && quota.kind === "metered"
-        && await env.ORG_QUOTA.getByName(b.organizationId).usage(quota.period.periodId) >= quota.limit
-      ) {
-        throw new GatewayError(429, "billing_request_quota_exceeded", "Request allowance exhausted");
-      }
+      await requireRealtimeAllowance(env, resolveDeployment(env, b.origin), b.organizationId, waitUntil, !active);
       if (active) return;
       // The same budgets admission refuses a generation by, each measured over
       // the month its scope is: the app's, and the caller's install or user.

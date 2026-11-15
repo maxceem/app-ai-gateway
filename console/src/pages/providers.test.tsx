@@ -313,20 +313,36 @@ describe("draftsToPricing", () => {
       .toEqual({ error: "Prices for m must be numbers of 0 or more" });
     expect(draftsToPricing([{ model: "", input: "1", output: "2" }]))
       .toEqual({ error: "Every pricing row needs a model name" });
-    expect(draftsToPricing([{ model: "m", input: "1", output: "2", cacheWrite: "abc" }]))
+    expect(draftsToPricing([{ model: "m", input: "1", output: "2", rates: { cache_write: "abc" } }]))
       .toEqual({ error: "Prices for m must be numbers of 0 or more" });
   });
 
-  it("sends the cache prices that are filled in and leaves out the blank ones", () => {
+  it("sends the optional prices that are filled in and leaves out the blank ones", () => {
     expect(draftsToPricing([
-      { model: "a", input: "1", output: "2", cachedInput: "0.1", cacheWrite: "1.25" },
-      { model: "b", input: "1", output: "2", cachedInput: " ", cacheWrite: "" },
+      { model: "a", input: "1", output: "2", rates: { cached_input: "0.1", cache_write: "1.25" } },
+      { model: "b", input: "1", output: "2", rates: { cached_input: " ", cache_write: "" } },
+      {
+        model: "voice",
+        input: "4",
+        output: "16",
+        rates: { cached_input: "0.4", audio_input: "32", audio_output: "64", cached_input_audio: "0.4" },
+      },
     ])).toEqual({
       pricing: {
         a: { input: 1, output: 2, cached_input: 0.1, cache_write: 1.25 },
         b: { input: 1, output: 2 },
+        voice: { input: 4, output: 16, cached_input: 0.4, audio_input: 32, audio_output: 64, cached_input_audio: 0.4 },
       },
     });
+  });
+
+  it("opens a row's audio fields only when it has an audio price", () => {
+    const drafts = toDrafts({
+      text: { input: 1, output: 2 },
+      voice: { input: 4, output: 16, audio_output: 64 },
+    });
+    expect(drafts.map((draft) => draft.showAudio)).toEqual([false, true]);
+    expect(drafts[1]?.rates).toEqual({ audio_output: "64" });
   });
 
   it("keeps rates the form has no field for when the prices are saved again", () => {
@@ -1208,6 +1224,27 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "PUT");
       expect(call?.body.revision).toBe(DIRECT.revision);
+    });
+  });
+
+  it("edits a model's audio prices", async () => {
+    const calls = stubProviders();
+    renderProviders();
+
+    await runRowAction("Prod OpenAI", /pricing/i);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByLabelText("Audio input price 1")).toBeNull();
+    await userEvent.click(within(dialog).getByRole("button", { name: /add audio prices/i }));
+    await userEvent.type(within(dialog).getByLabelText("Audio input price 1"), "32");
+    await userEvent.type(within(dialog).getByLabelText("Audio output price 1"), "64");
+    await userEvent.type(within(dialog).getByLabelText("Cached audio price 1"), "0.4");
+    await userEvent.click(within(dialog).getByRole("button", { name: /save pricing/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "PUT");
+      expect(call?.body.pricing).toEqual({
+        "gpt-brand-new": { input: 1.25, output: 10, audio_input: 32, audio_output: 64, cached_input_audio: 0.4 },
+      });
     });
   });
 

@@ -132,3 +132,49 @@ export async function admitAllowance(
   });
   return { kind: "uncounted" };
 }
+
+/**
+ * Whether the organization's allowance is known to be used up, for a check
+ * made before anything is counted, such as opening a realtime session.
+ *
+ * It reads the counter without spending from it. When the counter cannot
+ * answer within {@link ALLOWANCE_ADMIT_DEADLINE_MS}, the answer comes from what
+ * this isolate last learned, and passes when it learned nothing. Each request
+ * is still counted on its own, by {@link admitAllowance}.
+ */
+export async function allowanceExhausted(
+  counter: { usage(periodId: string): Promise<number> | number },
+  organizationId: string,
+  allowance: { periodId: string; limit: number },
+  waitUntil: (promise: Promise<unknown>) => void,
+  deadlineMs: number = ALLOWANCE_ADMIT_DEADLINE_MS,
+): Promise<boolean> {
+  const call = Promise.resolve().then(() => counter.usage(allowance.periodId));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), deadlineMs);
+  });
+  let failure: CounterFailure;
+  let error: unknown;
+  try {
+    const used = await Promise.race([call, deadline]);
+    if (used !== "timeout") return used >= allowance.limit;
+    failure = "timeout";
+    waitUntil(call.catch(() => undefined));
+  } catch (caught) {
+    error = caught;
+    failure = platformFailure(caught) ?? "fault";
+  } finally {
+    clearTimeout(timer);
+  }
+  const reading = lastReadings.get(organizationId);
+  if (reading?.periodId === allowance.periodId && reading.used + reading.uncounted >= allowance.limit) {
+    return true;
+  }
+  log("warn", "allowance_check_skipped", {
+    organizationId,
+    reason: failure,
+    ...(error === undefined ? {} : { error: errorFacts(error) }),
+  });
+  return false;
+}

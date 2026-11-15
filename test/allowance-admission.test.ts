@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { admitAllowance } from "../src/billing/allowance-admission";
+import { admitAllowance, allowanceExhausted } from "../src/billing/allowance-admission";
 import type { QuotaAdmission, QuotaAdmissionInput } from "../src/do/OrgQuota";
 import { clearIsolateCaches } from "./helpers";
 
@@ -110,5 +110,32 @@ describe("admitAllowance", () => {
   it("serves an organization it has no reading for", async () => {
     await expect(admit("org-unknown", counter({ delayMs: DEADLINE_MS * 5, admission: allowed(1) })).outcome)
       .resolves.toEqual({ kind: "uncounted" });
+  });
+});
+
+describe("allowanceExhausted", () => {
+  const reader = (options: { used?: number; delayMs?: number; error?: unknown }) => ({
+    usage: vi.fn(async () => {
+      if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      if (options.error !== undefined) throw options.error;
+      return options.used!;
+    }),
+  });
+  const check = (org: string, r: ReturnType<typeof reader>) =>
+    allowanceExhausted(r, org, PERIOD, () => undefined, DEADLINE_MS);
+
+  it("answers from the counter when it answers in time", async () => {
+    await expect(check("org-read", reader({ used: PERIOD.limit - 1 }))).resolves.toBe(false);
+    await expect(check("org-read", reader({ used: PERIOD.limit }))).resolves.toBe(true);
+  });
+
+  it("passes when the counter is slow or fails and nothing is known", async () => {
+    await expect(check("org-read-slow", reader({ used: PERIOD.limit, delayMs: DEADLINE_MS * 5 }))).resolves.toBe(false);
+    await expect(check("org-read-down", reader({ error: new Error("down") }))).resolves.toBe(false);
+  });
+
+  it("refuses when the counter fails and the last reading is used up", async () => {
+    await admit("org-read-full", counter({ admission: allowed(PERIOD.limit) })).outcome;
+    await expect(check("org-read-full", reader({ error: new Error("down") }))).resolves.toBe(true);
   });
 });

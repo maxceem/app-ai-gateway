@@ -16,10 +16,23 @@ import { EmptyState } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { API_STYLE_LABELS } from "@/lib/capabilities";
 import { providerLabel, reportsCost } from "@/lib/config-types";
-import { draftsToPricing, toDrafts, type PricingDraft } from "@/lib/pricing-draft";
+import {
+  AUDIO_RATES,
+  draftsToPricing,
+  toDrafts,
+  type OptionalRate,
+  type PricingDraft,
+} from "@/lib/pricing-draft";
 import { useUpdateProvider } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
 import { errorMessage } from "./shared";
+
+/** Each audio field's name, and the price its tokens bill at when it is left blank. */
+const AUDIO_FIELDS: Record<(typeof AUDIO_RATES)[number], { label: string; blank: string }> = {
+  audio_input: { label: "Audio input", blank: "= input" },
+  audio_output: { label: "Audio output", blank: "= output" },
+  cached_input_audio: { label: "Cached audio", blank: "= cached" },
+};
 
 /**
  * What a price on this provider is for. A provider that reports its own cost
@@ -75,6 +88,12 @@ export function PricingDialog({
       current.map((row, position) => (position === index ? { ...row, ...patch } : row)),
     );
   };
+  const setRate = (index: number, name: OptionalRate, text: string) => {
+    setDrafts((current) =>
+      current.map((row, position) =>
+        position === index ? { ...row, rates: { ...row.rates, [name]: text } } : row),
+    );
+  };
 
   const submit = async () => {
     if (!provider) return;
@@ -113,8 +132,8 @@ export function PricingDialog({
           <DialogDescription>
             For models the built-in price list does not cover, or prices it in a way you disagree with.
             {provider ? ` ${pricingNote(provider)}` : null}{" "}
-            Enter $0 for a model that is genuinely free. A cache price left blank bills at the
-            input price.
+            Enter $0 for a model that is genuinely free. An optional price left blank bills at
+            the matching text price. A realtime model needs every audio price and a cached price.
           </DialogDescription>
           {drafts.length === 0 ? (
             <EmptyState>No custom prices for this provider.</EmptyState>
@@ -135,57 +154,86 @@ export function PricingDialog({
                 <span className="w-9" />
               </div>
               {drafts.map((row, index) => (
-                <div key={index} className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] items-center gap-2">
-                  <Input
-                    aria-label={`Model ${index + 1}`}
-                    value={row.model}
-                    placeholder="gpt-brand-new"
-                    disabled={readOnly}
-                    onChange={(event) => setRow(index, { model: event.target.value })}
-                  />
-                  <Input
-                    aria-label={`Input price ${index + 1}`}
-                    inputMode="decimal"
-                    value={row.input}
-                    placeholder="1.25"
-                    disabled={readOnly}
-                    onChange={(event) => setRow(index, { input: event.target.value })}
-                  />
-                  <Input
-                    aria-label={`Output price ${index + 1}`}
-                    inputMode="decimal"
-                    value={row.output}
-                    placeholder="10"
-                    disabled={readOnly}
-                    onChange={(event) => setRow(index, { output: event.target.value })}
-                  />
-                  <Input
-                    aria-label={`Cached input price ${index + 1}`}
-                    inputMode="decimal"
-                    value={row.cachedInput ?? ""}
-                    placeholder="= input"
-                    disabled={readOnly}
-                    onChange={(event) => setRow(index, { cachedInput: event.target.value })}
-                  />
-                  <Input
-                    aria-label={`Cache write price ${index + 1}`}
-                    inputMode="decimal"
-                    value={row.cacheWrite ?? ""}
-                    placeholder="= input"
-                    disabled={readOnly}
-                    onChange={(event) => setRow(index, { cacheWrite: event.target.value })}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove pricing row ${index + 1}`}
-                    disabled={readOnly}
-                    onClick={() =>
-                      setDrafts((current) => current.filter((_row, position) => position !== index))
-                    }
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
+                <div key={index} className="space-y-2">
+                  <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] items-center gap-2">
+                    <Input
+                      aria-label={`Model ${index + 1}`}
+                      value={row.model}
+                      placeholder="gpt-brand-new"
+                      disabled={readOnly}
+                      onChange={(event) => setRow(index, { model: event.target.value })}
+                    />
+                    <Input
+                      aria-label={`Input price ${index + 1}`}
+                      inputMode="decimal"
+                      value={row.input}
+                      placeholder="1.25"
+                      disabled={readOnly}
+                      onChange={(event) => setRow(index, { input: event.target.value })}
+                    />
+                    <Input
+                      aria-label={`Output price ${index + 1}`}
+                      inputMode="decimal"
+                      value={row.output}
+                      placeholder="10"
+                      disabled={readOnly}
+                      onChange={(event) => setRow(index, { output: event.target.value })}
+                    />
+                    <Input
+                      aria-label={`Cached input price ${index + 1}`}
+                      inputMode="decimal"
+                      value={row.rates?.cached_input ?? ""}
+                      placeholder="= input"
+                      disabled={readOnly}
+                      onChange={(event) => setRate(index, "cached_input", event.target.value)}
+                    />
+                    <Input
+                      aria-label={`Cache write price ${index + 1}`}
+                      inputMode="decimal"
+                      value={row.rates?.cache_write ?? ""}
+                      placeholder="= input"
+                      disabled={readOnly}
+                      onChange={(event) => setRate(index, "cache_write", event.target.value)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Remove pricing row ${index + 1}`}
+                      disabled={readOnly}
+                      onClick={() =>
+                        setDrafts((current) => current.filter((_row, position) => position !== index))
+                      }
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                  {row.showAudio ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      {AUDIO_RATES.map((name) => (
+                        <label key={name} className="space-y-1 text-xs text-muted-foreground">
+                          <span>{AUDIO_FIELDS[name].label} $/1M</span>
+                          <Input
+                            aria-label={`${AUDIO_FIELDS[name].label} price ${index + 1}`}
+                            inputMode="decimal"
+                            value={row.rates?.[name] ?? ""}
+                            placeholder={AUDIO_FIELDS[name].blank}
+                            disabled={readOnly}
+                            onChange={(event) => setRate(index, name, event.target.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-xs"
+                      disabled={readOnly}
+                      onClick={() => setRow(index, { showAudio: true })}
+                    >
+                      Add audio prices
+                    </Button>
+                  )}
                 </div>
               ))}
             </>
@@ -194,7 +242,7 @@ export function PricingDialog({
             variant="outline"
             size="sm"
             disabled={readOnly}
-            onClick={() => setDrafts((current) => [...current, { model: "", input: "", output: "", cachedInput: "", cacheWrite: "" }])}
+            onClick={() => setDrafts((current) => [...current, { model: "", input: "", output: "" }])}
           >
             <Plus className="size-4" />
             Add model
