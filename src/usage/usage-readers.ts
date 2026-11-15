@@ -536,6 +536,15 @@ const TAIL_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/gu;
 const HEAD_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/u;
 
 /**
+ * The served tier of a truncated document, a string at its top level: OpenAI
+ * states it after `usage` in a chat answer and near the start of a Responses
+ * one, so the tail's last occurrence is read, else the head's first. Escaped
+ * quotes inside content never match, as for `duration`.
+ */
+const TAIL_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/gu;
+const HEAD_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/u;
+
+/**
  * A synthetic document carrying whatever usage the tail of a truncated JSON
  * body still holds. Every shape this file prices reports at the end of the
  * document, so the last such key is the one that counts; `null` means the
@@ -638,6 +647,11 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     if (document.duration === undefined) {
       const duration = HEAD_DURATION.exec(body.head)?.[1];
       if (duration !== undefined) document.duration = Number(duration);
+    }
+    // Only beside usage it found: the tier says what that usage was billed in.
+    if (document.usage !== undefined) {
+      const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
+      if (tier !== undefined) document.service_tier = tier;
     }
     return documentValues(Object.keys(document).length > 0 ? [document] : []);
   }

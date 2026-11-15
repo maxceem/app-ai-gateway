@@ -125,7 +125,8 @@ describe("billing in the service mode that served the request", () => {
     await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi" });
 
     const row = await recorded(appId);
-    expect(row.cost).toBeCloseTo(0.01, 10);
+    // The dearest price the model has is fast in us: 2 × 1.1 on $0.005.
+    expect(row.cost).toBeCloseTo(0.011, 10);
     expect(row.mode).toEqual({ tier: "ultrafast" });
     expect(lines.filter((line) => line.message === "served_mode_unpriced"))
       .toEqual([expect.objectContaining({ appId, serviceMode: "ultrafast" })]);

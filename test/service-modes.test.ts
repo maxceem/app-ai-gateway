@@ -3,7 +3,8 @@ import { GatewayError } from "../src/core/errors";
 import { parseServiceModeName, readServiceMode, serviceModeName, STANDARD_MODE } from "../src/shared/service-modes";
 import { ProviderPricingSchema } from "../src/contracts/schemas";
 import { providerDescriptor } from "../src/shared/providers";
-import { judgeServiceMode, priceInMode } from "../src/usage/pricing";
+import { computeCost, judgeServiceMode, priceInMode } from "../src/usage/pricing";
+import { observeResponse } from "../src/usage/usage-readers";
 
 const read = (body: Record<string, unknown>) => (name: string) => body[name];
 
@@ -181,5 +182,35 @@ describe("mode prices in an override", () => {
     ["a field that is no rate", { flex: { factor: 0.5, discount: 1 } }],
   ])("refuses %s", (_label, modes) => {
     expect(override(modes).success).toBe(false);
+  });
+});
+
+describe("billing a served mode with no price", () => {
+  const overrides = {
+    "a-model": { input: 1, output: 4, modes: { fast: { factor: 2 }, us: { factor: 1.1 } } },
+  };
+  const usage = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1000 };
+
+  it("bills the dearest price the model has, a composed pair included", () => {
+    // fast in us, 2 × 1.1 on $0.005, is the dearest: never less than it.
+    expect(computeCost("openai", "a-model", usage, overrides, { tier: "ultrafast", region: "us" }))
+      .toBeCloseTo(0.011, 10);
+  });
+
+  it("bills a priced mode at its own price", () => {
+    expect(computeCost("openai", "a-model", usage, overrides, { tier: "fast", region: "global" }))
+      .toBeCloseTo(0.01, 10);
+  });
+});
+
+describe("the served tier of a truncated response", () => {
+  it("is kept beside the usage the tail still holds", () => {
+    const observed = {
+      head: '{"id":"resp_1","service_tier":"priority","output":[{"content":"',
+      tail: '"}],"usage":{"input_tokens":10,"output_tokens":5}}',
+      truncated: true,
+    };
+    const { usage } = observeResponse(observed, "application/json", "openai", "direct", "responses");
+    expect(usage?.reportedModes).toEqual({ service_tier: "priority" });
   });
 });

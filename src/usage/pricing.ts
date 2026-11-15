@@ -19,11 +19,14 @@ import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 import {
+  parseServiceModeName,
   readServiceMode,
   serviceModeName,
   STANDARD_MODE,
   type ServiceMode,
   type ServiceModeField,
+  type ServiceRegion,
+  type ServiceTier,
 } from "../shared/service-modes";
 import {
   TOKEN_RATE_FIELDS,
@@ -542,10 +545,23 @@ export function computeCost(
   if (!price) return null;
   const served = priceInMode(price, mode);
   if (served) return costAt(served, usage);
-  let dearest = costAt(price, usage);
-  for (const entry of Object.values(price.modes ?? {})) {
-    const cost = costAt(withModePrice(price, entry), usage);
-    if (cost !== null && (dearest === null || cost > dearest)) dearest = cost;
+  // Every mode the model has a price in, a tier in a region included: the
+  // dearest can be a pair that only composes, such as `fast` in `us`.
+  const tiers = new Set<ServiceTier>(["standard"]);
+  const regions = new Set<ServiceRegion>(["global"]);
+  for (const name of Object.keys(price.modes ?? {})) {
+    const listed = parseServiceModeName(name);
+    if (!listed) continue;
+    tiers.add(listed.tier);
+    regions.add(listed.region);
+  }
+  let dearest: number | null = null;
+  for (const tier of tiers) {
+    for (const region of regions) {
+      const priced = priceInMode(price, { tier, region });
+      const cost = priced ? costAt(priced, usage) : null;
+      if (cost !== null && (dearest === null || cost > dearest)) dearest = cost;
+    }
   }
   return dearest;
 }
