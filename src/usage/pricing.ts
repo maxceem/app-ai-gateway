@@ -14,7 +14,6 @@ import type { ModalityCounts, ModalityTokens, UsageCounts } from "../core/types"
 import type { ProviderPricing } from "../db/schema";
 import { baseUrlRegion, type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
 import { GATEWAY_DESCRIPTORS } from "../shared/gateways";
-import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
 import {
@@ -27,6 +26,7 @@ import {
   STANDARD_MODE,
   type ServiceMode,
   type ServiceModeField,
+  type ServiceModeValue,
   type ServiceRegion,
   type ServiceTier,
 } from "../shared/service-modes";
@@ -102,15 +102,6 @@ interface Price extends Partial<Record<TokenRateField, number>> {
   modes?: Record<string, ModePrice>;
 }
 
-/**
- * A model's price in one service mode: every rate the model has, multiplied by
- * `factor` (1 where it is left out), and then any rate the entry names in
- * place of its multiplied figure, for a provider page that prices one rate
- * apart from the rest (OpenAI's flex cached input, Gemini's flex cache reads
- * at the standard rate).
- */
-export type { ModePrice };
-
 /** One announced change to a catalog entry's rates; see `Price.price_changes`. */
 export interface PriceChange extends Partial<Record<TokenRateField, number>> {
   from: string;
@@ -121,13 +112,6 @@ export interface PriceChange extends Partial<Record<TokenRateField, number>> {
   /** Mode entries replaced from that day, whole; a mode it leaves out keeps its entry. */
   modes?: Record<string, ModePrice>;
 }
-
-/**
- * A model's price in one service mode, or `undefined` where it has none: the
- * shared reading in `src/shared/service-modes.ts`, which the price list's
- * updates compare prices by too.
- */
-export { priceInMode };
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
@@ -203,14 +187,21 @@ function modelPrice(
       price.long_context_threshold = override.long_context_threshold;
     }
     // An override with modes of its own is used as written, `{}` included,
-    // which prices no mode. One without keeps the catalog's: a price set
-    // because the list's was stale or missing says nothing against the
-    // provider's modes, whose factors then apply to the override's rates.
-    const modes = override.modes ?? catalogPrice(provider, model)?.modes;
+    // which prices no mode. One without keeps the catalog's factors: a price
+    // set because the list's was stale or missing says nothing against the
+    // provider's modes, but a rate the list states for a mode is the list's
+    // figure, not the override's, so only each mode's factor applies.
+    const modes = override.modes ?? modeFactors(catalogPrice(provider, model)?.modes);
     if (modes) price.modes = modes;
     return price;
   }
   return catalogPrice(provider, model);
+}
+
+/** Each mode's factor alone, without the rates a price list states for it. */
+function modeFactors(modes: Record<string, ModePrice> | undefined): Record<string, ModePrice> | undefined {
+  if (!modes) return undefined;
+  return Object.fromEntries(Object.entries(modes).map(([name, entry]) => [name, { factor: entry.factor ?? 1 }]));
 }
 
 /**
@@ -261,11 +252,8 @@ export function hasTokenModelPrice(
 /**
  * Whether a model has a price in a service mode: always in the standard one,
  * and in any other only where its entry lists the mode — see
- * {@link priceInMode}. One rule covers every mode, flex included: a known mode
- * the model has no price in is never billed at another mode's price. A dearer
- * one billed at standard would let an app's end user stretch their budget
- * several times over; a cheaper one would spend the budget faster than the
- * owner set it to last.
+ * {@link priceInMode}. Where it has none, {@link computeCost} bills an
+ * estimate and the event is recorded as `estimated`.
  */
 export function hasModePrice(
   provider: ProviderType,
@@ -284,8 +272,8 @@ export function hasModePrice(
  * canonical model, or a route that reports its own cost per request. Neither
  * means the spend would be invisible, and an invisible spend is a limit bypass.
  * `style` is the request's API, or `null` on a configuration write that has
- * none yet — see `routeCostReport`. The service mode is judged apart, by
- * {@link judgeServiceMode}.
+ * none yet — see `routeCostReport`. The service mode never stops a request: see
+ * {@link requestedServiceMode} and {@link computeCost}.
  */
 export function isBillable(
   provider: ProviderType,
@@ -313,63 +301,36 @@ function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly S
 }
 
 /**
- * The service mode a request asks one target for, and whether the gateway can
- * bill it exactly.
+ * The service mode a request asks one target for: read, never judged.
  *
  * `read` returns one field of the body as it will be sent — the client's JSON
  * merged with anything the configuration adds, or a form field — and the
  * target's own table says what its value means. The region is the one a field
  * names, else the one the row's own base URL serves (`regionalOrigins`).
+ * `unknown` is the first value the table does not know, which leaves its axis
+ * at the default.
  *
- * A mode a request chooses is never refused for want of a price: an app may
- * already rely on it, and nothing here can tell a mode it started using today
- * from one that worked yesterday. What the gateway cannot price exactly — a
- * value its table does not know, or a mode the model has no price in — is
- * forwarded, billed at the estimate {@link computeCost} makes, recorded as
- * `estimated`, and logged (`service_mode_unknown`, `service_mode_unpriced`).
- * A mode the owner's own configuration names is judged where it is saved
- * instead, by {@link configuredModeProblem}. A route whose provider reports
- * what each request cost needs no price at all.
+ * A mode a request chooses is never refused: an app may already rely on it,
+ * and nothing can tell a mode it started using today from one that worked
+ * yesterday. Whether it is billed exactly is decided once, where the event is
+ * recorded, against the mode that actually served it (`usage-record.ts`). So
+ * this is only a few property reads on a body already parsed. A mode the
+ * owner's own configuration names is judged where it is saved instead, by
+ * {@link configuredModeProblem}.
  */
-export function judgeServiceMode(input: {
+export function requestedServiceMode(input: {
   type: ProviderType;
-  route: ProviderRoute | null;
+  route: ProviderRoute;
   /** The row's own base URL, whose host may pin a region. */
-  baseUrl?: string | null;
-  pricing?: ProviderPricing | null;
-  style: ApiStyle;
-  model: string;
+  baseUrl: string | null;
   read: (name: string) => unknown;
-  /** The app the request is for, so a log line names it. */
-  appId?: string;
-}): { mode: ServiceMode; estimated: boolean } {
-  const { type, route } = input;
-  if (route === null) return { mode: STANDARD_MODE, estimated: false };
-  const reading = readServiceMode(serviceModeFields(type, route), input.read);
-  const baseRegion = baseUrlRegion(type, input.baseUrl);
+}): { mode: ServiceMode; unknown?: ServiceModeValue } {
+  const reading = readServiceMode(serviceModeFields(input.type, input.route), input.read);
+  const baseRegion = baseUrlRegion(input.type, input.baseUrl);
   const mode: ServiceMode = reading.mode.region === "global" && baseRegion !== "global"
     ? { tier: reading.mode.tier, region: baseRegion }
     : reading.mode;
-  if (reportsCost(type, route, input.style)) return { mode, estimated: false };
-  const appField = input.appId === undefined ? {} : { appId: input.appId };
-  if (reading.unknown) {
-    log("warn", "service_mode_unknown", {
-      ...appField,
-      provider: type,
-      field: reading.unknown.field,
-      value: reading.unknown.value,
-    });
-  }
-  const priced = hasModePrice(type, input.model, input.pricing, mode);
-  if (!priced) {
-    log("warn", "service_mode_unpriced", {
-      ...appField,
-      provider: type,
-      model: input.model,
-      serviceMode: serviceModeName(mode),
-    });
-  }
-  return { mode, estimated: !priced || reading.unknown !== undefined };
+  return reading.unknown ? { mode, unknown: reading.unknown } : { mode };
 }
 
 /**
@@ -383,14 +344,14 @@ export function judgeServiceMode(input: {
  */
 export function configuredModeProblem(input: {
   type: ProviderType;
-  route: ProviderRoute | null;
+  route: ProviderRoute;
   pricing?: ProviderPricing | null;
   style: ApiStyle;
   model: string;
   read: (name: string) => unknown;
 }): string | null {
   const { type, route } = input;
-  if (route === null || reportsCost(type, route, input.style)) return null;
+  if (reportsCost(type, route, input.style)) return null;
   const reading = readServiceMode(serviceModeFields(type, route), input.read);
   if (reading.unknown) {
     const { field, value } = reading.unknown;
@@ -535,11 +496,14 @@ export function computeCost(
   // priced region.
   const tiers = new Set<ServiceTier>();
   const regions = new Set<ServiceRegion>();
+  // Priced on its own only: a tier or region that appears only inside a pair
+  // (`priority+eu`) has no price of its own, and the pair is still reached
+  // through `priceInMode` when both of its parts are tried.
   for (const name of Object.keys(price.modes ?? {})) {
     const listed = parseServiceModeName(name);
     if (!listed) continue;
-    tiers.add(listed.tier);
-    regions.add(listed.region);
+    if (listed.region === "global") tiers.add(listed.tier);
+    else if (listed.tier === "standard") regions.add(listed.region);
   }
   const tierPriced = mode.tier === "standard" || tiers.has(mode.tier);
   const regionPriced = mode.region === "global" || regions.has(mode.region);

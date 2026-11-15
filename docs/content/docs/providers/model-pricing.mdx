@@ -224,8 +224,8 @@ missing, while the part that is priced keeps its price:
 - a dearer tier at the dearest tier the model is priced in;
 - a region at the dearest region the model is priced in.
 
-A mode value the gateway does not know is billed at the standard price. Such
-events have `cost_source` `estimated`, and the console marks their cost with
+A mode value a request sends that the gateway does not know is billed at the
+standard price. Such events have `cost_source` `estimated`, and the console marks their cost with
 **≈**. To bill one exactly, add a price for the mode to the provider's custom
 pricing. A mode you choose in a custom endpoint's parameters is checked when
 you save it instead: a mode with no price is refused there, as a model with no
@@ -288,8 +288,10 @@ prompt size in tokens above which they apply. The dialog shows the cache
 rates and keeps the others as they are when you save.
 
 A custom price can also price service modes, with the same `modes` object as
-the price list. Without `modes`, it keeps the price list's modes for that
-model, their factors applied to your rates. With `modes`, yours are used as
+the price list. Without `modes`, it keeps the price list's mode factors for
+that model, applied to your rates; a rate the price list names apart in a mode
+is not kept, since it was set against the list's own price. With `modes`,
+yours are used as
 written, and `"modes": {}` prices no mode at all:
 
 ```json
@@ -400,7 +402,8 @@ usage, which are rewritten to zero but keep their `unresolved` marker). With
 answers `400 invalid_request` and writes nothing, so a month is never left
 half-repriced. Events with a `reported` cost are never touched, since a local
 price would replace a fact with an estimate. A repriced event's `cost_source`
-becomes `computed` when readable usage was available.
+becomes `computed` when readable usage was available, except an `estimated`
+event, which stays `estimated`.
 
 Repricing covers retained raw events only, with at most 10,000 matching events
 per call, and requires token pricing. It does not reprice compacted history,

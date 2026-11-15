@@ -2,7 +2,7 @@ import type { ApiStyle } from "../shared/capabilities";
 import type { ResolvedProvider } from "../providers/provider-store";
 import type { PreparedProxyRequest } from "./proxy-rules";
 import type { AttemptAttribution } from "../usage/usage-record";
-import type { ServiceMode } from "../shared/service-modes";
+import type { ServiceMode, ServiceModeValue } from "../shared/service-modes";
 
 export interface ExecutionRequest {
   body: BodyInit | null;
@@ -36,11 +36,11 @@ export interface ExecutionAttempt {
    */
   readonly serviceMode: ServiceMode;
   /**
-   * Whether that mode can only be billed at an estimate: a value the gateway
-   * does not know, or a mode the model has no price in. The event is then
-   * recorded as `estimated`.
+   * A value of that mode the gateway does not know, which left its axis at the
+   * default: the event is then billed at an estimate, recorded as `estimated`,
+   * and the value logged so the provider's table can learn it.
    */
-  readonly serviceModeEstimated: boolean;
+  readonly serviceModeUnknown?: ServiceModeValue;
   readonly buildRequest: () => ExecutionRequest;
 }
 
@@ -68,7 +68,7 @@ export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttributio
     apiStyle: attempt.apiStyle,
     passthrough: attempt.passthrough,
     serviceMode: attempt.serviceMode,
-    serviceModeEstimated: attempt.serviceModeEstimated,
+    ...(attempt.serviceModeUnknown && { serviceModeUnknown: attempt.serviceModeUnknown }),
     route: `${resolved.slug}/${attempt.providerPath}`,
   };
 }
@@ -95,7 +95,7 @@ export function preparedExecutionAttempt(
     apiStyle: prepared.apiStyle,
     passthrough: prepared.passthrough,
     serviceMode: prepared.serviceMode,
-    serviceModeEstimated: prepared.serviceModeEstimated,
+    ...(prepared.serviceModeUnknown && { serviceModeUnknown: prepared.serviceModeUnknown }),
     buildRequest: () => ({
       body: prepared.body,
       headers: prepared.headers,

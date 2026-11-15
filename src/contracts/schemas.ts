@@ -886,7 +886,7 @@ export const ProviderPricingSchema = z.record(
     long_context_threshold: z.number().int().positive().optional(),
     modes: ModePricesSchema.optional().meta({
       description:
-        "Prices in service modes other than standard. A mode left out has no price, so a request for it is not billed at another mode's price.",
+        "Prices in service modes other than standard. Left out, the price list's mode factors for the model apply to these rates. A mode with no price is still served, billed at an estimate and marked estimated.",
     }),
   }).strict().refine(
     (price) => price.long_context_threshold !== undefined

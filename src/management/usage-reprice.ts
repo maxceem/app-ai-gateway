@@ -6,7 +6,7 @@ import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
 import { computeCost, hasModePrice, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
 import { providerDescriptor } from "../shared/providers";
-import { serviceModeFromStored } from "../shared/service-modes";
+import { parseServiceModeName, STANDARD_MODE } from "../shared/service-modes";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -118,7 +118,9 @@ export async function repriceAppUsage(
     // repriced cost moves only with the rates themselves.
     // Repriced in the mode that served it. A row recorded before modes were
     // kept was billed as standard, which is the only assumption it can carry.
-    const mode = serviceModeFromStored(row.serviceMode);
+    // A name this deployment does not read, which only a newer one could have
+    // written, reprices as the standard mode it would otherwise not price.
+    const mode = (row.serviceMode ? parseServiceModeName(row.serviceMode) : null) ?? STANDARD_MODE;
     const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded
       ? computeCost(provider, model, {
         ...row,

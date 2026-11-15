@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { call, smokeId } from "../../../src/gateway.ts";
+import { admin, call, smokeId } from "../../../src/gateway.ts";
 import { MODEL } from "../../../src/mock/formats.ts";
 import { env, expectForwardedCleanly, expectStatus, json, state } from "../../support.ts";
 
@@ -50,4 +50,30 @@ test("a server app gets a streamed Responses answer", async () => {
   expect(text).toContain(`pong ${id}`);
   expect(text).toContain("response.completed");
   await expectForwardedCleanly(id, "v1/responses");
+});
+
+// The smoke model has a custom price with no service modes, so a flex request
+// has no exact price. It must still be served, never refused, and its usage
+// event must say the cost is an estimate.
+test("a request in a service mode with no price is served and recorded as estimated", { timeout: 75_000 }, async () => {
+  const id = smokeId();
+  const response = await call(env, proxy("v1/chat/completions"), {
+    key,
+    headers: { "x-client-trace-id": id },
+    body: { model: MODEL, service_tier: "flex", messages: [{ role: "user", content: id }] },
+  });
+  await expectStatus(response, 200, "Flex Chat Completions");
+  await response.text();
+  await expectForwardedCleanly(id, "v1/chat/completions");
+
+  type Event = { service_mode?: string | null; cost_source: string | null };
+  const path = `/v1/admin/apps/${state.apps.server.id}/events?trace=${encodeURIComponent(id)}`;
+  const deadline = Date.now() + 60_000;
+  let event: Event | undefined;
+  while (!event && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    event = (await admin<{ events: Event[] }>(env, "GET", path)).events[0];
+  }
+  expect(event, "no usage event recorded within 60s").toBeDefined();
+  expect(event).toMatchObject({ service_mode: "flex", cost_source: "estimated" });
 });

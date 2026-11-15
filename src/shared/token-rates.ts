@@ -192,7 +192,7 @@ export function rateDescription(field: TokenRateField): string | undefined {
 /**
  * A model's price in one service mode: every rate multiplied by `factor` (1
  * where it is left out), then any rate named here in place of its multiplied
- * figure. See `priceInMode` in `src/usage/pricing.ts`.
+ * figure. See `priceInMode` in `src/shared/service-modes.ts`.
  */
 export type ModePrice = Partial<Record<TokenRateField | "per_minute" | "per_hour" | "per_image", number>>
   & {

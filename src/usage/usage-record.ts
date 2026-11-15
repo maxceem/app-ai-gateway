@@ -25,11 +25,12 @@ import { providerDescriptor, type ProviderType, routeCostReport } from "../share
 import { relaysProviderResponses } from "../shared/gateways";
 import {
   SERVICE_TIERS,
+  isStandardMode,
   readServiceMode,
   serviceModeName,
   STANDARD_MODE,
-  storedServiceMode,
   type ServiceMode,
+  type ServiceModeValue,
 } from "../shared/service-modes";
 import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
@@ -76,8 +77,8 @@ export interface AttemptAttribution {
    * included. Absent is the standard mode.
    */
   serviceMode?: ServiceMode;
-  /** Whether the request's mode could only be billed at an estimate. Absent is false. */
-  serviceModeEstimated?: boolean;
+  /** A value of the request's mode the gateway does not know; see `ExecutionAttempt.serviceModeUnknown`. */
+  serviceModeUnknown?: ServiceModeValue;
   /** `slug/path`, the `route` column. */
   route: string;
 }
@@ -372,9 +373,9 @@ function servedServiceMode(
   reported: UsageObservation["reportedModes"],
   headers: Headers | undefined,
   truncated: boolean,
-): { mode: ServiceMode; unknown: boolean } {
+): { mode: ServiceMode; unknown?: ServiceModeValue } {
   const requested = attribution.serviceMode ?? STANDARD_MODE;
-  if (!relaysProviderResponses(attribution.providerRoute.kind)) return { mode: requested, unknown: false };
+  if (!relaysProviderResponses(attribution.providerRoute.kind)) return { mode: requested };
   const descriptor = providerDescriptor(attribution.provider);
   const { named, unknown } = readServiceMode(
     descriptor.servedModes ?? descriptor.serviceModes,
@@ -386,10 +387,8 @@ function servedServiceMode(
   // served the request, never a cheaper one than it asked for.
   if (truncated && SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank) tier = requested.tier;
   const region = named.region ?? requested.region;
-  return {
-    mode: tier === requested.tier && region === requested.region ? requested : { tier, region },
-    unknown: unknown !== undefined,
-  };
+  const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
+  return unknown ? { mode, unknown } : { mode };
 }
 
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
@@ -452,8 +451,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const reporting = integration !== null;
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
-  const served = attribution.passthrough
-    ? { mode: STANDARD_MODE, unknown: false }
+  const served: { mode: ServiceMode; unknown?: ServiceModeValue } = attribution.passthrough
+    ? { mode: STANDARD_MODE }
     : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, truncated);
   const servedMode = served.mode;
   const price = computeCost(
@@ -463,22 +462,40 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     attribution.pricing,
     servedMode,
   );
-  // The request's own mode was judged before it left. A mode it did not show,
-  // which the response says served it, is the one that can still lack a price:
-  // `computeCost` then billed the dearest price it could, and this says so.
-  if (
-    !attribution.passthrough
-    && !reporting
-    && servedMode !== (attribution.serviceMode ?? STANDARD_MODE)
-    && !hasModePrice(attribution.provider, attribution.model, attribution.pricing, servedMode)
-  ) {
-    log("warn", "served_mode_unpriced", {
-      eventId,
-      appId: identity.appId,
-      provider: attribution.provider,
-      model: attribution.model,
-      serviceMode: serviceModeName(servedMode),
-    });
+  // Whether the mode is billed exactly is decided here, once, on the mode that
+  // served the request: a mode the model has no price in was billed at the
+  // estimate `computeCost` makes, and so was a request value the gateway does
+  // not know, which left its axis at the default. A response value it does not
+  // know leaves the request's own reading standing, so it only says so.
+  // Nothing of this is read where the provider reports what it charged.
+  const modePriced = attribution.passthrough
+    || hasModePrice(attribution.provider, attribution.model, attribution.pricing, servedMode);
+  if (!attribution.passthrough && !reporting) {
+    const unknowns = [["request", attribution.serviceModeUnknown], ["response", served.unknown]] as const;
+    for (const [source, value] of unknowns) {
+      if (!value) continue;
+      log("warn", "service_mode_unknown", {
+        eventId,
+        appId: identity.appId,
+        provider: attribution.provider,
+        source,
+        field: value.field,
+        value: value.value,
+      });
+    }
+    if (!modePriced) {
+      // A mode the request did not ask for, which the response says served it,
+      // is a provider default the request never showed, and alerts.
+      const name = serviceModeName(servedMode);
+      const asked = name === serviceModeName(attribution.serviceMode ?? STANDARD_MODE);
+      log("warn", asked ? "service_mode_unpriced" : "served_mode_unpriced", {
+        eventId,
+        appId: identity.appId,
+        provider: attribution.provider,
+        model: attribution.model,
+        serviceMode: name,
+      });
+    }
   }
   // A provider that answered successfully and reported nothing readable would
   // otherwise bill a legitimate-looking $0 and consume no budget — a silent
@@ -575,13 +592,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // A passthrough call the provider reports no cost for has no source at all:
   // null, never `computed` at a $0 nobody computed.
   const cost = reportedCost ?? (judged ? price : null) ?? 0;
-  // Estimated where the gateway could not price the mode exactly: a value it
-  // does not know, or a mode the model has no price in, in the request or in
-  // what the response says served it.
-  const estimated = judged
-    && (attribution.serviceModeEstimated === true
-      || served.unknown
-      || !hasModePrice(attribution.provider, attribution.model, attribution.pricing, servedMode));
+  const estimated = judged && (attribution.serviceModeUnknown !== undefined || !modePriced);
   const costSource: CostSource | null = reportedCost !== null
     ? "reported"
     : !judged
@@ -637,7 +648,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // The same rule: `{}` is "split nothing", null is "recorded before the
       // split was kept".
       tokenVariants: usage.tokenVariants ?? {},
-      serviceMode: storedServiceMode(servedMode),
+      serviceMode: isStandardMode(servedMode) ? null : serviceModeName(servedMode),
       costUsd: cost,
       costSource,
       reportedCostUsd: reportedCost,

@@ -164,9 +164,10 @@ export interface ProviderDescriptor {
    * flex or priority, or a region — and what each of their values means in the
    * gateway's own names (`./service-modes.ts`). The client sends these fields
    * in the provider's own spelling and they are forwarded unchanged; this table
-   * only lets the gateway know what was asked for, so it can refuse a mode it
-   * knows costs more and has no price for, instead of billing it as standard.
-   * A value missing from the table is forwarded, billed at standard and logged.
+   * only lets the gateway know what was asked for, so the request is billed at
+   * the mode's price, or at an estimate where the model has none. A value
+   * missing from the table is forwarded, billed at standard, marked estimated
+   * and logged.
    *
    * Required, so a new type has to say: a type with no tiers declares
    * {@link NO_SERVICE_TIERS}.
@@ -268,7 +269,8 @@ export const PROVIDER_DESCRIPTORS = {
     transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
     modelAuthor: "OpenAI",
     // `priority` is the name Fast mode had until July 2026, and is still
-    // accepted for it. `auto` is the project's default tier, standard unless the
+    // accepted for it. The response's `service_tier` is read with this table
+    // too: fast traffic shed to `default` on a ramp bills as standard. `auto` is the project's default tier, standard unless the
     // project was set otherwise. `scale` draws on prepaid Scale Tier units,
     // paid for by contract rather than per token, so it bills as standard.
     serviceModes: [{
@@ -282,21 +284,6 @@ export const PROVIDER_DESCRIPTORS = {
         fast: "fast",
         ultrafast: "ultrafast",
         scale: "standard",
-      },
-    }],
-    // The response says which tier served the request, which is not always the
-    // one asked for: fast traffic is shed to `default` on a ramp.
-    servedModes: [{
-      names: ["service_tier"],
-      axis: "tier",
-      values: {
-        default: "standard",
-        auto: "standard",
-        scale: "standard",
-        flex: "flex",
-        priority: "fast",
-        fast: "fast",
-        ultrafast: "ultrafast",
       },
     }],
     // No `regionalOrigins`: OpenAI's data residency hosts (us., eu., gb. and
