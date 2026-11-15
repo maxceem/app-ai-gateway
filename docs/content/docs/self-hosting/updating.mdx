@@ -94,10 +94,12 @@ keeps updating as plain as before: a `wrangler deploy` is enough.
 ### Seamless realtime releases
 
 To keep open conversations through updates, turn on seamless realtime
-releases. Each release then runs realtime sessions in a Worker of its own,
-which an update leaves running: established sessions stay on it until they
-end, and new ones go to the newest release. Set the plain variable
-`REALTIME_RELEASES` to `seamless` and deploy:
+releases. Realtime sessions then run in a separate realtime Worker, which an
+update leaves running. Most updates don't change that Worker's code, so they
+keep using it. When an update does change it, the update adds a new realtime
+Worker: established sessions stay on the old one until they end, and new ones
+go to the new one. Set the plain variable `REALTIME_RELEASES` to `seamless`
+and deploy:
 
 - From a checkout or a button fork, in the `vars` block of `wrangler.jsonc` or
   of your [deployment profile](/self-hosting/deploy-with-wrangler):
@@ -119,7 +121,8 @@ Seamless releases need three more things from your installation:
   so WAF and rate limiting rules on your own zone do not apply to them; the
   gateway's own limits do.
 - The credentials you deploy with must be able to create, read and delete
-  Workers in the account: each release adds one, and cleanup removes old ones.
+  Workers in the account: an update that changes realtime code adds one, and
+  cleanup removes old ones.
 - Deploy with the button, `pnpm run deploy` or the CLI. A plain
   `wrangler deploy` updates the gateway but no release Worker: new sessions
   keep going to the previous release Worker, and on a gateway that never had

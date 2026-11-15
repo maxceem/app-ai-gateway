@@ -1,9 +1,10 @@
-import type { Bootstrap, Generation } from "./types";
-import type { UsageEvent } from "../usage/usage-record";
+import type { Bootstrap, Settlement } from "./contract";
+import type { Generation } from "./types";
 
+/** A response's usage, waiting to reach the gateway. */
 export interface OutboxItem {
   id: string;
-  event: UsageEvent;
+  settlement: Settlement;
   attempts: number;
   due: number;
   createdAt: number;
@@ -22,7 +23,7 @@ function retryAt(attempts: number): number {
   return Date.now() + Math.min(3_600_000, 1000 * 2 ** Math.min(attempts, 12));
 }
 
-/** Only identifiers, counters, prices and outcomes. Never persist socket input or credentials. */
+/** Only identifiers, counters, usage and outcomes. Never persist socket input or credentials. */
 export class SessionJournal {
   constructor(private storage: DurableObjectStorage) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS session_metadata (singleton INTEGER PRIMARY KEY, json TEXT NOT NULL);
@@ -57,17 +58,16 @@ export class SessionJournal {
       .map(row => JSON.parse(row.json) as Generation);
   }
 
-  settle(generation: Generation, event: UsageEvent): void {
+  settle(generation: Generation, settlement: Settlement): void {
     this.storage.transactionSync(() => {
       generation.stage = "settled";
-      generation.event = event;
       this.save(generation);
       // Dated from the generation, not from settlement: admission recovery
       // and usage delivery share one seven-day horizon, which is what a retired
       // release is kept for. A late settlement gets what is left of it.
       const item: OutboxItem = {
-        id: event.eventId,
-        event,
+        id: settlement.generationId,
+        settlement,
         attempts: 0,
         due: Date.now(),
         createdAt: generation.at,

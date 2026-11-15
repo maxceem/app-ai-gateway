@@ -39,6 +39,7 @@ const steps = [
   { name: "test:indexnow", tier: "test" },
   { name: "test:test-ledger", tier: "test" },
   { name: "test:realtime-conformance", tier: "test" },
+  { name: "test:realtime-relay", tier: "test" },
   { name: "smoke:check", tier: "check" },
   { name: "smoke:test", tier: "test" },
 ];

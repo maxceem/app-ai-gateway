@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import { localSessionBackend } from "../realtime/local-backend";
-import type { SessionCoordinator } from "../realtime/session";
-import type { Bootstrap, JsonObject } from "../realtime/types";
-import { object } from "../realtime/protocols/validation";
+import { gatewayBackend } from "../realtime/gateway-backend";
+import type { SessionCoordinator } from "../realtime/relay/session";
+import type { Bootstrap, JsonObject } from "../realtime/relay/contract";
+import { object } from "../realtime/relay/protocols/validation";
+import { readBootstrapHeader } from "../realtime/relay/bootstrap";
+import { RelayError, errorResponse as relayErrorResponse } from "../realtime/relay/errors";
 import { GatewayError, errorResponse } from "../core/errors";
 
 /**
@@ -11,15 +13,19 @@ import { GatewayError, errorResponse } from "../core/errors";
  * serves them itself; with seamless releases, the release Worker's own class
  * does, and this one serves only local development.
  */
-const engine = () => Promise.all([import("../realtime/session"), import("../realtime/journal")])
-  .then(([{ SessionCoordinator }, { SessionJournal }]) => ({ SessionCoordinator, SessionJournal }));
+const engine = () => Promise.all([
+  import("../realtime/relay/session"),
+  import("../realtime/relay/journal"),
+  import("../realtime/relay/backend"),
+]).then(([{ SessionCoordinator }, { SessionJournal }, { sessionBackend }]) =>
+  ({ SessionCoordinator, SessionJournal, sessionBackend }));
 
 /** Binding-only per-connection owner. No route accepts a caller-selected object/session ID. */
 export class RealtimeSession extends DurableObject<Env> {
   private coordinator: SessionCoordinator | null = null;
 
   override async fetch(request: Request): Promise<Response> {
-    const { SessionCoordinator, SessionJournal } = await engine();
+    const { SessionCoordinator, SessionJournal, sessionBackend } = await engine();
     // Answered here, not thrown: an error crossing the stub arrives as a plain
     // Error, and a refusal would lose its status, code and Retry-After.
     try {
@@ -27,31 +33,33 @@ export class RealtimeSession extends DurableObject<Env> {
         throw new GatewayError(409, "conflict", "Realtime session cannot be reopened");
       }
       const bootstrap = parseBootstrap(request.headers.get("x-realtime-bootstrap"));
-      this.coordinator = new SessionCoordinator(this.backend(), this.ctx, bootstrap, request.headers);
+      this.coordinator = new SessionCoordinator(sessionBackend(this.calls()), this.ctx, bootstrap, request.headers);
       return await this.coordinator.start();
     } catch (error) {
       if (error instanceof GatewayError) {
         return errorResponse(error.status, error.code, error.message, error.headers, error.data);
       }
+      if (error instanceof RelayError) return relayErrorResponse(error);
       throw error;
     }
   }
 
   override async alarm(): Promise<void> {
     if (!this.coordinator) {
-      const { SessionCoordinator, SessionJournal } = await engine();
+      const { SessionCoordinator, SessionJournal, sessionBackend } = await engine();
       const bootstrap = new SessionJournal(this.ctx.storage).metadata();
       if (!bootstrap) {
         await this.ctx.storage.deleteAll();
         return;
       }
-      this.coordinator = new SessionCoordinator(this.backend(), this.ctx, bootstrap, new Headers());
+      this.coordinator = new SessionCoordinator(sessionBackend(this.calls()), this.ctx, bootstrap, new Headers());
     }
     await this.coordinator.alarm();
   }
 
-  private backend() {
-    return localSessionBackend(this.env, promise => this.ctx.waitUntil(promise));
+  /** The gateway's answers, called in-process through the realtime Worker's own contract. */
+  private calls() {
+    return gatewayBackend(this.env, promise => this.ctx.waitUntil(promise));
   }
 }
 
@@ -72,10 +80,10 @@ function invalidBootstrap(): GatewayError {
 }
 
 function parseBootstrap(raw: string | null): Bootstrap {
-  if (!raw || raw.length > 8192) throw invalidBootstrap();
+  if (!raw || raw.length > 16_384) throw invalidBootstrap();
   let value;
   try {
-    value = object(JSON.parse(raw));
+    value = object(readBootstrapHeader(raw));
   } catch {
     throw invalidBootstrap();
   }

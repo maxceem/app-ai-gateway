@@ -1,4 +1,4 @@
-import { REALTIME_MAX_SESSION_SECONDS } from '../realtime/limits.ts';
+import { REALTIME_MAX_SESSION_SECONDS } from '../realtime/relay/limits.ts';
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import {

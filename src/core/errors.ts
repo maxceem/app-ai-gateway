@@ -199,7 +199,6 @@ export type ErrorCode =
   | "realtime_not_supported"
   | "realtime_session_limit"
   | "realtime_protocol_error"
-  | "realtime_usage_unresolved"
   | "upgrade_required"
   /**
    * The deployment verifies email addresses but could not send a verification

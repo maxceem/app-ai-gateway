@@ -6,8 +6,9 @@ import { GatewayError } from "../core/errors";
 import { enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { requireRealtimeAllowance } from "./allowance";
 import { realtimePolicy } from "./policy";
-import type { Bootstrap } from "./types";
-import { activeRealtimeRelease, seamlessReleases } from "./releases";
+import type { Bootstrap } from "./relay/contract";
+import { bootstrapHeader } from "./relay/bootstrap";
+import { activeRealtimeRelease, seamlessReleases, type RealtimeRelease } from "./releases";
 import { resolveDeployment } from "../policy/deployment";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import type { GatewayIdentity } from "../core/types";
@@ -109,7 +110,7 @@ export async function prepareRealtime(
   // Fresh headers: client internal metadata, cookies and provider control headers never enter the DO.
   const headers = new Headers({
     Upgrade: "websocket",
-    "x-realtime-bootstrap": JSON.stringify(bootstrap),
+    "x-realtime-bootstrap": bootstrapHeader(bootstrap),
     Authorization: request.headers.get("authorization")!,
   });
   const endUser = app.config.authentication.end_user;
@@ -127,11 +128,14 @@ function localOrigin(origin: string): boolean {
 }
 
 /**
- * Whether this gateway serves sessions itself: always, unless releases are
- * seamless, and then only in local development, which has no release Worker.
+ * The realtime Worker that serves new sessions, or null when this gateway
+ * serves them itself: always, unless releases are seamless, and then in local
+ * development, which has no release Worker, and until a first realtime Worker
+ * is promoted.
  */
-function servesSessions(env: Env, url: string): boolean {
-  return !seamlessReleases(env) || (!env.GATEWAY_BUILD_ID && localOrigin(url));
+async function sessionHost(env: Env, url: string): Promise<RealtimeRelease | null> {
+  if (!seamlessReleases(env) || (!env.GATEWAY_BUILD_ID && localOrigin(url))) return null;
+  return activeRealtimeRelease(env.DB);
 }
 
 /** With seamless releases, the stable gateway never transports production sockets. */
@@ -145,7 +149,7 @@ export const serveRealtime: Handler<{ Bindings: Env; Variables: ServedVariables 
       { Upgrade: "websocket" },
     );
   }
-  if (servesSessions(c.env, c.req.url)) {
+  if (await sessionHost(c.env, c.req.url) === null) {
     const { bootstrap, headers } = await prepareRealtime(
       c.env,
       c.req.raw,
@@ -158,7 +162,7 @@ export const serveRealtime: Handler<{ Bindings: Env; Variables: ServedVariables 
     const session = c.env.REALTIME_SESSION.get(c.env.REALTIME_SESSION.newUniqueId());
     return session.fetch(
       new Request("https://realtime.internal/", {
-        headers: { ...Object.fromEntries(headers), "x-realtime-bootstrap": JSON.stringify(bootstrap) },
+        headers: { ...Object.fromEntries(headers), "x-realtime-bootstrap": bootstrapHeader(bootstrap) },
       }),
     );
   }
@@ -175,9 +179,8 @@ export const discoverRealtime: Handler<{ Bindings: Env; Variables: ServedVariabl
     "realtime_discover",
     promise => c.executionCtx.waitUntil(promise),
   );
-  const release = servesSessions(c.env, c.req.url)
-    ? { id: c.env.GATEWAY_BUILD_ID ?? "local", url: new URL(c.req.url).origin.replace(/^http/u, "ws") }
-    : await activeRealtimeRelease(c.env.DB);
+  const release = await sessionHost(c.env, c.req.url)
+    ?? { id: c.env.GATEWAY_BUILD_ID ?? "local", url: new URL(c.req.url).origin.replace(/^http/u, "ws") };
   const url = new URL(release.url);
   const appId = encodeURIComponent(bootstrap.appId);
   const providerSlug = encodeURIComponent(bootstrap.providerSlug);

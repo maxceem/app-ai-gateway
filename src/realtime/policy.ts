@@ -5,7 +5,7 @@ import { lookup } from "../shared/records";
 import type { ResolvedProvider } from "../providers/provider-store";
 import { modelPrice, type Price } from "../usage/pricing";
 import type { RealtimeProtocol } from "../shared/capabilities";
-import { REALTIME_LIMITS } from "./limits";
+import { REALTIME_LIMITS } from "./relay/limits";
 
 /** Supported realtime profiles, independent of catalog membership. */
 export const OPENAI_REALTIME_MODELS = ["gpt-realtime", "gpt-realtime-mini"] as const;

@@ -8,9 +8,12 @@ CREATE TABLE realtime_release (
   retired_at INTEGER,
   delete_after INTEGER
 );
+-- Release tooling creates this same table before any migration runs, to hold
+-- its lease (scripts/seamless.ts), so both definitions must match: no foreign
+-- key here, since the release table may not exist yet at that point.
 CREATE TABLE IF NOT EXISTS gateway_release_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  active_realtime_id TEXT REFERENCES realtime_release(id),
+  active_realtime_id TEXT,
   deployment_owner TEXT,
   deployment_expires_at INTEGER,
   promotion_at INTEGER,

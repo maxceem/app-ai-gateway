@@ -116,6 +116,7 @@ const EVERY_OPTION = {
     },
   },
   conversations: { store: false, keep: { images: false, audio: true, files: false }, retention_days: 30 },
+  realtime: { enabled: true, max_session_seconds: 600, max_concurrent_sessions: 5, max_concurrent_sessions_per_identity: 1 },
 };
 
 const homes: string[] = [];

@@ -14,6 +14,20 @@ function withAbsoluteMigrations(databases) {
   }));
 }
 
+/**
+ * Where the deployed gateway answers: its public API URL, its console origin,
+ * its first custom domain, or its `workers.dev` address when that is on.
+ * Undefined when nothing reaches it, and then its version goes unchecked.
+ */
+export function gatewayOrigin(config, name, subdomain) {
+  if (config.vars?.PUBLIC_API_URL) return config.vars.PUBLIC_API_URL;
+  if (config.vars?.CLI_CONSOLE_ORIGIN) return config.vars.CLI_CONSOLE_ORIGIN;
+  const domain = (config.routes ?? []).find((route) => typeof route === "object" && route?.custom_domain);
+  if (domain) return `https://${domain.pattern}`;
+  if (config.workers_dev !== false && subdomain) return `https://${name}.${subdomain}.workers.dev`;
+  return undefined;
+}
+
 /** Checkout and one-click adapter. Primary keeps Cloudflare's CI identity; companion does not. */
 export async function deployCheckout({
   config,
@@ -115,10 +129,7 @@ export async function deployCheckout({
     primary.d1_databases = withAbsoluteMigrations(config.d1_databases);
     const path = join(directory, "primary.json");
     await writeFile(path, JSON.stringify(primary), { mode: 0o600 });
-    const origin =
-      config.vars?.PUBLIC_API_URL ||
-      config.vars?.CLI_CONSOLE_ORIGIN ||
-      (subdomain ? `https://${name}.${subdomain}.workers.dev` : undefined);
+    const origin = gatewayOrigin(config, name, subdomain);
     const settings = async (worker) => {
       try {
         return await resultOf(cf, `/accounts/${accountId}/workers/scripts/${worker}/settings`);
@@ -140,18 +151,25 @@ export async function deployCheckout({
             "using its existing deployment method, then retry. Never change an established identity.",
         );
       }
-      const response = await fetch(new URL("/v1/cli/capabilities", origin), {
-        signal: AbortSignal.timeout(10_000),
-        redirect: "error",
-      });
-      if (!response.ok) throw new Error("Cannot verify existing gateway release before mutation");
-      const capabilities = await response.json();
-      if (capabilities.deployment?.id !== deploymentId) {
-        throw new Error("Existing gateway identity differs; no deployment started");
-      }
-      if (![packaged.version, ...packaged.upgradeFrom].includes(capabilities.serverVersion)) {
-        throw new Error(
-          "This gateway release cannot upgrade the deployed database; use a supported migration release",
+      if (origin) {
+        const response = await fetch(new URL("/v1/cli/capabilities", origin), {
+          signal: AbortSignal.timeout(10_000),
+          redirect: "error",
+        });
+        if (!response.ok) throw new Error("Cannot verify existing gateway release before mutation");
+        const capabilities = await response.json();
+        if (capabilities.deployment?.id !== deploymentId) {
+          throw new Error("Existing gateway identity differs; no deployment started");
+        }
+        if (![packaged.version, ...packaged.upgradeFrom].includes(capabilities.serverVersion)) {
+          throw new Error(
+            "This gateway release cannot upgrade the deployed database; use a supported migration release",
+          );
+        }
+      } else {
+        console.warn(
+          "No URL reaches this gateway (no PUBLIC_API_URL, custom domain or workers.dev), " +
+            "so its current version is not checked before the update.",
         );
       }
     }

@@ -1,5 +1,5 @@
 import { AdmissionReceipts } from "./admission-receipts";
-import { REALTIME_LIMITS } from "../realtime/limits";
+import { REALTIME_LIMITS } from "../realtime/relay/limits";
 import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 

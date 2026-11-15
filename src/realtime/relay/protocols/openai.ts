@@ -1,6 +1,5 @@
 import type { AdapterEffect, AdapterState, JsonObject, ProtocolAdapter } from "../types";
-import type { UsageObservation } from "../../usage/pricing";
-import { cap, count, id, invalid, isBase64, isSingleModality, keys, object } from "./validation";
+import { cap, id, invalid, isBase64, isSingleModality, keys, object } from "./validation";
 
 const OUTPUT_MODALITIES = ["text", "audio"];
 
@@ -313,7 +312,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       return [{
         kind: "finalize",
         responseId,
-        usage: response.usage == null ? null : openAIUsage(response.usage),
+        usage: response.usage == null ? null : object(response.usage),
         status: response.status as "completed" | "cancelled" | "failed" | "incomplete",
         frame,
       }];
@@ -330,7 +329,10 @@ export class OpenAIAdapter implements ProtocolAdapter {
         error !== null &&
         (error as JsonObject).code === "response_cancel_not_active";
       if (staleCancel) return [{ kind: "forward", frame }];
-      invalid("Provider rejected a realtime event");
+      // The app gets the provider's own error first, then the session ends:
+      // which of its events the provider rejected, and what that leaves
+      // running, is not known here.
+      return [{ kind: "forward", frame }, { kind: "reject", message: "Provider rejected a realtime event" }];
     }
     return [{ kind: "forward", frame }];
   }
@@ -346,47 +348,4 @@ function pcm24k(value: unknown, message: string): void {
   const format = object(value);
   keys(format, ["type", "rate"]);
   if (format.type !== "audio/pcm" || format.rate !== 24000) invalid(message);
-}
-
-/** OpenAI reports total prompt tokens including cached tokens and per-modality cached details. */
-export function openAIUsage(value: unknown): UsageObservation {
-  const usage = object(value);
-  const total = count(usage.input_tokens);
-  const output = count(usage.output_tokens);
-  const input = object(usage.input_token_details);
-  const out = object(usage.output_token_details);
-  const cached = count(input.cached_tokens);
-  const cachedDetails = input.cached_tokens_details === undefined && cached === 0
-    ? { audio_tokens: 0, text_tokens: 0 }
-    : object(input.cached_tokens_details);
-  const audio = count(input.audio_tokens);
-  const text = count(input.text_tokens);
-  const cachedAudio = count(cachedDetails.audio_tokens);
-  const cachedText = count(cachedDetails.text_tokens);
-  const outputAudio = count(out.audio_tokens);
-  const outputText = count(out.text_tokens);
-  if (
-    audio + text !== total ||
-    cachedAudio + cachedText !== cached ||
-    cachedAudio > audio ||
-    cachedText > text ||
-    cached > total ||
-    outputAudio + outputText !== output
-  ) {
-    invalid("Inconsistent realtime modality usage");
-  }
-  return {
-    inputTokens: total - cached,
-    cachedInputTokens: cached,
-    cacheWriteTokens: 0,
-    outputTokens: output,
-    // The modality count covers the whole prompt, cached part included; the
-    // cached audio is the `cached_input` bucket's audio variant. See
-    // `splitCachedModalities` in `src/usage/pricing.ts`.
-    modalityTokens: {
-      input: { audio },
-      output: { audio: outputAudio },
-    },
-    tokenVariants: { cached_input: { audio: cachedAudio } },
-  };
 }

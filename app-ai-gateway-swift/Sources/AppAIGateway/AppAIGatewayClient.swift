@@ -395,12 +395,22 @@ public actor AppAIGatewayClient {
     /// conversation generates counts as one request; the handshake and the
     /// audio sent over the socket do not.
     public func authorizedRealtimeRequest(provider: String, model: String) async throws -> URLRequest {
-        try await authorizedRequest(
-            url: realtimeURL(provider: provider, model: model),
-            method: "GET",
-            body: nil,
-            contentType: nil
-        )
+        let url = try await realtimeURL(provider: provider, model: model)
+        await renewTokenToOutlive(Self.realtimeSessionSeconds)
+        return try await authorizedRequest(url: url, method: "GET", body: nil, contentType: nil)
+    }
+
+    /// The longest realtime conversation the gateway allows.
+    static let realtimeSessionSeconds: TimeInterval = 30 * 60
+
+    /// Replaces the cached token, before it is due, when it would expire within
+    /// `interval`. A conversation ends when the token that opened it expires,
+    /// so a handshake should carry one that outlives the conversation. A failed
+    /// renewal is not an error: the current token still opens it, and the
+    /// conversation is only shorter.
+    private func renewTokenToOutlive(_ interval: TimeInterval) async {
+        guard let accessToken, accessToken.usableUntil.timeIntervalSinceNow < interval else { return }
+        _ = try? await refreshGatewayAccessToken()
     }
 
     /// A WebSocket handshake for one new realtime conversation. See the

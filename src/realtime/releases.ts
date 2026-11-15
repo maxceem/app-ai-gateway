@@ -1,5 +1,5 @@
 import { GatewayError } from "../core/errors";
-import { REALTIME_BACKEND_CONTRACT } from "./backend";
+import { REALTIME_BACKEND_CONTRACT } from "./relay/contract";
 
 export const REALTIME_ADMISSION_GRACE_MS = 60_000;
 
@@ -33,10 +33,16 @@ function closedToSessions(row: AdmissionRow, releaseId: string): boolean {
   return Date.now() >= row.retired_at + REALTIME_ADMISSION_GRACE_MS;
 }
 
-export async function activeRealtimeRelease(db: D1Database): Promise<RealtimeRelease> {
+/**
+ * The realtime Worker new sessions go to, or null when none has been promoted
+ * yet: seamless releases were just turned on, or their first release failed.
+ * The gateway then serves sessions itself rather than refuse them.
+ */
+export async function activeRealtimeRelease(db: D1Database): Promise<RealtimeRelease | null> {
   const row = await db.prepare(`SELECT r.id, r.url, r.backend_contract, r.retired_at FROM realtime_release r
     JOIN gateway_release_state s ON s.active_realtime_id = r.id WHERE s.singleton = 1`).first<RealtimeRelease>();
-  if (!row || row.backend_contract !== REALTIME_BACKEND_CONTRACT) {
+  if (!row) return null;
+  if (row.backend_contract !== REALTIME_BACKEND_CONTRACT) {
     throw new GatewayError(503, "provider_unavailable", "Realtime release is not ready");
   }
   return row;

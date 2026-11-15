@@ -1,26 +1,11 @@
-import type { GatewayIdentity } from "../core/types";
-import type { Price, UsageObservation } from "../usage/pricing";
-import type { QuotaAdmissionInput } from "../do/OrgQuota";
-import type { UsageEvent } from "../usage/usage-record";
-import type { RealtimeProtocol } from "../shared/capabilities";
+import type {
+  AdmissionClaim,
+  CompletionStatus,
+  JsonObject,
+  UsageTicket,
+} from "./contract";
 
-export type JsonObject = Record<string, unknown>;
-
-export interface Bootstrap {
-  sessionId: string;
-  appId: string;
-  organizationId: string;
-  providerId: string;
-  providerSlug: string;
-  model: string;
-  requestedModel: string;
-  protocol: RealtimeProtocol;
-  identity: GatewayIdentity;
-  appVersion: string | null;
-  origin: string;
-}
-
-export type CompletionStatus = "completed" | "cancelled" | "failed" | "incomplete" | "interrupted";
+export type { CompletionStatus, JsonObject } from "./contract";
 
 export type AdapterEffect =
   | { kind: "forward"; frame: JsonObject; useful?: boolean; input?: boolean; endInput?: boolean }
@@ -31,15 +16,19 @@ export type AdapterEffect =
   | { kind: "generate"; frame: JsonObject; correlation?: string; inputActivity?: boolean }
   | { kind: "cancel" }
   | { kind: "created"; responseId: string }
-  | { kind: "observe"; usage: UsageObservation }
+  /** The provider's usage so far, as it reported it. */
+  | { kind: "observe"; usage: JsonObject }
   | {
     kind: "finalize";
     responseId: string;
-    usage: UsageObservation | null;
+    /** The provider's usage object, as it reported it; the gateway reads it. */
+    usage: JsonObject | null;
     status: CompletionStatus;
     frame: JsonObject;
   }
-  | { kind: "pendingAuto"; frame: JsonObject; correlation: string };
+  | { kind: "pendingAuto"; frame: JsonObject; correlation: string }
+  /** Ends the session after the frames before it, such as a provider's error, were forwarded. */
+  | { kind: "reject"; message: string };
 
 export interface AdapterState {
   ready: boolean;
@@ -55,17 +44,19 @@ export interface ProtocolAdapter {
   cancel(): JsonObject | null;
 }
 
+/** One response of a session, as its journal keeps it. Never holds a secret or a payload. */
 export interface Generation {
   id: string;
   ordinal: number;
   at: number;
   stage: "prepared" | "admitting" | "admitted" | "dispatching" | "active" | "settled" | "refused";
   intent?: { kind: string; fingerprint: string };
-  claim?: QuotaAdmissionInput | null;
+  /** Stored before the gateway spends it; null for an unmetered admission. */
+  claim?: AdmissionClaim | null;
+  /** What the gateway needs to record this response's usage, stored with the claim. */
+  ticket?: UsageTicket;
   responseId: string | null;
-  observation: UsageObservation | null;
+  /** The provider's usage object, as last reported. */
+  usage: JsonObject | null;
   outputBytes: number;
-  price: Price;
-  /** Complete metadata-only template permits recovery without provider keys or payloads. */
-  event: UsageEvent;
 }

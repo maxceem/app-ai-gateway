@@ -2283,6 +2283,29 @@ extension AppAIGatewayClientTests {
         #expect(request.value(forHTTPHeaderField: "X-End-User-Id") == "user-7")
         #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
     }
+    /// A conversation ends when the token that opened it expires, so a
+    /// handshake renews a token that would expire before a full conversation.
+    @Test func realtimeHandshakeCarriesATokenThatOutlivesTheConversation() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/connection") == true {
+                return response(request, status: 200, body: #"{"url":"wss://release.workers.dev/v1/apps/test-app/realtime/openai?model=gpt-realtime","releaseId":"release"}"#)
+            }
+            tokenCalls.increment()
+            // Twenty minutes: shorter than the longest conversation.
+            return response(request, status: 200, body: #"{"access_token":"token-\#(tokenCalls.snapshot())","expires_in":1200}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(key: "agw_test-key", issuerTokenProvider: { _ in "firebase-token" }),
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        let request = try await client.authorizedRealtimeRequest(provider: "openai", model: "gpt-realtime")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token-2")
+        #expect(tokenCalls.snapshot() == 2)
+    }
     @Test func localRealtimeUsesWS() async throws {
         MockURLProtocol.handler = { request in
             (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"url":"ws://preview.localhost:8080/v1/apps/test/realtime/openai?model=gpt-realtime"}"#.utf8))

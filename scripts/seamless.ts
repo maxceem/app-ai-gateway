@@ -1,5 +1,5 @@
-import { REALTIME_BACKEND_CONTRACT } from "../src/realtime/contract.ts";
-import { REALTIME_MAX_SESSION_SECONDS, REALTIME_LIMITS } from "../src/realtime/limits.ts";
+import { REALTIME_BACKEND_CONTRACT } from "../src/realtime/relay/version.ts";
+import { REALTIME_MAX_SESSION_SECONDS, REALTIME_LIMITS } from "../src/realtime/relay/limits.ts";
 import { latestDeployment } from "./deploy-lib.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { access, readFile, writeFile } from "node:fs/promises";
@@ -433,8 +433,14 @@ export async function seamlessRelease(
     }
     /** Creates or reuses this release's own realtime Worker, verified but not yet promoted. */
     const releaseRealtime = async (): Promise<string> => {
-      if (!input.subdomain || !input.gatewayOrigin) {
+      if (!input.subdomain) {
         throw new Error("Seamless realtime releases need your account's workers.dev subdomain enabled");
+      }
+      if (!input.gatewayOrigin) {
+        throw new Error(
+          "Seamless realtime releases need a URL that reaches the gateway: set PUBLIC_API_URL, " +
+            "or serve it on a custom domain or workers.dev",
+        );
       }
       const realtimeId = releaseFingerprint(
         await readFile(input.realtimeBundle),
@@ -513,10 +519,12 @@ export async function seamlessRelease(
     } catch (error) {
       // The new gateway serves either way: with seamless releases, sessions
       // stay on the release Worker it already had, which speaks the same
-      // backend contract. A lost lease is another release's to finish, and
+      // backend contract, or on the gateway itself until one is promoted. A lost lease is another release's to finish, and
       // says so itself.
       if (!(error instanceof LeaseLost)) {
-        const sessions = input.seamless ? "; realtime sessions stay on the active release" : "";
+        const sessions = input.seamless
+          ? "; realtime sessions stay on the active realtime Worker, or on the gateway if none was promoted yet"
+          : "";
         driver.log(`Main build ${buildId} is serving${sessions}. Re-run the deployment to record the release.`);
       }
       throw error;

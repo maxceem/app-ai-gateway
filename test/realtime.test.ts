@@ -1,8 +1,8 @@
 import { prepareRealtime } from "../src/realtime/serve";
-import { remoteSessionBackend, safeBackendCall } from "../src/realtime/remote-backend";
+import { sessionBackend, safeBackendCall } from "../src/realtime/relay/backend";
 import { requireRealtimeAdmission } from "../src/realtime/releases";
 import { testAttribution } from "./helpers";
-import { localSessionBackend } from "../src/realtime/local-backend";
+import { gatewayBackend } from "../src/realtime/gateway-backend";
 import type { OrgQuota } from "../src/do/OrgQuota";
 import type { UserLimiter } from "../src/do/UserLimiter";
 import { env } from "cloudflare:workers";
@@ -12,27 +12,30 @@ import { eq } from "drizzle-orm";
 import { database } from "../src/db";
 import { app as appTable } from "../src/db/schema";
 import app from "../src/index";
-import { OpenAIAdapter, openAIUsage } from "../src/realtime/protocols/openai";
+import { OpenAIAdapter } from "../src/realtime/relay/protocols/openai";
+import { openAIUsage, realtimeTicket } from "../src/realtime/usage";
 import { realtimePolicy } from "../src/realtime/policy";
-import { protocolAdapter, upstreamRequest } from "../src/realtime/upstream";
+import { upstreamRequest } from "../src/realtime/upstream";
+import { protocolAdapter } from "../src/realtime/relay/protocols";
+import { bootstrapHeader, readBootstrapHeader } from "../src/realtime/relay/bootstrap";
 import { routeThroughGateway } from "../src/providers/route-adapters";
 import { realtimeProtocols } from "../src/shared/capabilities";
-import { SessionCoordinator } from "../src/realtime/session";
-import { SessionJournal } from "../src/realtime/journal";
+import { SessionCoordinator } from "../src/realtime/relay/session";
+import { SessionJournal } from "../src/realtime/relay/journal";
 import { loadApp } from "../src/core/app-records";
 import { authenticateRequest } from "../src/client-auth/client-auth";
 import { requireProvider } from "../src/providers/provider-store";
 import { computeCost } from "../src/usage/pricing";
-import { buildUsageEvent, persistUsageEventAcknowledged } from "../src/usage/usage-record";
-import { REALTIME_LIMITS } from "../src/realtime/limits";
-import { frameBytes } from "../src/realtime/transport";
+import { buildUsageEvent } from "../src/usage/usage-record";
+import { REALTIME_LIMITS } from "../src/realtime/relay/limits";
+import { frameBytes } from "../src/realtime/relay/transport";
 import { parseAppConfig } from "../src/shared/app-config";
 import { CATALOG } from "../src/contracts/catalog";
 import { createOpenAPIDocument } from "../src/contracts/openapi";
 import { INFERENCE_ROUTES } from "../src/contracts/inference-routes";
-import companion from "../src/realtime/worker";
+import companion from "../src/realtime/relay/worker";
 import { realtimeCaller } from "../src/realtime/caller";
-import type { Bootstrap, JsonObject } from "../src/realtime/types";
+import type { Bootstrap, JsonObject, RealtimeBackendCalls } from "../src/realtime/relay/contract";
 import {
   clearIsolateCaches,
   registerTestInstall,
@@ -43,6 +46,10 @@ import {
   tokenForInstall,
   TEST_ORGANIZATION_ID,
 } from "./helpers";
+
+/** The gateway's answers, reached the way the gateway's own sessions reach them. */
+const localSessionBackend = (runtimeEnv: Env, waitUntil: (promise: Promise<unknown>) => void) =>
+  sessionBackend(gatewayBackend(runtimeEnv, waitUntil));
 
 const soak = process.env.REALTIME_SOAK === "1";
 const manual = { ready: true, configuring: false, active: false, responseId: null };
@@ -311,7 +318,7 @@ describe("realtime protocol and accounting", () => {
     expect(results.filter(result => result.allowed)).toHaveLength(3);
     expect(await quota.usage("race")).toBe(3);
   });
-  it("keeps the conversation when a cancel crosses its response on the wire, and closes on other provider errors", () => {
+  it("keeps the conversation when a cancel crosses its response on the wire, and forwards other provider errors before closing", () => {
     const adapter = new OpenAIAdapter("gpt-realtime", 4096);
     const late = {
       type: "error",
@@ -322,10 +329,11 @@ describe("realtime protocol and accounting", () => {
       },
     };
     expect(adapter.server(late, manual)).toEqual([{ kind: "forward", frame: late }]);
-    expect(() => adapter.server(
-      { type: "error", error: { type: "invalid_request_error", code: "invalid_value" } },
-      manual,
-    )).toThrow();
+    const rejected = { type: "error", error: { type: "invalid_request_error", code: "invalid_value" } };
+    expect(adapter.server(rejected, manual)).toEqual([
+      { kind: "forward", frame: rejected },
+      { kind: "reject", message: "Provider rejected a realtime event" },
+    ]);
   });
   it("counts managed VAD input only from detected speech, and manual input until the response", () => {
     const vad = new OpenAIAdapter("gpt-realtime", 4096);
@@ -540,14 +548,35 @@ describe("realtime protocol and accounting", () => {
     const url = "https://gateway.test/v1/apps/no-app/realtime/openai?model=gpt-realtime";
     const seamlessEnv = { ...env, REALTIME_RELEASES: "seamless" };
     expect((await app.fetch(new Request(url), env)).status).toBe(426);
+    // With seamless releases on but no realtime Worker promoted yet, the
+    // gateway serves sessions itself, so it authenticates the handshake.
     expect((await app.fetch(
-      new Request(url + "&key=secret", { headers: { Upgrade: "websocket", "x-realtime-bootstrap": "{}" } }),
+      new Request(url + "&key=secret", { headers: { Upgrade: "websocket" } }),
       seamlessEnv,
-    )).status).toBe(409);
-    expect((await app.fetch(
-      new Request(url, { headers: { Upgrade: "websocket", "x-realtime-bootstrap": "{}" } }),
-      seamlessEnv,
-    )).status).toBe(409);
+      createExecutionContext(),
+    )).status).toBe(400);
+    // Once one is promoted, the gateway's own socket sends apps to discovery.
+    const state = await env.DB
+      .prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1")
+      .first<{ active_realtime_id: string | null }>();
+    const release = crypto.randomUUID();
+    await recordRelease(release);
+    await promoteRelease(release);
+    try {
+      expect((await app.fetch(
+        new Request(url + "&key=secret", { headers: { Upgrade: "websocket", "x-realtime-bootstrap": "{}" } }),
+        seamlessEnv,
+      )).status).toBe(409);
+      expect((await app.fetch(
+        new Request(url, { headers: { Upgrade: "websocket", "x-realtime-bootstrap": "{}" } }),
+        seamlessEnv,
+      )).status).toBe(409);
+    } finally {
+      await env.DB
+        .prepare("UPDATE gateway_release_state SET active_realtime_id=? WHERE singleton=1")
+        .bind(state?.active_realtime_id ?? null)
+        .run();
+    }
     // A gateway that serves sessions itself authenticates the handshake first.
     // A gateway that serves sessions itself refuses them as discovery does.
     expect((await app.fetch(
@@ -636,7 +665,16 @@ describe("realtime protocol and accounting", () => {
       expect(rows.results.every(row =>
         row.completion_status === "completed" && row.cost_source === "computed")).toBe(true);
       const first = coordinator.journal.generations()[0]!;
-      await persistUsageEventAcknowledged(env, first.event);
+      // Settling again records nothing twice.
+      await localSessionBackend(env, () => {}).settle(bootstrap, {
+        generationId: first.id,
+        ticket: first.ticket!,
+        usage: first.usage,
+        responseId: first.responseId,
+        status: "completed",
+        aborted: false,
+        latencyMs: 1,
+      });
       expect((await env.DB
         .prepare("SELECT COUNT(*) AS count FROM app_usage_event WHERE realtime_session_id = ?")
         .bind(bootstrap.sessionId)
@@ -667,21 +705,22 @@ describe("immutable realtime release boundaries", () => {
     await prepareRealtime(env, request, appId, providerSlug, origin, "realtime_discover");
   });
   it("awaits a real service-binding acknowledgement before completing admission", async () => {
-    const { bootstrap } = await seeded();
-    const application = await loadApp(env, bootstrap.appId);
-    const backend = remoteSessionBackend(env.TEST_REALTIME_BACKEND);
+    const { bootstrap, headers } = await seeded();
+    const backend = sessionBackend(env.TEST_REALTIME_BACKEND as unknown as RealtimeBackendCalls);
+    const grant = await backend.grant(bootstrap, headers, null);
     const admit = (acknowledge: Parameters<typeof backend.admit>[5]) => backend.admit(
       bootstrap,
-      application,
-      attribution(),
+      headers,
+      grant,
       crypto.randomUUID(),
       Date.now(),
       acknowledge,
       () => true,
     );
     let acknowledged = false;
-    await admit(async claim => {
+    await admit(async (claim, ticket) => {
       expect(claim).toBeNull();
+      expect(ticket).toMatchObject({ event: { row: { model: "gpt-realtime" } } });
       await new Promise(resolve => setTimeout(resolve, 20));
       acknowledged = true;
     });
@@ -691,7 +730,9 @@ describe("immutable realtime release boundaries", () => {
       transientCalls++;
       throw Object.assign(new Error("private transient detail"), { retryable: true, overloaded: true });
     })).rejects.toMatchObject({ message: "Realtime backend unavailable", retryable: true, overloaded: true });
-    expect(transientCalls).toBe(1); // Admission remains non-retryable even on transient failure.
+    // Repeated once on a platform fault: the limiters keep a receipt per
+    // generation, so the repeat never counts twice.
+    expect(transientCalls).toBe(2);
 
     await expect(admit(() => {
       throw new Error("closed");
@@ -741,11 +782,16 @@ describe("immutable realtime release boundaries", () => {
       headers: {
         Upgrade: "websocket",
         Authorization: headers.get("authorization")!,
-        "x-realtime-bootstrap": JSON.stringify(bootstrap),
+        "x-realtime-bootstrap": bootstrapHeader(bootstrap),
       },
     });
     expect(full.status).toBe(429);
     expect(await full.json()).toMatchObject({ error: { code: "realtime_session_limit" } });
+  });
+  it("carries a bootstrap with any characters in a header", () => {
+    const bootstrap = { sessionId: "s", identity: { userId: "Олена 🎧" }, appVersion: "2.0 – beta" } as unknown as Bootstrap;
+    const headers = new Headers({ "x-realtime-bootstrap": bootstrapHeader(bootstrap) });
+    expect(readBootstrapHeader(headers.get("x-realtime-bootstrap")!)).toEqual(bootstrap);
   });
   it("the companion handshake prepares over the service binding and keeps the refusal it gets", async () => {
     const { bootstrap, headers } = await seeded();
@@ -762,6 +808,11 @@ describe("immutable realtime release boundaries", () => {
       companionEnv,
     );
     expect((await companion.fetch(new Request(url, { headers }), companionEnv)).status).toBe(426);
+    const malformed = await companion.fetch(
+      new Request("https://release.test/v1/apps/%E0%A4%A/realtime/openai", { headers: { Upgrade: "websocket" } }),
+      companionEnv,
+    );
+    expect(malformed.status).toBe(400);
     expect((await (await open()).json())).toMatchObject({ error: { code: "conflict" } });
     await recordRelease(id);
     await promoteRelease(id);
@@ -816,10 +867,24 @@ describe("immutable realtime release boundaries", () => {
       .bind(Date.now() - 60_001, id)
       .run();
     await expect(requireRealtimeAdmission(env.DB, id)).rejects.toMatchObject({ status: 409 });
-    const backend = remoteSessionBackend(env.TEST_REALTIME_BACKEND);
-    const access = await backend.revalidate(bootstrap, headers);
-    await backend.maintain(bootstrap, access.app, false);
-    await backend.persist(buildEventForReleaseTest(bootstrap));
+    const backend = sessionBackend(env.TEST_REALTIME_BACKEND as unknown as RealtimeBackendCalls);
+    const grant = await backend.grant(bootstrap, headers, null);
+    await backend.maintain(bootstrap, headers, grant, false);
+    const generationId = crypto.randomUUID();
+    await backend.settle(bootstrap, {
+      generationId,
+      ticket: realtimeTicket({ event: buildEventForReleaseTest(bootstrap, generationId), price: { kind: "text", input: 4, output: 16 } }),
+      usage: null,
+      responseId: null,
+      status: "interrupted",
+      aborted: true,
+      latencyMs: 1,
+    });
+    // No usage reported is recorded, at no cost, as unresolved.
+    expect(await env.DB
+      .prepare("SELECT cost_source, cost_usd FROM app_usage_event WHERE event_id = ?")
+      .bind(generationId)
+      .first()).toEqual({ cost_source: "unresolved", cost_usd: 0 });
   });
 });
 describe("realtime on an App Attest app that verifies every request", () => {
@@ -895,13 +960,13 @@ describe("realtime on an App Attest app that verifies every request", () => {
     const { bootstrap, headers } = await prepareRealtime(env, request, appId, appId, "https://gateway.test");
     expect(bootstrap.appVersion).toHaveLength(64);
     const backend = localSessionBackend(env, () => {});
-    await backend.revalidate(bootstrap, headers);
+    await backend.grant(bootstrap, headers, null);
     await env.DB
       .prepare("DELETE FROM app_attest_key WHERE app_id = ? AND key_id = ?")
       .bind(appId, install.keyId)
       .run();
     clearIsolateCaches();
-    await expect(backend.revalidate(bootstrap, headers))
+    await expect(backend.grant(bootstrap, headers, null))
       .rejects.toMatchObject({ status: 403, code: "attest_failed" });
   });
 
@@ -915,7 +980,7 @@ describe("realtime on an App Attest app that verifies every request", () => {
       "https://gateway.test",
     );
     const backend = localSessionBackend(env, () => {});
-    expect((await backend.revalidate(bootstrap, headers)).app.id).toBe(appId);
+    expect((await backend.grant(bootstrap, headers, null)).model).toBe("gpt-realtime");
     expect(await backend.capacity(bootstrap, "user", "acquire", 1)).toMatchObject({ allowed: true });
     const installLimiter = env.USER_LIMITER.getByName(`${appId}:install:${install.keyId}`);
     expect(await installLimiter.acquireSession("another-session", 1)).toMatchObject({ allowed: false });
@@ -924,7 +989,7 @@ describe("realtime on an App Attest app that verifies every request", () => {
   });
 });
 
-function buildEventForReleaseTest(b: Bootstrap) {
+function buildEventForReleaseTest(b: Bootstrap, eventId = crypto.randomUUID()) {
   return buildUsageEvent({
     organizationId: b.organizationId,
     identity: b.identity,
@@ -934,7 +999,7 @@ function buildEventForReleaseTest(b: Bootstrap) {
     latencyMs: 1,
     contentType: "application/json",
     observed: null,
-    eventId: crypto.randomUUID(),
+    eventId,
     createdAt: new Date().toISOString(),
   });
 }

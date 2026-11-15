@@ -1,4 +1,5 @@
-import { localSessionBackend } from "../src/realtime/local-backend";
+import { gatewayBackend } from "../src/realtime/gateway-backend";
+import { sessionBackend } from "../src/realtime/relay/backend";
 import { env } from "cloudflare:workers";
 import { runInDurableObject, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
@@ -6,17 +7,20 @@ import { eq } from "drizzle-orm";
 import gateway from "../src/index";
 import { database } from "../src/db";
 import { app as appTable } from "../src/db/schema";
-import { SessionCoordinator, settledEvent } from "../src/realtime/session";
-import { SessionJournal } from "../src/realtime/journal";
-import { GeminiAdapter } from "../src/realtime/protocols/gemini";
-import { Mailbox } from "../src/realtime/transport";
-import { GatewayError } from "../src/core/errors";
+import { SessionCoordinator } from "../src/realtime/relay/session";
+import { realtimeTicket, settledEvent, type RealtimeTicket } from "../src/realtime/usage";
+import { RelayError } from "../src/realtime/relay/errors";
+import { SessionJournal } from "../src/realtime/relay/journal";
+import { GeminiAdapter } from "../src/realtime/relay/protocols/gemini";
+import { Mailbox } from "../src/realtime/relay/transport";
+import { REALTIME_LIMITS } from "../src/realtime/relay/limits";
 import { loadApp } from "../src/core/app-records";
 import { authenticateRequest } from "../src/client-auth/client-auth";
 import { requireProvider } from "../src/providers/provider-store";
 import { buildUsageEvent, persistUsageEventAcknowledged } from "../src/usage/usage-record";
-import type { Bootstrap, Generation, JsonObject } from "../src/realtime/types";
-import type { SessionBackend } from "../src/realtime/backend";
+import type { Bootstrap, CompletionStatus, JsonObject, Settlement } from "../src/realtime/relay/contract";
+import type { Generation } from "../src/realtime/relay/types";
+import type { SessionBackend } from "../src/realtime/relay/backend";
 import {
   clearIsolateCaches,
   seedProvider,
@@ -24,6 +28,10 @@ import {
   testAttribution,
   TEST_ORGANIZATION_ID,
 } from "./helpers";
+
+/** The gateway's answers, reached the way the gateway's own sessions reach them. */
+const localSessionBackend = (runtimeEnv: Env, waitUntil: (promise: Promise<unknown>) => void) =>
+  sessionBackend(gatewayBackend(runtimeEnv, waitUntil));
 
 const usage = {
   input_tokens: 1,
@@ -155,10 +163,10 @@ function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "admitted
     at,
     ordinal: 1,
     stage,
-    observation: null,
+    usage: null,
     responseId: null,
     outputBytes: 0,
-    price: {
+    ticket: realtimeTicket({ price: {
       kind: "realtime",
       input: 4,
       output: 16,
@@ -185,7 +193,23 @@ function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "admitted
         providerResponseId: null,
         completionStatus: "interrupted",
       },
-    }),
+    }) }),
+  };
+}
+/** The ticket admission wrote for a generation, as the gateway reads it. */
+function ticketOf(g: Generation): RealtimeTicket {
+  return g.ticket as unknown as RealtimeTicket;
+}
+/** What a session reports when `g` settles. */
+function settlementOf(g: Generation, status: CompletionStatus, aborted: boolean): Settlement {
+  return {
+    generationId: g.id,
+    ticket: g.ticket!,
+    usage: g.usage,
+    responseId: g.responseId,
+    status,
+    aborted,
+    latencyMs: Math.max(0, Date.now() - g.at),
   };
 }
 function frames(socket: WebSocket) {
@@ -218,6 +242,12 @@ interface Sockets {
   next: ReturnType<typeof frames>;
   state: DurableObjectState;
   bootstrap: Bootstrap;
+}
+/** Lets a test session admit more than the one response a day `setup` allows. */
+async function allowManyResponses(appId: string) {
+  const application = await loadApp(env, appId);
+  application.config.limits.per_app.requests.per_day = null;
+  await saveAppConfig(appId, application.config);
 }
 async function withSockets(
   run: (input: Sockets) => Promise<void>,
@@ -261,11 +291,11 @@ describe("realtime failure boundaries", () => {
         const pending = new Promise<void>(resolve => { entered = resolve; });
         const gate = new Promise<void>(resolve => { release = resolve; });
         const backend = Reflect.get(coordinator, "backend") as SessionBackend;
-        backend.maintain = async (_bootstrap, _app, active) => {
+        backend.maintain = async (_bootstrap, _headers, _previous, active) => {
           expect(active).toBe(false);
           entered();
           await gate;
-          throw new GatewayError(429, code, "Exhausted");
+          throw new RelayError(429, code, "Exhausted");
         };
         const maintain = Reflect.get(coordinator, "maintain");
         const maintenance = Reflect.apply(maintain, coordinator, []) as Promise<void>;
@@ -476,7 +506,7 @@ describe("realtime failure boundaries", () => {
         });
         try {
           expect(() => coordinator.terminate(
-            new GatewayError(502, "provider_error", "Realtime transport failed"),
+            new RelayError(502, "provider_error", "Realtime transport failed"),
             1011,
           )).not.toThrow();
           await sleep(2100);
@@ -583,7 +613,7 @@ describe("realtime failure boundaries", () => {
       const journal = new SessionJournal(state.storage);
       journal.open(bootstrap);
       const g = generation(bootstrap);
-      journal.settle(g, settledEvent(g, "interrupted", true));
+      journal.settle(g, settlementOf(g, "interrupted", true));
       const item = journal.outbox()[0]!;
       const due = Date.now() + 3_600_000;
       item.due = due;
@@ -805,7 +835,7 @@ describe("realtime failure boundaries", () => {
       await sleep(2100);
       expect(triggers).toBe(0);
       const quota = runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId);
-      expect(await quota.usage(attempt.claim!.periodId)).toBe(1);
+      expect(await quota.usage(String(attempt.claim!.periodId))).toBe(1);
       expect((await env.DB
         .prepare("SELECT event_id, completion_status FROM app_usage_event WHERE realtime_session_id = ?")
         .bind(bootstrap.sessionId)
@@ -861,13 +891,17 @@ describe("realtime failure boundaries", () => {
         if (failures-- > 0) throw new Error("D1 unavailable");
         return maintain(...args);
       };
+      const leaseBefore = Reflect.get(coordinator, "leaseExpiry") as number;
+      await sleep(5);
       Reflect.set(coordinator, "nextMaintenance", Date.now() - 1);
       await coordinator.alarm();
       await Reflect.get(coordinator, "maintenance");
       expect(socket.readyState).toBe(WebSocket.OPEN);
       expect(Reflect.get(coordinator, "nextMaintenance")).toBeLessThanOrEqual(Date.now() + 5_000);
+      // The gateway check failed, but the leases were still renewed.
+      expect(Reflect.get(coordinator, "leaseExpiry")).toBeGreaterThan(leaseBefore);
       backend.maintain = async () => {
-        throw new GatewayError(429, "app_budget_exhausted", "Exhausted");
+        throw new RelayError(429, "app_budget_exhausted", "Exhausted");
       };
       Reflect.set(coordinator, "nextMaintenance", Date.now() - 1);
       await coordinator.alarm();
@@ -991,30 +1025,78 @@ describe("realtime failure boundaries", () => {
         .toEqual({ requestsToday: 1 });
     });
   });
-  it("missing usage closes after one honest unresolved attempt", async () => {
+  it("missing usage is recorded unresolved and the conversation goes on", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     await withSockets(async ({ socket, upstream, next, coordinator }) => {
+      await allowManyResponses(coordinator.bootstrap.appId);
+      let turn = 0;
       upstream.addEventListener("message", event => {
         if (frameType(event) !== "response.create") return;
-        upstream.send('{"type":"response.created","response":{"id":"r"}}');
-        upstream.send('{"type":"response.done","response":{"id":"r","status":"completed"}}');
+        const id = `r-${++turn}`;
+        upstream.send(JSON.stringify({ type: "response.created", response: { id } }));
+        upstream.send(turn === 1
+          ? JSON.stringify({ type: "response.done", response: { id, status: "completed" } })
+          : responseDone(id));
       });
       socket.send('{"type":"response.create"}');
       await next("response.done");
-      expect(await next("gateway.error")).toMatchObject({ error: { code: "realtime_usage_unresolved" } });
-      expect(coordinator.journal.generations()[0]?.event.row.costSource).toBe("unresolved");
+      socket.send('{"type":"response.create"}');
+      await next("response.done");
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      await sleep(20);
+      expect((await env.DB
+        .prepare("SELECT cost_source FROM app_usage_event WHERE realtime_session_id = ? ORDER BY created_at")
+        .bind(coordinator.bootstrap.sessionId)
+        .all()).results.map(row => row.cost_source).sort()).toEqual(["computed", "unresolved"]);
     });
+    vi.restoreAllMocks();
+  });
+  it("usage the gateway cannot record stays in the journal and the conversation goes on", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await withSockets(async ({ socket, upstream, next, coordinator, state }) => {
+      await allowManyResponses(coordinator.bootstrap.appId);
+      const backend = Reflect.get(coordinator, "backend") as SessionBackend;
+      const settle = backend.settle;
+      let down = true;
+      backend.settle = async (...args) => {
+        if (down) throw new RelayError(503, "provider_unavailable", "Realtime backend unavailable");
+        return settle(...args);
+      };
+      let turn = 0;
+      upstream.addEventListener("message", event => {
+        if (frameType(event) !== "response.create") return;
+        const id = `r-${++turn}`;
+        upstream.send(JSON.stringify({ type: "response.created", response: { id } }));
+        upstream.send(responseDone(id));
+      });
+      socket.send('{"type":"response.create"}');
+      await next("response.done");
+      socket.send('{"type":"response.create"}');
+      await next("response.done");
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      await sleep(20);
+      expect(coordinator.journal.outbox().length).toBeGreaterThan(0);
+      // Once the gateway answers again, the journal delivers what it kept.
+      down = false;
+      for (const item of coordinator.journal.outbox()) {
+        item.due = 0;
+        state.storage.sql.exec(
+          "UPDATE usage_outbox SET json = ? WHERE id = ?",
+          JSON.stringify(item),
+          item.id,
+        );
+      }
+      await Reflect.apply(Reflect.get(coordinator, "flush"), coordinator, []);
+      expect(coordinator.journal.outbox()).toHaveLength(0);
+      expect(await sessionUsageCount(coordinator.bootstrap.sessionId)).toBe(2);
+    });
+    vi.restoreAllMocks();
   });
   it("a lost D1 insert acknowledgement replays exactly one row and spend delta", async () => {
     const { bootstrap } = await setup();
     const g = generation(bootstrap);
-    g.observation = {
-      inputTokens: 1,
-      outputTokens: 1,
-      cachedInputTokens: 0,
-      cacheWriteTokens: 0,
-      modalityTokens: { input: {}, output: {} },
-    };
-    const event = settledEvent(g, "completed", false);
+    g.usage = usage;
+    const event = settledEvent(bootstrap, settlementOf(g, "completed", false));
     let lost = false;
     const wrapStatement = (statement: D1PreparedStatement): D1PreparedStatement => new Proxy(statement, {
       get(target, property) {
@@ -1125,14 +1207,15 @@ describe("realtime failure boundaries", () => {
       const journal = new SessionJournal(state.storage);
       journal.open(bootstrap);
       const g = generation(bootstrap, "admitting");
-      g.claim = { periodId: "p", periodEnd: "2026-11-01T00:00:00Z", limit: 1, admissionId: g.id };
+      const claim = { periodId: "p", periodEnd: "2026-11-01T00:00:00Z", limit: 1, admissionId: g.id };
+      g.claim = claim;
       journal.save(g);
-      await env.ORG_QUOTA.getByName(bootstrap.organizationId).admit(g.claim);
+      await env.ORG_QUOTA.getByName(bootstrap.organizationId).admit(claim);
       const coordinator = coordinatorFor(env, state, bootstrap, headers);
       await coordinator.recover();
       const recovered = journal.generations()[0]!;
       expect(recovered.stage).toBe("settled");
-      expect(recovered.event.row)
+      expect(settledEvent(bootstrap, journal.outbox()[0]!.settlement).row)
         .toMatchObject({ costSource: "unresolved", completionStatus: "interrupted" });
       await coordinator.recover();
       expect(journal.outbox()).toHaveLength(1);
@@ -1162,10 +1245,8 @@ describe("realtime failure boundaries", () => {
       g.at = Date.now() - 3 * 86_400_000;
       journal.save(g);
       await coordinatorFor(env, state, bootstrap, headers).recover();
-      expect(journal.generations()[0]).toMatchObject({
-        stage: "settled",
-        event: { row: { completionStatus: "interrupted" } },
-      });
+      expect(journal.generations()[0]).toMatchObject({ stage: "settled" });
+      expect(journal.outbox()[0]?.settlement).toMatchObject({ status: "interrupted", aborted: true });
       // Delivery shares the generation's recovery horizon rather than starting a new one.
       expect(journal.outbox()).toMatchObject([{ createdAt: g.at }]);
     });
@@ -1182,20 +1263,22 @@ describe("realtime failure boundaries", () => {
       await coordinatorFor(env, state, bootstrap, headers).recover();
       expect(journal.generations()[0]?.stage).toBe("admitting");
       expect(journal.outbox()).toHaveLength(0);
+      // Once the call that carried the claim can no longer be running, no
+      // receipt means the claim never landed: nothing is counted or recorded.
+      g.at = Date.now() - REALTIME_LIMITS.receiptWaitMs - 1;
+      journal.save(g);
+      journal.saveTask("admission", { attempts: 0, due: 0, complete: false });
+      await coordinatorFor(env, state, bootstrap, headers).recover();
+      expect(journal.generations()[0]?.stage).toBe("refused");
+      expect(journal.outbox()).toHaveLength(0);
     });
   });
   it("cancelled/incomplete attempts retain observed usage and original admission month", async () => {
     const { bootstrap } = await setup();
     const g = generation(bootstrap);
-    g.event.row.createdAt = "2026-09-30T23:59:59Z";
-    g.observation = {
-      inputTokens: 1,
-      cachedInputTokens: 0,
-      cacheWriteTokens: 0,
-      outputTokens: 1,
-      modalityTokens: { input: {}, output: {} },
-    };
-    expect(settledEvent(g, "cancelled", true).row).toMatchObject({
+    ticketOf(g).event.row.createdAt = "2026-09-30T23:59:59Z";
+    g.usage = usage;
+    expect(settledEvent(bootstrap, settlementOf(g, "cancelled", true)).row).toMatchObject({
       createdAt: "2026-09-30T23:59:59Z",
       completionStatus: "cancelled",
       costSource: "computed",
@@ -1273,10 +1356,12 @@ describe("realtime failure boundaries", () => {
 describe("release admission acknowledgement ordering", () => {
   it("metered claim waits for durable acknowledgement and a rejected acknowledgement never claims", async () => {
     const runtimeEnv = hostedEnv();
-    const { bootstrap } = await setup();
+    const { bootstrap, headers } = await setup();
     const application = await loadApp(runtimeEnv, bootstrap.appId);
     application.config.limits.per_app.requests.per_day = null;
+    await saveAppConfig(bootstrap.appId, application.config);
     const backend = localSessionBackend(runtimeEnv, () => {});
+    const grant = await backend.grant(bootstrap, headers, null);
     const quota = () => runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId);
     let claim!: NonNullable<Generation["claim"]>;
     let entered!: () => void;
@@ -1284,24 +1369,25 @@ describe("release admission acknowledgement ordering", () => {
     const started = new Promise<void>(resolve => { entered = resolve; });
     const gate = new Promise<void>(resolve => { release = resolve; });
     const id = crypto.randomUUID();
-    const pending = backend.admit(bootstrap, application, attribution(), id, Date.now(), async value => {
+    const pending = backend.admit(bootstrap, headers, grant, id, Date.now(), async value => {
       claim = value!;
       entered();
       await gate;
     }, () => true);
     await started;
-    expect(await quota().usage(claim.periodId)).toBe(0);
+    expect(await quota().usage(String(claim.periodId))).toBe(0);
     expect(await backend.receipt(bootstrap, id)).toBeNull();
     release();
     await pending;
-    expect(await quota().usage(claim.periodId)).toBe(1);
+    expect(await quota().usage(String(claim.periodId))).toBe(1);
     expect(await backend.receipt(bootstrap, id)).toMatchObject({ allowed: true });
     const refused = crypto.randomUUID();
-    await expect(backend.admit(bootstrap, application, attribution(), refused, Date.now(), () => {
+    await expect(backend.admit(bootstrap, headers, grant, refused, Date.now(), () => {
       throw new Error("session closed");
-    }, () => true)).rejects.toThrow("session closed");
+      // The gateway keeps no detail of a failure on the session's side.
+    }, () => true)).rejects.toThrow("Realtime backend unavailable");
     expect(await backend.receipt(bootstrap, refused)).toBeNull();
-    expect(await quota().usage(claim.periodId)).toBe(1);
+    expect(await quota().usage(String(claim.periodId))).toBe(1);
   });
   it("an HTTP stream completes and settles once while realtime routing is promoted twice", async () => {
     const runtimeEnv = hostedEnv();
@@ -1366,15 +1452,17 @@ describe("realtime sessions during a billing outage", () => {
   it("stay open when billing cannot be read or the allowance counter is down", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { bootstrap } = await setup();
+    const { bootstrap, headers } = await setup();
     const application = await loadApp(env, bootstrap.appId);
     application.config.limits.per_app.requests.per_day = null;
+    await saveAppConfig(bootstrap.appId, application.config);
+    const grant = await localSessionBackend(env, () => {}).grant(bootstrap, headers, null);
     const billingDown = {
       ...hostedEnv(),
       BILLING: { getTenantAccess: async () => { throw new Error("billing service unreachable"); } },
     } as unknown as Env;
-    await expect(localSessionBackend(billingDown, () => {}).maintain(bootstrap, application, false))
-      .resolves.toBeUndefined();
+    await expect(localSessionBackend(billingDown, () => {}).maintain(bootstrap, headers, grant, false))
+      .resolves.toMatchObject({ model: "gpt-realtime" });
     const counterDown = hostedEnv();
     counterDown.ORG_QUOTA = new Proxy(counterDown.ORG_QUOTA, {
       get(target, property) {
@@ -1384,8 +1472,8 @@ describe("realtime sessions during a billing outage", () => {
         return passthrough(target, property);
       },
     });
-    await expect(localSessionBackend(counterDown, () => {}).maintain(bootstrap, application, false))
-      .resolves.toBeUndefined();
+    await expect(localSessionBackend(counterDown, () => {}).maintain(bootstrap, headers, grant, false))
+      .resolves.toMatchObject({ model: "gpt-realtime" });
     vi.restoreAllMocks();
   });
 });

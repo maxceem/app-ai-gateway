@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "app-ai-gateway-realtime-local",
-  "main": "src/realtime/worker.ts",
+  "main": "src/realtime/relay/worker.ts",
   "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,

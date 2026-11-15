@@ -1,10 +1,10 @@
-import { GatewayError } from "../../core/errors";
+import { RelayError } from "../errors";
 import type { JsonObject } from "../types";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/u;
 
 export function invalid(message: string): never {
-  throw new GatewayError(400, "realtime_protocol_error", message);
+  throw new RelayError(400, "realtime_protocol_error", message);
 }
 
 export function object(value: unknown): JsonObject {

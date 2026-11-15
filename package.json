@@ -45,6 +45,7 @@
     "test:indexnow": "node --test test/indexnow.node.mjs",
     "test:test-ledger": "node --test test/test-ledger.node.mjs",
     "test:realtime-conformance": "node --test test/realtime-conformance.node.mjs",
+    "test:realtime-relay": "node --test test/realtime-relay.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:dev": "node cli/scripts/dev.mjs",

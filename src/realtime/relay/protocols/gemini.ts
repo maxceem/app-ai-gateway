@@ -1,6 +1,5 @@
 import type { AdapterEffect, AdapterState, JsonObject, ProtocolAdapter } from "../types";
-import { cap, count, invalid, isBase64, isSingleModality, keys, object } from "./validation";
-import type { UsageObservation } from "../../usage/pricing";
+import { cap, invalid, isBase64, isSingleModality, keys, object } from "./validation";
 
 /**
  * Dormant explicit-turn implementation. Production policy has NO enabled Gemini profile.
@@ -11,7 +10,7 @@ export class GeminiAdapter implements ProtocolAdapter {
   private setup = false;
   private mode: "text" | "audio" | null = null;
   private activity = false;
-  private usage: UsageObservation | null = null;
+  private usage: JsonObject | null = null;
   private turn = 0;
 
   constructor(private model: string, private ceiling: number) {}
@@ -139,7 +138,7 @@ export class GeminiAdapter implements ProtocolAdapter {
     const effects: AdapterEffect[] = [];
     if (frame.usageMetadata !== undefined) {
       if (!state.active) invalid("Unattributed Gemini usage");
-      this.usage = geminiSnapshot(frame.usageMetadata);
+      this.usage = object(frame.usageMetadata);
       effects.push({ kind: "observe", usage: this.usage });
     }
     if (frame.serverContent !== undefined) {
@@ -161,44 +160,4 @@ export class GeminiAdapter implements ProtocolAdapter {
     effects.push({ kind: "forward", frame });
     return effects;
   }
-}
-
-/** Candidate per-turn snapshot strategy, never summed or differenced across rolling context. */
-export function geminiSnapshot(value: unknown): UsageObservation {
-  const raw = object(value);
-  const input = count(raw.promptTokenCount);
-  const output = count(raw.responseTokenCount);
-  const cached = count(raw.cachedContentTokenCount ?? 0);
-  if (cached !== 0 || (raw.thoughtsTokenCount !== undefined && count(raw.thoughtsTokenCount) !== 0)) {
-    invalid("Cached/thinking usage is unverified for this Gemini profile");
-  }
-  return {
-    inputTokens: input,
-    cachedInputTokens: 0,
-    cacheWriteTokens: 0,
-    outputTokens: output,
-    modalityTokens: {
-      input: modalityUsage(raw.promptTokensDetails, input),
-      output: modalityUsage(raw.responseTokensDetails, output),
-    },
-  };
-}
-
-/** The audio share of one direction's per-modality details, which must add up to its `total`. */
-function modalityUsage(values: unknown, total: number): { audio: number } {
-  if (!Array.isArray(values)) return invalid("Gemini modality usage is missing");
-  let sum = 0;
-  let audio = 0;
-  for (const value of values) {
-    const entry = object(value);
-    const tokens = count(entry.tokenCount);
-    sum += tokens;
-    if (entry.modality === "AUDIO") {
-      audio += tokens;
-    } else if (entry.modality !== "TEXT") {
-      invalid("Unsupported Gemini modality");
-    }
-  }
-  if (sum !== total) invalid("Inconsistent Gemini usage");
-  return { audio };
 }

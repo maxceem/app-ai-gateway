@@ -2,9 +2,6 @@ import { GatewayError } from "../core/errors";
 import type { RealtimeProtocol } from "../shared/capabilities";
 import { CF_AI_GATEWAY_BASE_URL } from "../providers/gateway-adapters";
 import { DIRECT_ROUTE, type ResolvedRoute } from "../providers/route-adapters";
-import type { ProtocolAdapter } from "./types";
-import { OpenAIAdapter } from "./protocols/openai";
-import { GeminiAdapter } from "./protocols/gemini";
 
 const GEMINI_LIVE_URL =
   "https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
@@ -64,15 +61,4 @@ export function upstreamRequest(
     headers: { Upgrade: "websocket", "x-goog-api-key": secret },
     redirect: "manual",
   });
-}
-
-export function protocolAdapter(
-  protocol: RealtimeProtocol,
-  model: string,
-  outputCap: number,
-  requestedModel = model,
-): ProtocolAdapter {
-  return protocol === "openai_realtime"
-    ? new OpenAIAdapter(model, outputCap, requestedModel)
-    : new GeminiAdapter(model, outputCap);
 }

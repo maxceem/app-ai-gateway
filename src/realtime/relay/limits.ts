@@ -23,5 +23,9 @@ export const REALTIME_LIMITS = {
   leaseSafetyMs: 10_000,
   maintenanceRetryMs: 5_000,
   drainMs: 2000,
+  /** How long a new turn waits for the previous turn's usage to reach the gateway. */
+  settleWaitMs: 2000,
   outboxRetentionMs: 7 * 86_400_000,
+  /** How long a claim with no receipt may still be landing before it is taken as never spent. */
+  receiptWaitMs: 10 * 60_000,
 } as const;

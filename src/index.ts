@@ -23,7 +23,7 @@ import { requestIdOf } from "./core/request-id";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
 import { serveRealtime, discoverRealtime } from "./realtime/serve";
-import { REALTIME_BACKEND_CONTRACT } from "./realtime/backend";
+import { REALTIME_BACKEND_CONTRACT } from "./realtime/relay/contract";
 import { RealtimeSession } from "./do/RealtimeSession";
 import { INFERENCE_ROUTES } from "./contracts/inference-routes";
 import { OrgQuota } from "./do/OrgQuota";
@@ -92,7 +92,9 @@ function healthProbe(env: Env): Promise<{ active_realtime_id: string | null } | 
 
 app.get("/v1/healthz", async (c) => {
   c.header("Cache-Control", "no-store");
-  const state = await healthProbe(c.env);
+  // A failed probe is `ready: false`, never an error: the gateway may still
+  // serve requests, and monitors read this route as "is it up".
+  const state = await healthProbe(c.env).catch(() => null);
   return c.json({ ok: true, service: "app-ai-gateway", vault: vaultStatus(c.env), email: emailDeliveryStatus(c.env),
     buildId: c.env.GATEWAY_BUILD_ID ?? "development", ready: state !== null && vaultStatus(c.env) === "ok" && Boolean(c.env.USER_LIMITER && c.env.ENDPOINT_RATE_LIMITER),
     backendContract: REALTIME_BACKEND_CONTRACT, realtimeReleaseId: state?.active_realtime_id ?? null } satisfies HealthResponse);

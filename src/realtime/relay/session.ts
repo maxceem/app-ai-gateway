@@ -1,31 +1,27 @@
-import type { AppRecord } from "../core/types";
-import { GatewayError } from "../core/errors";
-import { log } from "../core/log";
-import type { ProviderPricing } from "../db/schema";
-import type { ResolvedProvider } from "../providers/provider-store";
-import { DIRECT_ROUTE, routeAdapter, type ResolvedRoute } from "../providers/route-adapters";
-import { buildUsageEvent, type AttemptAttribution, type UsageEvent } from "../usage/usage-record";
-import { computeCost } from "../usage/pricing";
-import { realtimePolicy } from "./policy";
+import { RelayError } from "./errors";
+import { log } from "./log";
 import { REALTIME_LIMITS as L, REALTIME_MAX_SESSION_SECONDS } from "./limits";
 import { SessionJournal } from "./journal";
 import { Mailbox, close, frameBytes, send } from "./transport";
-import { protocolAdapter, upstreamRequest } from "./upstream";
+import { protocolAdapter } from "./protocols";
 import { id, object, invalid } from "./protocols/validation";
-import type {
-  AdapterEffect,
-  Bootstrap,
-  CompletionStatus,
-  Generation,
-  JsonObject,
-  ProtocolAdapter,
-} from "./types";
-
+import type { Bootstrap, CompletionStatus, SessionGrant, Settlement } from "./contract";
+import type { AdapterEffect, Generation, JsonObject, ProtocolAdapter } from "./types";
 import type { SessionBackend } from "./backend";
 
+/**
+ * One realtime session: the app's socket, the provider's socket, and the
+ * frames between them.
+ *
+ * Everything the gateway decides comes from its {@link SessionGrant}, which
+ * the gateway sends again at each check: the provider to call, the limits, and
+ * whether the session may go on. This class enforces the frame rules and keeps
+ * the journal that makes usage survive a restart. It prices nothing and reads
+ * no app settings, so it changes only when those two jobs do.
+ */
 export class SessionCoordinator {
-  private app: AppRecord | null = null;
-  private provider: ResolvedProvider | null = null;
+  /** Held in memory only: it carries the provider credential. */
+  private grant: SessionGrant | null = null;
   private adapter: ProtocolAdapter | null = null;
   private client: WebSocket | null = null;
   private upstream: WebSocket | null = null;
@@ -53,7 +49,6 @@ export class SessionCoordinator {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private configurationAt = Date.now();
   private alarmDue: number | null = null;
-  private authPolicy: string | null = null;
   private maintenance: Promise<void> | null = null;
   private flushing: Promise<boolean> | null = null;
   private releasing: Promise<void> | null = null;
@@ -74,7 +69,7 @@ export class SessionCoordinator {
     this.authHeaders = new Headers(headers);
     this.journal = new SessionJournal(ctx.storage);
     this.mailbox = new Mailbox(
-      () => this.terminate(new GatewayError(413, "payload_too_large", "Realtime queue limit exceeded"), 1009),
+      () => this.terminate(new RelayError(413, "payload_too_large", "Realtime queue limit exceeded"), 1009),
       error => this.fail(error),
     );
   }
@@ -88,13 +83,13 @@ export class SessionCoordinator {
 
   async start(testUpstream?: WebSocket): Promise<Response> {
     if (this.journal.metadata()) {
-      throw new GatewayError(409, "conflict", "A realtime object cannot be reopened");
+      throw new RelayError(409, "conflict", "A realtime object cannot be reopened");
     }
-    await this.revalidate();
-    const app = this.app!;
+    const grant = await this.backend.grant(this.bootstrap, this.authHeaders, null);
+    this.grant = grant;
     this.openedAt = Date.now();
     this.lastActivity = this.openedAt;
-    const maxSessionSeconds = Math.min(app.config.realtime.max_session_seconds, REALTIME_MAX_SESSION_SECONDS);
+    const maxSessionSeconds = Math.min(grant.maxSessionSeconds, REALTIME_MAX_SESSION_SECONDS);
     this.expiresAt = Math.min(
       this.openedAt + maxSessionSeconds * 1000,
       this.bootstrap.identity.expiresAt ?? Infinity,
@@ -112,38 +107,28 @@ export class SessionCoordinator {
         this.bootstrap,
         "user",
         "acquire",
-        app.config.realtime.max_concurrent_sessions_per_identity,
+        grant.maxSessionsPerIdentity,
       );
       if (!user.allowed) {
-        throw new GatewayError(429, "realtime_session_limit", "Realtime identity capacity exceeded");
+        throw new RelayError(429, "realtime_session_limit", "Realtime identity capacity exceeded");
       }
       this.requireStarting();
       const application = await this.backend.capacity(
         this.bootstrap,
         "app",
         "acquire",
-        app.config.realtime.max_concurrent_sessions,
+        grant.maxSessions,
       );
       if (!application.allowed) {
-        throw new GatewayError(429, "realtime_session_limit", "Realtime app capacity exceeded");
+        throw new RelayError(429, "realtime_session_limit", "Realtime app capacity exceeded");
       }
       this.leaseExpiry = Math.min(user.expiresAt, application.expiresAt);
       this.requireStarting();
-      const provider = this.provider!;
-      const policy = realtimePolicy(app, provider, this.bootstrap.requestedModel);
-      this.adapter = protocolAdapter(
-        policy.protocol,
-        policy.model,
-        policy.outputCap,
-        this.bootstrap.requestedModel,
-      );
+      this.adapter = protocolAdapter(grant.protocol, grant.model, grant.outputCap, this.bootstrap.requestedModel);
       if (testUpstream) {
         this.upstream = testUpstream;
       } else {
-        const request = upstreamRequest(policy.protocol, policy.model, provider.secret, provider.route, {
-          appId: this.bootstrap.appId,
-          userId: this.bootstrap.identity.userId,
-        });
+        const request = new Request(grant.upstream.url, { headers: grant.upstream.headers, redirect: "manual" });
         // The deadline bounds the upgrade only: the socket stays bound to the
         // signal it was opened with, so a timeout signal would close it later.
         const deadline = new AbortController();
@@ -155,7 +140,7 @@ export class SessionCoordinator {
           clearTimeout(timer);
         }
         if (response.status !== 101 || !response.webSocket) {
-          throw new GatewayError(502, "provider_error", "Realtime provider upgrade failed");
+          throw new RelayError(502, "provider_error", "Realtime provider upgrade failed");
         }
         this.upstream = response.webSocket;
       }
@@ -170,7 +155,7 @@ export class SessionCoordinator {
       // Cloudflare AI Gateway drops a socket written to before the provider has
       // spoken, so there the configuration waits for the provider's first event.
       const initial = this.adapter.initial();
-      if (provider.route.kind === "direct") {
+      if (!grant.waitForProvider) {
         if (initial) send(this.upstream, initial);
       } else {
         this.deferredInitial = initial;
@@ -203,44 +188,8 @@ export class SessionCoordinator {
       || Date.now() >= this.expiresAt
       || Date.now() >= this.openedAt + L.setupMs
     ) {
-      throw new GatewayError(504, "provider_error", "Realtime setup expired");
+      throw new RelayError(504, "provider_error", "Realtime setup expired");
     }
-  }
-
-  private async revalidate(): Promise<void> {
-    const b = this.bootstrap;
-    const { app, provider } = await this.backend.revalidate(b, this.authHeaders);
-    const authentication = JSON.stringify(app.config.authentication);
-    if (this.authPolicy !== null && authentication !== this.authPolicy) {
-      throw new GatewayError(401, "auth_required", "Realtime authentication policy changed; reconnect");
-    }
-    if (this.provider && provider.secret !== this.provider.secret) {
-      throw new GatewayError(
-        403,
-        "provider_not_configured",
-        "Realtime provider credential changed; reconnect",
-      );
-    }
-    if (provider.id !== b.providerId) {
-      throw new GatewayError(403, "provider_not_configured", "Realtime provider identity changed");
-    }
-    const policy = realtimePolicy(app, provider, b.requestedModel);
-    if (policy.model !== b.model || policy.protocol !== b.protocol) {
-      throw new GatewayError(403, "model_not_allowed", "Realtime model policy changed");
-    }
-    if (this.app) {
-      const previous = realtimePolicy(this.app, this.provider!, b.requestedModel);
-      if (policy.outputCap < previous.outputCap) {
-        throw new GatewayError(
-          403,
-          "max_output_tokens_exceeded",
-          "Realtime output policy changed; reconnect",
-        );
-      }
-    }
-    this.authPolicy = authentication;
-    this.app = app;
-    this.provider = provider;
   }
 
   /**
@@ -263,7 +212,7 @@ export class SessionCoordinator {
       if (source === "client" && this.terminating) return;
       if (typeof event.data !== "string") {
         this.terminate(
-          new GatewayError(400, "realtime_protocol_error", "Binary realtime frames are unsupported"),
+          new RelayError(400, "realtime_protocol_error", "Binary realtime frames are unsupported"),
           1008,
         );
         return;
@@ -271,12 +220,12 @@ export class SessionCoordinator {
       const bytes = frameBytes(event.data);
       const frameLimit = source === "client" ? L.clientFrameBytes : L.providerFrameBytes;
       if (bytes > frameLimit) {
-        this.terminate(new GatewayError(413, "payload_too_large", "Realtime frame limit exceeded"), 1009);
+        this.terminate(new RelayError(413, "payload_too_large", "Realtime frame limit exceeded"), 1009);
         return;
       }
       if (source === "client" && !this.allowClient(bytes)) {
         this.terminate(
-          new GatewayError(400, "realtime_protocol_error", "Realtime input is arriving faster than real time"),
+          new RelayError(400, "realtime_protocol_error", "Realtime input is arriving faster than real time"),
           1008,
         );
         return;
@@ -284,7 +233,7 @@ export class SessionCoordinator {
       if (source === "server" && this.active) {
         this.active.outputBytes += bytes;
         if (this.active.outputBytes > L.generationOutputBytes) {
-          this.terminate(new GatewayError(413, "payload_too_large", "Realtime output limit exceeded"), 1009);
+          this.terminate(new RelayError(413, "payload_too_large", "Realtime output limit exceeded"), 1009);
           return;
         }
       }
@@ -354,7 +303,7 @@ export class SessionCoordinator {
       this.terminate(null, source === "client" ? 1000 : 1011);
     });
     socket.addEventListener("error", () =>
-      this.terminate(new GatewayError(502, "provider_error", "Realtime transport failed"), 1011),
+      this.terminate(new RelayError(502, "provider_error", "Realtime transport failed"), 1011),
     );
   }
 
@@ -396,7 +345,7 @@ export class SessionCoordinator {
             this.inputBytes += bytes;
             if (this.inputStarted === null) this.inputStarted = Date.now();
             if (this.inputBytes > L.turnInputBytes) {
-              throw new GatewayError(413, "payload_too_large", "Realtime turn input limit exceeded");
+              throw new RelayError(413, "payload_too_large", "Realtime turn input limit exceeded");
             }
           }
           if (effect.useful) this.lastActivity = Date.now();
@@ -416,6 +365,9 @@ export class SessionCoordinator {
         // session.
         this.pendingAuto = effect;
         return;
+      case "reject":
+        // The provider's own error has reached the app; the session ends here.
+        return invalid(effect.message);
       case "cancel": {
         const frame = this.adapter!.cancel();
         if (frame) {
@@ -433,33 +385,23 @@ export class SessionCoordinator {
         return;
       case "observe":
         if (!this.active) invalid("Unattributed usage");
-        this.active.observation = effect.usage;
+        this.active.usage = effect.usage;
         this.journal.save(this.active);
         return;
       case "finalize": {
         const generation = this.active;
         if (!generation) invalid("Unadmitted terminal response");
-        generation.observation = effect.usage;
-        const event = settledEvent(generation, effect.status, this.terminating);
-        // SQLite settlement precedes terminal forwarding. D1 settlement gates the next turn.
-        this.journal.settle(generation, event);
+        generation.usage = effect.usage;
+        // Stored before the terminal frame is forwarded, then sent to the
+        // gateway in the background. Usage the gateway cannot record or read
+        // never ends the conversation: it stays in the journal and is retried,
+        // and the gateway reports usage it cannot price.
+        this.journal.settle(generation, settlement(generation, effect.status, this.terminating));
         this.terminalResponses.add(effect.responseId);
         this.active = null;
         await this.schedule();
         send(this.client, effect.frame);
-        if (event.row.costSource === "unresolved") {
-          this.terminate(
-            new GatewayError(502, "realtime_usage_unresolved", "Provider usage is missing or inconsistent"),
-            1011,
-          );
-        }
-        const persisted = await this.flush();
-        if (!persisted) {
-          this.terminate(
-            new GatewayError(503, "provider_unavailable", "Realtime usage recording failed"),
-            1011,
-          );
-        }
+        this.ctx.waitUntil(this.flush());
         const pending = this.pendingAuto;
         this.pendingAuto = null;
         if (pending && this.live()) await this.generate(pending.frame);
@@ -472,47 +414,13 @@ export class SessionCoordinator {
     if (!this.live()) return;
     if (this.active || this.pendingAuto) invalid("Only one active realtime generation is permitted");
     if (this.ordinal >= L.generations) invalid("Realtime generation limit exceeded");
-    if (!(await this.flush())) {
-      throw new GatewayError(503, "provider_unavailable", "Previous realtime usage is not settled");
-    }
+    // The previous response's usage normally reaches the gateway well before
+    // the next turn, so the budgets admission checks include it. It is waited
+    // for briefly, never required: an outage of ours undercounts instead.
+    await this.flushWithin(L.settleWaitMs);
     if (!this.live()) return;
-    await this.revalidate();
-    if (!this.live()) return;
-    const provider = this.provider!;
-    const app = this.app!;
-    const policy = realtimePolicy(app, provider, this.bootstrap.requestedModel);
-    const attribution: AttemptAttribution = {
-      provider: provider.type,
-      providerId: provider.id,
-      providerSlug: provider.slug,
-      providerRoute: localRoute(provider.route),
-      pricing: provider.pricing,
-      model: policy.model,
-      apiStyle: "other",
-      route: `${provider.slug}/${policy.path}`,
-      passthrough: false,
-    };
     const at = Date.now();
     const generationId = crypto.randomUUID();
-    const event = buildUsageEvent({
-      organizationId: app.organizationId,
-      identity: this.bootstrap.identity,
-      attribution,
-      appVersion: this.bootstrap.appVersion,
-      status: "ok",
-      latencyMs: 0,
-      contentType: "application/json",
-      observed: null,
-      eventId: generationId,
-      createdAt: new Date(at).toISOString(),
-      realtime: {
-        sessionId: this.bootstrap.sessionId,
-        generationId,
-        protocol: this.bootstrap.protocol,
-        providerResponseId: null,
-        completionStatus: "interrupted",
-      },
-    });
     const kind = typeof frame.type === "string"
       ? frame.type
       : inputActivity ? "gemini.activityStart" : "gemini.clientContent";
@@ -525,25 +433,24 @@ export class SessionCoordinator {
       at,
       stage: "prepared",
       responseId: null,
-      observation: null,
+      usage: null,
       outputBytes: 0,
-      price: policy.price,
-      event,
     };
     this.active = generation;
     this.journal.save(generation);
     generation.stage = "admitting";
     this.journal.save(generation);
     try {
-      await this.backend.admit(
+      this.grant = await this.backend.admit(
         this.bootstrap,
-        app,
-        attribution,
+        this.authHeaders,
+        this.grant!,
         generationId,
         at,
-        claim => {
-          if (!this.live()) throw new GatewayError(409, "conflict", "Session ended during admission");
+        (claim, ticket) => {
+          if (!this.live()) throw new RelayError(409, "conflict", "Session ended during admission");
           generation.claim = claim;
+          generation.ticket = ticket;
           this.journal.save(generation);
         },
         () => this.live(),
@@ -587,14 +494,14 @@ export class SessionCoordinator {
   }
 
   private fail(error: unknown): void {
-    const known = error instanceof GatewayError
+    const known = error instanceof RelayError
       ? error
-      : new GatewayError(502, "provider_error", "Realtime session failed");
+      : new RelayError(502, "provider_error", "Realtime session failed");
     const closeCode = known.code === "payload_too_large" ? 1009 : known.status < 500 ? 1008 : 1011;
     this.terminate(known, closeCode);
   }
 
-  terminate(error: GatewayError | null, code: number): void {
+  terminate(error: RelayError | null, code: number): void {
     if (this.terminating) return;
     this.terminating = true;
     if (error) {
@@ -697,6 +604,16 @@ export class SessionCoordinator {
     return this.releasing;
   }
 
+  /** Sends pending usage, waiting at most `ms` for it. Never fails. */
+  private async flushWithin(ms: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, ms);
+    });
+    await Promise.race([this.flush().catch(() => false), deadline]);
+    clearTimeout(timer);
+  }
+
   private flush(): Promise<boolean> {
     if (this.flushing) return this.flushing;
     this.flushing = this.deliver().finally(() => {
@@ -721,7 +638,7 @@ export class SessionCoordinator {
         continue;
       }
       try {
-        await this.backend.persist(item.event);
+        await this.backend.settle(this.bootstrap, item.settlement);
         this.journal.acknowledged(item.id);
       } catch {
         this.journal.retry(item);
@@ -756,11 +673,12 @@ export class SessionCoordinator {
         try {
           const receipt = await this.backend.receipt(this.bootstrap, generation.id);
           if (!receipt) {
-            if (withinRetention(generation)) {
+            // No receipt is the counter's own answer that the claim never
+            // landed, once the call that carried it can no longer be running.
+            if (Date.now() - generation.at < L.receiptWaitMs) {
               pending = true;
               continue;
             }
-            this.logAccountingGap(generation);
             this.refuse(generation);
             continue;
           }
@@ -778,7 +696,14 @@ export class SessionCoordinator {
           continue;
         }
       }
-      this.journal.settle(generation, settledEvent(generation, "interrupted", true));
+      if (!generation.ticket) {
+        // Admitted with no ticket stored cannot happen: the claim and the
+        // ticket are stored together, before the claim is spent.
+        this.logAccountingGap(generation);
+        this.refuse(generation);
+        continue;
+      }
+      this.journal.settle(generation, settlement(generation, "interrupted", true));
     }
     if (pending && task.due <= Date.now()) this.journal.retryTask("admission", task);
   }
@@ -797,15 +722,19 @@ export class SessionCoordinator {
 
   private async maintain(): Promise<void> {
     if (!this.live()) return;
-    await this.revalidate();
+    let outage: unknown = null;
     try {
-      await this.backend.maintain(this.bootstrap, this.app!, this.active !== null);
+      this.grant = await this.backend.maintain(this.bootstrap, this.authHeaders, this.grant!, this.active !== null);
     } catch (error) {
       // Admission can complete while maintenance awaits remote availability.
       // Its own checks already authorized the active generation to finish.
-      const quotaRefusal = error instanceof GatewayError
+      const quotaRefusal = error instanceof RelayError
         && ["billing_request_quota_exceeded", "app_budget_exhausted"].includes(error.code);
-      if (!(this.active && quotaRefusal)) throw error;
+      const refusal = error instanceof RelayError && error.status < 500;
+      if (refusal && !(this.active && quotaRefusal)) throw error;
+      // A gateway fault is not a refusal: the leases are still renewed below,
+      // so the session outlasts it, and the check is retried shortly.
+      if (!refusal) outage = error;
     }
     if (!this.live()) return;
     const [user, app] = await Promise.all([
@@ -813,9 +742,10 @@ export class SessionCoordinator {
       this.backend.capacity(this.bootstrap, "app", "renew"),
     ]);
     if (!this.live() || !user.allowed || !app.allowed) {
-      throw new GatewayError(429, "realtime_session_limit", "Realtime capacity lease expired");
+      throw new RelayError(429, "realtime_session_limit", "Realtime capacity lease expired");
     }
     this.leaseExpiry = Math.min(user.expiresAt, app.expiresAt);
+    if (outage) throw outage;
     this.nextMaintenance = Date.now() + L.revalidateMs;
   }
 
@@ -885,18 +815,20 @@ export class SessionCoordinator {
     if (Date.now() >= this.deadline()) {
       const expired = Date.now() >= this.expiresAt;
       const error = expired
-        ? new GatewayError(401, "auth_required", "Realtime session expired")
-        : new GatewayError(408, "realtime_protocol_error", "Realtime deadline exceeded");
+        ? new RelayError(401, "auth_required", "Realtime session expired")
+        : new RelayError(408, "realtime_protocol_error", "Realtime deadline exceeded");
       this.terminate(error, expired ? 1000 : 1008);
       return;
     }
     if (!this.maintenance && Date.now() >= this.nextMaintenance) {
+      // Usage a failed delivery left in the journal is retried here too.
+      this.ctx.waitUntil(this.flush());
       this.maintenance = this.maintain()
         .catch(error => {
           // An outage is not a refusal. While the leases still cover the session
           // it tries again shortly; only a policy answer, or leases about to
           // lapse, end the conversation.
-          const transient = !(error instanceof GatewayError) || error.status >= 500;
+          const transient = !(error instanceof RelayError) || error.status >= 500;
           if (transient && Date.now() + L.maintenanceRetryMs < this.leaseExpiry - L.leaseSafetyMs) {
             log("warn", "realtime_maintenance_retry", {
               sessionId: this.bootstrap.sessionId,
@@ -944,38 +876,17 @@ export class SessionCoordinator {
   }
 }
 
-export function settledEvent(generation: Generation, status: CompletionStatus, aborted: boolean): UsageEvent {
-  const usage = generation.observation;
-  const { row } = generation.event;
-  const cost = usage
-    ? computeCost(row.providerType as "openai" | "gemini", row.model, usage, {
-      [row.model]: generation.price as ProviderPricing[string],
-    })
-    : null;
+/** What a settled response reports for its usage record. */
+function settlement(generation: Generation, status: CompletionStatus, aborted: boolean): Settlement {
   return {
-    ...generation.event,
-    row: {
-      ...row,
-      inputTokens: usage?.inputTokens ?? 0,
-      cachedInputTokens: usage?.cachedInputTokens ?? 0,
-      cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
-      outputTokens: usage?.outputTokens ?? 0,
-      modalityTokens: usage?.modalityTokens ?? {},
-      tokenVariants: usage?.tokenVariants ?? {},
-      costUsd: cost ?? 0,
-      costSource: cost === null ? "unresolved" : "computed",
-      providerResponseId: generation.responseId,
-      completionStatus: status,
-      status: status === "failed" ? "provider_error" : "ok",
-      clientAborted: aborted ? 1 : null,
-      latencyMs: Math.max(0, Date.now() - generation.at),
-    },
+    generationId: generation.id,
+    ticket: generation.ticket!,
+    usage: generation.usage,
+    responseId: generation.responseId,
+    status,
+    aborted,
+    latencyMs: Math.max(0, Date.now() - generation.at),
   };
-}
-
-/** The provider's route with this isolate's own adapter: one read over RPC carries only its data. */
-function localRoute(route: ResolvedRoute): ResolvedRoute {
-  return route.kind === "direct" ? DIRECT_ROUTE : { ...route, adapter: routeAdapter(route.kind) };
 }
 
 /**
@@ -996,7 +907,7 @@ function withinRetention(generation: Generation): boolean {
 }
 
 /** The `retry_after_seconds` an error frame carries when the error names a `Retry-After`. */
-function retryAfterSeconds(error: GatewayError): { retry_after_seconds: number } | Record<string, never> {
+function retryAfterSeconds(error: RelayError): { retry_after_seconds: number } | Record<string, never> {
   const retryAfter = new Headers(error.headers).get("Retry-After");
   return retryAfter ? { retry_after_seconds: Number(retryAfter) } : {};
 }

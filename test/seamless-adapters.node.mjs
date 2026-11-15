@@ -194,3 +194,18 @@ await import("./scripts/deploy.mjs");
   assert.ok(JSON.parse(readFileSync(statePath)).calls.every(call =>
     call.args.includes("--dry-run") || ["auth", "deployments", "versions"].includes(call.args[0])));
 });
+
+test("a deploy checks the gateway where it answers, custom domain included", async () => {
+  const { gatewayOrigin } = await import("../scripts/seamless-root.mjs");
+  const domain = { pattern: "console.example.com", custom_domain: true };
+  // The custom-domain guide's setup: no workers.dev, one custom domain, no URL vars.
+  assert.equal(gatewayOrigin({ workers_dev: false, routes: [domain] }, "gw", "acct"), "https://console.example.com");
+  assert.equal(
+    gatewayOrigin({ workers_dev: false, routes: [domain], vars: { PUBLIC_API_URL: "https://api.example.com" } }, "gw", "acct"),
+    "https://api.example.com",
+  );
+  assert.equal(gatewayOrigin({}, "gw", "acct"), "https://gw.acct.workers.dev");
+  // Nothing reaches it: the version check is skipped, not run against workers.dev.
+  assert.equal(gatewayOrigin({ workers_dev: false }, "gw", "acct"), undefined);
+  assert.equal(gatewayOrigin({}, "gw", undefined), undefined);
+});
