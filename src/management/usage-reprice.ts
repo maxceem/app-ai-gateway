@@ -5,6 +5,7 @@ import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
 import { computeCost, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
+import { providerDescriptor } from "../shared/providers";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -94,11 +95,19 @@ export async function repriceAppUsage(
   const skipped: { id: number; previousCostUsd: number }[] = [];
   // Every row was selected by the requested provider type, so that is the type
   // each one is priced as.
+  //
+  // A type that declares the input modalities it counts has every prompt it
+  // answers broken down, all-text ones included, since the gateway read them.
+  // A row of it with a prompt and no breakdown was recorded before then.
+  const breaksDownInput = (providerDescriptor(provider).countedInputModalities?.length ?? 0) > 0;
   for (const row of rows) {
     // A row recorded before modality records were kept says nothing about what
     // its tokens were. Where the price depends on that, any figure would be a
     // guess, and the highest-rate one could multiply a text request's cost.
-    const unrecorded = row.modalityTokens === null && pricesModalities(provider, model, row.pricing);
+    const unrecorded = pricesModalities(provider, model, row.pricing) && (
+      row.modalityTokens === null
+      || (breaksDownInput && row.modalityTokens.input === undefined && row.inputTokens + row.cachedInputTokens > 0)
+    );
     // A row recorded before token variants were kept is priced unsplit, every
     // cache write at the default rate. Unlike a missing modality record that is
     // no new guess: it is the assumption the row was recorded under, so its

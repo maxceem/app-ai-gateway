@@ -10,7 +10,7 @@
 import models from "./models.json";
 import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider-type";
 import { lookup } from "../shared/records";
-import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
+import type { ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
 import { type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
 import { GATEWAY_DESCRIPTORS } from "../shared/gateways";
@@ -23,10 +23,14 @@ import {
   TOKEN_RATE_FIELDS,
   VARIANTS,
   bucketRates,
+  type Modality,
+  type ModalityRate,
+  modalityRate,
   type SplitBucket,
   type TokenPrice,
   type TokenRateField,
   type TokenVariants,
+  type Variant,
   variantRate,
 } from "../shared/token-rates";
 
@@ -350,14 +354,15 @@ export function reportsPricedMeasure(
 const INPUT_RATES = { image: "image_input", audio: "audio_input", video: "video_input" } as const;
 const OUTPUT_RATES = { image: "image_output" } as const;
 
-/** The modalities a model prices apart on one side, with their rates. */
+/** The modalities a model prices apart on one side, with their rates in or out of long context. */
 function modalityRates(
   price: Price,
-  fields: Partial<Record<Modality, keyof Price>>,
+  fields: Partial<Record<Modality, ModalityRate>>,
+  longContext: boolean,
 ): [Modality, number][] {
-  return (Object.entries(fields) as [Modality, keyof Price][]).flatMap(([modality, field]) => {
-    const rate = price[field];
-    return typeof rate === "number" ? [[modality, rate] as [Modality, number]] : [];
+  return (Object.entries(fields) as [Modality, ModalityRate][]).flatMap(([modality, field]) => {
+    const rate = modalityRate(price, field, longContext);
+    return rate === undefined ? [] : [[modality, rate] as [Modality, number]];
   });
 }
 
@@ -368,9 +373,10 @@ function modalityRates(
  * down, bill at the highest rate the model has, rather than let an image or a
  * recording pass at the text price and escape the budget it should consume.
  *
- * Gemini counts a modality over the whole prompt, cached part included, so the
+ * A modality count covers the whole prompt, cached part included, so the
  * modality tokens are taken out of `tokens`, unknown ones first, and never
- * exceed it.
+ * exceed it. {@link splitCachedModalities} has already moved out what the
+ * cache holds, where the price bills a modality's cached part apart.
  */
 function sideCost(
   tokens: number,
@@ -403,7 +409,9 @@ export function pricesModalities(
 ): boolean {
   const price = modelPrice(provider, model, overrides);
   return price !== undefined
-    && (modalityRates(price, INPUT_RATES).length > 0 || modalityRates(price, OUTPUT_RATES).length > 0);
+    && [false, true].some((longContext) =>
+      modalityRates(price, INPUT_RATES, longContext).length > 0
+      || modalityRates(price, OUTPUT_RATES, longContext).length > 0);
 }
 
 export function computeCost(
@@ -428,12 +436,57 @@ export function computeCost(
   const longContext =
     price.long_context_threshold !== undefined && promptTokens > price.long_context_threshold;
   const rates = bucketRates(price as Price & TokenPrice, longContext);
+  const { input, tokenVariants } = splitCachedModalities(usage);
   return (
-    sideCost(usage.inputTokens, rates.input, modalityRates(price, INPUT_RATES), usage.modalityTokens?.input) +
-    variantCost("cached_input", usage.cachedInputTokens, rates.cached_input, price, longContext, usage.tokenVariants) +
-    variantCost("cache_write", usage.cacheWriteTokens, rates.cache_write, price, longContext, usage.tokenVariants) +
-    sideCost(usage.outputTokens, rates.output, modalityRates(price, OUTPUT_RATES), usage.modalityTokens?.output)
+    sideCost(usage.inputTokens, rates.input, modalityRates(price, INPUT_RATES, longContext), input) +
+    variantCost("cached_input", usage.cachedInputTokens, rates.cached_input, price, longContext, tokenVariants) +
+    variantCost("cache_write", usage.cacheWriteTokens, rates.cache_write, price, longContext, tokenVariants) +
+    sideCost(
+      usage.outputTokens,
+      rates.output,
+      modalityRates(price, OUTPUT_RATES, longContext),
+      usage.modalityTokens?.output,
+    )
   ) / 1_000_000;
+}
+
+/** The cached-input variants that are one modality's share of the cache. */
+const CACHED_MODALITIES = VARIANTS.filter(
+  (variant): variant is Variant & { modality: Modality } =>
+    variant.bucket === "cached_input" && variant.modality !== undefined,
+);
+
+/**
+ * A prompt's modality counts and token variants, with each modality that has a
+ * cached-input variant (BytePlus's cached audio) split between the uncached
+ * input and the cache.
+ *
+ * The count covers the whole prompt, and the variant is the part of it the
+ * response reported as cached. The rest is taken to be uncached first, at the
+ * modality's full rate, and only what the uncached input cannot hold is moved
+ * into the variant: where a response does not say what was cached — BytePlus
+ * under an explicit cache — the guess bills high rather than low, as images do
+ * under OpenAI's `cached_tokens`. A count that fits the uncached input, with
+ * nothing reported cached, comes back as it came, without a copy.
+ */
+function splitCachedModalities(
+  usage: UsageObservation,
+): { input: ModalityCounts | undefined; tokenVariants: TokenVariants | undefined } {
+  let input = usage.modalityTokens?.input;
+  let tokenVariants = usage.tokenVariants;
+  if (!input) return { input, tokenVariants };
+  for (const variant of CACHED_MODALITIES) {
+    const total = variantCount(input[variant.modality]);
+    const shares: Partial<Record<string, unknown>> | undefined = tokenVariants?.cached_input;
+    const reported = Math.min(usage.cachedInputTokens, variantCount(shares?.[variant.name]));
+    if (reported === 0 && total <= usage.inputTokens) continue;
+    const rest = Math.max(0, total - reported);
+    const uncached = Math.min(rest, usage.inputTokens);
+    const cached = Math.min(usage.cachedInputTokens, reported + rest - uncached);
+    input = { ...input, [variant.modality]: uncached };
+    tokenVariants = { ...tokenVariants, cached_input: { ...tokenVariants?.cached_input, [variant.name]: cached } };
+  }
+  return { input, tokenVariants };
 }
 
 /**

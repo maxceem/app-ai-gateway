@@ -25,6 +25,7 @@ import {
 import { type CostReport, OPENROUTER_COST_REPORT, XAI_COST_REPORT } from "./cost-report.ts";
 import { relaysProviderResponses } from "./gateways.ts";
 import type { ServiceModeField } from "./service-modes.ts";
+import type { Modality } from "./token-rates.ts";
 
 /**
  * How a provider authenticates a direct call. The header name and the scheme
@@ -131,6 +132,20 @@ export interface ProviderDescriptor {
    * asked for and the provider itself answers for the paths it does not have.
    */
   apiStyles?: readonly ApiStyle[];
+  /**
+   * The input modalities this provider prices apart from text and counts on
+   * every response whose prompt holds them, as `<modality>_tokens` in the
+   * usage's input details (`prompt_tokens_details` or `input_tokens_details`).
+   * Its usage then always breaks the prompt down: a count it leaves out is
+   * zero, and the rest of the prompt is text, which is what it bills everything
+   * else as.
+   *
+   * Absent where a usage that names no modality cannot be taken as text: a
+   * model that prices one apart then bills such a prompt at its highest rate,
+   * so declaring a modality here is what lets one be priced without every
+   * text request paying for it. Only the OpenAI usage shape reads it.
+   */
+  countedInputModalities?: readonly Modality[];
   /**
    * How this provider reports what a request cost, per request, in its own
    * response — the parsing, the headers that ask for it, and any request rewrite
@@ -592,6 +607,9 @@ export const PROVIDER_DESCRIPTORS = {
       axis: "tier",
       values: { default: "standard", flex: "flex" },
     }],
+    // Seed models that hear price audio input apart, and Chat Completions and
+    // Responses report it as `audio_tokens`; images and video bill as text.
+    countedInputModalities: ["audio"],
   },
 
   openrouter: {

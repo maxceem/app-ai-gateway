@@ -1760,6 +1760,10 @@
               "type": "number",
               "minimum": 0
             },
+            "cached_input_audio": {
+              "type": "number",
+              "minimum": 0
+            },
             "cache_write": {
               "type": "number",
               "minimum": 0
@@ -1796,6 +1800,10 @@
               "type": "number",
               "minimum": 0
             },
+            "long_cached_input_audio": {
+              "type": "number",
+              "minimum": 0
+            },
             "long_cache_write": {
               "type": "number",
               "minimum": 0
@@ -1809,6 +1817,22 @@
               "minimum": 0
             },
             "long_output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_image_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_audio_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_video_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_image_output": {
               "type": "number",
               "minimum": 0
             },
@@ -12129,6 +12153,10 @@
                             "cached_input": {
                               "type": "number"
                             },
+                            "cached_input_audio": {
+                              "type": "number",
+                              "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                            },
                             "cache_write": {
                               "type": "number"
                             },
@@ -12165,6 +12193,9 @@
                             "long_cached_input": {
                               "type": "number"
                             },
+                            "long_cached_input_audio": {
+                              "type": "number"
+                            },
                             "long_cache_write": {
                               "type": "number"
                             },
@@ -12175,6 +12206,18 @@
                               "type": "number"
                             },
                             "long_output": {
+                              "type": "number"
+                            },
+                            "long_image_input": {
+                              "type": "number"
+                            },
+                            "long_audio_input": {
+                              "type": "number"
+                            },
+                            "long_video_input": {
+                              "type": "number"
+                            },
+                            "long_image_output": {
                               "type": "number"
                             },
                             "per_minute": {
@@ -12208,6 +12251,10 @@
                                   },
                                   "cached_input": {
                                     "type": "number"
+                                  },
+                                  "cached_input_audio": {
+                                    "type": "number",
+                                    "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
                                   },
                                   "cache_write": {
                                     "type": "number"
@@ -12245,6 +12292,9 @@
                                   "long_cached_input": {
                                     "type": "number"
                                   },
+                                  "long_cached_input_audio": {
+                                    "type": "number"
+                                  },
                                   "long_cache_write": {
                                     "type": "number"
                                   },
@@ -12255,6 +12305,18 @@
                                     "type": "number"
                                   },
                                   "long_output": {
+                                    "type": "number"
+                                  },
+                                  "long_image_input": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_input": {
+                                    "type": "number"
+                                  },
+                                  "long_video_input": {
+                                    "type": "number"
+                                  },
+                                  "long_image_output": {
                                     "type": "number"
                                   },
                                   "per_minute": {

@@ -21,18 +21,28 @@ import type { ProviderType } from "./providers.ts";
 /** The buckets a variant may split. Input and output split by modality instead. */
 export type SplitBucket = "cached_input" | "cache_write";
 
+/** The kinds of token a provider may price apart from text. */
+export type Modality = "image" | "audio" | "video";
+
 /**
  * A named part of a token bucket that a provider bills at a rate of its own.
  *
- * `reportedAt` is the path, from a response's `usage` object, of the count of
- * the bucket's tokens that were this variant. It is read from every usage
- * object, whatever its provider: each path is a field name only its own
- * provider uses, as with cache hits in `usage-readers.ts`.
+ * `reportedAt` lists the paths, from a response's `usage` object, where a
+ * provider may report the count of the bucket's tokens that were this variant;
+ * the first one present is read. They are read from every usage object,
+ * whatever its provider: each path is a field name only its own provider uses,
+ * as with cache hits in `usage-readers.ts`.
+ *
+ * `modality` marks a variant that is the cached part of one modality's tokens.
+ * A modality count covers the whole prompt, cached part included, so
+ * `computeCost` takes the variant out of it before it bills the rest as
+ * uncached.
  */
 interface VariantSpec {
   /** The rate's description in the API reference. */
   readonly description: string;
-  readonly reportedAt: readonly string[];
+  readonly reportedAt: readonly (readonly string[])[];
+  readonly modality?: Modality;
   /**
    * Where one provider reports the count in a response header instead, because
    * its body on that API carries only the bucket's total. Unlike `reportedAt`,
@@ -64,6 +74,21 @@ interface HeaderReport {
  * Adding a variant is one entry here and the rates in the catalog.
  */
 export const TOKEN_VARIANTS = {
+  cached_input: {
+    // BytePlus ModelArk: audio read from the cache bills at its own rate, 15x
+    // the cached text rate on Seed 2.0 Lite. Chat Completions and Responses
+    // report it under their own details object, and only when the cache was
+    // implicit; with an explicit cache it is absent, see
+    // `splitCachedModalities` in `src/usage/pricing.ts`.
+    audio: {
+      description: "USD per 1M cached audio input tokens, where they are priced apart from cached text input.",
+      reportedAt: [
+        ["prompt_tokens_details", "audio_cached_tokens"],
+        ["input_tokens_details", "audio_cached_tokens"],
+      ],
+      modality: "audio",
+    },
+  },
   cache_write: {
     // Anthropic: a write kept for an hour bills at 2x input, against 1.25x for
     // the default five minutes. `usage.cache_creation` splits the write by TTL.
@@ -71,7 +96,7 @@ export const TOKEN_VARIANTS = {
     // Messages API.
     "1h": {
       description: "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write.",
-      reportedAt: ["cache_creation", "ephemeral_1h_input_tokens"],
+      reportedAt: [["cache_creation", "ephemeral_1h_input_tokens"]],
       // Kimi's Chat Completions body reports only the total write, in
       // `prompt_tokens_details.cache_write_tokens`; the one-hour share is in
       // the `Msh-Usage-Cache-Write-Tokens-1h` header of a non-streamed
@@ -83,7 +108,7 @@ export const TOKEN_VARIANTS = {
     // against 1.25x for the default 30 minutes.
     "12h": {
       description: "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write.",
-      reportedAt: ["input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens"],
+      reportedAt: [["input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens"]],
     },
   },
 } as const satisfies Partial<Record<SplitBucket, Record<string, VariantSpec>>>;
@@ -123,12 +148,12 @@ export const VARIANTS: readonly Variant[] = Object.entries(TOKEN_VARIANTS).flatM
 const BUCKETS = ["input", "cached_input", "cache_write", "output"] as const;
 type Bucket = (typeof BUCKETS)[number];
 
-/** Input or output tokens of one modality, priced apart from text. They have no long-context rate. */
+/** Input or output tokens of one modality, priced apart from text. */
 const MODALITY_RATES = ["image_input", "audio_input", "video_input", "image_output"] as const;
-type ModalityRate = (typeof MODALITY_RATES)[number];
+export type ModalityRate = (typeof MODALITY_RATES)[number];
 
 type ShortRateField = Bucket | VariantRateField | ModalityRate;
-type LongRateField = `long_${Bucket | VariantRateField}`;
+type LongRateField = `long_${ShortRateField}`;
 
 /** Rates in USD per 1M tokens. Time- and image-priced rates are not here. */
 export type TokenRateField = ShortRateField | LongRateField;
@@ -146,10 +171,12 @@ const BUCKET_FIELDS = BUCKETS.flatMap((bucket) => [
   ...VARIANTS.filter((variant) => variant.bucket === bucket).map((variant) => variant.field),
 ]) as readonly (Bucket | VariantRateField)[];
 
-/** The `long_*` rates, which only apply above `long_context_threshold`. */
-export const LONG_RATE_FIELDS = BUCKET_FIELDS.map((field) => `long_${field}`) as readonly LongRateField[];
+/** The `long_*` rates, which only apply above `long_context_threshold`: one for every other rate. */
+export const LONG_RATE_FIELDS = [...BUCKET_FIELDS, ...MODALITY_RATES].map(
+  (field) => `long_${field}`,
+) as readonly LongRateField[];
 
-/** Every token rate: each bucket and its variants, the modality rates, then the long-context rates. */
+/** Every token rate: each bucket and its variants, the modality rates, then their long-context rates. */
 export const TOKEN_RATE_FIELDS: readonly TokenRateField[] = [...BUCKET_FIELDS, ...MODALITY_RATES, ...LONG_RATE_FIELDS];
 
 const DESCRIPTIONS = new Map<string, string>([
@@ -194,6 +221,19 @@ export function bucketRates(price: TokenPrice, longContext: boolean): Record<Buc
     cache_write: price.long_cache_write ?? price.cache_write ?? input,
     output: price.long_output ?? price.output,
   };
+}
+
+/**
+ * What one modality's tokens bill at, where the price has a rate for it: its
+ * long-context rate in long context, then its own. Undefined where neither is
+ * set, and the modality bills at its side's rate like text.
+ */
+export function modalityRate(
+  price: Partial<Record<TokenRateField, number>>,
+  field: ModalityRate,
+  longContext: boolean,
+): number | undefined {
+  return (longContext ? price[`long_${field}`] : undefined) ?? price[field];
 }
 
 /**

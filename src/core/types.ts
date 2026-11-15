@@ -4,6 +4,7 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 import type { AppStatus } from "../shared/app-status.ts";
+import type { Modality } from "../shared/token-rates.ts";
 
 /** How a client first proved itself to an application: an API key, or an App Attest key. */
 export type AuthMethod = "attest" | "api_key";
@@ -59,8 +60,8 @@ export type GatewayIdentity =
   | (GatewayIdentityFields & { authMethod: "attest"; installId: string; appleAccountId: string | null })
   | (GatewayIdentityFields & { authMethod: "api_key"; installId: null; appleAccountId: null });
 
-/** A modality a model may price apart from text. */
-export type Modality = "image" | "audio" | "video";
+/** A modality a model may price apart from text; declared beside the rates that price it. */
+export type { Modality };
 
 /**
  * Tokens of each non-text modality on one side of a request, and `unknown`
