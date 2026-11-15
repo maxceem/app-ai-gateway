@@ -89,6 +89,7 @@ per million tokens unless the field says otherwise:
 | `long_context_threshold`, `long_*` | A prompt longer than the threshold, in tokens, bills all its tokens at the `long_` rates, where the model has them. |
 | `per_minute`, `per_hour`, `per_image` | Price per minute or hour of audio, or per generated image, for models billed that way. |
 | `author` | Who made the model, where that is not the provider: a Llama model served by Groq is Meta's. |
+| `release_date` | The day (`YYYY-MM-DD`) the provider released the model. Where no source gives that day, it is the day the model was added to the price list; a new model is added within about a day of appearing on the provider's official page. Once set, the daily check never changes it. Nothing is billed from it. |
 | `retirement_date` | The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model. |
 | `unlisted_since` | The day (`YYYY-MM-DD`) the provider's price page stopped listing or pricing the model. Its rates are the last ones that page gave. |
 | `price_changes` | Announced price changes, earliest first. Each has `from`, the day it takes effect (from 00:00 UTC), and only the rates that change then; the others keep their value. |
@@ -101,6 +102,7 @@ For example, a model whose price doubles on 1 January:
   "input": 0.75,
   "cached_input": 0.075,
   "output": 3.75,
+  "release_date": "2026-09-02",
   "price_changes": [
     { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
   ]

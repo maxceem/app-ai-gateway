@@ -12,6 +12,8 @@
 //     `unlisted_since` instead, so an app that uses it keeps working;
 //   - changes the model's `kind`, which would turn away the custom endpoints
 //     that serve it;
+//   - changes or removes its `release_date`, which is set once, when the
+//     model is added (a person corrects one by hand, past this check);
 //   - changes how it is billed (per token, per minute, per hour, per image);
 //   - drops one of its rates, which would bill those tokens at another rate;
 //   - moves a rate, in the standard mode or any service mode, by more than
@@ -100,6 +102,9 @@ export function priceUpdateProblems(before, after) {
       }
       const next = after[provider][model];
       if (entry.kind !== next.kind) problems.push(`${where}: kind ${entry.kind} → ${next.kind}`);
+      if (entry.release_date !== undefined && entry.release_date !== next.release_date) {
+        problems.push(`${where}: release_date ${entry.release_date} → ${next.release_date ?? "gone"}`);
+      }
       if (unit(entry) !== unit(next)) {
         problems.push(`${where}: billed ${unit(entry)} → ${unit(next)}`);
         continue;
