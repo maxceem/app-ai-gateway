@@ -24,7 +24,7 @@ import { notAddedKey } from "./new-models.mjs";
 
 /** How far one run may move a price before a person has to confirm it. */
 export const MAX_FACTOR = 3;
-/** The per-1M band `test/usage.test.ts` holds every token price to. */
+/** The per-1M band `test/shipped-prices.test.ts` holds every token price to. */
 export const MIN_PRICE = 0.001;
 export const MAX_PRICE = 1000;
 

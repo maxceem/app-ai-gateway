@@ -1,7 +1,7 @@
 // What a new model does, read from the community lists before anyone is asked.
 //
 // Every catalog entry names a `kind` (MODEL_KINDS in src/shared/model-kinds.ts,
-// which test/usage.test.ts holds this list to). A new model's kind comes from
+// which test/shipped-prices.test.ts holds this list to). A new model's kind comes from
 // LiteLLM's `mode` first, which covers nearly every model these providers
 // publish, then from Models.dev's `type`; only a model neither list knows is
 // left to the AI review, and a person can override any of them from the PR.
