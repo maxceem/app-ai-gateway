@@ -1,11 +1,18 @@
 {
   "openai": {
-    "gpt-4o-mini-tts": { "kind": "speech", "input": 0.6, "output": 12.0, "author": "OpenAI" },
+    "gpt-4o-mini-tts": {
+      "kind": "speech",
+      "input": 0.6,
+      "output": 12.0,
+      "author": "OpenAI",
+      "retirement_date": "2027-01-06"
+    },
     "gpt-4o-transcribe-diarize": {
       "kind": "transcription",
       "input": 2.5,
       "output": 10.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "retirement_date": "2027-02-26"
     },
     "gpt-realtime-whisper": { "kind": "realtime", "per_minute": 0.017, "author": "OpenAI" },
     "text-embedding-ada-002": {
@@ -106,7 +113,11 @@
       "long_cache_write_12h": 5.0,
       "long_output": 7.5,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.5-cyber": {
       "kind": "text",
@@ -142,7 +153,10 @@
       "input": 2.5,
       "cached_input": 1.25,
       "output": 10.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.7 }
+      }
     },
     "gpt-6-sol": {
       "kind": "text",
@@ -157,7 +171,11 @@
       "long_cache_write_12h": 10.0,
       "long_output": 15.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-transcribe": { "kind": "transcription", "per_minute": 0.0045, "author": "OpenAI" },
     "gpt-live-transcribe": { "kind": "realtime", "per_minute": 0.017, "author": "OpenAI" },
@@ -169,7 +187,10 @@
       "long_input": 60.0,
       "long_output": 270.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-6-luna": {
       "kind": "text",
@@ -184,7 +205,11 @@
       "long_cache_write_12h": 0.5,
       "long_output": 0.75,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-6.1-sol": {
       "kind": "text",
@@ -199,7 +224,12 @@
       "long_cache_write_12h": 10.0,
       "long_output": 15.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 },
+        "ultrafast": { "factor": 6.0 }
+      }
     },
     "gpt-6-astra": {
       "kind": "text",
@@ -214,7 +244,12 @@
       "long_cache_write_12h": 50.0,
       "long_output": 75.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 },
+        "ultrafast": { "factor": 6.0 }
+      }
     },
     "gpt-5.6-sol": {
       "kind": "text",
@@ -229,7 +264,11 @@
       "long_cache_write": 10.0,
       "long_cache_write_12h": 20.0,
       "long_output": 30.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.6-terra": {
       "kind": "text",
@@ -244,7 +283,11 @@
       "long_cache_write": 5.0,
       "long_cache_write_12h": 10.0,
       "long_output": 18.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.6-luna": {
       "kind": "text",
@@ -259,7 +302,11 @@
       "long_cache_write": 0.5,
       "long_cache_write_12h": 1.0,
       "long_output": 1.8,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.5": {
       "kind": "text",
@@ -270,7 +317,11 @@
       "long_input": 10.0,
       "long_cached_input": 1.0,
       "long_output": 45.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.5 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.4": {
       "kind": "text",
@@ -281,7 +332,11 @@
       "long_input": 5.0,
       "long_cached_input": 0.5,
       "long_output": 22.5,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5, "cached_input": 0.13 }
+      }
     },
     "gpt-5.4-pro": {
       "kind": "text",
@@ -290,14 +345,21 @@
       "long_context_threshold": 272000,
       "long_input": 60.0,
       "long_output": 270.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.4-mini": {
       "kind": "text",
       "input": 0.75,
       "cached_input": 0.075,
       "output": 4.5,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.4-nano": {
       "kind": "text",
@@ -305,6 +367,9 @@
       "cached_input": 0.02,
       "output": 1.25,
       "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2027-04-01"
     },
     "gpt-5.3-codex": {
@@ -313,6 +378,9 @@
       "cached_input": 0.175,
       "output": 14.0,
       "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 }
+      },
       "retirement_date": "2027-04-01"
     },
     "gpt-5.2": {
@@ -320,7 +388,11 @@
       "input": 1.75,
       "cached_input": 0.175,
       "output": 14.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      }
     },
     "gpt-5.2-pro": { "kind": "text", "input": 21.0, "output": 168.0, "author": "OpenAI" },
     "gpt-5.1": {
@@ -329,6 +401,10 @@
       "cached_input": 0.125,
       "output": 10.0,
       "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2027-04-01"
     },
     "gpt-5": {
@@ -337,6 +413,10 @@
       "cached_input": 0.125,
       "output": 10.0,
       "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2026-12-11"
     },
     "gpt-5-pro": {
@@ -352,6 +432,10 @@
       "cached_input": 0.025,
       "output": 2.0,
       "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.8 },
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2026-12-11"
     },
     "gpt-5-nano": {
@@ -360,6 +444,9 @@
       "cached_input": 0.005,
       "output": 0.4,
       "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2026-12-11"
     },
     "o3": {
@@ -368,6 +455,10 @@
       "cached_input": 0.5,
       "output": 8.0,
       "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.75 },
+        "flex": { "factor": 0.5 }
+      },
       "retirement_date": "2026-12-11"
     },
     "o3-pro": {
@@ -382,21 +473,30 @@
       "input": 2.0,
       "cached_input": 0.5,
       "output": 8.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.75 }
+      }
     },
     "gpt-4.1-mini": {
       "kind": "text",
       "input": 0.4,
       "cached_input": 0.1,
       "output": 1.6,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.75 }
+      }
     },
     "gpt-4o-mini": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.075,
       "output": 0.6,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 1.666667 }
+      }
     },
     "gpt-4o-mini-transcribe": {
       "kind": "transcription",
@@ -480,7 +580,11 @@
       "cache_write": 10.0,
       "cache_write_1h": 16.0,
       "output": 40.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-fable-5-2": {
       "kind": "text",
@@ -489,7 +593,11 @@
       "cache_write": 10.0,
       "cache_write_1h": 16.0,
       "output": 40.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-mythos-5-1": {
       "kind": "text",
@@ -498,7 +606,10 @@
       "cache_write": 12.5,
       "cache_write_1h": 20.0,
       "output": 50.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-sonnet-5-5": {
       "kind": "text",
@@ -507,7 +618,10 @@
       "cache_write": 2.5,
       "cache_write_1h": 4.0,
       "output": 10.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-5-5": {
       "kind": "text",
@@ -516,7 +630,11 @@
       "cache_write": 5.0,
       "cache_write_1h": 8.0,
       "output": 20.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-fable-5-1": {
       "kind": "text",
@@ -525,7 +643,10 @@
       "cache_write": 12.5,
       "cache_write_1h": 20.0,
       "output": 50.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-fable-5": {
       "kind": "text",
@@ -534,7 +655,10 @@
       "cache_write": 12.5,
       "cache_write_1h": 20.0,
       "output": 50.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-mythos-5": {
       "kind": "text",
@@ -543,7 +667,10 @@
       "cache_write": 12.5,
       "cache_write_1h": 20.0,
       "output": 50.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-5": {
       "kind": "text",
@@ -552,7 +679,11 @@
       "cache_write": 6.25,
       "cache_write_1h": 10.0,
       "output": 25.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-4-8": {
       "kind": "text",
@@ -561,7 +692,11 @@
       "cache_write": 6.25,
       "cache_write_1h": 10.0,
       "output": 25.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "fast": { "factor": 2.0 },
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-4-7": {
       "kind": "text",
@@ -570,7 +705,10 @@
       "cache_write": 6.25,
       "cache_write_1h": 10.0,
       "output": 25.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-4-6": {
       "kind": "text",
@@ -579,7 +717,10 @@
       "cache_write": 6.25,
       "cache_write_1h": 10.0,
       "output": 25.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-opus-4-5": {
       "kind": "text",
@@ -597,7 +738,10 @@
       "cache_write": 2.5,
       "cache_write_1h": 4.0,
       "output": 10.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-sonnet-4-6": {
       "kind": "text",
@@ -606,7 +750,10 @@
       "cache_write": 3.75,
       "cache_write_1h": 6.0,
       "output": 15.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-sonnet-4-5": {
       "kind": "text",
@@ -631,7 +778,10 @@
       "long_cache_write_1h": 1.0,
       "long_output": 2.5,
       "long_context_threshold": 100000,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "claude-haiku-4-5": {
       "kind": "text",
@@ -664,7 +814,10 @@
       "long_cached_input": 1.0,
       "long_output": 12.0,
       "long_context_threshold": 199999,
-      "author": "xAI"
+      "author": "xAI",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "grok-4.7": {
       "kind": "text",
@@ -675,7 +828,10 @@
       "long_cached_input": 1.0,
       "long_output": 12.0,
       "long_context_threshold": 199999,
-      "author": "xAI"
+      "author": "xAI",
+      "modes": {
+        "us": { "factor": 1.1 }
+      }
     },
     "grok-4.5": {
       "kind": "text",
@@ -750,32 +906,40 @@
       "kind": "embedding",
       "input": 0.15,
       "output": 0.0,
-      "author": "Google"
+      "author": "Google",
+      "retirement_date": "2028-05-14"
     },
     "gemini-2.5-pro-preview-tts": {
       "kind": "speech",
       "input": 1.0,
       "output": 20.0,
-      "author": "Google"
+      "author": "Google",
+      "retirement_date": "2026-12-18"
     },
     "gemini-2.5-flash-preview-tts": {
       "kind": "speech",
       "input": 0.5,
       "output": 10.0,
-      "author": "Google"
+      "author": "Google",
+      "retirement_date": "2026-12-18"
     },
     "gemini-3.1-flash-tts-preview": {
       "kind": "speech",
       "input": 1.0,
       "output": 20.0,
-      "author": "Google"
+      "author": "Google",
+      "retirement_date": "2026-12-18"
     },
     "gemini-4-hydrogen": {
       "kind": "text",
       "input": 1.5,
       "cached_input": 0.075,
       "output": 7.5,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      }
     },
     "gemini-4-carbon": {
       "kind": "text",
@@ -783,6 +947,10 @@
       "cached_input": 0.1,
       "output": 10.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2026-12-01", "input": 4.0, "cached_input": 0.2, "output": 20.0 }
       ]
@@ -793,6 +961,10 @@
       "cached_input": 0.1,
       "output": 10.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2026-12-01", "input": 4.0, "cached_input": 0.2, "output": 20.0 }
       ]
@@ -811,6 +983,10 @@
       "input": 0.5,
       "output": 6.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.0, "output": 12.0 }
       ]
@@ -820,6 +996,10 @@
       "input": 0.5,
       "output": 9.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.0, "output": 18.0 }
       ]
@@ -830,6 +1010,10 @@
       "cached_input": 0.075,
       "output": 3.75,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -841,6 +1025,10 @@
       "output": 1.5,
       "audio_input": 0.5,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "retirement_date": "2027-05-07"
     },
     "gemini-3.8-flash": {
@@ -849,6 +1037,10 @@
       "cached_input": 0.075,
       "output": 3.75,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -859,6 +1051,10 @@
       "cached_input": 0.075,
       "output": 3.75,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -869,6 +1065,10 @@
       "cached_input": 0.075,
       "output": 3.75,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -878,7 +1078,11 @@
       "input": 0.3,
       "cached_input": 0.03,
       "output": 2.5,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.02 },
+        "priority": { "factor": 1.8, "cached_input": 0.05 }
+      }
     },
     "gemini-3.1-pro-preview": {
       "kind": "text",
@@ -889,7 +1093,11 @@
       "long_input": 4.0,
       "long_cached_input": 0.4,
       "long_output": 18.0,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.2, "long_cached_input": 0.4 },
+        "priority": { "factor": 1.8 }
+      }
     },
     "gemini-3.1-pro-preview-customtools": {
       "kind": "text",
@@ -900,7 +1108,11 @@
       "long_input": 4.0,
       "long_cached_input": 0.4,
       "long_output": 18.0,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.2, "long_cached_input": 0.4 },
+        "priority": { "factor": 1.8 }
+      }
     },
     "gemini-3-flash-preview": {
       "kind": "text",
@@ -908,7 +1120,11 @@
       "cached_input": 0.05,
       "output": 3.0,
       "audio_input": 1.0,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.05 },
+        "priority": { "factor": 1.8 }
+      }
     },
     "gemini-nano-banana-2.1": {
       "kind": "image",
@@ -948,6 +1164,10 @@
       "long_cached_input": 0.25,
       "long_output": 15.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.125, "long_cached_input": 0.25 },
+        "priority": { "factor": 1.8 }
+      },
       "retirement_date": "2026-12-01",
       "price_changes": [
         { "from": "2026-12-01", "input": 0.75, "cached_input": 0.075, "output": 3.75, "long_input": 0.75, "long_cached_input": 0.075, "long_output": 3.75 },
@@ -961,6 +1181,10 @@
       "output": 2.5,
       "audio_input": 1.0,
       "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.03 },
+        "priority": { "factor": 1.8 }
+      },
       "retirement_date": "2026-12-01",
       "price_changes": [
         { "from": "2026-12-01", "audio_input": 0.3 }
@@ -972,7 +1196,11 @@
       "cached_input": 0.01,
       "output": 0.4,
       "audio_input": 0.3,
-      "author": "Google"
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.01 },
+        "priority": { "factor": 1.8 }
+      }
     }
   },
   "perplexity": {
@@ -1067,7 +1295,11 @@
       "long_cached_input": 1.0,
       "long_output": 45.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-5.6-luna": {
       "kind": "text",
@@ -1078,7 +1310,11 @@
       "long_cached_input": 0.04,
       "long_output": 1.8,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-5.6-terra": {
       "kind": "text",
@@ -1089,7 +1325,11 @@
       "long_cached_input": 0.4,
       "long_output": 18.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-5.6-sol": {
       "kind": "text",
@@ -1100,7 +1340,11 @@
       "long_cached_input": 0.8,
       "long_output": 30.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-6-luna": {
       "kind": "text",
@@ -1111,7 +1355,11 @@
       "long_cached_input": 0.02,
       "long_output": 0.75,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-6-sol": {
       "kind": "text",
@@ -1122,7 +1370,11 @@
       "long_cached_input": 0.4,
       "long_output": 15.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-6-astra": {
       "kind": "text",
@@ -1133,7 +1385,11 @@
       "long_cached_input": 2.0,
       "long_output": 75.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "openai/gpt-6.1-sol": {
       "kind": "text",
@@ -1144,7 +1400,11 @@
       "long_cached_input": 0.2,
       "long_output": 15.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      }
     },
     "anthropic/claude-haiku-5-5": {
       "kind": "text",
@@ -1243,35 +1503,64 @@
       "input": 0.075,
       "cached_input": 0.037,
       "output": 0.3,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
     },
     "meta-llama/llama-prompt-guard-2-86m": {
       "kind": "text",
       "input": 0.04,
       "output": 0.04,
-      "author": "Meta"
+      "author": "Meta",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
     },
     "meta-llama/llama-prompt-guard-2-22m": {
       "kind": "text",
       "input": 0.03,
       "output": 0.03,
-      "author": "Meta"
+      "author": "Meta",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
     },
-    "whisper-large-v3-turbo": { "kind": "transcription", "per_hour": 0.04, "author": "OpenAI" },
-    "whisper-large-v3": { "kind": "transcription", "per_hour": 0.111, "author": "OpenAI" },
+    "whisper-large-v3-turbo": {
+      "kind": "transcription",
+      "per_hour": 0.04,
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
+    },
+    "whisper-large-v3": {
+      "kind": "transcription",
+      "per_hour": 0.111,
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
+    },
     "openai/gpt-oss-120b": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.075,
       "output": 0.6,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
     },
     "openai/gpt-oss-20b": {
       "kind": "text",
       "input": 0.075,
       "cached_input": 0.037,
       "output": 0.3,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
     },
     "qwen/qwen3.6-27b": {
       "kind": "text",
@@ -1280,9 +1569,91 @@
       "author": "Alibaba",
       "retirement_date": "2026-09-14"
     },
-    "qwen/qwen3.8-27b": { "kind": "text", "input": 0.8, "output": 4.0, "author": "Alibaba" }
+    "qwen/qwen3.8-27b": {
+      "kind": "text",
+      "input": 0.8,
+      "output": 4.0,
+      "author": "Alibaba",
+      "modes": {
+        "flex": { "factor": 1.0 }
+      }
+    }
   },
   "mistral": {
+    "zai-glm-latest": {
+      "kind": "text",
+      "input": 1.4,
+      "cached_input": 0.14,
+      "output": 4.4,
+      "author": "Z.ai"
+    },
+    "zai-glm-5": {
+      "kind": "text",
+      "input": 1.4,
+      "cached_input": 0.14,
+      "output": 4.4,
+      "author": "Z.ai"
+    },
+    "ministral-14b-latest": {
+      "kind": "text",
+      "input": 0.2,
+      "cached_input": 0.02,
+      "output": 0.2,
+      "author": "Mistral"
+    },
+    "ministral-8b-latest": {
+      "kind": "text",
+      "input": 0.15,
+      "cached_input": 0.015,
+      "output": 0.15,
+      "author": "Mistral"
+    },
+    "ministral-3b-latest": {
+      "kind": "text",
+      "input": 0.1,
+      "cached_input": 0.01,
+      "output": 0.1,
+      "author": "Mistral"
+    },
+    "voxtral-mini-transcribe-latest": {
+      "kind": "transcription",
+      "per_minute": 0.0035,
+      "author": "Mistral"
+    },
+    "voxtral-mini-transcribe-3": {
+      "kind": "transcription",
+      "per_minute": 0.0035,
+      "author": "Mistral"
+    },
+    "voxtral-mini-transcribe-realtime-latest": {
+      "kind": "realtime",
+      "per_minute": 0.008,
+      "author": "Mistral"
+    },
+    "voxtral-mini-transcribe-realtime-3": {
+      "kind": "realtime",
+      "per_minute": 0.008,
+      "author": "Mistral"
+    },
+    "voxtral-small-transcribe-latest": {
+      "kind": "transcription",
+      "per_minute": 0.004,
+      "author": "Mistral"
+    },
+    "voxtral-small-transcribe-3": {
+      "kind": "transcription",
+      "per_minute": 0.004,
+      "author": "Mistral"
+    },
+    "codestral-latest": {
+      "kind": "text",
+      "input": 0.3,
+      "cached_input": 0.03,
+      "output": 0.9,
+      "author": "Mistral"
+    },
+    "codestral-embed": { "kind": "embedding", "input": 0.15, "output": 0.0, "author": "Mistral" },
+    "mistral-embed": { "kind": "embedding", "input": 0.1, "output": 0.0, "author": "Mistral" },
     "mistral-small-2603": {
       "kind": "text",
       "input": 0.15,
@@ -1472,14 +1843,20 @@
       "input": 0.15,
       "cached_input": 0.015,
       "output": 0.6,
-      "author": "Minimax"
+      "author": "Minimax",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "reflection/Beam-1.0-501B-A23B": {
       "kind": "text",
@@ -1517,21 +1894,30 @@
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "zai-org/GLM-5.3-Flash": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.03,
       "output": 0.5,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "zai-org/GLM-5.3": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "Qwen/Qwen3.5-9B": { "kind": "text", "input": 0.17, "output": 0.25, "author": "Alibaba" },
     "Qwen/Qwen3.6-Plus": { "kind": "text", "input": 0.5, "output": 3.0, "author": "Alibaba" },
@@ -1556,14 +1942,20 @@
       "input": 3.0,
       "cached_input": 0.3,
       "output": 15.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.13,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "modes": {
+        "us": { "factor": 1.25 }
+      }
     },
     "openai/gpt-oss-120b": { "kind": "text", "input": 0.15, "output": 0.6, "author": "OpenAI" },
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
@@ -1784,7 +2176,10 @@
       "input": 0.44,
       "cached_input": 0.014,
       "output": 1.32,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.014 }
+      }
     },
     "deepseek-v4-1-flash-260910": {
       "kind": "text",
@@ -1823,7 +2218,10 @@
       "input": 0.5,
       "cached_input": 0.1,
       "output": 2.5,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.1 }
+      }
     },
     "seed-2-0-pro-260328": {
       "kind": "text",
@@ -1834,7 +2232,10 @@
       "long_input": 1.0,
       "long_cached_input": 0.2,
       "long_output": 6.0,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.1, "long_cached_input": 0.2 }
+      }
     },
     "seed-2-0-lite-260428": {
       "kind": "text",
@@ -1849,7 +2250,10 @@
       "long_cached_input_audio": 1.5,
       "long_output": 4.0,
       "long_audio_input": 7.5,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.05, "cached_input_audio": 0.75, "long_cached_input": 0.1, "long_cached_input_audio": 1.5 }
+      }
     },
     "seed-2-0-mini-260428": {
       "kind": "text",
@@ -1864,14 +2268,20 @@
       "long_cached_input_audio": 0.6,
       "long_output": 0.8,
       "long_audio_input": 3.0,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.02, "cached_input_audio": 0.3, "long_cached_input": 0.04, "long_cached_input_audio": 0.6 }
+      }
     },
     "deepseek-v4-pro-ga-260813": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.044,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "modes": {
+        "flex": { "factor": 0.5, "cached_input": 0.044 }
+      }
     },
     "gpt-oss-120b-250805": {
       "kind": "text",
