@@ -203,11 +203,8 @@ export const UsageEventSchema = z.object({
   service_mode: z.string().nullable().optional().meta({
     description: "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded.",
   }),
-  upstream_status: z.number().int().nullable().optional().meta({
-    description: "For a provider_error, the HTTP status the provider answered with. Absent where it never answered, on a served request, and on events recorded before this field existed.",
-  }),
-  error_code: z.string().nullable().optional().meta({
-    description: "For a provider_error, a short code saying why: the provider's own, such as rate_limit_exceeded, overloaded_error or RESOURCE_EXHAUSTED, or timeout and connection_failed where the provider never answered. Never the provider's message. Absent where none is known.",
+  error: z.string().nullable().optional().meta({
+    description: "For a provider_error, why it failed in one short line: the HTTP status the provider answered with and the code its error named, such as `429 rate_limit_exceeded`; the status alone, such as `502`, where it named none; or `timeout` or `connection_failed` where the provider never answered. Never the provider's message. Absent on a served request and on events recorded before this field existed.",
   }),
   cost_source: z.enum(["computed", "estimated", "reported", "unresolved"]).nullable().meta({
     description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `estimated` is the catalog too, but for a service mode it has no exact price for (a mode the model is not priced in, or a value the gateway does not know), billed at the estimate the model pricing guide describes; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",

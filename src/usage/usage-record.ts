@@ -401,6 +401,16 @@ function servedServiceMode(
   return unknown ? { mode, unknown } : { mode };
 }
 
+/**
+ * A failed attempt's `error`, in one short line: the provider's HTTP status
+ * and the code its error named (`429 rate_limit_exceeded`), the status alone
+ * (`502`), or the gateway's own code where it never answered (`timeout`).
+ */
+function usageError(status: number | undefined, code: string | null): string | null {
+  if (status === undefined) return code;
+  return code ? `${status} ${code}` : String(status);
+}
+
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const { attribution, identity } = input;
   // Minted before any work, so the observer read, the retries below and any
@@ -413,8 +423,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // the request was served as far as the caller wanted it — but it is why a
   // stream can end without the usage the provider only sends at the end.
   let aborted = false;
-  // Why a failed attempt failed, in a short code: the gateway's own where the
-  // provider never answered, else the one its error response names.
+  // Why a failed attempt failed: the gateway's own code where the provider
+  // never answered, else the code its error response names, if any.
   let errorCode: string | null = input.status === "provider_error" ? input.noAnswer ?? null : null;
   if (input.observed) {
     const body = await input.observed;
@@ -660,8 +670,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // split was kept".
       tokenVariants: usage.tokenVariants ?? {},
       serviceMode: isStandardMode(servedMode) ? null : serviceModeName(servedMode),
-      upstreamStatus: input.status === "provider_error" ? input.upstreamStatus ?? null : null,
-      errorCode,
+      error: input.status === "provider_error" ? usageError(input.upstreamStatus, errorCode) : null,
       costUsd: cost,
       costSource,
       reportedCostUsd: reportedCost,

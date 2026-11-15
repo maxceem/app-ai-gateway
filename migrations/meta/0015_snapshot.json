@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0f767255-0ede-477d-b912-c9ca052540a7",
+  "id": "d665c381-ef80-4517-9e80-bd9908e1407b",
   "prevId": "a0ba82f7-291c-4b47-a21e-13cce91026ab",
   "tables": {
     "account_activation": {
@@ -975,15 +975,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "upstream_status": {
-          "name": "upstream_status",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "error_code": {
-          "name": "error_code",
+        "error": {
+          "name": "error",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

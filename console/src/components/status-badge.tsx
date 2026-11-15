@@ -87,11 +87,14 @@ const NO_ANSWER: Record<string, { short: string; long: string }> = {
  * `timeout` where it never answered. The hover says it in words. A served
  * request is every ordinary row, so it is shown as nothing at all.
  */
-export function EventStatusLabel({ status, upstreamStatus, errorCode }: {
+export function EventStatusLabel({ status, error }: {
   status: UsageStatus;
-  upstreamStatus?: number | null;
-  errorCode?: string | null;
+  /** The event's `error`: `429 rate_limit_exceeded`, `502` or `timeout`. */
+  error?: string | null;
 }) {
+  const [first = "", ...rest] = (error ?? "").split(" ");
+  const upstreamStatus = /^\d{3}$/u.test(first) ? Number(first) : null;
+  const errorCode = upstreamStatus ? rest.join(" ") || null : error || null;
   if (status === "ok") return null;
   const noAnswer = errorCode && !upstreamStatus ? NO_ANSWER[errorCode] : undefined;
   const headline = upstreamStatus ? String(upstreamStatus) : noAnswer?.short ?? "error";

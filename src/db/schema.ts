@@ -421,18 +421,14 @@ export const appUsageEvent = sqliteTable(
      */
     serviceMode: text("service_mode"),
     /**
-     * For a failed attempt, the HTTP status the provider answered with. Null
-     * where it never answered, on a served request, and on every row recorded
-     * before the column existed.
+     * Why a failed attempt failed, in one short line: the HTTP status the
+     * provider answered with and the code its error named
+     * (`429 rate_limit_exceeded`), the status alone where it named none
+     * (`502`), or `timeout` / `connection_failed` where it never answered.
+     * Never the provider's message, which can quote the request. Null on a
+     * served request, and on every row recorded before the column existed.
      */
-    upstreamStatus: integer("upstream_status"),
-    /**
-     * For a failed attempt, a short code saying why: the provider's own
-     * (`rate_limit_exceeded`, `overloaded_error`, `RESOURCE_EXHAUSTED`), or
-     * `timeout` and `connection_failed` where it never answered. Only a short
-     * token is kept, never the provider's message, which can quote the request.
-     */
-    errorCode: text("error_code"),
+    error: text("error"),
     costUsd: real("cost_usd").notNull().default(0),
     /**
      * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a

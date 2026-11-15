@@ -614,7 +614,7 @@ export function UsageTab({
                           that failed. */}
                       {event.status !== "ok" ? (
                         <span className="mt-1 flex justify-end">
-                          <EventStatusLabel status={event.status} upstreamStatus={event.upstream_status} errorCode={event.error_code} />
+                          <EventStatusLabel status={event.status} error={event.error} />
                         </span>
                       ) : null}
                     </TableCell>

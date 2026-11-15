@@ -294,7 +294,7 @@ describe("UsageTab event costs", () => {
 
 describe("UsageTab event statuses", () => {
   it("says what the provider answered a failed request with", async () => {
-    renderUsage([event({ status: "provider_error", upstream_status: 429, error_code: "rate_limit_exceeded" })]);
+    renderUsage([event({ status: "provider_error", error: "429 rate_limit_exceeded" })]);
     expect(await screen.findByText("429")).toBeTruthy();
     expect(screen.getByText("rate_limit_exceeded")).toBeTruthy();
     expect(screen.getByText("429").closest("[aria-description]")?.getAttribute("aria-description"))

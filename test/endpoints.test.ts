@@ -289,11 +289,11 @@ describe("custom endpoints", () => {
 
     await settleUsage();
     const { results } = await env.DB.prepare(
-      "SELECT status, upstream_status, error_code FROM app_usage_event WHERE app_id = ? ORDER BY id",
+      "SELECT status, error FROM app_usage_event WHERE app_id = ? ORDER BY id",
     ).bind(appId).all();
     expect(results).toEqual([
-      { status: "provider_error", upstream_status: 429, error_code: "rate_limit_exceeded" },
-      { status: "ok", upstream_status: null, error_code: null },
+      { status: "provider_error", error: "429 rate_limit_exceeded" },
+      { status: "ok", error: null },
     ]);
   });
 

@@ -17,7 +17,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 /**
  * The code a provider's error response names, or null where it names none
- * this can read.
+ * this can read. It becomes the second half of the usage event's `error`,
+ * after the HTTP status.
  *
  * Providers put it in a few places, read in this order:
  *

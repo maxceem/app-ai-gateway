@@ -58,7 +58,7 @@ describe("a failed attempt records why it failed", () => {
 
     const row = await env.DB.prepare("SELECT * FROM app_usage_event WHERE app_id = ?").bind(appId)
       .first<Record<string, unknown>>();
-    expect(row).toMatchObject({ status: "provider_error", upstream_status: 429, error_code: "rate_limit_exceeded" });
+    expect(row).toMatchObject({ status: "provider_error", error: "429 rate_limit_exceeded" });
     expect(JSON.stringify(row)).not.toContain("secret");
   });
 });
