@@ -26,6 +26,28 @@ describe("providerErrorCode", () => {
   });
 });
 
+describe("a failure written by code from before the error column", () => {
+  it("is given the error the backfill gave every earlier failure, and a served one none", async () => {
+    // How 0.19.0 writes an event: a status, and no error.
+    const insert = (eventId: string, status: string, error: string | null) => env.DB.prepare(
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, provider_type, model, route, status, error)
+       VALUES (?, 'operator-test-organization', 'old-writer', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, ?)`,
+    ).bind(eventId, status, error).run();
+    await insert("old-writer-failed", "provider_error", null);
+    await insert("old-writer-served", "ok", null);
+    await insert("new-writer-failed", "provider_error", "429 rate_limit_exceeded");
+
+    const { results } = await env.DB.prepare(
+      "SELECT event_id, error FROM app_usage_event WHERE app_id = 'old-writer' ORDER BY event_id",
+    ).all();
+    expect(results).toEqual([
+      { event_id: "new-writer-failed", error: "429 rate_limit_exceeded" },
+      { event_id: "old-writer-failed", error: "provider_error" },
+      { event_id: "old-writer-served", error: null },
+    ]);
+  });
+});
+
 describe("a failed attempt records why it failed", () => {
   let pending: ExecutionContext[] = [];
   afterEach(async () => {

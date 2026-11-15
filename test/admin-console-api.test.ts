@@ -13,7 +13,6 @@ import {
   appleConfig,
   clearProviderCaches,
   defaultProxyConfig,
-  recordFailureCauses,
   seedApp,
   seedProvider,
   seedServerApp,
@@ -62,7 +61,6 @@ async function recordUsage(
   )
     .bind(appId, user, provider, providerSlug, model, `${providerSlug}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
-  await recordFailureCauses();
 }
 
 describe("admin console API", () => {
