@@ -463,6 +463,53 @@ describe("admin API", () => {
     await expect(refused.text()).resolves.toContain("predate the modality record");
   });
 
+  it("reprices BytePlus audio, and refuses a row from before its prompts were broken down", async () => {
+    const appId = "admin-reprice-byteplus-audio";
+    await seedApp(appId);
+    const insert = (inputTokens: number, modalityTokens: string) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, modality_tokens, cost_usd, status
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'bytedance', 'seed-2-0-lite-260428',
+                 'bytedance/chat/completions', ?, 0, 0, 0, ?, 0, 'ok')`,
+    ).bind(appId, inputTokens, modalityTokens).run();
+    await insert(1000, JSON.stringify({ input: { audio: 900 } }));
+    await insert(1000, JSON.stringify({ input: {} }));
+    // An unreadable response has no prompt to break down, and reprices to zero as before.
+    await insert(0, "{}");
+    const month = new Date().toISOString().slice(0, 7);
+    const reprice = (apply: boolean) => exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "bytedance", model: "seed-2-0-lite-260428", month, apply }),
+      },
+    );
+    expect((await reprice(true)).status).toBe(200);
+    const rows = await env.DB.prepare(
+      "SELECT cost_usd FROM app_usage_event WHERE app_id = ? ORDER BY id",
+    ).bind(appId).all<{ cost_usd: number }>();
+    const lite = shippedRates("bytedance", "seed-2-0-lite-260428");
+    expect(rows.results.map((row) => row.cost_usd)).toEqual([
+      expect.closeTo((900 * lite.audio_input + 100 * lite.input) / 1e6, 12),
+      expect.closeTo(1000 * lite.input / 1e6, 12),
+      0,
+    ]);
+
+    // Recorded before BytePlus prompts were broken down: whether it held audio
+    // is unknown, so it is neither billed as audio nor taken to be text.
+    await insert(1000, "{}");
+    const dryRun = await reprice(false);
+    await expect(dryRun.json()).resolves.toMatchObject({ matched_events: 3, unpriced_events: 1 });
+    const refused = await reprice(true);
+    expect(refused.status).toBe(400);
+    await expect(refused.text()).resolves.toContain("predate the modality record");
+  });
+
   it("reprices a one-hour cache write at its own rate, and an unsplit one at the default", async () => {
     const appId = "admin-reprice-cache-1h";
     await seedApp(appId);

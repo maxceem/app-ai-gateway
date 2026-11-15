@@ -526,6 +526,35 @@ describe("default inference endpoints", () => {
     expect(captured).toHaveLength(1);
   });
 
+  it("bills a BytePlus prompt's audio at the audio rate and the rest of it as text", async () => {
+    const appId = `proxy-byteplus-audio-${crypto.randomUUID()}`;
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const model = "seed-2-0-lite-260428";
+    const rates = shippedRates("bytedance", model);
+    for (const [details, cost] of [
+      [{ cached_tokens: 0, audio_tokens: 900 }, (900 * rates.audio_input + 100 * rates.input + 10 * rates.output) / 1e6],
+      // A text prompt BytePlus reports no audio for bills as text, never at the audio rate.
+      [{ cached_tokens: 0 }, (1000 * rates.input + 10 * rates.output) / 1e6],
+    ] as const) {
+      vi.restoreAllMocks();
+      upstream({ usage: { prompt_tokens: 1000, prompt_tokens_details: details, completion_tokens: 10 } });
+      const response = await proxyRequest({
+        appId,
+        token,
+        path: "bytedance/chat/completions",
+        body: { model, messages: [{ role: "user", content: "hi" }] },
+      });
+      await response.text();
+      expect(response.status).toBe(200);
+      await settleUsage();
+      const row = await env.DB.prepare(
+        "SELECT cost_usd FROM app_usage_event WHERE app_id = ? ORDER BY id DESC",
+      ).bind(appId).first<{ cost_usd: number }>();
+      expect(row?.cost_usd).toBeCloseTo(cost, 12);
+    }
+  });
+
   it("allows them in all mode too", async () => {
     const appId = "proxy-default-inference-all";
     await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });

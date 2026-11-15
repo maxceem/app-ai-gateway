@@ -78,6 +78,7 @@ per million tokens unless the field says otherwise:
 | `kind` | `text`, `image`, `speech`, `transcription`, `embedding` or `realtime`. |
 | `input`, `output` | Price per million input and output tokens. |
 | `cached_input` | Input served from the provider's prompt cache. Absent: billed as `input`. |
+| `cached_input_audio` | Audio input served from the prompt cache, where the provider prices it apart from cached text. Absent: billed as `cached_input`. |
 | `cache_write`, `cache_write_1h`, `cache_write_12h` | Input written to the prompt cache, for the default lifetime, one hour or 12 hours. Absent: billed as `input` (the longer lifetimes as `cache_write`). |
 | `image_input`, `audio_input`, `video_input`, `image_output` | Tokens of that kind, where the provider prices them apart from text. |
 | `long_context_threshold`, `long_*` | A prompt longer than the threshold, in tokens, bills all its tokens at the `long_` rates, where the model has them. |

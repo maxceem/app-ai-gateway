@@ -16,7 +16,7 @@ import { EMPTY_USAGE, type UsageObservation } from "./pricing";
 import { asRecord } from "../shared/records";
 import type { Modality, ModalityCounts } from "../core/types";
 import { type TokenVariants, VARIANTS } from "../shared/token-rates";
-import { type ProviderType, routeCostReport } from "../shared/providers";
+import { type ProviderType, providerDescriptor, routeCostReport } from "../shared/providers";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { relaysProviderResponses } from "../shared/gateways";
 
@@ -41,6 +41,9 @@ function countsAny(usage: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => finiteNumber(usage[key]) !== null);
 }
 
+/** What a provider that declares nothing counts on every response. */
+const NOTHING_COUNTED: readonly Modality[] = [];
+
 /**
  * One side of an OpenAI usage object broken down by modality, as the image
  * endpoints report it in `input_tokens_details` and `output_tokens_details`:
@@ -49,8 +52,25 @@ function countsAny(usage: Record<string, unknown>, keys: string[]): boolean {
  * Completions `audio_tokens` or `reasoning_tokens` alone is not a split of the
  * side. As with Gemini, only what the split accounts for is believed, and the
  * rest of `total` is `unknown` rather than text.
+ *
+ * `counted` is what the provider declares it always counts (see
+ * `countedInputModalities` in `src/shared/providers.ts`). Where it declares
+ * any, the side is always broken down: each of them is read from its
+ * `<modality>_tokens`, absent meaning none, and the rest is text.
  */
-function openAiModalities(details: Record<string, unknown> | null, total: number): ModalityCounts | undefined {
+function openAiModalities(
+  details: Record<string, unknown> | null,
+  total: number,
+  counted: readonly Modality[] = NOTHING_COUNTED,
+): ModalityCounts | undefined {
+  if (counted.length > 0) {
+    const counts: ModalityCounts = {};
+    for (const modality of counted) {
+      const tokens = details ? numberAt(details, `${modality}_tokens`) : 0;
+      if (tokens > 0) counts[modality] = tokens;
+    }
+    return counts;
+  }
   if (!details || !countsAny(details, ["text_tokens", "image_tokens"])) return undefined;
   const counts: ModalityCounts = {};
   const image = numberAt(details, "image_tokens");
@@ -62,7 +82,7 @@ function openAiModalities(details: Record<string, unknown> | null, total: number
   return counts;
 }
 
-function openAiUsage(value: unknown): UsageObservation | null {
+function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
   const response = asRecord(root.response) ?? root;
@@ -89,9 +109,9 @@ function openAiUsage(value: unknown): UsageObservation | null {
   const cacheWrite = details ? numberAt(details, "cache_write_tokens") : 0;
   const outputTotal = numberAt(usage, "output_tokens") || numberAt(usage, "completion_tokens");
   // An image model prices its image tokens apart from its text on both sides,
-  // and the split counts the whole side, cached part included: `sideCost`
+  // and the split counts the whole side, cached part included: `computeCost`
   // takes it out of the uncached tokens, never past them.
-  const input = openAiModalities(details, inputTotal);
+  const input = openAiModalities(details, inputTotal, countedInput);
   const output = openAiModalities(
     asRecord(usage.output_tokens_details) ?? asRecord(usage.completion_tokens_details),
     outputTotal,
@@ -143,7 +163,11 @@ type VariantCounts = Partial<Record<string, Partial<Record<string, number>>>>;
 function readTokenVariants(usage: Record<string, unknown>): TokenVariants | undefined {
   let found: VariantCounts | undefined;
   for (const variant of VARIANTS) {
-    const count = countAt(usage, variant.reportedAt);
+    let count = 0;
+    for (const path of variant.reportedAt) {
+      count = countAt(usage, path);
+      if (count > 0) break;
+    }
     if (count === 0) continue;
     found ??= {};
     (found[variant.bucket] ??= {})[variant.name] = count;
@@ -600,8 +624,11 @@ function withMessageStart(counts: UsageObservation, values: ResponseValues): Usa
  * Values are consumed from the last one backwards and the walk stops as soon as
  * the answer is settled, which is what keeps a long stream from being parsed
  * whole.
+ *
+ * `counted` is the input modalities the provider declares it always counts,
+ * which only the OpenAI shape reads.
  */
-export type UsageReader = (values: ResponseValues) => UsageObservation | null;
+export type UsageReader = (values: ResponseValues, counted: readonly Modality[]) => UsageObservation | null;
 
 /** The last value that parses to an observation; every shape reports at the end. */
 function lastReported(
@@ -620,7 +647,7 @@ function lastReported(
  * value that parses to an observation. A streamed transcription carries its
  * usage on the final `transcript.text.done` event.
  */
-const openAiReader: UsageReader = (values) => lastReported(values, openAiUsage);
+const openAiReader: UsageReader = (values, counted) => lastReported(values, (value) => openAiUsage(value, counted));
 const geminiReader: UsageReader = (values) => lastReported(values, geminiUsage);
 const audioReader: UsageReader = (values) => lastReported(values, audioUsage);
 
@@ -648,7 +675,7 @@ const anthropicReader: UsageReader = (values) => {
  * body: the rule the shape filter enforced before any value was read, applied
  * from the end inwards.
  */
-const sniffUsage: UsageReader = (values) => {
+const sniffUsage: UsageReader = (values, counted) => {
   let anthropicShaped = false;
   for (const value of values.backwards()) {
     const shape = usageShape(value);
@@ -662,7 +689,7 @@ const sniffUsage: UsageReader = (values) => {
     const parsed = shape === "gemini"
       ? geminiUsage(value)
       : shape === "openai"
-        ? openAiUsage(value)
+        ? openAiUsage(value, counted)
         : shape === "audio"
           ? audioUsage(value)
         : null;
@@ -686,16 +713,23 @@ const USAGE_READERS: Record<UsageFormat, UsageReader> = {
   unknown: sniffUsage,
 };
 
-export function readUsage(values: ResponseValues, style: ApiStyle): UsageObservation | null {
-  return USAGE_READERS[PROTOCOLS[style].usage](values);
+/**
+ * The usage `values` report, read by the style's reader. `provider` is the type
+ * that answered, which supplies what its responses always count; without one,
+ * nothing is taken to be counted that the body does not say.
+ */
+export function readUsage(values: ResponseValues, style: ApiStyle, provider?: ProviderType): UsageObservation | null {
+  const counted = provider ? providerDescriptor(provider).countedInputModalities : undefined;
+  return USAGE_READERS[PROTOCOLS[style].usage](values, counted ?? NOTHING_COUNTED);
 }
 
 export function extractUsageText(
   text: string,
   contentType: string,
   style: ApiStyle,
+  provider?: ProviderType,
 ): UsageObservation | null {
-  return readUsage(responseValues(wholeBody(text), contentType), style);
+  return readUsage(responseValues(wholeBody(text), contentType), style, provider);
 }
 
 /** A header's value as a count: a whole number and nothing else, or null. */
@@ -758,7 +792,7 @@ export function observeResponse(
 ): { usage: UsageObservation | null; report: ProviderReport | null } {
   const values = responseValues(body, contentType);
   const reporting = routeCostReport(provider, route, style);
-  const usage = readUsage(values, style);
+  const usage = readUsage(values, style, provider);
   return {
     usage: usage && headers ? headerVariants(usage, headers, contentType, provider, route, style) : usage,
     // Handed the same backwards walk: the report of a stream is in its final

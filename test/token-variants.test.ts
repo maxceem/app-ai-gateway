@@ -322,6 +322,7 @@ describe("the rate config", () => {
     expect(TOKEN_RATE_FIELDS).toEqual([
       "input",
       "cached_input",
+      "cached_input_audio",
       "cache_write",
       "cache_write_1h",
       "cache_write_12h",
@@ -332,10 +333,15 @@ describe("the rate config", () => {
       "image_output",
       "long_input",
       "long_cached_input",
+      "long_cached_input_audio",
       "long_cache_write",
       "long_cache_write_1h",
       "long_cache_write_12h",
       "long_output",
+      "long_image_input",
+      "long_audio_input",
+      "long_video_input",
+      "long_image_output",
     ]);
     expect(LONG_RATE_FIELDS).toEqual(TOKEN_RATE_FIELDS.filter((field) => field.startsWith("long_")));
   });
@@ -439,5 +445,124 @@ describe("the custom price schema", () => {
 
   it("refuses long-context rates without their threshold", () => {
     expect(ProviderPricingSchema.safeParse({ m: { input: 1, output: 2, long_input: 2 } }).success).toBe(false);
+  });
+});
+
+describe("BytePlus audio input", () => {
+  const LITE = "seed-2-0-lite-260428";
+
+  function chatUsage(promptDetails: Record<string, unknown> | undefined, promptTokens: number, completionTokens = 0) {
+    return extractUsageText(
+      JSON.stringify({
+        object: "chat.completion",
+        usage: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+          ...(promptDetails && { prompt_tokens_details: promptDetails }),
+        },
+      }),
+      "application/json",
+      "chat_completions",
+      "bytedance",
+    )!;
+  }
+
+  function responsesUsage(inputDetails: Record<string, unknown>, inputTokens: number) {
+    return extractUsageText(
+      JSON.stringify({
+        object: "response",
+        usage: { input_tokens: inputTokens, input_tokens_details: inputDetails, output_tokens: 0 },
+      }),
+      "application/json",
+      "responses",
+      "bytedance",
+    )!;
+  }
+
+  it("bills a prompt that names no audio as text, whether the count is zero or absent", () => {
+    // Without the declaration a prompt with no breakdown would bill at the
+    // model's highest rate: every text request at the audio price.
+    const rates = shippedRates("bytedance", LITE);
+    for (const details of [undefined, { cached_tokens: 0 }, { cached_tokens: 0, audio_tokens: 0 }]) {
+      const usage = chatUsage(details, 1000, 500);
+      expect(usage.modalityTokens).toEqual({ input: {} });
+      expect(computeCost("bytedance", LITE, usage)).toBeCloseTo((1000 * rates.input + 500 * rates.output) / 1e6, 12);
+    }
+  });
+
+  it("bills the audio of a prompt at the audio rate and the rest as text", () => {
+    const rates = shippedRates("bytedance", LITE);
+    const usage = chatUsage({ cached_tokens: 0, audio_tokens: 22_500 }, 22_600, 500);
+    expect(usage.modalityTokens).toEqual({ input: { audio: 22_500 } });
+    expect(computeCost("bytedance", LITE, usage)).toBeCloseTo(
+      (22_500 * rates.audio_input + 100 * rates.input + 500 * rates.output) / 1e6,
+      12,
+    );
+  });
+
+  it("bills cached audio at its own rate where the response says how much was cached", () => {
+    // A second turn about the same recording: the audio comes from the cache.
+    const rates = shippedRates("bytedance", LITE);
+    const usage = responsesUsage(
+      { cached_tokens: 22_600, audio_tokens: 22_500, audio_cached_tokens: 22_500 },
+      23_000,
+    );
+    expect(usage).toMatchObject({
+      inputTokens: 400,
+      cachedInputTokens: 22_600,
+      modalityTokens: { input: { audio: 22_500 } },
+      tokenVariants: { cached_input: { audio: 22_500 } },
+    });
+    expect(computeCost("bytedance", LITE, usage)).toBeCloseTo(
+      (400 * rates.input + 22_500 * rates.cached_input_audio + 100 * rates.cached_input) / 1e6,
+      12,
+    );
+  });
+
+  it("bills audio as uncached first where the response does not say what was cached", () => {
+    // An explicit cache reports no `audio_cached_tokens`: the audio fills the
+    // uncached input first and only the rest of it counts as cached audio.
+    const rates = shippedRates("bytedance", LITE);
+    const usage = responsesUsage({ cached_tokens: 22_600, audio_tokens: 22_500 }, 23_000);
+    expect(computeCost("bytedance", LITE, usage)).toBeCloseTo(
+      (400 * rates.audio_input + 22_100 * rates.cached_input_audio + 500 * rates.cached_input) / 1e6,
+      12,
+    );
+  });
+
+  it("uses the long-context audio rates above the threshold", () => {
+    const rates = shippedRates("bytedance", LITE);
+    const prompt = rates.long_context_threshold + 50_000;
+    const usage = responsesUsage(
+      { cached_tokens: 10_000, audio_tokens: 60_000, audio_cached_tokens: 10_000 },
+      prompt,
+    );
+    expect(computeCost("bytedance", LITE, usage)).toBeCloseTo(
+      (50_000 * rates.long_audio_input + (prompt - 60_000) * rates.long_input
+        + 10_000 * rates.long_cached_input_audio) / 1e6,
+      12,
+    );
+  });
+
+  it("bills cached audio as cached input where the price has no cached audio rate", () => {
+    const usage = responsesUsage(
+      { cached_tokens: 1000, audio_tokens: 1000, audio_cached_tokens: 1000 },
+      1500,
+    );
+    const pricing = { [LITE]: { input: 1, output: 2, cached_input: 0.1, audio_input: 10 } };
+    expect(computeCost("bytedance", LITE, usage, pricing)).toBeCloseTo((500 * 1 + 1000 * 0.1) / 1e6, 12);
+  });
+
+  it("reads no audio split for a provider that does not declare one", () => {
+    // OpenAI Chat Completions reports `audio_tokens: 0` beside a prompt that
+    // may hold images it does not count, so the rest is not known to be text.
+    const usage = extractUsageText(
+      JSON.stringify({ usage: { prompt_tokens: 100, prompt_tokens_details: { audio_tokens: 0 }, completion_tokens: 1 } }),
+      "application/json",
+      "chat_completions",
+      "openai",
+    );
+    expect(usage?.modalityTokens).toBeUndefined();
   });
 });
