@@ -312,4 +312,56 @@ describe("billing in the service mode that served the request", () => {
     expect(row.cost).toBeCloseTo(0.03, 10);
     expect(row.mode).toEqual("ultrafast");
   });
+
+  // Only a scanned document is held to the requested tier: a whole stream
+  // event and a response header are parsed, not scanned, so a downgrade they
+  // report is billed even on a body too big to keep whole.
+  it.each([
+    {
+      label: "a whole event of a long OpenAI stream",
+      attribution: {
+        pricing: { "gpt-5.6-sol": { input: 1, output: 4, modes: { ultrafast: { factor: 6 } } } },
+        serviceMode: { tier: "ultrafast", region: "global" },
+      },
+      contentType: "text/event-stream",
+      head: 'event: response.created\ndata: {"type":"response.created","response":{"service_tier":"ultrafast"}}\n\nevent: response.output_text.delta\ndata: {"delta":"',
+      tail: 'x"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":1000,"output_tokens":1000}}}\n\n',
+      headers: undefined,
+    },
+    {
+      label: "Gemini's header on a long answer",
+      attribution: {
+        provider: "gemini" as const,
+        providerSlug: "gemini",
+        model: "gemini-3.5-flash",
+        apiStyle: "gemini_native" as const,
+        route: "gemini/v1beta/models/gemini-3.5-flash:generateContent",
+        pricing: { "gemini-3.5-flash": { input: 1, output: 4, modes: { priority: { factor: 1.8 } } } },
+        serviceMode: { tier: "priority", region: "global" },
+      },
+      contentType: "application/json",
+      head: '{"candidates":[{"content":{"parts":[{"text":"',
+      tail: '"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":1000}}',
+      headers: new Headers({ "x-gemini-service-tier": "standard" }),
+    },
+  ])("bills a downgrade reported by $label", async ({ attribution, contentType, head, tail, headers }) => {
+    const appId = `mode-billing-${crypto.randomUUID()}`;
+    await recordUsageEvent({
+      organizationId: "operator-test-organization",
+      env,
+      observed: Promise.resolve({ head, tail, truncated: true, totalBytes: 2_000_000, aborted: false }),
+      contentType,
+      ...(headers && { responseHeaders: headers }),
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(attribution as unknown as Parameters<typeof testAttribution>[0]),
+      appVersion: null,
+      status: "ok",
+      latencyMs: 9,
+    });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.005, 10);
+    expect(row.mode).toBeNull();
+    expect(row.source).toBe("computed");
+  });
 });

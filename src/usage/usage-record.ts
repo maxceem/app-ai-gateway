@@ -20,7 +20,7 @@ import {
   resolveModelAuthor,
   type UsageObservation,
 } from "./pricing";
-import { observeResponse } from "./usage-readers";
+import { isEventStream, observeResponse } from "./usage-readers";
 import { providerDescriptor, type ProviderType, routeCostReport } from "../shared/providers";
 import { relaysProviderResponses } from "../shared/gateways";
 import {
@@ -372,20 +372,25 @@ function servedServiceMode(
   attribution: AttemptAttribution,
   reported: UsageObservation["reportedModes"],
   headers: Headers | undefined,
-  truncated: boolean,
+  /** Whether the body was a document too big to keep whole, so its tier was found by a text scan. */
+  scanned: boolean,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
   const requested = attribution.serviceMode ?? STANDARD_MODE;
   if (!relaysProviderResponses(attribution.providerRoute.kind)) return { mode: requested };
   const descriptor = providerDescriptor(attribution.provider);
-  const { named, unknown } = readServiceMode(
-    descriptor.servedModes ?? descriptor.serviceModes,
-    (name) => name.startsWith("header:") ? headers?.get(name.slice("header:".length)) ?? undefined : reported?.[name],
-  );
+  const fields = descriptor.servedModes ?? descriptor.serviceModes;
+  const header = (name: string) => name.startsWith("header:") ? headers?.get(name.slice("header:".length)) ?? undefined : undefined;
+  const { named, unknown } = readServiceMode(fields, (name) => header(name) ?? reported?.[name]);
   let tier = named.tier ?? requested.tier;
-  // A truncated body's tier was found by scanning text the client can have a
-  // hand in (its own `metadata`, echoed back), so it may say a dearer tier
-  // served the request, never a cheaper one than it asked for.
-  if (truncated && SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank) tier = requested.tier;
+  // A scanned document's tier was found in text the client can have a hand in
+  // (its own `metadata`, echoed back), so it may say a dearer tier served the
+  // request, never a cheaper one than it asked for. A header, and every event
+  // of a stream, is parsed whole and believed.
+  if (
+    scanned
+    && SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank
+    && readServiceMode(fields, (name) => header(name)).named.tier === undefined
+  ) tier = requested.tier;
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
   return unknown ? { mode, unknown } : { mode };
@@ -453,7 +458,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
   const served: { mode: ServiceMode; unknown?: ServiceModeValue } = attribution.passthrough
     ? { mode: STANDARD_MODE }
-    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, truncated);
+    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, truncated && !isEventStream(input.contentType));
   const servedMode = served.mode;
   const price = computeCost(
     attribution.provider,

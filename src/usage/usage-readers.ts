@@ -614,7 +614,7 @@ function documentValues(values: unknown[]): ResponseValues {
   };
 }
 
-function isEventStream(contentType: string): boolean {
+export function isEventStream(contentType: string): boolean {
   return contentType.toLowerCase().includes("text/event-stream");
 }
 
