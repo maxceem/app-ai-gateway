@@ -42,7 +42,7 @@ describe("the shipped price catalog", () => {
             expect([where, MODEL_KINDS.includes(value as ModelKind)]).toEqual([where, true]);
             continue;
           }
-          if (field === "retirement_date") {
+          if (field === "retirement_date" || field === "unlisted_since") {
             // A real calendar day.
             const day = String(value);
             expect([where, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])

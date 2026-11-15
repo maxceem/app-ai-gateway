@@ -12237,6 +12237,10 @@
                               "type": "string",
                               "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."
                             },
+                            "unlisted_since": {
+                              "type": "string",
+                              "description": "The day (YYYY-MM-DD) the provider's official price page stopped listing or pricing this model. Its rates are the last ones that page gave; the model stays priced."
+                            },
                             "price_changes": {
                               "type": "array",
                               "items": {
