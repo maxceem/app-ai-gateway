@@ -2936,7 +2936,7 @@ describe("a custom end-user header", () => {
 });
 
 /**
- * A request field that asks the provider for a dearer service mode — priority,
+ * A request field that asks the provider for a service mode — flex, priority,
  * fast, ultrafast, a pinned region — has no price yet. For now it is forwarded,
  * billed at standard, and logged as `service_mode_unpriced`, so apps that send
  * one are found before any request is refused; `test/service-modes.test.ts`
@@ -2991,6 +2991,9 @@ describe("service modes", () => {
     ["xAI priority on its Anthropic-format API", "xai/v1/messages", { model: "grok-4.7", max_tokens: 16, messages: [], service_tier: "priority" }, "xai", "priority"],
     ["Gemini priority behind a flex alias", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex", serviceTier: "priority" }, "gemini", "priority"],
     ["a tier in capitals", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ULTRAFAST" }, "openai", "ultrafast"],
+    ["OpenAI flex", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "flex" }, "openai", "flex"],
+    ["Gemini flex", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex" }, "gemini", "flex"],
+    ["Groq flex", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "flex" }, "groq", "flex"],
   ])("forwards %s, which has no price yet, and logs it", async (_label, path, body, provider, mode) => {
     const bodies = upstream();
     const lines = warnings();
@@ -3047,14 +3050,11 @@ describe("service modes", () => {
   });
 
   it.each([
-    ["OpenAI flex", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "flex" }],
     ["OpenAI's project default", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "auto" }],
     ["an explicit null", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: null }],
     ["Anthropic standard speed, global", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "standard", inference_geo: "global" }],
     ["Anthropic's Priority Tier commitment", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], service_tier: "auto" }],
-    ["Gemini flex", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex" }],
     ["Mistral standard only", "mistral/v1/chat/completions", { model: "mistral-large-latest", messages: [], service_tier: "standard_only" }],
-    ["Groq flex", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "flex" }],
     ["Groq's reserved capacity, paid for by contract", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "performance" }],
     ["OpenAI Scale Tier units, paid for by contract", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "scale" }],
     ["xAI priority, whose cost xAI reports", "xai/v1/chat/completions", { model: "grok-4.7", messages: [], service_tier: "priority" }],

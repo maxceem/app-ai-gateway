@@ -63,6 +63,7 @@ describe("serviceModeRefusal, when unpriced modes are refused", () => {
     ["OpenAI fast", "openai", { service_tier: "priority" }, "fast"],
     ["Anthropic fast mode in the US", "anthropic", { speed: "fast", inference_geo: "us" }, "fast+us"],
     ["Mistral's priority-when-eligible", "mistral", { service_tier: "auto" }, "priority"],
+    ["flex, which no price lists yet", "openai", { service_tier: "flex" }, "flex"],
   ] as const)("refuses %s with the mode it names", (_label, type, body, mode) => {
     const error = refusal({ type, body });
     expect(error).toBeInstanceOf(GatewayError);
@@ -71,10 +72,19 @@ describe("serviceModeRefusal, when unpriced modes are refused", () => {
 
   it.each([
     ["standard", "openai", { service_tier: "default" }],
-    ["flex", "openai", { service_tier: "flex" }],
     ["a tier paid for by contract", "groq", { service_tier: "performance" }],
   ] as const)("lets %s through", (_label, type, body) => {
     expect(refusal({ type, body })).toBeNull();
+  });
+
+  it("quotes the fields the client sent, and says how to add the price", () => {
+    expect(refusal({ type: "anthropic", style: "anthropic_messages", body: { speed: "fast", inference_geo: "us" } }))
+      .toMatchObject({
+        message: 'Model a-model has no price on anthropic in service mode fast+us, which the request asks for with '
+          + 'speed: "fast", inference_geo: "us". Add a price for that mode under custom model pricing in the provider '
+          + "settings, or leave speed and inference_geo out.",
+        data: { service_mode: "fast+us", field: "speed" },
+      });
   });
 
   it("lets an unknown value through, and logs it", () => {

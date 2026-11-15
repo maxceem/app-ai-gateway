@@ -158,11 +158,13 @@ right price. Through Vercel AI Gateway, Vercel's own
 `providerOptions.gateway.serviceTier` and `speed` are read too.
 
 The price list does not carry these prices yet, so every request is billed at
-the model's standard rate for now. A tier that costs more, such as OpenAI's
-Fast mode or Anthropic's fast mode, will need a price in a later release, and
-requests for one without a price will then be refused with
-`400 pricing_not_configured`. Flex, the providers' standard values, and tiers
-paid for by contract (OpenAI `scale`, Groq `performance`) keep working.
+the model's standard rate for now. In a later release, each mode a request
+asks for, flex included, will need a price for its model, and a request for
+one without a price will be refused with `400 pricing_not_configured`. The
+error names the mode and the field that asked for it, and you will be able
+to add the price yourself under custom model pricing in the provider settings.
+The providers' standard values, and tiers paid for by contract (OpenAI
+`scale`, Groq `performance`), keep working.
 
 ## Limits on a request
 

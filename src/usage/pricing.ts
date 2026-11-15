@@ -200,15 +200,15 @@ export function hasTokenModelPrice(
 /**
  * Whether a service mode can be billed, for a model priced in the standard one.
  *
- * Prices carry no modes yet, so this is the interim rule. Flex passes: it is
- * billed at the standard rate, which never costs an app less than the provider
- * charges. Priority, fast, ultrafast and a pinned region all cost more than
- * standard, so a request for one is refused rather than billed below its cost —
- * an app's end user could otherwise stretch their budget several times over
- * with one request field.
+ * Prices carry no modes yet, so only the standard mode has one. Every other
+ * mode, flex included, is unpriced, and one rule covers them all: a known mode
+ * the model has no price in is never billed at another mode's price. A dearer
+ * one billed at standard would let an app's end user stretch their budget
+ * several times over; a cheaper one would spend the budget faster than the
+ * owner set it to last.
  */
 function hasModePrice(mode: ServiceMode): boolean {
-  return mode.region === "global" && (mode.tier === "standard" || mode.tier === "flex");
+  return mode.tier === "standard" && mode.region === "global";
 }
 
 /**
@@ -238,11 +238,12 @@ function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly S
 }
 
 /**
- * What happens to a request for a mode that costs more than standard and has no
- * price: `log` forwards it, billed at standard, and logs `service_mode_unpriced`;
- * `refuse` answers `pricing_not_configured`. It starts at `log`, so apps that
- * already send a paid tier show up in the logs before any request of theirs is
- * refused; turning refusal on is this one line.
+ * What happens to a request for a known service mode the model has no price in:
+ * `log` forwards it, billed at standard, and logs `service_mode_unpriced`;
+ * `refuse` answers `pricing_not_configured`, saying how to add the price. It
+ * starts at `log`, so apps that already send a mode show up in the logs before
+ * any request of theirs is refused; turning refusal on is this one line, once
+ * mode prices exist.
  */
 export const UNPRICED_SERVICE_MODES: "log" | "refuse" = "log";
 
@@ -252,9 +253,8 @@ export const UNPRICED_SERVICE_MODES: "log" | "refuse" = "log";
  *
  * `read` returns one field of the body as it will be sent — the client's JSON
  * merged with anything the configuration adds, or a form field — and the
- * target's own table says what its value means. A mode the table knows costs
- * more than standard, and the model has no price in, is handled as
- * {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
+ * target's own table says what its value means. A mode the table knows, and
+ * the model has no price in, is handled as {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
  * through and billed at standard, so a tier a provider adds never breaks a
  * client before the gateway learns it; it is logged as `service_mode_unknown`
  * so it can be added. A route whose provider reports what each request cost
@@ -296,12 +296,15 @@ export function serviceModeRefusal(input: {
     });
     return null;
   }
+  const sent = reading.askedBy.map((asked) => `${asked.field}: "${asked.value}"`).join(", ");
+  const fields = reading.askedBy.map((asked) => asked.field).join(" and ");
   return new GatewayError(
     400,
     "pricing_not_configured",
-    `${type} has no price for ${input.model} in service mode ${name}`,
+    `Model ${input.model} has no price on ${type} in service mode ${name}, which the request asks for with ${sent}. `
+      + `Add a price for that mode under custom model pricing in the provider settings, or leave ${fields} out.`,
     undefined,
-    { data: { service_mode: name } },
+    { data: { service_mode: name, ...(reading.askedBy[0] ? { field: reading.askedBy[0].field } : {}) } },
   );
 }
 

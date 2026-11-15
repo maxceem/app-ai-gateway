@@ -93,6 +93,13 @@ export interface UnknownServiceMode {
 export interface ServiceModeReading {
   /** What the known values ask for; an unknown value leaves its axis at the default. */
   readonly mode: ServiceMode;
+  /**
+   * The fields, as the client spelled them, that set the mode's tier and
+   * region where they are not the default: what a message about the mode
+   * quotes back, so the client sees the field it sent rather than only the
+   * gateway's name for it.
+   */
+  readonly askedBy: readonly UnknownServiceMode[];
   /** The first value the table does not know, if any. */
   readonly unknown?: UnknownServiceMode;
 }
@@ -115,7 +122,9 @@ export function readServiceMode(
   read: (name: string) => unknown,
 ): ServiceModeReading {
   let tier: ServiceTier | undefined;
+  let tierAskedBy: UnknownServiceMode | undefined;
   let region: ServiceRegion = "global";
+  let regionAskedBy: UnknownServiceMode | undefined;
   let unknown: UnknownServiceMode | undefined;
   for (const field of fields) {
     for (const name of field.names) {
@@ -129,16 +138,24 @@ export function readServiceMode(
       }
       if (field.axis === "tier") {
         const asked = meaning as ServiceTier;
-        if (tier === undefined || SERVICE_TIERS[asked].rank > SERVICE_TIERS[tier].rank) tier = asked;
+        if (tier === undefined || SERVICE_TIERS[asked].rank > SERVICE_TIERS[tier].rank) {
+          tier = asked;
+          tierAskedBy = { field: name, value: describeValue(value) };
+        }
       } else if (region === "global") {
         region = meaning as ServiceRegion;
+        regionAskedBy = { field: name, value: describeValue(value) };
       }
     }
   }
   const mode = (tier ?? "standard") === "standard" && region === "global"
     ? STANDARD_MODE
     : { tier: tier ?? "standard", region };
-  return unknown ? { mode, unknown } : { mode };
+  const askedBy = [
+    ...(mode.tier !== "standard" && tierAskedBy ? [tierAskedBy] : []),
+    ...(mode.region !== "global" && regionAskedBy ? [regionAskedBy] : []),
+  ];
+  return unknown ? { mode, askedBy, unknown } : { mode, askedBy };
 }
 
 /** A field's value, following a dotted name into nested objects. */
