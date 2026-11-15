@@ -590,11 +590,18 @@ export const AppConfigSchema = z.object({
     per_app: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
   }).strict().prefault({}),
   realtime: z.object({
-    enabled: z.boolean().default(false),
-    max_session_seconds: z.number().int().positive().max(REALTIME_MAX_SESSION_SECONDS).default(REALTIME_MAX_SESSION_SECONDS),
-    max_concurrent_sessions: z.number().int().positive().max(100).default(10),
-    max_concurrent_sessions_per_identity: z.number().int().positive().max(10).default(2),
-  }).strict().prefault({}),
+    enabled: z.boolean().default(false).meta({
+      description: "Allow realtime voice conversations with OpenAI's realtime models over a WebSocket, through the gateway: each response counts as one request and is limited and recorded per user. Off by default.",
+    }),
+    max_session_seconds: z.number().int().positive().max(REALTIME_MAX_SESSION_SECONDS).default(REALTIME_MAX_SESSION_SECONDS)
+      .meta({ description: "The longest conversation, in seconds." }),
+    max_concurrent_sessions: z.number().int().positive().max(100).default(10)
+      .meta({ description: "Open conversations for the whole app." }),
+    max_concurrent_sessions_per_identity: z.number().int().positive().max(10).default(2)
+      .meta({ description: "Open conversations per user: an install on an iOS app, an API key on a server app with no users." }),
+  }).strict().prefault({}).meta({
+    description: "Realtime conversations over a WebSocket; see the Realtime voice guide. Use this rather than opening v1/realtime/client_secrets as a passthrough path, which lets the app reach the provider directly, uncounted.",
+  }),
   endpoints: z.record(
     safeKey(z.string().regex(ENDPOINT_SLUG)),
     EndpointSchema,

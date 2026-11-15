@@ -89,6 +89,19 @@ the media \`conversations.keep\` allows (images, audio, files; all by default),
 for \`conversations.retention_days\` (default 180). Turn it on only when
 the person asks, and remind them to disclose it in their privacy policy.
 
+Apps can hold realtime voice conversations with OpenAI's \`gpt-realtime\` and
+\`gpt-realtime-mini\` over a WebSocket through the gateway: set
+\`realtime.enabled\` to \`true\`, and allow the OpenAI provider, and
+\`v1/realtime\` and the model where the app lists paths or models. Each
+response is counted as one request, the app's per-user limits apply, and its
+usage is recorded. On iOS the Swift package 1.9 or later connects with
+\`authorizedRealtimeRequest(provider:model:)\`; a server asks
+\`GET /v1/apps/{app}/realtime/{provider}/connection?model=…\` for the
+\`wss://\` URL to open with the same headers. Never set realtime up by
+allowing the passthrough path \`v1/realtime/client_secrets\` so the app talks
+to OpenAI directly: none of that conversation is counted, limited or recorded.
+If an app already allows it, tell the person and suggest realtime sessions.
+
 Changes come in three shapes.
 
 **Creates take two calls.** \`add_app\` and \`add_app_key\` first reserve: called

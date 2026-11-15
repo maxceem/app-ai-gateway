@@ -93,3 +93,19 @@ adapters. The HTTP
 stream harness promotes the D1 realtime pointer twice while a stream settles;
 it does not deploy a main Worker on Cloudflare during that stream. Actual
 platform deployment and network failures remain outside that harness.
+
+## Live checks
+
+`scripts/realtime-conformance.mjs --live openai MODEL` checks two manual text
+turns. `scripts/realtime-modes.mjs --live openai MODEL` also checks audio, an
+audio-mode function call and its follow-up, voice detection and cancellation.
+Set `REALTIME_PCM_FILE` to a short mono 24 kHz signed 16-bit PCM speech file
+for the audio checks. Both spend provider credits.
+
+Credentials come from an ignored local environment file:
+`REALTIME_PROVIDER_KEY` for OpenAI directly, or `REALTIME_GATEWAY_URL` and
+`REALTIME_GATEWAY_TOKEN` for a running gateway. For Cloudflare AI Gateway's
+stored keys, set `CF_ACCOUNT_ID`, `CF_GATEWAY_NAME` and `CF_GATEWAY_API_KEY`.
+Against a provider directly, the scripts mint a short-lived client secret and
+use the provider's own WebSocket endpoint; that is confined to these scripts.
+

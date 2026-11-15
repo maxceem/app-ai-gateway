@@ -185,7 +185,10 @@ app has a permanent ID, an authentication policy, a proxy policy saying
 which providers, paths and models it may use, optional custom endpoints,
 and limits on its users. Client apps call
 `{GATEWAY_URL}/v1/apps/{app}/proxy/{provider_slug}/{provider_path}` with the
-provider's own request format. You manage all of this through the admin API.
+provider's own request format. Apps can also hold realtime voice conversations
+with OpenAI over a WebSocket through the gateway, counted and limited like any
+request; see [Realtime sessions](#realtime-sessions). You manage all of this
+through the admin API.
 
 ## Authentication
 
@@ -372,7 +375,7 @@ read, which an update requires.
 
 ## Application configuration reference
 
-`config` is one JSON object with five top-level keys. Unknown keys are
+`config` is one JSON object with six top-level keys. Unknown keys are
 rejected.
 
 ```json
@@ -381,7 +384,8 @@ rejected.
   "routing": { … },
   "limits": { … },
   "endpoints": { … },
-  "conversations": { … }
+  "conversations": { … },
+  "realtime": { … }
 }
 ```
 
@@ -447,7 +451,7 @@ Policy object for one provider:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"?, "methods"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none`. A listed path outside the inference APIs and the provider's own endpoints (files, batches, realtime session keys) is passthrough: forwarded unread, with no model checked or priced, `POST` only unless `methods` lists more of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `methods` is refused on any other path. Allowing `GET` on a list endpoint such as `v1/files` shows the app's users the whole provider account's data, so add it only when the person asks |
+| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"?, "methods"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none`. A listed path outside the inference APIs and the provider's own endpoints (files, batches) is passthrough: forwarded unread, with no model checked or priced, `POST` only unless `methods` lists more of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `methods` is refused on any other path. Allowing `GET` on a list endpoint such as `v1/files` shows the app's users the whole provider account's data, so add it only when the person asks |
 | `allowed_models` | string[] | Empty allows every priced model |
 | `max_output_tokens` | positive integer, optional | Requests above it are refused; requests without an output limit get it injected |
 
@@ -504,7 +508,24 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 
 `listModelPrices` gives every listed model's `kind`: `text`, `image`,
 `speech`, `transcription`, `embedding` or `realtime`. Pick an endpoint's
-models by it; a `realtime` model serves no endpoint.
+models by it; a `realtime` model serves no endpoint. It is used through
+[realtime sessions](#realtime-sessions) instead.
+
+### `realtime`
+
+Optional; omitted means off. Turn it on when the person wants live voice or
+text conversations with OpenAI's realtime models.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `enabled` | boolean, default `false` | Allow realtime conversations for this app |
+| `max_session_seconds` | integer 1-1800, default `1800` | Longest conversation |
+| `max_concurrent_sessions` | integer 1-100, default `10` | Open conversations for the whole app |
+| `max_concurrent_sessions_per_identity` | integer 1-10, default `2` | Open conversations per user: an install on an iOS app, an API key on a server app with no users |
+
+The app must also allow the OpenAI provider, and `v1/realtime` and the model if
+its `routing` lists paths or models. With `realtime.enabled`, the end-user
+header can't be `x-realtime-bootstrap`.
 
 ### `conversations`
 
@@ -710,6 +731,30 @@ is minted. Records are kept for 90 days.
 
 ## Realtime sessions
 
-Opt-in [realtime WebSockets](/integrate/realtime) serve direct OpenAI
-`gpt-realtime` and `gpt-realtime-mini`. Each admitted response is one request;
-setup and audio add none. Read that guide before building a realtime client.
+The gateway serves OpenAI's realtime models, `gpt-realtime` and
+`gpt-realtime-mini`, over a WebSocket, direct or through Cloudflare AI Gateway.
+Gemini Live is not available yet. Each response in a conversation counts as
+one request, the app's per-user and per-app limits apply, and its usage is
+recorded per user; opening the conversation and its audio add no requests.
+
+To add realtime voice to an app:
+
+1. Set `config.realtime.enabled` to `true` (see [`realtime`](#realtime)), and
+   allow the OpenAI provider, `v1/realtime` and the model in `routing` if it
+   lists paths or models.
+2. On iOS, use the AppAIGateway Swift package 1.9 or later:
+   `gateway.authorizedRealtimeRequest(provider:model:)` builds the handshake
+   for `URLSession.webSocketTask(with:)`.
+3. On a server, `GET {GATEWAY_URL}/v1/apps/{app}/realtime/{provider_slug}/connection?model=gpt-realtime`
+   with the app's authentication answers `{ url }`; open that `wss://` URL with
+   the same headers.
+
+Events on the socket are OpenAI's own realtime events. Read
+[Realtime voice](/integrate/realtime) before writing the client.
+
+Do not set up realtime by allowing `v1/realtime/client_secrets` as a
+passthrough path so the app can connect to OpenAI directly. The gateway sees
+only that one request: the conversation's responses are not counted, per-user
+limits and budgets do not apply, its usage is not recorded, and the app holds a
+live OpenAI credential. If an app already allows it, tell the person, suggest
+moving to realtime sessions, and do not remove it unless they ask.

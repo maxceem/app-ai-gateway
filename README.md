@@ -20,6 +20,9 @@ Anthropic, Gemini or whichever provider you use.
 - 💰 You set what an app and its users may spend:
   - request limits and a monthly budget per user,
   - a monthly budget per app.
+- 🎙️ Realtime voice: apps hold live conversations with OpenAI's realtime models
+  over a WebSocket through the gateway, with every response counted and limited
+  per user.
 - 📊 The console shows where the money went, which requests failed and why, and
   lets you block a user who is running up your bill.
 
@@ -41,11 +44,12 @@ Leave the other fields at their defaults; everything else is provisioned for
 you. When the deployment finishes, open the console, register with an email you
 listed, and add your provider keys.
 
-Updates deploy the stable gateway at 100% and switch new realtime connections to
-an immutable release Worker. Established realtime sessions keep their existing
-Worker through ordinary updates. Setup provisions these resources automatically
-and keeps authentication, secrets, limits, and usage in the stable gateway.
-See [updating and rollback](https://docs.appaigateway.com/self-hosting/updating).
+By default an update ends the realtime conversations open at that moment. With
+seamless realtime releases turned on, conversations run in a separate realtime
+Worker that updates leave running, so open conversations stay open; it is
+replaced only when realtime code changes. Authentication, secrets, limits and
+usage stay in the gateway either way. See
+[updating and rollback](https://docs.appaigateway.com/self-hosting/updating).
 
 ## Local development
 

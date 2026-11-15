@@ -923,29 +923,34 @@
             "properties": {
               "enabled": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "Allow realtime voice conversations with OpenAI's realtime models over a WebSocket, through the gateway: each response counts as one request and is limited and recorded per user. Off by default."
               },
               "max_session_seconds": {
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 1800,
-                "default": 1800
+                "default": 1800,
+                "description": "The longest conversation, in seconds."
               },
               "max_concurrent_sessions": {
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 100,
-                "default": 10
+                "default": 10,
+                "description": "Open conversations for the whole app."
               },
               "max_concurrent_sessions_per_identity": {
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 10,
-                "default": 2
+                "default": 2,
+                "description": "Open conversations per user: an install on an iOS app, an API key on a server app with no users."
               }
             },
             "default": {},
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Realtime conversations over a WebSocket; see the Realtime voice guide. Use this rather than opening v1/realtime/client_secrets as a passthrough path, which lets the app reach the provider directly, uncounted."
           },
           "endpoints": {
             "type": "object",

@@ -1,141 +1,210 @@
 ---
-title: Realtime WebSockets
-description: Provider-native realtime conversations with no wait between turns, bounded sessions, and durable usage.
+title: Realtime voice
+description: Talk to OpenAI's realtime models over a WebSocket through the gateway, with every response counted, limited and recorded per user.
 ---
 
-Enable **Realtime sessions** in your app's settings to use a supported OpenAI
-model. Existing apps have realtime disabled.
+Your app can hold a live voice or text conversation with OpenAI's realtime
+models through the gateway. The app opens a WebSocket to the gateway, and the
+gateway connects to OpenAI with your provider key. Your app never holds that
+key, and the conversation follows the same rules as every other request:
 
-Discover the connection URL using your provider instance's slug:
+- The gateway checks your app's authentication before the conversation opens:
+  App Attest, sign-in tokens and paid-user checks, as for any request.
+- The limits you set per user and per app apply: requests per minute and per
+  day, and the monthly spending budget.
+- Every response is counted as one request, and its usage and cost are recorded
+  against the user, so you see realtime traffic in the console with the rest.
 
-```text
-GET https://api.appaigateway.com/v1/apps/{app}/realtime/{provider}/connection?model=gpt-realtime
-Authorization: Bearer <your gateway token or app API key>
-X-App-Version: <your app version>
+Events on the socket are OpenAI's own realtime events, so OpenAI's realtime
+documentation applies. The gateway adds a few rules, described below.
+
+## What is supported
+
+| Provider | Models | Features |
+| --- | --- | --- |
+| OpenAI, direct or through Cloudflare AI Gateway | `gpt-realtime`, `gpt-realtime-mini` | Text and 24 kHz PCM audio, manual turns or voice detection (`server_vad`), function tools that run in your app |
+
+Gemini Live is not available yet. Other provider gateways, such as Vercel AI
+Gateway, and custom provider addresses don't support realtime. Through
+Cloudflare AI Gateway, the conversation uses the OpenAI key stored in your
+Cloudflare gateway.
+
+Not supported: images, input transcription, hosted tools, stored prompts,
+semantic voice detection, and binary frames. Browsers and WebRTC aren't
+supported, because a browser can't send the authentication headers a
+WebSocket needs. Use a native app or a server.
+
+## Turn it on
+
+Realtime is off for every app until you turn it on.
+
+1. In the console, open your app's **Settings** and, under **Realtime
+   sessions**, turn on **Enable realtime WebSockets**. You can also lower the
+   session length and the number of open sessions per app and per user there.
+2. In **Provider access**, allow the OpenAI provider. If you list endpoints
+   for it, add `v1/realtime`. If you list models, add the realtime models
+   you use.
+
+The built-in price list prices `gpt-realtime` and `gpt-realtime-mini`. A custom
+price for a realtime model must give text input and output, audio input and
+output, cached text input and cached audio input.
+
+Through the API, the CLI or MCP, set the app's `realtime` settings:
+
+```json
+{
+  "realtime": {
+    "enabled": true,
+    "max_session_seconds": 1800,
+    "max_concurrent_sessions": 10,
+    "max_concurrent_sessions_per_identity": 2
+  }
+}
 ```
 
-The JSON response contains `url` and `releaseId`. Open that `wss://` URL with
-`Upgrade: websocket` and the same authentication headers. Discover again for
-every new conversation, and again whenever an open is refused with `conflict`.
+## Connect from an iOS app
 
-Whether a conversation survives a gateway update depends on how the gateway is
-deployed. By default an update ends the conversations open at that moment, so
-handle a close by discovering again and starting a new conversation. A gateway
-with [seamless realtime releases](/self-hosting/updating#seamless-realtime-releases)
-keeps established sessions on their release through updates. New connections
-move to the newest release, and a previously discovered URL accepts opens for
-at most 60 seconds after it is replaced. Network failures, runtime failures,
-and client disconnects end a conversation either way.
+Use the AppAIGateway Swift package 1.9 or later.
+`authorizedRealtimeRequest` finds the conversation's address and builds a
+signed handshake for it. Build a new one for every conversation.
 
-Use `X-App-Version` with gateway tokens, and your configured end-user header for
-API keys that identify users. Credentials in query parameters, cookies, or
-WebSocket subprotocols are unsupported. Native iOS and server clients can supply
-authentication headers; browser clients and WebRTC are outside this release.
+```swift
+let request = try await gateway.authorizedRealtimeRequest(
+    provider: .openai, model: "gpt-realtime"
+)
+let socket = URLSession.shared.webSocketTask(with: request)
+socket.resume()
 
-On an iOS app whose **Verify App Attest on** is **Every request**, discovery and
-the WebSocket handshake are two requests, and each carries its own
-`X-AppAttest-Proof`, signed over its own URL. A proof is good for one request:
-a handshake sent twice with the same proof is refused with `403 attest_failed`.
-Once a session is open, nothing sent over the socket is signed. The Swift
-package builds and signs both requests for you.
+// Wait for session.updated before sending input.
+while true {
+    let message = try await socket.receive()
+    guard case .string(let text) = message else { continue }
+    let data = Data(text.utf8)
+    if let error = try? JSONDecoder().decode(RealtimeGatewayError.self, from: data),
+       error.type == "gateway.error" {
+        print(error.error.code) // See "When a conversation ends" below.
+        break
+    }
+    // Handle OpenAI's event, and send yours when appropriate:
+    // try await socket.send(.string(#"{"type":"response.create"}"#))
+}
+socket.cancel(with: .normalClosure, reason: nil)
+```
 
-## Supported profiles
+On an app that verifies App Attest on every request, the package signs both
+requests a conversation opens with: finding the address, and the handshake.
+Nothing sent over the open socket is signed.
 
-| Provider | Models | Modes |
-| --- | --- | --- |
-| OpenAI, direct to its official origin or through Cloudflare AI Gateway | `gpt-realtime`, `gpt-realtime-mini` | Manual response creation; gateway-managed `server_vad`; text and 24 kHz PCM audio; application function tools |
-| Gemini Live | Unavailable pending live conformance | The adapter is restricted to explicit text turns or manual audio activities; no enabled model profile yet |
+## Connect from a server
 
-Through Cloudflare AI Gateway, the conversation uses the OpenAI key stored in
-your Cloudflare gateway. Other gateway routes, such as Vercel AI Gateway, and
-custom provider origins are unsupported. Pricing
-catalog membership does not enable a realtime profile. Custom realtime prices
-must include text input/output, audio input/output, cached text input and cached
-audio input. Images, transcription, hosted tools, stored prompts, semantic VAD,
-idle prompts, and unknown client event types are refused.
+A conversation opens in two steps.
 
-## One generation is one request
+1. Ask the gateway where to connect. Use your provider's slug, `openai` in
+   this example, and the model:
 
-Each response counts once. Twenty responses over one socket count as twenty
-requests. Connection setup, configuration, audio chunks, and output deltas add
-no requests. Failed, cancelled, or disconnected responses still count.
+   ```text
+   GET https://api.appaigateway.com/v1/apps/{app}/realtime/openai/connection?model=gpt-realtime
+   Authorization: Bearer <your app API key or gateway token>
+   ```
 
-Turns never wait for the gateway. The gateway checks access and every limit
-when a conversation opens: the limits you set per user — per install on an iOS
-app — your app's limits, and your allowance. After that, each response is sent
-to the provider at once and counted in the background. If counting it finds a
-limit reached, the user blocked, or the app's access changed, that response
-finishes, uncounted, and then the conversation closes with a `gateway.error`.
-So a limit can be exceeded by one response per open conversation, or by a few
-more while the gateway is slow to answer. Only one provider response can be
-active.
+   The answer is `{ "url": "wss://…", "releaseId": "…" }`.
 
-Each response's usage is stored before its last event reaches your app, and
-recorded in the background, so a spending budget can lag by a response.
-Monthly spending is based on completed usage; in-flight responses can exceed a
-spending budget before their final costs are known.
+2. Open that `url` as a WebSocket with the same headers:
 
-## OpenAI event flow
+   ```js
+   import WebSocket from "ws";
 
-Wait for `session.updated` before sending input. The gateway initially disables
-turn detection. For manual turns send conversation items or append/commit audio,
-then `response.create`. You may lower `max_output_tokens`; the gateway applies
-its finite ceiling to the session and every response.
+   const base = "https://api.appaigateway.com";
+   const headers = { Authorization: `Bearer ${process.env.APP_API_KEY}` };
+   const found = await fetch(
+     `${base}/v1/apps/${appId}/realtime/openai/connection?model=gpt-realtime`,
+     { headers },
+   );
+   const { url } = await found.json();
+   const socket = new WebSocket(url, { headers });
+   socket.on("message", (data) => console.log(JSON.parse(data)));
+   ```
 
-For managed VAD, send `session.update` with `audio.input.turn_detection.type`
-set to `server_vad`. Your requested `create_response` and `interrupt_response`
-behavior is managed by the gateway. Upstream these fields are forced to `false`;
-the acknowledgement shows the actual effective configuration. With
-`create_response` left on, the gateway starts one response for each committed
-speech item; do not also send manual `response.create` in this mode. Speech
-committed while a response is still running is answered by one response after
-it, however many utterances it holds. With `create_response: false`, voice
-detection only commits your audio, and you send `response.create` yourself.
-Either way, interruption cancels the active response and waits for it to end
-before starting the next one.
+Send `X-App-Version` with gateway tokens, and your end-user header if your
+app identifies users that way. Credentials in the URL, in cookies or in
+WebSocket subprotocols are refused. Ask for the address again for every new
+conversation, and when an open is refused with `conflict`.
 
-Function tools run in your application. Send results for outstanding calls with
-`conversation.item.create`, then request another response. Cancellation
-uses `response.cancel`; it consumes no additional request and does not refund the
-active attempt.
+## How a conversation works
 
-## Limits and errors
+The gateway checks everything when the conversation opens: authentication,
+your app's settings, and the limits you set per user and per app. After that,
+turns never wait for the gateway. Each response goes to OpenAI at once and is
+counted in the background.
 
-Defaults: 30-minute session, 10 concurrent sessions per app and 2 per caller —
-an install on an iOS app, a user or else an API key on a server app —
-10-second setup, 120-second useful-activity idle timeout, 60-second input turn,
-120-second response, 1,000 generations, and 4,096 output tokens (or a lower app
-cap). Gateway tokens bound the session to their verified expiry. Each caller
-may discover 30 times and open 10 sessions per minute; a server app that sends
-no end-user header shares those across everything using its API key.
+- **Each response is one request.** Twenty responses in one conversation count
+  as twenty requests. Opening the conversation, configuring it, audio and
+  output add none. A failed, cancelled or interrupted response still counts.
+- **A limit reached ends the conversation.** If counting a response finds a
+  limit reached, the user blocked or the app's access changed, that response
+  finishes, uncounted, and then the conversation closes with a `gateway.error`.
+  So a limit can be exceeded by one response per open conversation, or a few
+  more while the gateway is slow to answer.
+- **Usage is never lost.** Each response's usage is stored before its last
+  event reaches your app, then recorded in the background. If the gateway
+  can't record it for a moment, the conversation goes on and the usage is
+  recorded once it can. A spending budget can lag by a response.
+- **Audio and conversations aren't stored.** Raw audio, transcripts and keys
+  are never kept, only usage.
 
-A turn's input is what is sent before its response starts. Under VAD only
-audio sent while the provider hears speech counts, so a microphone left
-streaming silence between turns does not use it up; with automatic responses,
-each committed utterance starts a new turn. Without VAD it is everything
-appended or added since the last response.
+### OpenAI events
 
-Client JSON frames are limited to 256 KiB; provider frames to 1 MiB. Queued input
-is limited to 256 events and 1 MiB, input per turn to 4 MiB, and output per
-generation to 16 MiB. A client may send 256 KiB a second, four times live
-24 kHz audio, with bursts of up to 1 MiB; faster input closes the session.
-These bound application buffering; they do not implement network write
-backpressure. Binary frames are unsupported.
+Wait for `session.updated` before sending input. The gateway starts every
+session with voice detection off.
 
-Client `response.create` event IDs are deduplicated for the entire connection.
-Other client event IDs, including audio chunks, are deduplicated within the most
-recent 4,096 such events. Audio chunks do not consume a lifetime event-ID limit.
-Use a fresh ID for each new event; replaying an event outside the recent window
-can forward it again. Reusing a retained ID with different content closes the
-session.
+- **Manual turns:** send conversation items or append and commit audio, then
+  `response.create`.
+- **Voice detection:** send `session.update` with
+  `audio.input.turn_detection.type` set to `server_vad`. With
+  `create_response` left on, the gateway starts one response for each
+  utterance; don't send `response.create` yourself. Speech that arrives while
+  a response is running is answered by one response after it. With
+  `create_response: false`, voice detection only commits your audio, and you
+  send `response.create`.
+- **Interruptions:** under voice detection, when the user starts speaking, the
+  gateway cancels the running response, unless you set `interrupt_response`
+  to `false`. Upstream, OpenAI's own automatic responses and interruptions are
+  always off, because the gateway applies them; `session.updated` shows the
+  settings OpenAI received.
+- **Function tools** run in your app. Send each result with
+  `conversation.item.create`, then ask for another response.
+- **Cancelling:** `response.cancel` stops the running response. It costs no
+  extra request, and the response still counts.
+- **Output length:** you may lower `max_output_tokens`. The gateway caps every
+  response at 4,096 tokens, or your app's lower limit.
 
-A refused generation closes the session, as does any client event the
-gateway does not accept: an unknown field or event type, or a `session.update`
-while a response is active. So does a provider `error` event: your app gets
-the provider's own error first, then the gateway's. The one exception is the
-error OpenAI sends when a cancel arrives just after its response finished,
-which is passed on and changes nothing. Gateway-originated errors have their own type;
-provider events retain their native shape:
+Only one response can run at a time. A `session.update` while a response is
+running, an unknown event or field, or an event ID reused with different
+content closes the conversation.
+
+## Limits
+
+| Limit | Default |
+| --- | --- |
+| Conversation length | 30 minutes, or the sign-in token's expiry if sooner |
+| Open conversations | 10 per app, 2 per user (an install on an iOS app, an API key on a server app with no users) |
+| Responses per conversation | 1,000 |
+| Idle time | 2 minutes without useful activity |
+| One turn's input | 60 seconds, 4 MiB |
+| One response | 2 minutes, 16 MiB of output |
+| Setup | 10 seconds |
+| Frames | 256 KiB from your app, 1 MiB from OpenAI |
+| Input rate | 256 KiB a second (four times live 24 kHz audio), bursts to 1 MiB |
+| Opening | 30 address lookups and 10 conversations per user a minute |
+
+Under voice detection, only audio sent while OpenAI hears speech counts toward
+a turn's input, so a microphone streaming silence between turns doesn't use it
+up.
+
+## When a conversation ends
+
+The gateway reports its own errors as a `gateway.error` event, then closes the
+socket. OpenAI's events, errors included, reach your app unchanged.
 
 ```json
 {
@@ -146,76 +215,38 @@ provider events retain their native shape:
 }
 ```
 
-Policy/auth closure uses 1008, oversize input uses 1009, upstream failure uses
-1011, and normal expiration uses 1000. App/provider changes and key
-revocation are checked at generation boundaries and every 30 seconds, with the
-existing caches allowing up to about 90 seconds before a change takes effect.
+| Close code | Means |
+| --- | --- |
+| 1000 | The conversation ended normally, or reached its maximum length |
+| 1008 | A rule or a limit: see the `gateway.error` code |
+| 1009 | Input or output too large |
+| 1011 | OpenAI or the gateway failed |
 
-## Reconnect and incomplete usage
+An OpenAI `error` event also closes the conversation, after your app has
+received it. The one exception is the error OpenAI sends when a cancel crosses
+its response's end, which changes nothing.
 
-Reconnect with a fresh authorized request. A reconnect creates a new conversation;
-no session resumption, automatic replay, provider fallback, or refund is provided.
-A crash after a response is sent still records it, as interrupted. Missing provider usage is marked unresolved, never asserted
-to be free, and the conversation goes on. If the gateway can't record usage for
-a moment, the conversation goes on too; the usage is recorded once it can. Disconnect cancels upstream work, with at most two seconds to collect
-final usage. Accounting retries retain metadata for up to seven days; raw audio,
-transcripts, and credentials are never stored in the session journal.
+To continue, open a new conversation with a fresh request. A conversation
+can't be resumed. Changes to your app, its provider or its keys take effect
+within about 90 seconds, even in an open conversation.
 
-Gemini's future explicit audio profile requires automatic activity detection to
-be disabled, then `activityStart`, audio, and `activityEnd`. The response
-starts at `activityStart`. Default automatic/proactive Gemini SDK sessions will not
-work unchanged. No Gemini profile is available until its usage snapshots and
-output cap pass a real-provider conformance check.
+Gateway updates can end open conversations too. A self-hosted gateway can keep
+them open through updates with
+[seamless realtime releases](/self-hosting/updating#seamless-realtime-releases).
 
-## Swift
+## Instead of client secrets
 
-Realtime needs the AppAIGateway Swift package 1.9 or later.
-`authorizedRealtimeRequest` discovers the connection URL, retrying discovery
-once on a `401` as `withAuthorizedRequest` does, and returns a handshake signed
-for that one connection.
+Some apps let their users call OpenAI directly: they mint an OpenAI client
+secret through the gateway, from the `v1/realtime/client_secrets` endpoint,
+and connect to OpenAI with it. The gateway passes that request through, but
+it sees nothing of the conversation that follows:
 
-```swift
-let request = try await gateway.authorizedRealtimeRequest(
-    provider: .openai, model: "gpt-realtime"
-)
-let socket = URLSession.shared.webSocketTask(with: request)
-socket.resume()
+- its responses aren't counted, so per-user and per-app limits don't apply to
+  them;
+- its usage and cost aren't recorded, so they're missing from the console and
+  from spending budgets;
+- the app holds a live OpenAI credential while the conversation lasts.
 
-// Receive session.updated before sending input.
-while true {
-    let message = try await socket.receive()
-    guard case .string(let text) = message else { continue }
-    let data = Data(text.utf8)
-    if let error = try? JSONDecoder().decode(RealtimeGatewayError.self, from: data),
-       error.type == "gateway.error" {
-        print(error.error.code) // Handle retry_after_seconds when present.
-        break
-    }
-    // Handle the provider-native event and send when appropriate:
-    // try await socket.send(.string(#"{"type":"response.create"}"#))
-}
-// Explicit cancellation of an active OpenAI response:
-try await socket.send(.string(#"{"type":"response.cancel"}"#))
-socket.cancel(with: .normalClosure, reason: nil)
-// For a new conversation, build a new authorizedRealtimeRequest and socket.
-```
-
-## Development checks
-
-`scripts/realtime-conformance.mjs --live openai MODEL` checks two manual text
-turns. `scripts/realtime-modes.mjs --live openai MODEL` additionally checks audio,
-an audio-mode function call and its follow-up, voice detection, and cancellation.
-Set `REALTIME_PCM_FILE` to a short mono 24 kHz signed 16-bit PCM speech fixture
-for the audio checks. These scripts explicitly spend provider credits.
-
-Credentials come from an ignored local environment file. Use
-`REALTIME_PROVIDER_KEY` for direct access, or `REALTIME_GATEWAY_URL` and
-`REALTIME_GATEWAY_TOKEN` for a running gateway. For Cloudflare AI Gateway's
-stored keys, provide `CF_ACCOUNT_ID`, `CF_GATEWAY_NAME`, and `CF_GATEWAY_API_KEY`.
-The scripts issue short-lived credentials over HTTP, then use the official
-provider WebSocket endpoint. This option is confined to the test scripts.
-
-The Swift SDK discovers the URL automatically in `authorizedRealtimeRequest`.
-`realtimeURL` is also asynchronous and performs authenticated discovery. Both
-reject insecure public URLs, URL credentials, and fragments. Local development
-uses `ws://` only when both gateway and connection hosts are loopback hosts.
+Realtime through the gateway has none of these gaps. If your app mints client
+secrets today, move it to the gateway's realtime conversations, then remove
+`v1/realtime/client_secrets` from your app's provider access.

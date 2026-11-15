@@ -76,7 +76,7 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
         <CardHeader><SectionHeader title="Realtime sessions" /></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between gap-4">
-            <div><p className="text-sm font-medium">Enable realtime WebSockets</p><p className="text-xs text-muted-foreground">Direct OpenAI Realtime with manual turns or managed VAD. Each admitted generation is one request. Gemini Live is pending conformance.</p></div>
+            <div><p className="text-sm font-medium">Enable realtime WebSockets</p><p className="text-xs text-muted-foreground">Live voice or text conversations with OpenAI's realtime models over a WebSocket, through the gateway. Each response is one request, within your limits. Gemini Live is not available yet.</p></div>
             <Switch aria-label="Enable realtime WebSockets" checked={realtime.enabled} disabled={readOnly} onCheckedChange={enabled => state.updateConfig({ realtime: { ...realtime, enabled } })} />
           </div>
           {realtime.enabled && <div className="grid gap-4 sm:grid-cols-3">
