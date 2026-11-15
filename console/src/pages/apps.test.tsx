@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { AppsPage } from "./apps";
-import { renderAuthenticated, stubApi } from "@/test/render";
+import { findByHint, renderAuthenticated, stubApi } from "@/test/render";
 import type { AppSummary } from "@/lib/types";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -143,7 +143,7 @@ describe("the budget column", () => {
   it("draws no bar for an app with no budget, which says so with a sign", async () => {
     renderApps({ apps: [budgeted(null, 5)], hasProxiedRequests: true });
 
-    expect(await screen.findByTitle(/no monthly budget/i)).toBeTruthy();
+    expect(await findByHint(/no monthly budget/i)).toBeTruthy();
     // An empty track would read as an untouched budget rather than an absent one.
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
   });

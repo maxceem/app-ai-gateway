@@ -2592,6 +2592,13 @@
             ],
             "description": "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded."
           },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a provider_error, why it failed in one short line: the HTTP status the provider answered with and the code its error named, such as `429 rate_limit_exceeded`; the status alone, such as `502`, where it named none; `timeout` or `connection_failed` where the provider never answered; or `provider_error` for a failure recorded before causes were. Never the provider's message. Present exactly when `status` is `provider_error`."
+          },
           "cost_source": {
             "type": [
               "string",
@@ -12057,6 +12064,7 @@
                 "install",
                 "status",
                 "cost_source",
+                "service_mode",
                 "route",
                 "endpoint",
                 "app_version"
@@ -12105,6 +12113,7 @@
                         "install",
                         "status",
                         "cost_source",
+                        "service_mode",
                         "route",
                         "endpoint",
                         "app_version"

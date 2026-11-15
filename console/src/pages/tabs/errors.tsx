@@ -1,3 +1,4 @@
+import { Hint } from "@/components/hint";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -393,12 +394,11 @@ export function ErrorsTab({ appId }: { appId: string }) {
                       {event.claim_delay_ms === null ? (
                         "—"
                       ) : (
-                        <span
-                          className="text-amber-600 dark:text-amber-400"
-                          title="This exchange ended a wait for an entitlement claim to propagate."
-                        >
-                          {formatDuration(event.claim_delay_ms)}
-                        </span>
+                        <Hint content="This exchange ended a wait for an entitlement claim to propagate.">
+                          <span className="text-amber-600 dark:text-amber-400">
+                            {formatDuration(event.claim_delay_ms)}
+                          </span>
+                        </Hint>
                       )}
                     </TableCell>
                   </TableRow>

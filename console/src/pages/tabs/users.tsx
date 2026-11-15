@@ -1,3 +1,4 @@
+import { Hint } from "@/components/hint";
 import { useState } from "react";
 import { Ban, CircleCheck, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -181,9 +182,9 @@ export function UsersTab({
                   </TableCell>
                   <TableCell>
                     {appAttest && !installsOnly && user.installs > 0 ? (
-                      <span className="tabular text-xs" title="App Attest keys this user holds: one per install">
-                        {formatNumber(user.installs)}
-                      </span>
+                      <Hint content="App Attest keys this user holds: one per install">
+                        <span className="tabular text-xs">{formatNumber(user.installs)}</span>
+                      </Hint>
                     ) : user.attest_registered ? (
                       <Badge variant="secondary" className="text-[11px] font-normal">
                         registered
@@ -214,9 +215,9 @@ export function UsersTab({
                       // the user's installs, or it is each Apple Account's and
                       // this is one slice of one: no single bar says where
                       // anyone stands, so the cost is shown on its own.
-                      <span className="whitespace-nowrap" title={partialSpendTitle(user)}>
-                        {formatCost(user.usage.cost_usd)}
-                      </span>
+                      <Hint content={partialSpendTitle(user)}>
+                        <span className="whitespace-nowrap">{formatCost(user.usage.cost_usd)}</span>
+                      </Hint>
                     )}
                   </TableCell>
                   <TableCell className="text-right">

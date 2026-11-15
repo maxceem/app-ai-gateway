@@ -119,6 +119,25 @@ export function priceInMode<P extends ModalPrice>(price: P, mode: ServiceMode): 
 }
 
 /**
+ * How many times the standard price a mode costs, by the same rule as
+ * {@link priceInMode}: the mode's own entry, else a tier in a region as the
+ * tier's factor times the region's. `undefined` where `modes` prices it
+ * neither way. A rate an entry names apart is not in it, so this is the
+ * figure to show beside a mode, not to bill with.
+ */
+export function serviceModeFactor(modes: Readonly<Record<string, ModePrice>> | undefined, mode: ServiceMode): number | undefined {
+  if (isStandardMode(mode)) return 1;
+  if (!modes) return undefined;
+  const factor = (name: string) => Object.hasOwn(modes, name) ? modes[name]!.factor ?? 1 : undefined;
+  const exact = factor(serviceModeName(mode));
+  if (exact !== undefined) return exact;
+  if (mode.tier === "standard" || mode.region === "global") return undefined;
+  const tier = factor(mode.tier);
+  const region = factor(mode.region);
+  return tier !== undefined && region !== undefined ? tier * region : undefined;
+}
+
+/**
  * A mode spelled the way {@link serviceModeName} spells it — `fast`, `us`,
  * `fast+us`, `standard` — or `null` for anything else. A price's `modes` keys
  * are read with it, so a key that names no mode is refused where prices are
