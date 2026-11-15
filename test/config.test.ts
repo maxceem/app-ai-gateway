@@ -649,11 +649,11 @@ describe("the application configuration grammar", () => {
       expect(() => validateConfig(withTier("flex"))).toThrowError(
         'endpoints.chat: Model gpt-5.6-sol has no price on openai in service mode flex, which the parameters set with service_tier: "flex"',
       );
-      // OpenAI calls Fast mode `priority` too; Scale Tier units bill as standard,
-      // and a value the gateway does not know is not judged.
+      // OpenAI calls Fast mode `priority` too; Scale Tier units bill as standard;
+      // a value the gateway does not know can never be priced.
       expect(() => validateConfig(withTier("priority"))).toThrowError("service mode fast");
       expect(() => validateConfig(withTier("scale"))).not.toThrow();
-      expect(() => validateConfig(withTier("turbo"))).not.toThrow();
+      expect(() => validateConfig(withTier("turbo"))).toThrowError('endpoints.chat: service_tier: "turbo" is not a service mode the gateway knows for openai');
       // The price list prices o3 flex: a fallback to it saves, one to a model it does not price in flex does not.
       expect(() => validateConfig(serverConfig({
         endpoints: { chat: { ...responses, model: "o3", params: { service_tier: "flex" } } },

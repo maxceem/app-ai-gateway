@@ -100,7 +100,9 @@ describe("judgeServiceMode", () => {
   it("reads a gateway's own fields on its route, and the region of a regional base URL", () => {
     const body = { providerOptions: { gateway: { serviceTier: "priority" } } };
     expect(judged({ type: "openai", body }).mode).toEqual(STANDARD_MODE);
-    expect(judged({ type: "openai", route: "vercel", body }).mode).toEqual({ tier: "priority", region: "global" });
+    // Vercel passes its tier on as the provider's own: OpenAI's priority is fast.
+    expect(judged({ type: "openai", route: "vercel", body }).mode).toEqual({ tier: "fast", region: "global" });
+    expect(judged({ type: "gemini", route: "vercel", style: "gemini_native", body }).mode).toEqual({ tier: "priority", region: "global" });
     expect(judged({ type: "together", style: "chat_completions", baseUrl: "https://us-api.together.ai/", body: {} }).mode)
       .toEqual({ tier: "standard", region: "us" });
   });
@@ -117,9 +119,15 @@ describe("configuredModeProblem", () => {
     );
   });
 
-  it("accepts a priced mode, a value the gateway does not know, and any mode on a route that reports its cost", () => {
+  it("refuses a value the gateway does not know, which could never be priced", () => {
+    expect(problem({ service_tier: "turbo" })).toBe(
+      'service_tier: "turbo" is not a service mode the gateway knows for openai, so it cannot be priced. '
+        + "Leave service_tier out of the parameters.",
+    );
+  });
+
+  it("accepts a priced mode, and any mode on a route that reports its cost", () => {
     expect(problem({ service_tier: "priority" }, PRICED)).toBeNull();
-    expect(problem({ service_tier: "turbo" })).toBeNull();
     expect(problem({ service_tier: "priority" }, undefined, "xai")).toBeNull();
   });
 });
@@ -154,6 +162,14 @@ describe("priceInMode", () => {
   it("prefers a pair the provider prices apart over the product of its parts", () => {
     expect(priceInMode(price, { tier: "priority", region: "eu" })?.input).toBeCloseTo(3.7, 10);
     expect(priceInMode(price, { tier: "priority", region: "us" })?.input).toBeCloseTo(2 * 1.75 * 1.2, 10);
+  });
+
+  it("puts a tier in a region at the tier's price times the region's factor, never the region's own rates", () => {
+    // A region kept at its last price states its rates; fast in it is still fast × 1.1.
+    const kept = { ...price, modes: { fast: { factor: 2 }, us: { factor: 1.1, input: 2.2, output: 8.8, unlisted_since: "2026-11-30" } } };
+    expect(priceInMode(kept, { tier: "standard", region: "us" })).toMatchObject({ input: 2.2, output: 8.8 });
+    expect(priceInMode(kept, { tier: "fast", region: "us" })?.input).toBeCloseTo(4.4, 10);
+    expect(priceInMode(kept, { tier: "fast", region: "us" })?.output).toBeCloseTo(17.6, 10);
   });
 
   it("reads an entry with no factor as factor 1", () => {

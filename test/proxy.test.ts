@@ -3138,12 +3138,12 @@ describe("service modes", () => {
   });
 
   it.each([
-    ["Vercel's own tier option", { gateway: { serviceTier: "priority" } }, "priority"],
+    ["Vercel's own tier option, read as OpenAI's own", { gateway: { serviceTier: "priority" } }, "fast"],
     ["Vercel's speed option", { gateway: { speed: "fast" } }, "fast"],
     ["OpenAI's tier passed on by Vercel", { openai: { serviceTier: "ultrafast" } }, "ultrafast"],
   ])("notes %s on a route through Vercel", async (_label, providerOptions, mode) => {
     const appId = `proxy-mode-vercel-${crypto.randomUUID()}`;
-    const slug = `openai-vercel-${mode}`;
+    const slug = `openai-vercel-${appId.slice(-8)}`;
     await seedApp(appId, ALL_PROVIDERS);
     await seedProvider({
       type: "openai",

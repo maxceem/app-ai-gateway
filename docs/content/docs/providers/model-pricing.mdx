@@ -198,8 +198,9 @@ entry lists the modes it is sold in under `modes`, keyed by the mode's name:
   names replaces its multiplied figure, for a provider that prices one rate
   apart, such as a flex cache read.
 - **A tier in a region:** the pair's own entry if there is one, otherwise the
-  tier's entry and then the region's on top. Anthropic fast mode in the US is
-  2 × 1.1.
+  tier's price times the region's factor. Anthropic fast mode in the US is
+  2 × 1.1. A region's own rates are its standard prices there, so they apply
+  to a standard request in that region only.
 - **A mode a model does not list has no price.** A request for it is still
   served, and billed at an estimate (below).
 - **A mode is never removed.** When a provider's page stops listing a mode for

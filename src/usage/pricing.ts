@@ -300,8 +300,16 @@ export function isBillable(
 /** The fields a request on this route names its service mode in: the provider's, and its gateway's own. */
 function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly ServiceModeField[] {
   const own = providerDescriptor(type).serviceModes;
-  const gateway = route === "direct" ? [] : GATEWAY_DESCRIPTORS[route].serviceModes;
-  return gateway.length === 0 ? own : [...own, ...gateway];
+  const gateway: readonly ServiceModeField[] = route === "direct" ? [] : GATEWAY_DESCRIPTORS[route].serviceModes;
+  if (gateway.length === 0) return own;
+  // A gateway field the gateway passes on as one of the provider's own is read
+  // with the provider's table for it.
+  const passedOn = gateway.map((field) => {
+    const as = field.as;
+    const target = as === undefined ? undefined : own.find((candidate) => candidate.names.includes(as));
+    return target ? { ...target, names: field.names } : field;
+  });
+  return [...own, ...passedOn];
 }
 
 /**
@@ -369,8 +377,9 @@ export function judgeServiceMode(input: {
  * `params` — cannot be billed on one target, or `null` when it can. Naming a
  * mode is choosing it, so a mode with no price is refused where it is saved,
  * as a model with no price is: the owner adds the price, or leaves the mode
- * out. A value the gateway does not know is not judged, and a region is not
- * judged here: a row's base URL is its own setting.
+ * out. A value the gateway does not know is refused too: chosen in the
+ * configuration, it could never be priced. A region is not judged here: a
+ * row's base URL is its own setting.
  */
 export function configuredModeProblem(input: {
   type: ProviderType;
@@ -383,6 +392,11 @@ export function configuredModeProblem(input: {
   const { type, route } = input;
   if (route === null || reportsCost(type, route, input.style)) return null;
   const reading = readServiceMode(serviceModeFields(type, route), input.read);
+  if (reading.unknown) {
+    const { field, value } = reading.unknown;
+    return `${field}: "${value}" is not a service mode the gateway knows for ${type}, so it cannot be priced. `
+      + `Leave ${field} out of the parameters.`;
+  }
   if (hasModePrice(type, input.model, input.pricing, reading.mode)) return null;
   const asked = reading.askedBy.map((field) => `${field.field}: "${field.value}"`).join(", ");
   const fields = reading.askedBy.map((field) => field.field).join(" and ");

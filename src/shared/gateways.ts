@@ -113,10 +113,13 @@ export const GATEWAY_DESCRIPTORS = {
     relaysProviderResponses: false,
     // Vercel's own tier options, which it maps to each provider's field, and the
     // per-provider options it passes on: Anthropic's speed, and OpenAI's tier,
-    // the only way to ask for ultrafast there.
+    // the only way to ask for ultrafast there. Vercel hands its `serviceTier` to
+    // the provider as the provider's own `service_tier`, so it is read with the
+    // provider's table: `priority` is fast on OpenAI and priority on Gemini.
     serviceModes: [
       {
         names: ["providerOptions.gateway.serviceTier"],
+        as: "service_tier",
         axis: "tier",
         values: { default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "fast" },
       },

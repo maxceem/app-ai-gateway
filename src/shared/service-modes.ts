@@ -140,9 +140,11 @@ export function withModePrice<P extends ModalPrice>(price: P, entry: ModePrice):
  * The standard mode is the entry itself. Any other is the entry's own
  * `modes[name]`: an exact key wins, so a provider that prices a combination
  * apart (Mistral's priority with regional inference, ×1.85 rather than
- * 1.75 × 1.1) states it. Failing one, a tier in a region is the tier's entry
- * and then the region's on top of it — Anthropic's fast mode in the US is
- * 2 × 1.1. Everything downstream — the long-context threshold, cache-write
+ * 1.75 × 1.1) states it. Failing one, a tier in a region is the tier's price
+ * times the region's factor — Anthropic's fast mode in the US is 2 × 1.1. A
+ * region's own rates are its standard-tier prices there, not a surcharge, so
+ * they apply to a standard request in that region only: on top of a tier they
+ * would replace the tier's price. Everything downstream — the long-context threshold, cache-write
  * variants, modality rates and every fallback in `bucketRates` — then reads
  * the derived price exactly as it reads a standard one.
  */
@@ -156,7 +158,7 @@ export function priceInMode<P extends ModalPrice>(price: P, mode: ServiceMode): 
   if (mode.tier === "standard" || mode.region === "global") return undefined;
   const tier = entry(mode.tier);
   const region = entry(mode.region);
-  return tier && region ? withModePrice(withModePrice(price, tier), region) : undefined;
+  return tier && region ? withModePrice(withModePrice(price, tier), { factor: region.factor ?? 1 }) : undefined;
 }
 
 /**
@@ -195,11 +197,19 @@ export type ServiceModeField =
     readonly names: readonly string[];
     readonly axis: "tier";
     readonly values: Readonly<Record<string, ServiceTier>>;
+    /**
+     * For a gateway's own field that it passes on as the provider's: the
+     * provider's field whose table its values are read with, where the
+     * provider has one, so a value means what it means to that provider
+     * (OpenAI's `priority` is its fast mode). `values` answers otherwise.
+     */
+    readonly as?: string;
   }
   | {
     readonly names: readonly string[];
     readonly axis: "region";
     readonly values: Readonly<Record<string, ServiceRegion>>;
+    readonly as?: string;
   };
 
 /** A field value no entry of a provider's table names. */
