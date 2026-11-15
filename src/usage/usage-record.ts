@@ -75,6 +75,11 @@ interface UsageEventInput {
    */
   observed: Promise<ObservedBody> | null;
   contentType: string;
+  /**
+   * The provider's response headers, where it answered. Read only for usage a
+   * provider reports there rather than in the body.
+   */
+  responseHeaders?: Headers;
   /** Who called: the app, the end user if there is one, and how they proved it. */
   identity: GatewayIdentity;
   /** Which provider row served the attempt, and how it was reached. */
@@ -370,6 +375,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         attribution.provider,
         attribution.providerRoute.kind,
         attribution.apiStyle,
+        input.responseHeaders,
       );
       observed = seen.usage;
       report = seen.report;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ProviderPricingSchema } from "../src/contracts/schemas";
 import { computeCost, type UsageObservation } from "../src/usage/pricing";
-import { extractUsageText } from "../src/usage/usage-readers";
+import { wholeBody } from "../src/usage/body-observer";
+import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
 import {
   LONG_RATE_FIELDS,
   TOKEN_RATE_FIELDS,
@@ -191,6 +192,128 @@ describe("OpenAI cache-write TTL split", () => {
       (1000 * 1 + 4000 * 0.1 + 7000 * 1.25 + 10 * 4) / 1e6,
       12,
     );
+  });
+});
+
+describe("Kimi Chat Completions cache-write TTL split", () => {
+  const KIMI = "kimi-k3";
+  // Kimi's own prices for kimi-k3: a one-hour write costs twice a 5-minute one.
+  const pricing = { [KIMI]: { input: 3, cached_input: 0.3, cache_write: 3, cache_write_1h: 6, output: 15 } };
+  const usage = {
+    prompt_tokens: 1000,
+    completion_tokens: 10,
+    prompt_tokens_details: { cached_tokens: 200, cache_write_tokens: 500 },
+  };
+  const completion = JSON.stringify({ object: "chat.completion", choices: [], usage });
+  const stream = [
+    `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "hi" } }] })}`,
+    `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [], usage })}`,
+    "data: [DONE]",
+  ].join("\n\n") + "\n\n";
+
+  function headers(fiveMinutes?: string, oneHour?: string): Headers {
+    const sent = new Headers({ "content-type": "application/json" });
+    if (fiveMinutes !== undefined) sent.set("Msh-Usage-Cache-Write-Tokens-5m", fiveMinutes);
+    if (oneHour !== undefined) sent.set("Msh-Usage-Cache-Write-Tokens-1h", oneHour);
+    return sent;
+  }
+
+  function observe(
+    sent: Headers | undefined,
+    options: { provider?: "moonshot" | "openai" | "together"; body?: string; contentType?: string } = {},
+  ): UsageObservation | null {
+    return observeResponse(
+      wholeBody(options.body ?? completion),
+      options.contentType ?? "application/json",
+      options.provider ?? "moonshot",
+      "direct",
+      "chat_completions",
+      sent,
+    ).usage;
+  }
+
+  /** What 800 uncached, 200 cached, 500 written (`oneHour` of them for an hour) and 10 output tokens cost. */
+  function cost(oneHour: number): number {
+    return (300 * 3 + 200 * 0.3 + (500 - oneHour) * 3 + oneHour * 6 + 10 * 15) / 1e6;
+  }
+
+  it("bills the one-hour share its headers report at the one-hour rate", () => {
+    const observed = observe(headers("300", "200"));
+    expect(observed).toEqual({
+      inputTokens: 300,
+      cachedInputTokens: 200,
+      cacheWriteTokens: 500,
+      outputTokens: 10,
+      tokenVariants: { cache_write: { "1h": 200 } },
+    });
+    expect(computeCost("moonshot", KIMI, observed!, pricing)).toBeCloseTo(cost(200), 12);
+  });
+
+  it("bills every write at the default rate when only the total is reported", () => {
+    for (const sent of [headers(), undefined]) {
+      const observed = observe(sent);
+      expect(observed).toMatchObject({ cacheWriteTokens: 500 });
+      expect(observed?.tokenVariants).toBeUndefined();
+      expect(computeCost("moonshot", KIMI, observed!, pricing)).toBeCloseTo(cost(0), 12);
+    }
+  });
+
+  it("stores no split when nothing was written for an hour", () => {
+    expect(observe(headers("500", "0"))?.tokenVariants).toBeUndefined();
+  });
+
+  it("records no split when the response wrote nothing and has no headers", () => {
+    const body = JSON.stringify({ choices: [], usage: { prompt_tokens: 40, completion_tokens: 2 } });
+    const observed = observe(headers(), { body });
+    expect(observed).toEqual({ inputTokens: 40, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 });
+    expect(computeCost("moonshot", KIMI, observed!, pricing)).toBeCloseTo((40 * 3 + 2 * 15) / 1e6, 12);
+  });
+
+  it("ignores a header value that is not a whole number", () => {
+    for (const bad of ["", "-200", "200.5", "2e2", "two hundred"]) {
+      expect(observe(headers("300", bad))?.tokenVariants).toBeUndefined();
+    }
+  });
+
+  it("never bills more one-hour tokens than were written", () => {
+    const observed = observe(headers("0", "9000"));
+    expect(computeCost("moonshot", KIMI, observed!, pricing)).toBeCloseTo(cost(500), 12);
+  });
+
+  it("keeps today's default rate for a stream, which reports only the total", () => {
+    // Kimi: "For streaming requests, the full cache read/write breakdown is
+    // only returned in the `usage` field of the final chunk", which carries no
+    // split. A stream's headers are not read, whatever they say.
+    const observed = observe(headers("300", "200"), { body: stream, contentType: "text/event-stream; charset=utf-8" });
+    expect(observed).toMatchObject({ cachedInputTokens: 200, cacheWriteTokens: 500, outputTokens: 10 });
+    expect(observed?.tokenVariants).toBeUndefined();
+    expect(computeCost("moonshot", KIMI, observed!, pricing)).toBeCloseTo(cost(0), 12);
+  });
+
+  it("ignores the headers on any other provider", () => {
+    for (const provider of ["openai", "together"] as const) {
+      expect(observe(headers("300", "200"), { provider })?.tokenVariants).toBeUndefined();
+    }
+  });
+
+  it("ignores the headers on another API of Moonshot's", () => {
+    const observed = observeResponse(
+      wholeBody(anthropicBody({ input_tokens: 5, cache_creation_input_tokens: 100, output_tokens: 1 })),
+      "application/json",
+      "moonshot",
+      "direct",
+      "anthropic_messages",
+      headers("40", "60"),
+    ).usage;
+    expect(observed?.tokenVariants).toBeUndefined();
+  });
+
+  it("lets the body's own split win over a header", () => {
+    const body = JSON.stringify({
+      choices: [],
+      usage: { ...usage, cache_creation: { ephemeral_1h_input_tokens: 100 } },
+    });
+    expect(observe(headers("300", "200"), { body })?.tokenVariants).toEqual({ cache_write: { "1h": 100 } });
   });
 });
 

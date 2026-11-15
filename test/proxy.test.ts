@@ -2025,6 +2025,40 @@ describe("provider-native proxy", () => {
     );
   });
 
+  it("records a Kimi one-hour cache write that a Chat Completions response reports in its headers", async () => {
+    const appId = "proxy-moonshot-cache-1h";
+    await seedApp(appId, {
+      proxy: { moonshot: { allowed_paths: [], allowed_models: [] }, model_rewrites: {} },
+    });
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
+      {
+        object: "chat.completion",
+        choices: [],
+        usage: { prompt_tokens: 120, completion_tokens: 3, prompt_tokens_details: { cache_write_tokens: 100 } },
+      },
+      { headers: { "Msh-Usage-Cache-Write-Tokens-5m": "70", "Msh-Usage-Cache-Write-Tokens-1h": "30" } },
+    ));
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "moonshot/v1/chat/completions",
+      body: { model: "kimi-k3", messages: [], max_tokens: 32 },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT cache_write_tokens, token_variants FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ cache_write_tokens: number; token_variants: string | null }>();
+    expect(row?.cache_write_tokens).toBe(100);
+    expect(JSON.parse(row!.token_variants!)).toEqual({ cache_write: { "1h": 30 } });
+  });
+
   it("bills a BytePlus Seedream request per generated image", async () => {
     const appId = "proxy-seedream";
     await seedApp(appId, {
