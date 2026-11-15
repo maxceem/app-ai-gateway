@@ -302,10 +302,11 @@ describe("UsageTab event statuses", () => {
   });
 
   it("lists only provider attempts as usage statuses", async () => {
-    renderUsage([event({ status: "provider_error" })]);
-    const badge = await screen.findByText("error");
+    // A failure recorded before causes were says only that it failed.
+    renderUsage([event({ status: "provider_error", error: "provider_error" })]);
+    const badge = await screen.findByText("provider_error");
     expect(badge.closest("[aria-description]")?.getAttribute("aria-description"))
-      .toBe("The provider refused or failed the request");
+      .toBe("The provider refused or failed the request. Its cause was not recorded.");
     const trigger = screen.getAllByRole("combobox")
       .find((option) => option.textContent === "All statuses")!;
     await userEvent.click(trigger);

@@ -670,7 +670,9 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // split was kept".
       tokenVariants: usage.tokenVariants ?? {},
       serviceMode: isStandardMode(servedMode) ? null : serviceModeName(servedMode),
-      error: input.status === "provider_error" ? usageError(input.upstreamStatus, errorCode) : null,
+      // Every failure says why; `provider_error` where nothing more is known,
+      // as every failure recorded before the column existed says.
+      error: input.status === "provider_error" ? usageError(input.upstreamStatus, errorCode) ?? "provider_error" : null,
       costUsd: cost,
       costSource,
       reportedCostUsd: reportedCost,

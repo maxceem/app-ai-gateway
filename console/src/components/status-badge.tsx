@@ -76,9 +76,11 @@ const HTTP_STATUS_NAMES: Record<number, string> = {
 };
 
 /** What the gateway records when the provider never answered, in words. */
+/** What a failure that names no HTTP status means, in words. */
 const NO_ANSWER: Record<string, { short: string; long: string }> = {
   timeout: { short: "timeout", long: "The provider did not answer in time." },
   connection_failed: { short: "no connection", long: "The gateway could not reach the provider." },
+  provider_error: { short: "provider_error", long: "The provider refused or failed the request. Its cause was not recorded." },
 };
 
 /**
@@ -87,15 +89,19 @@ const NO_ANSWER: Record<string, { short: string; long: string }> = {
  * `timeout` where it never answered. The hover says it in words. A served
  * request is every ordinary row, so it is shown as nothing at all.
  */
-export function EventStatusLabel({ status, error }: {
-  status: UsageStatus;
-  /** The event's `error`: `429 rate_limit_exceeded`, `502` or `timeout`. */
+export function EventStatusLabel({ error }: {
+  /**
+   * The event's `error`: `429 rate_limit_exceeded`, `502`, `timeout`, or
+   * `provider_error` for a failure recorded before causes were. None on a
+   * served request, which shows nothing.
+   */
   error?: string | null;
 }) {
-  const [first = "", ...rest] = (error ?? "").split(" ");
+  if (!error) return null;
+  const status: UsageStatus = "provider_error";
+  const [first = "", ...rest] = error.split(" ");
   const upstreamStatus = /^\d{3}$/u.test(first) ? Number(first) : null;
-  const errorCode = upstreamStatus ? rest.join(" ") || null : error || null;
-  if (status === "ok") return null;
+  const errorCode = upstreamStatus ? rest.join(" ") || null : error;
   const noAnswer = errorCode && !upstreamStatus ? NO_ANSWER[errorCode] : undefined;
   const headline = upstreamStatus ? String(upstreamStatus) : noAnswer?.short ?? "error";
   const code = upstreamStatus && errorCode ? errorCode : null;

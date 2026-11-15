@@ -487,7 +487,7 @@ export function UsageTab({
                   // served rows around it at a glance.
                   <TableRow
                     key={event.id}
-                    className={cn(event.status !== "ok" && "bg-destructive/5 hover:bg-destructive/10 dark:bg-destructive/10 dark:hover:bg-destructive/15")}
+                    className={cn(event.error && "bg-destructive/5 hover:bg-destructive/10 dark:bg-destructive/10 dark:hover:bg-destructive/15")}
                   >
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       <Hint content={formatDateTime(event.created_at)}>
@@ -612,9 +612,9 @@ export function UsageTab({
                       {/* Only a failure is marked: a served request is every
                           ordinary row, and a badge on each would hide the few
                           that failed. */}
-                      {event.status !== "ok" ? (
+                      {event.error ? (
                         <span className="mt-1 flex justify-end">
-                          <EventStatusLabel status={event.status} error={event.error} />
+                          <EventStatusLabel error={event.error} />
                         </span>
                       ) : null}
                     </TableCell>

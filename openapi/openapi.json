@@ -2597,7 +2597,7 @@
               "string",
               "null"
             ],
-            "description": "For a provider_error, why it failed in one short line: the HTTP status the provider answered with and the code its error named, such as `429 rate_limit_exceeded`; the status alone, such as `502`, where it named none; or `timeout` or `connection_failed` where the provider never answered. Never the provider's message. Absent on a served request and on events recorded before this field existed."
+            "description": "For a provider_error, why it failed in one short line: the HTTP status the provider answered with and the code its error named, such as `429 rate_limit_exceeded`; the status alone, such as `502`, where it named none; `timeout` or `connection_failed` where the provider never answered; or `provider_error` for a failure recorded before causes were. Never the provider's message. Present exactly when `status` is `provider_error`."
           },
           "cost_source": {
             "type": [

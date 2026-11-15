@@ -665,3 +665,14 @@ export async function seedUnaffiliatedHuman(
   ]);
   return { userId: human.userId, cookie: human.cookie, email: human.email };
 }
+
+/**
+ * Gives every failed usage event a test inserted by hand the `error` the
+ * gateway would have written, as migration 0015 did for every earlier one:
+ * a failure is the event that records why.
+ */
+export async function recordFailureCauses(): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE app_usage_event SET error = 'provider_error' WHERE status = 'provider_error' AND error IS NULL",
+  ).run();
+}

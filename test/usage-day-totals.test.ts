@@ -16,7 +16,7 @@ import {
   sealUsageDays,
 } from "../src/usage/usage-retention";
 import { QueryBudget } from "../src/core/query-budget";
-import { seedApp, TEST_ORGANIZATION_ID } from "./helpers";
+import { recordFailureCauses, seedApp, TEST_ORGANIZATION_ID } from "./helpers";
 
 const ORIGIN = "https://example.test";
 const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
@@ -52,6 +52,7 @@ async function usage(
        input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at
      ) VALUES (?, ?, ?, ?, 'openai', 'gpt-test', 'openai/v1/responses', ?, 2, 1, 5, ?, ?, ?)`,
   ).bind(eventId, organizationId, appId, user, input, cost, status, createdAt).run();
+  await recordFailureCauses();
   return eventId;
 }
 

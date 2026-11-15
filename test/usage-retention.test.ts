@@ -25,7 +25,7 @@ import {
   usageMonthTotals,
   usageTimeseries,
 } from "../src/management/usage-queries";
-import { TEST_ORGANIZATION_ID, TEST_SERVICE_USER_ID, seedServerApp } from "./helpers";
+import { recordFailureCauses, TEST_ORGANIZATION_ID, TEST_SERVICE_USER_ID, seedServerApp } from "./helpers";
 
 /** Fixed so every cutoff below is arithmetic rather than a moving target. */
 const NOW = Date.parse("2026-06-01T00:00:00Z");
@@ -86,6 +86,7 @@ async function insertEvent(input: EventInput): Promise<void> {
       input.createdAt ?? `${input.day} ${input.time ?? "12:00:00"}`,
     )
     .run();
+  await recordFailureCauses();
 }
 
 /** Many identical events in one statement, for the chunk-boundary cases. */

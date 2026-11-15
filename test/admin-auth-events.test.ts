@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { seedApp } from "./helpers";
+import { seedApp, recordFailureCauses } from "./helpers";
 
 const ORIGIN = "https://example.test";
 const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
@@ -95,6 +95,7 @@ describe("application auth event summary", () => {
          event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
        ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok', ?)`,
     ).bind(daysAgo(0)).run();
+    await recordFailureCauses();
     await recordRejection("auth-summary", "auth-summary-reject", "user-1", "blocked_user", "user");
 
     await env.DB.prepare(
@@ -173,6 +174,7 @@ describe("application auth event summary", () => {
     ]) {
       await insert.bind(appId, createdAt).run();
     }
+    await recordFailureCauses();
 
     const { status, body } = await get(`/v1/admin/apps/${appId}/auth-events/summary?days=1`);
     expect(status).toBe(200);

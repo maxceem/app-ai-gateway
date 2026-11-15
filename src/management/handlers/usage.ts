@@ -1,4 +1,4 @@
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { UsageBreakdownDimension } from "../../contracts/responses";
 import { database } from "../../db";
 import { appUsageEvent } from "../../db/schema";
@@ -24,7 +24,7 @@ const BREAKDOWN_COLUMNS = {
   model_author: appUsageEvent.modelAuthor,
   user: appUsageEvent.userId,
   install: appUsageEvent.installId,
-  status: appUsageEvent.status,
+  status: sql<string>`CASE WHEN ${appUsageEvent.error} IS NULL THEN 'ok' ELSE 'provider_error' END`,
   cost_source: appUsageEvent.costSource,
   service_mode: appUsageEvent.serviceMode,
   route: appUsageEvent.route,
@@ -75,7 +75,8 @@ export const usageHandlers = {
     const appId = params.app;
     const { limit } = query;
     const filters = [eq(appUsageEvent.appId, appId)];
-    if (query.status) filters.push(eq(appUsageEvent.status, query.status));
+    // A failed event is one that records why; see `eventStatus`.
+    if (query.status) filters.push(query.status === "ok" ? isNull(appUsageEvent.error) : isNotNull(appUsageEvent.error));
     if (query.provider) filters.push(eq(appUsageEvent.providerType, query.provider));
     if (query.user) filters.push(eq(appUsageEvent.userId, query.user));
     if (query.install) filters.push(eq(appUsageEvent.installId, query.install));
@@ -121,7 +122,7 @@ export const usageHandlers = {
         cost_source: row.costSource,
         app_version: row.appVersion,
         auth_method: row.authMethod,
-        status: row.status,
+        status: row.error ? "provider_error" as const : "ok" as const,
         client_aborted: row.clientAborted,
         latency_ms: row.latencyMs,
         client_trace_id: row.clientTraceId,
