@@ -208,12 +208,13 @@ names where the provider reports one (OpenAI, Anthropic, Gemini, xAI, Mistral,
 Groq, Perplexity and BytePlus do), so a priority request a provider served as
 standard bills at standard. Otherwise it is the mode the request asked for.
 The region also comes from the provider's base URL: a provider set to
-`https://us.api.openai.com/` or `https://us.api.x.ai/` bills its requests in
-the `us` region. Each usage event records its mode as `service_mode`.
+`https://us.api.x.ai/` bills its requests in the `us` region. OpenAI's data
+residency hosts are billed as the global host. Each usage event records its mode as `service_mode`.
 
 If a provider reports serving a mode the model has no price for, such as an
-account's default tier the request did not show, the request is billed at the
-dearest price the model has, never at less. To see which modes the gateway
+account's default tier the request did not show, it is billed at the dearest
+price the model has for what is missing: an unpriced tier at its dearest
+priced tier, an unpriced region at its dearest priced region. To see which modes the gateway
 reads in each provider's requests, see
 [Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
 

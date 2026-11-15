@@ -106,15 +106,35 @@ describe("billing in the service mode that served the request", () => {
   });
 
   it("adds the region of a regional base URL", async () => {
-    const { appId, slug } = await seeded("openai", OPENAI_PRICING, "https://us.api.openai.com/");
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer("priority")));
+    const appId = `mode-billing-${crypto.randomUUID()}`;
+    const slug = `together-${appId.slice(-12)}`;
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    await seedProvider({
+      type: "together",
+      id: `${appId}-provider`,
+      slug,
+      baseUrl: "https://us-api.together.ai/",
+      pricing: { "zai-org/GLM-5.3": { input: 1, output: 4, modes: { us: { factor: 1.25 } } } },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { prompt_tokens: 1000, completion_tokens: 1000 } }));
 
-    await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi", service_tier: "priority" });
+    await send(appId, `${slug}/v1/chat/completions`, { model: "zai-org/GLM-5.3", messages: [] });
 
     const row = await recorded(appId);
-    // fast × us: 2 × 1.1 on $0.005.
-    expect(row.cost).toBeCloseTo(0.011, 10);
-    expect(row.mode).toEqual({ tier: "fast", region: "us" });
+    expect(row.cost).toBeCloseTo(0.00625, 10);
+    expect(row.mode).toEqual({ region: "us" });
+  });
+
+  it("bills an OpenAI data residency host as the global one", async () => {
+    const { appId, slug } = await seeded("openai", OPENAI_PRICING, "https://eu.api.openai.com/");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer()));
+
+    await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi" });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.005, 10);
+    expect(row.mode).toBeNull();
   });
 
   it("bills a served mode with no price at the dearest price the model has, and says so", async () => {
@@ -125,8 +145,9 @@ describe("billing in the service mode that served the request", () => {
     await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi" });
 
     const row = await recorded(appId);
-    // The dearest price the model has is fast in us: 2 × 1.1 on $0.005.
-    expect(row.cost).toBeCloseTo(0.011, 10);
+    // The dearest tier the model is priced in, fast, in the region it was
+    // served in: 2 × $0.005, not fast in us.
+    expect(row.cost).toBeCloseTo(0.01, 10);
     expect(row.mode).toEqual({ tier: "ultrafast" });
     expect(lines.filter((line) => line.message === "served_mode_unpriced"))
       .toEqual([expect.objectContaining({ appId, serviceMode: "ultrafast" })]);

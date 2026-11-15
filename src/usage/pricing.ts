@@ -492,11 +492,11 @@ export function pricesModalities(
  * What one usage figure costs, in the service mode that served it.
  *
  * A served mode the model has no price in is billed at the dearest price the
- * model has — standard, or any mode it lists — never at the standard rate
- * alone. It is reached only where a provider served a mode the request did not
- * show, such as an account's default tier, or where unpriced modes are logged
- * rather than refused; either way the budget is charged no less than the
- * provider could have charged.
+ * model has on the axis that lacks one: an unpriced tier at the dearest tier
+ * the model is priced in, an unpriced region at the dearest priced region,
+ * while the axis that is priced keeps its own value. It is reached only where a
+ * provider served a mode the request did not show, such as an account's
+ * default tier, or where unpriced modes are logged rather than refused.
  */
 export function computeCost(
   provider: ProviderType,
@@ -509,25 +509,32 @@ export function computeCost(
   if (!price) return null;
   const served = priceInMode(price, mode);
   if (served) return costAt(served, usage);
-  // Every mode the model has a price in, a tier in a region included: the
-  // dearest can be a pair that only composes, such as `fast` in `us`.
-  const tiers = new Set<ServiceTier>(["standard"]);
-  const regions = new Set<ServiceRegion>(["global"]);
+  // Searched on the axis that has no price only: the served tier is kept
+  // where the model prices it, and so is the served region. A tier in a
+  // region with no price is billed at that tier's dearest priced region, never
+  // at another tier's price; an unpriced tier at its dearest priced tier in the
+  // served region, a pair that only composes (`fast` in `us`) included.
+  const tiers = new Set<ServiceTier>();
+  const regions = new Set<ServiceRegion>();
   for (const name of Object.keys(price.modes ?? {})) {
     const listed = parseServiceModeName(name);
     if (!listed) continue;
     tiers.add(listed.tier);
     regions.add(listed.region);
   }
+  const tierPriced = mode.tier === "standard" || tiers.has(mode.tier);
+  const regionPriced = mode.region === "global" || regions.has(mode.region);
+  const tryTiers = tierPriced ? [mode.tier] : ["standard" as const, ...tiers];
+  const tryRegions = regionPriced ? [mode.region] : ["global" as const, ...regions];
   let dearest: number | null = null;
-  for (const tier of tiers) {
-    for (const region of regions) {
+  for (const tier of tryTiers) {
+    for (const region of tryRegions) {
       const priced = priceInMode(price, { tier, region });
       const cost = priced ? costAt(priced, usage) : null;
       if (cost !== null && (dearest === null || cost > dearest)) dearest = cost;
     }
   }
-  return dearest;
+  return dearest ?? costAt(price, usage);
 }
 
 function costAt(price: Price, usage: UsageObservation): number | null {

@@ -450,7 +450,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   );
   // The request's own mode was judged before it left. A mode it did not show,
   // which the response says served it, is the one that can still lack a price:
-  // `computeCost` then billed the dearest price the model has, and this says so.
+  // `computeCost` then billed the dearest price it could, and this says so.
   if (
     !attribution.passthrough
     && !reporting

@@ -299,20 +299,10 @@ export const PROVIDER_DESCRIPTORS = {
         ultrafast: "ultrafast",
       },
     }],
-    // Data residency hosts, priced 10% over the global one for models released
-    // on or after 2026-03-05, which the price list states per model.
-    regionalOrigins: {
-      "https://us.api.openai.com/": "us",
-      "https://eu.api.openai.com/": "eu",
-      "https://gb.api.openai.com/": "gb",
-      "https://ca.api.openai.com/": "ca",
-      "https://au.api.openai.com/": "au",
-      "https://jp.api.openai.com/": "jp",
-      "https://kr.api.openai.com/": "kr",
-      "https://in.api.openai.com/": "in",
-      "https://sg.api.openai.com/": "sg",
-      "https://ae.api.openai.com/": "ae",
-    },
+    // No `regionalOrigins`: OpenAI's data residency hosts (us., eu., gb. and
+    // others under api.openai.com) cost 10% more only for models released on or
+    // after 2026-03-05, and its pages give no release date for most models, so
+    // requests through them are billed as through the global host.
   },
   anthropic: {
     label: "Anthropic",

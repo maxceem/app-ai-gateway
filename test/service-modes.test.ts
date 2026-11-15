@@ -197,6 +197,16 @@ describe("billing a served mode with no price", () => {
       .toBeCloseTo(0.011, 10);
   });
 
+  it("searches only the axis that has no price", () => {
+    // An unpriced region keeps the served tier: standard in eu bills at the
+    // dearest priced region, us, never at fast.
+    expect(computeCost("openai", "a-model", usage, overrides, { tier: "standard", region: "eu" }))
+      .toBeCloseTo(0.0055, 10);
+    // An unpriced tier keeps the served region.
+    expect(computeCost("openai", "a-model", usage, overrides, { tier: "ultrafast", region: "global" }))
+      .toBeCloseTo(0.01, 10);
+  });
+
   it("bills a priced mode at its own price", () => {
     expect(computeCost("openai", "a-model", usage, overrides, { tier: "fast", region: "global" }))
       .toBeCloseTo(0.01, 10);
