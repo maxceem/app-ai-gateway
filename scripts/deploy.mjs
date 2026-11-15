@@ -3,6 +3,8 @@ import { deployCheckout } from './seamless-root.mjs';
 //
 //   pnpm run deploy                    # the tracked wrangler.jsonc, as one-click deploy uses it
 //   pnpm run deploy --profile <name>   # wrangler.jsonc merged with wrangler.<name>.overlay.jsonc
+//   node scripts/deploy.mjs [--profile <name>] --prebuilt <dir>
+//                                      # a Worker and console built by scripts/build-prebuilt.mjs
 //
 // See scripts/wrangler-config.mjs for how profiles are resolved.
 import { existsSync, readFileSync } from "node:fs";
@@ -27,12 +29,17 @@ import {
 
 function parseArguments(argv) {
   const { profile, rest } = takeProfileArgument(argv);
+  let prebuilt;
+  const at = rest.indexOf("--prebuilt");
+  if (at >= 0 && at + 1 < rest.length) prebuilt = rest.splice(at, 2)[1];
   const action = rest[0] === "cleanup" ? "cleanup" : rest[0] === "rollback" ? "rollback" : "deploy";
   const rollbackId = action === "rollback" ? rest[1] : undefined;
   if (rest.length > (action === "deploy" ? 0 : action === "rollback" ? 2 : 1) || action === "rollback" && !rollbackId) {
-    throw new Error(`Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>]`);
+    throw new Error(
+      `Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [cleanup | rollback <build-id>] [--profile <name>] [--prebuilt <dir>]`,
+    );
   }
-  return { profile, action, rollbackId };
+  return { profile, action, rollbackId, prebuilt };
 }
 
 let profile;
@@ -46,8 +53,9 @@ let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
 async function prepare(argv) {
-  ({ profile, action, rollbackId } = parseArguments(argv));
-  ({ config, configArgs, configPath } = resolveWranglerConfig(profile));
+  let prebuilt;
+  ({ profile, action, rollbackId, prebuilt } = parseArguments(argv));
+  ({ config, configArgs, configPath } = resolveWranglerConfig(profile, undefined, { prebuilt }));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
   const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};

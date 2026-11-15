@@ -9,6 +9,7 @@ import {
 } from "../../billing/gateway";
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../../policy/accounts";
+import { planFeatures } from "../../billing/features";
 import { billingQuota, quotaUsage } from "../../billing/quota";
 import type { BillingStatusResponse } from "../../contracts/billing";
 import type { BodiedOperation } from "../../contracts/catalog";
@@ -97,6 +98,7 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
   return {
     access: quota.access,
     limits,
+    features: planFeatures(quota.access),
     // A plan with no monthly limit counts nothing, so there is no figure to report.
     quota: await quotaUsage(c.env, organizationId, quota),
     actions: subscriptionActions(quota.access),

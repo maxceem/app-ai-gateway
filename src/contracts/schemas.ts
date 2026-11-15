@@ -16,6 +16,8 @@ import {
 } from "../shared/gateways.ts";
 import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
+import { LONG_RATE_FIELDS, TOKEN_RATE_FIELDS, type TokenRateField } from "../shared/token-rates.ts";
+import { parseServiceModeName } from "../shared/service-modes.ts";
 
 /**
  * The vocabulary an application configuration is written in.
@@ -35,9 +37,17 @@ export const APP_ATTEST_ENVIRONMENTS = ["production", "development"] as const;
  */
 export const APP_ATTEST_VERIFY_ON = ["every_request", "token_exchange"] as const;
 export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+/** Longer than any AppTransaction Apple issues: three certificates and a small payload. */
+export const MAX_APP_TRANSACTION_LENGTH = 16_384;
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const HTTP_FIELD_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/**
+ * A client's own identifier for one unit of work, sent as `X-Client-Trace-Id`.
+ * Bounded and plain so it can be stored, logged and used in a file listing
+ * without escaping.
+ */
+export const CLIENT_TRACE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 /**
  * A UTC calendar month as `YYYY-MM`, with a month that exists. Flag-free for
  * the same reason as the slug patterns: it is published as an OpenAPI
@@ -196,7 +206,7 @@ const IssuerAuthenticationSchema = z.object({
   audience: IssuerClaimValuesSchema,
   user_id_claim: z.string().min(1),
   /** Lowercased, because header lookups ignore case. */
-  token_header: z.string().min(1).toLowerCase().optional(),
+  token_header: z.string().min(1).toLowerCase().superRefine(refuseReservedHeader).optional(),
   required_claims: z.array(ClaimRequirementSchema),
   max_token_lifetime_seconds: z.number().int().positive(),
   /**
@@ -214,18 +224,34 @@ const IssuerAuthenticationSchema = z.object({
 }).strict();
 
 /**
- * Headers the gateway already owns, which an application may therefore not read
- * its end-user id from. Naming a credential carrier would read the caller's own
- * key as a user id and then store and display it.
+ * Headers the gateway already owns, which an application may therefore name
+ * neither as its end-user id header nor as its issuer token header. Naming a
+ * credential carrier as the user id header would read the caller's own key as
+ * a user id, then store, display and log it; naming `x-app-version` as the
+ * token header would send a credential where the gateway logs the app version.
  */
-const RESERVED_END_USER_HEADERS: ReadonlySet<string> = new Set([
+const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
+  "cookie",
+  "x-appattest-proof",
   ...PROVIDER_CREDENTIAL_HEADERS,
   "x-app-version",
+  "x-client-sdk",
+  "x-client-trace-id",
+  "x-conversation-storage",
   "content-type",
   "content-length",
   "host",
 ]);
+
+function refuseReservedHeader(header: string, context: z.RefinementCtx): void {
+  if (RESERVED_APP_HEADERS.has(header)) {
+    context.addIssue({
+      code: "custom",
+      message: `cannot be ${header}: the gateway already uses that header`,
+    });
+  }
+}
 
 /**
  * A header name, as HTTP defines one (RFC 9110 field names). Bounded because it
@@ -238,14 +264,7 @@ const EndUserHeaderSchema = z.string()
   .min(1)
   .max(64)
   .regex(HTTP_FIELD_NAME, { error: "must be a valid HTTP header name" })
-  .superRefine((header, context) => {
-    if (RESERVED_END_USER_HEADERS.has(header)) {
-      context.addIssue({
-        code: "custom",
-        message: `cannot be ${header}: the gateway already uses that header`,
-      });
-    }
-  });
+  .superRefine(refuseReservedHeader);
 
 const HeaderEndUserSchema = z.object({
   source: z.literal("header"),
@@ -341,12 +360,25 @@ const ApiKeyAuthenticationSchema = z.object({
   end_user: ApiKeyEndUserSchema,
 }).strict();
 
+/**
+ * The HTTP methods a passthrough path can be opened for. Without `methods` a
+ * passthrough path takes POST alone, because the same provider path often
+ * reads or deletes data under another method — `GET v1/files` lists every file
+ * on the provider account — and reaching that has to be the owner's explicit
+ * choice. A model call is always a POST, so a recognised path never takes one.
+ */
+export const PASSTHROUGH_METHODS = ["POST", "GET", "PUT", "PATCH", "DELETE"] as const;
+export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
+
 const AllowedPathSchema = z.union([
   z.string().min(1),
   z.object({
     path: z.string().min(1),
     fixed_model: z.string().min(1).optional(),
     clamp: z.enum(OUTPUT_CLAMP_STYLES).optional(),
+    methods: z.array(z.enum(PASSTHROUGH_METHODS)).min(1)
+      .refine((methods) => new Set(methods).size === methods.length, "methods must not repeat a method")
+      .optional(),
   }).strict(),
 ]);
 
@@ -419,23 +451,30 @@ const LimitScopeSchema = z.object({
   spending: z.object({ monthly_usd: NullableSpendLimit }).strict(),
 }).strict();
 
-/** Whose month a `limits.per_user` budget is measured over. */
-export const BUDGET_SCOPES = ["install", "user"] as const;
+/**
+ * Whose month a `limits.per_user` budget is measured over: one install's, one
+ * signed-in user's, or one Apple Account's — every install that account has,
+ * on any device and across reinstalls, as the App Store's signed
+ * AppTransaction names it.
+ */
+export const BUDGET_SCOPES = ["install", "user", "apple_account"] as const;
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
 
 /**
  * The limits on each of an application's callers. The key stays `per_user`,
- * but on an App Attest application its request limits count
- * per install — one copy of the app on one device — and so, by default, does
- * its budget; `spending.scope` moves the budget to the signed-in user, which
- * only an issuer-backed App Attest application can do. A server application
- * has no installs: everything here is per user.
+ * but on an App Attest application its request limits count per install —
+ * one copy of the app on one device — while its budget is measured by
+ * default over the Apple Account the install belongs to, so a reinstall does
+ * not start a fresh month. `spending.scope` moves the budget to the install
+ * alone, or to the signed-in user, which only an issuer-backed App Attest
+ * application can do. A server application has no installs: everything here
+ * is per user.
  */
 const PerUserLimitScopeSchema = LimitScopeSchema.extend({
   spending: LimitScopeSchema.shape.spending.extend({
     scope: z.enum(BUDGET_SCOPES).optional().meta({
       description:
-        "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
+        "Whose month monthly_usd is measured over: apple_account (the default on App Attest applications), install, or user (the default, and the only value, on server applications). apple_account counts every install of one Apple Account together, across devices and reinstalls; an install whose client sent no verifiable App Store transaction is counted on its own, as under install. user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration.",
     }),
   }).strict(),
 }).strict();
@@ -461,6 +500,47 @@ export const scopeHasLimits = (scope: LimitScopeConfig): boolean =>
   scope.requests.per_minute !== null
   || scope.requests.per_day !== null
   || scope.spending.monthly_usd !== null;
+
+/** How long stored conversations are kept, in days: the default, and the bounds an app may set. */
+export const CONVERSATION_RETENTION_DAYS = { default: 180, min: 1, max: 400 } as const;
+
+/**
+ * Whether the gateway keeps a copy of this application's requests and
+ * responses, and for how long. Off unless an operator turns it on: what an
+ * app's users send is theirs, and keeping it is a decision the operator makes
+ * and discloses, never one the gateway makes for them.
+ */
+const keptMedia = (field: string, what: string) =>
+  z.boolean({ error: `conversations.keep.${field} must be true or false` }).default(true).meta({
+    description: `Keep ${what} beside the conversation. Off, each is recorded by its type and size alone.`,
+  });
+
+/**
+ * Which attachments a stored conversation keeps: all of them unless the
+ * operator leaves a kind out. The conversation itself — messages, instructions,
+ * tool calls — is always kept.
+ */
+const ConversationKeepSchema = z.object({
+  images: keptMedia("images", "images"),
+  audio: keptMedia("audio", "audio: recordings sent for transcription, audio in a request, spoken replies"),
+  files: keptMedia("files", "every other attached file, such as a PDF or a text document"),
+}).strict();
+
+const ConversationsSchema = z.object({
+  store: z.boolean({ error: "conversations.store must be true or false" }).default(false).meta({
+    description:
+      "Keep a copy of every request and response this app sends through the gateway, with the media `keep` allows.",
+  }),
+  keep: ConversationKeepSchema.prefault({}),
+  retention_days: z.number({ error: "conversations.retention_days must be a whole number of days" })
+    .int({ error: "conversations.retention_days must be a whole number of days" })
+    .min(CONVERSATION_RETENTION_DAYS.min, { error: `conversations.retention_days must be at least ${CONVERSATION_RETENTION_DAYS.min}` })
+    .max(CONVERSATION_RETENTION_DAYS.max, { error: `conversations.retention_days must be at most ${CONVERSATION_RETENTION_DAYS.max}` })
+    .default(CONVERSATION_RETENTION_DAYS.default)
+    .meta({ description: "Days a stored conversation is kept before nightly maintenance deletes it." }),
+}).strict();
+
+export type ConversationsConfig = z.output<typeof ConversationsSchema>;
 
 /**
  * An application's configuration: the one grammar, and the one shape.
@@ -520,6 +600,7 @@ export const AppConfigSchema = z.object({
     EndpointSchema,
     { error: "is not a valid slug; use 1-64 characters from a-z, 0-9, and -" },
   ).prefault({}),
+  conversations: ConversationsSchema.prefault({}),
 }).strict().superRefine((config, context) => {
   /*
    * Per-user limits need somebody to apply to. An application that identifies
@@ -557,11 +638,11 @@ export const AppConfigSchema = z.object({
    */
   const budgetScope = (perUser as PerUserLimitScopeConfig | undefined)?.spending.scope;
   if (authentication !== undefined && budgetScope !== undefined) {
-    if (authentication.type === "api_key" && budgetScope === "install") {
+    if (authentication.type === "api_key" && budgetScope !== "user") {
       context.addIssue({
         code: "custom",
         path: ["limits", "per_user", "spending", "scope"],
-        message: "cannot be install: server applications have no install; the budget is per user",
+        message: `cannot be ${budgetScope}: server applications have no install or Apple Account; the budget is per user`,
       });
     }
     if (
@@ -573,16 +654,18 @@ export const AppConfigSchema = z.object({
         code: "custom",
         path: ["limits", "per_user", "spending", "scope"],
         message:
-          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use install",
+          "can be user only when authentication.end_user.source is issuer: under app_install every install is its own user, so use apple_account to count one person's installs together, or install",
       });
     }
   }
 }).overwrite((config) => {
   // The scope's default depends on the application type, so it is filled in
-  // here, once both are parsed, and every reader finds it written.
+  // here, once both are parsed, and every reader finds it written. Every App
+  // Attest application stored before apple_account existed had install
+  // written into it by migration 0012, so this default reaches new ones only.
   const spending = config.limits.per_user.spending;
   if (spending.scope === undefined) {
-    spending.scope = config.authentication.type === "apple_app_attest" ? "install" : "user";
+    spending.scope = config.authentication.type === "apple_app_attest" ? "apple_account" : "user";
   }
   return config;
 }).meta({ id: "AppConfig" });
@@ -631,6 +714,58 @@ export const AppUpdateSchema = AppWriteSchema.extend({
   }),
 }).meta({ id: "AppUpdate" });
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
+
+/** The most operations one patch may carry. */
+export const APP_PATCH_MAX_OPERATIONS = 100;
+
+/**
+ * Where an operation applies, as a JSON Pointer (RFC 6901) into the document
+ * `getApp` answers under `app`: `/name`, `/status`, or anything under
+ * `/config`. `~1` stands for `/` and `~0` for `~` inside a key, as the RFC
+ * spells them. The id, revision and timestamps are not the patch's to change.
+ */
+// Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
+const AppPatchPathSchema = z.string()
+  .regex(/^\/(?:name|status|config(?:\/(?:[^~/]|~[01])*)*)$/, {
+    error: "path must be /name, /status or a JSON Pointer under /config",
+  })
+  .meta({ example: "/config/limits/per_app/requests/per_minute" });
+
+/** What `add` and `replace` write: required even when it is `null`. */
+const AppPatchValueSchema = z.unknown().nonoptional({ error: "value is required; send null to write null" });
+
+/**
+ * One change, with the meaning RFC 6902 (JSON Patch) gives it, restricted to
+ * the three operations that change a document:
+ *
+ * - `add` writes `value` at `path`: a new or existing key of an object, or an
+ *   array position, `-` appending. The parent must exist.
+ * - `replace` writes `value` where something already is.
+ * - `remove` deletes what is at `path`, which must exist.
+ *
+ * A value is written as given, `null` included: `null` is how a limit says
+ * unlimited, so nothing here ever treats it as "delete".
+ */
+export const AppPatchOperationSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+  z.object({ op: z.literal("replace"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+  z.object({ op: z.literal("remove"), path: AppPatchPathSchema }).strict(),
+], { error: "op must be add, replace or remove" }).meta({ id: "AppPatchOperation" });
+export type AppPatchOperation = z.infer<typeof AppPatchOperationSchema>;
+
+/**
+ * A partial update: operations applied in order to the application as it is
+ * stored, then judged exactly as an update with the resulting whole document
+ * would be. Either every operation applies and the result is accepted, or
+ * nothing is written.
+ */
+export const AppPatchSchema = z.object({
+  revision: AppUpdateSchema.shape.revision,
+  operations: z.array(AppPatchOperationSchema)
+    .min(1, { error: "operations must name at least one change" })
+    .max(APP_PATCH_MAX_OPERATIONS, { error: `operations can name at most ${APP_PATCH_MAX_OPERATIONS} changes` }),
+}).strict().meta({ id: "AppPatch" });
+export type AppPatch = z.infer<typeof AppPatchSchema>;
 
 /**
  * The two languages an application's example is written in: Swift for an App
@@ -689,6 +824,10 @@ export const AppAttestTokenRequestSchema = z.object({
   key_id: AppAttestKeyIdSchema,
   assertion: z.string().min(1),
   challenge: ChallengeSchema,
+  app_transaction: z.string().min(1).max(MAX_APP_TRANSACTION_LENGTH).optional().meta({
+    description:
+      "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify against Apple's root names no account, and the install is counted on its own.",
+  }),
 }).meta({ id: "AppAttestTokenRequest" });
 
 export const ApiKeyTokenRequestSchema = z.object({
@@ -703,20 +842,69 @@ export const UsageRepriceRequestSchema = z.object({
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
 
+const TokenRateSchema = z.number().finite().nonnegative();
+
+/**
+ * Every rate but input and output, optional, named by the one list the cost
+ * arithmetic reads — so a rate the gateway learns to bill is overridable the
+ * moment it exists, and nothing else is ever stored.
+ */
+const OPTIONAL_TOKEN_RATES = Object.fromEntries(
+  TOKEN_RATE_FIELDS
+    .filter((field) => field !== "input" && field !== "output")
+    .map((field) => [field, TokenRateSchema.optional()]),
+) as Record<Exclude<TokenRateField, "input" | "output">, z.ZodOptional<typeof TokenRateSchema>>;
+
+/**
+ * A model's price in one service mode: a factor on every rate the model has,
+ * and any rate the mode prices apart from that factor.
+ */
+const ModePriceSchema = z.object({
+  factor: TokenRateSchema.optional().meta({
+    description: "Multiplies every rate of the model's standard price in this mode. 1 where left out.",
+  }),
+  input: TokenRateSchema.optional(),
+  output: TokenRateSchema.optional(),
+  ...OPTIONAL_TOKEN_RATES,
+}).strict();
+
+/**
+ * Prices per service mode, keyed by the mode's name: a tier (`flex`,
+ * `priority`, `fast`, `ultrafast`), a region (`us`, `eu`, …), or a tier in a
+ * region (`priority+eu`) where the provider prices that combination apart. A
+ * mode left out has no price.
+ */
+export const ModePricesSchema = z.record(
+  z.string().refine(
+    (name) => name !== "standard" && parseServiceModeName(name) !== null,
+    { message: "Name a service mode: flex, priority, fast or ultrafast, a region such as us or eu, or a tier+region pair" },
+  ),
+  ModePriceSchema,
+).meta({ id: "ModePrices" });
+
 /**
  * Per-1M-token overrides for models the shipped catalog does not cover, or
  * covers with a stale price. `$0` is enterable for genuinely free models.
+ * Input and output are required; every other rate is optional and, left out,
+ * falls back as it does on a catalog entry without it — an override replaces
+ * the catalog's rates for its model, it never inherits them.
  */
 export const ProviderPricingSchema = z.record(
   z.string().trim().min(1).max(200),
   z.object({
-    input: z.number().finite().nonnegative(),
-    output: z.number().finite().nonnegative(),
-    audio_input: z.number().finite().nonnegative().optional(),
-    audio_output: z.number().finite().nonnegative().optional(),
-    cached_input: z.number().finite().nonnegative().optional(),
-    cached_audio_input: z.number().finite().nonnegative().optional(),
-  }).strict(),
+    input: TokenRateSchema,
+    output: TokenRateSchema,
+    ...OPTIONAL_TOKEN_RATES,
+    long_context_threshold: z.number().int().positive().optional(),
+    modes: ModePricesSchema.optional().meta({
+      description:
+        "Prices in service modes other than standard. Left out, the price list's mode factors for the model apply to these rates. A mode with no price is still served, billed at an estimate and marked estimated.",
+    }),
+  }).strict().refine(
+    (price) => price.long_context_threshold !== undefined
+      || LONG_RATE_FIELDS.every((field) => price[field] === undefined),
+    { message: "Long-context rates need long_context_threshold" },
+  ),
 ).meta({ id: "ProviderPricing" });
 
 const ProviderNameSchema = z.string().trim().min(1).max(100);
@@ -1082,3 +1270,45 @@ export const ConfirmEmailVerificationRequestSchema = z.object({
     description: "The `token` query parameter of the link in the verification email.",
   }),
 }).strict();
+
+/** What a support message is about, which the console's Support menu offers one item for each. */
+export const SupportMessageKindSchema = z.enum(["bug", "support", "feedback"]);
+
+/**
+ * Each kind's topic, which is the email's subject: the message alone is what a
+ * person writes, so the subject is never theirs to fill in.
+ */
+export const SUPPORT_TOPICS: Record<z.infer<typeof SupportMessageKindSchema>, string> = {
+  bug: "Bug report",
+  support: "Support request",
+  feedback: "Feedback",
+};
+
+/** A diagnostic an agent attaches: a short name, and a short value. */
+const SUPPORT_CONTEXT_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,39}$/;
+
+/** A message to the deployment's support inbox, from the person the credential belongs to. */
+export const SupportMessageRequestSchema = z.object({
+  kind: SupportMessageKindSchema,
+  message: z.string().trim().min(1, "Write a message").max(10_000).meta({
+    description: "What the person wants support to know, in their words. Never include a key, token or password.",
+  }),
+  /** The console page the message was written from, for context. */
+  page: ConsoleReturnPathSchema.optional(),
+  context: z
+    .record(
+      z.string().regex(SUPPORT_CONTEXT_KEY, "Context names are letters, digits, _ . and -, up to 40 characters"),
+      z.string().trim().min(1).max(500),
+    )
+    .refine((value) => Object.keys(value).length <= 20, "At most 20 context entries")
+    .optional()
+    .meta({
+      description: "Facts that help support act without asking back, such as app_id, request_id, error_code or agw_version. Never a credential.",
+    }),
+  client: z.string().trim().min(1).max(100).optional().meta({
+    description: "What sent the message, such as `agw 0.10.3`, as the client reports it. A label only.",
+  }),
+}).strict();
+
+export type SupportMessageKind = z.infer<typeof SupportMessageKindSchema>;
+export type SupportMessageRequest = z.infer<typeof SupportMessageRequestSchema>;

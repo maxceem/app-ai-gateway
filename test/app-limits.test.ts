@@ -432,12 +432,14 @@ describe("an application's own limits", () => {
       requests_per_minute: 10,
       requests_per_day: 4,
       monthly_budget_usd: 2,
+      budget_scope: "user",
       blocked: false,
     });
     // Nothing about the organization's plan allowance leaks into a user's own
     // view: no limit, no used, no resetAt.
     expect(Object.keys(body.limits).sort()).toEqual([
       "blocked",
+      "budget_scope",
       "monthly_budget_usd",
       "monthly_cost_usd",
       "requests_per_day",
@@ -464,17 +466,25 @@ describe("an application's own limits", () => {
 
 /**
  * On an App Attest application the callers are installs — one copy of the
- * app on one device — so request limits count per install, and so does the
- * budget unless the application measures it per signed-in user.
+ * app on one device — so request limits count per install. The budget is
+ * measured by default over the Apple Account the install belongs to, where its
+ * token names one, and otherwise over the install itself; an application can
+ * also measure it per install or per signed-in user.
  */
 describe("an App Attest application's limits", () => {
-  async function installs(appId: string, options: Parameters<typeof seedApp>[1]) {
+  /** A phone and a tablet of one person, both signed into `appleAccount` when given. */
+  async function installs(
+    appId: string,
+    options: Parameters<typeof seedApp>[1],
+    appleAccount?: string,
+  ) {
     await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} }, ...options });
     const phone = await registerTestInstall(appId, "limits-person");
     const tablet = await registerTestInstall(appId, "limits-person");
+    const account = appleAccount === undefined ? {} : { appleAccountId: appleAccount };
     return {
-      phone: { install: phone, token: await tokenForInstall(phone) },
-      tablet: { install: tablet, token: await tokenForInstall(tablet) },
+      phone: { install: phone, token: await tokenForInstall(phone, account) },
+      tablet: { install: tablet, token: await tokenForInstall(tablet, account) },
     };
   }
 
@@ -502,7 +512,7 @@ describe("an App Attest application's limits", () => {
     return { code: body.error.code, scope: body.error.data?.scope };
   }
 
-  async function spent(appId: string, scope: "user" | "install", key: string, microusd: number) {
+  async function spent(appId: string, scope: "user" | "install" | "apple_account", key: string, microusd: number) {
     await env.DB.prepare(
       `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
        VALUES ('operator-test-organization', ?, ?, ?, ?, ?)`,
@@ -521,8 +531,12 @@ describe("an App Attest application's limits", () => {
     expect((await signedProxy("limits-install-rpm", tablet.token)).status).toBe(200);
   });
 
-  it("measures the budget per install by default", async () => {
-    const { phone, tablet } = await installs("limits-install-budget", { budgetUsd: 1 });
+  it("measures the budget per install when the application says so, Apple Account or not", async () => {
+    const { phone, tablet } = await installs(
+      "limits-install-budget",
+      { budgetUsd: 1, budgetScope: "install" },
+      "account-hash-1",
+    );
     await spent("limits-install-budget", "install", phone.install.keyId, 1_000_000);
     mockUpstream();
 
@@ -530,6 +544,88 @@ describe("an App Attest application's limits", () => {
     expect(refused.status).toBe(429);
     await expect(scopeOf(refused)).resolves.toEqual({ code: "app_budget_exhausted", scope: "install" });
     expect((await signedProxy("limits-install-budget", tablet.token)).status).toBe(200);
+  });
+
+  it("measures the budget per Apple Account by default, across every install of it", async () => {
+    const { phone, tablet } = await installs("limits-account-budget", { budgetUsd: 1 }, "account-hash-1");
+    await spent("limits-account-budget", "apple_account", "account-hash-1", 1_000_000);
+    mockUpstream();
+
+    // A reinstall or a second device is the same Apple Account, so neither
+    // starts a fresh month.
+    for (const caller of [phone, tablet]) {
+      const refused = await signedProxy("limits-account-budget", caller.token);
+      expect(refused.status).toBe(429);
+      await expect(scopeOf(refused)).resolves.toEqual({ code: "app_budget_exhausted", scope: "apple_account" });
+    }
+    // Somebody else's Apple Account has a month of its own.
+    const other = await registerTestInstall("limits-account-budget", "limits-other");
+    const otherToken = await tokenForInstall(other, { appleAccountId: "account-hash-2" });
+    expect((await signedProxy("limits-account-budget", otherToken)).status).toBe(200);
+  });
+
+  it("measures an install whose token names no Apple Account on its own under apple_account", async () => {
+    // A client that predates sending the App Store transaction, or one whose
+    // transaction did not verify: counted exactly as it was before.
+    const { phone, tablet } = await installs("limits-account-fallback", { budgetUsd: 1 });
+    await spent("limits-account-fallback", "install", phone.install.keyId, 1_000_000);
+    mockUpstream();
+
+    const refused = await signedProxy("limits-account-fallback", phone.token);
+    expect(refused.status).toBe(429);
+    await expect(scopeOf(refused)).resolves.toEqual({ code: "app_budget_exhausted", scope: "install" });
+    expect((await signedProxy("limits-account-fallback", tablet.token)).status).toBe(200);
+  });
+
+  it("records the Apple Account's spend from every event that names one", async () => {
+    const { phone } = await installs("limits-account-ledger", {}, "account-hash-1");
+    mockUpstream();
+
+    expect((await signedProxy("limits-account-ledger", phone.token)).status).toBe(200);
+    await settle();
+
+    const month = new Date().toISOString().slice(0, 7);
+    const appId = "limits-account-ledger";
+    const perAccount = await monthlySpendMicrousd(
+      env.DB,
+      { appId, scope: "apple_account", key: "account-hash-1" },
+      month,
+    );
+    const perInstall = await monthlySpendMicrousd(env.DB, { appId, scope: "install", key: phone.install.keyId }, month);
+    expect(perAccount).toBeGreaterThan(0);
+    expect(perAccount).toBe(perInstall);
+    const event = await env.DB.prepare(
+      "SELECT apple_account_id FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    ).bind(appId).first();
+    expect(event).toEqual({ apple_account_id: "account-hash-1" });
+  });
+
+  it("reports the Apple Account's month on /me, and the install's where the token names none", async () => {
+    const { phone } = await installs("limits-account-me", { budgetUsd: 2 }, "account-hash-1");
+    const bare = await registerTestInstall("limits-account-me", "limits-person");
+    const bareToken = await tokenForInstall(bare);
+    await spent("limits-account-me", "apple_account", "account-hash-1", 500_000);
+    await spent("limits-account-me", "install", bare.keyId, 250_000);
+
+    const me = async (token: string) => {
+      const executionCtx = createExecutionContext();
+      contexts.push(executionCtx);
+      const response = await worker.fetch(
+        await signRequest(new Request(`${ORIGIN}/v1/apps/limits-account-me/me`, {
+          headers: { authorization: `Bearer ${token}` },
+        })),
+        env,
+        executionCtx,
+      );
+      expect(response.status).toBe(200);
+      return (await response.json<{ limits: Record<string, unknown> }>()).limits;
+    };
+    await expect(me(phone.token)).resolves.toMatchObject({
+      monthly_cost_usd: 0.5,
+      monthly_budget_usd: 2,
+      budget_scope: "apple_account",
+    });
+    await expect(me(bareToken)).resolves.toMatchObject({ monthly_cost_usd: 0.25, budget_scope: "install" });
   });
 
   it("measures the budget per user when the application says so", async () => {

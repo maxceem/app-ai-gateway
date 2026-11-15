@@ -51,6 +51,9 @@ public enum GatewayAuthMode: Sendable {
     /// The key lives in the Secure Enclave for one install of one app, so it
     /// does not survive reinstalling or clearing the app's data. Per-install
     /// limits and blocks hold, but a user can shed one by starting over.
+    /// The exchange also sends the app's App Store transaction, so an
+    /// application that measures its budget per Apple Account keeps counting
+    /// the same person after a reinstall.
     case appAttestInstall
 
     /// With an issuer provider, the API key is exchanged for a per-user gateway token.
@@ -61,7 +64,15 @@ public enum GatewayAuthMode: Sendable {
 public actor AppAIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
+        /// When to replace it: well before it expires, so a refresh that fails
+        /// or is slow is ridden out with this one.
         let refreshAt: Date
+        /// Until when it is still sent: its expiry, less a margin for the
+        /// request to reach the gateway. Past this, the next request waits for
+        /// a new token.
+        let usableUntil: Date
+        /// How long a failed refresh waits before it is tried again.
+        let retryInterval: TimeInterval
         /// The App Attest key the token is bound to, in the App Attest modes:
         /// the key that signs the requests it is sent with, where any are.
         let keyID: String?
@@ -85,6 +96,11 @@ public actor AppAIGatewayClient {
 
     private struct ChallengeResponse: Decodable {
         let challenge: String
+        /// Whether the gateway that issued the challenge reads an App Store
+        /// transaction in the exchange. Absent from an older gateway, which
+        /// ignores the body field but rebuilds the three-key client data, so
+        /// a four-key assertion would fail there.
+        let accepts_app_transaction: Bool?
     }
 
     private let appID: String
@@ -94,6 +110,7 @@ public actor AppAIGatewayClient {
     private let endUserHeader: String
     private let issuerRejectionRecovery: IssuerRejectionRecovery?
     private let attestProvider: any AppAttestProviding
+    private let appTransactionProvider: any AppTransactionProviding
     private let credentialStore: any GatewayCredentialStoring
     private let session: URLSession
     private var accessToken: AccessToken?
@@ -103,6 +120,9 @@ public actor AppAIGatewayClient {
     /// came in between: a discarded exchange may answer an older `verify_on`.
     private var tokenGeneration = 0
     private var refreshTask: Task<Void, Never>?
+    /// Set when a refresh behind a still-usable token failed: no request starts
+    /// another before then, so an outage does not cost each request an exchange.
+    private var nextRefreshAttempt: Date?
     private var rateLimitHold: RateLimitHold?
 
     /// A refusal the gateway timed, and the instant its window closes.
@@ -122,6 +142,7 @@ public actor AppAIGatewayClient {
         endUserHeader: String = "X-End-User-ID",
         issuerRejectionRecovery: IssuerRejectionRecovery? = nil,
         attestProvider: any AppAttestProviding = SystemAppAttestProvider(),
+        appTransactionProvider: any AppTransactionProviding = SystemAppTransactionProvider(),
         credentialStore: any GatewayCredentialStoring = KeychainGatewayCredentialStore(),
         session: URLSession = .shared
     ) {
@@ -132,6 +153,7 @@ public actor AppAIGatewayClient {
         self.endUserHeader = endUserHeader
         self.issuerRejectionRecovery = issuerRejectionRecovery
         self.attestProvider = attestProvider
+        self.appTransactionProvider = appTransactionProvider
         self.credentialStore = credentialStore
         self.session = session
     }
@@ -154,10 +176,62 @@ public actor AppAIGatewayClient {
     /// token returned rather than reading the cache afterwards: an exchange
     /// that a discard overtook returns its token without caching it.
     private func currentAccessToken() async throws -> AccessToken {
-        if let accessToken, accessToken.refreshAt.timeIntervalSinceNow > 0 {
-            return accessToken
+        if let accessToken {
+            if accessToken.refreshAt.timeIntervalSinceNow > 0 { return accessToken }
+            // Due for replacement but still accepted: refresh behind it rather
+            // than in front of it, so neither a slow exchange nor a failed one
+            // holds the request. Only a token about to expire is waited for.
+            if accessToken.usableUntil.timeIntervalSinceNow > 0 {
+                refreshBehind()
+                return accessToken
+            }
         }
         return try await refreshGatewayAccessToken()
+    }
+
+    /// Starts a refresh without waiting for it, unless one is in flight or a
+    /// failed one is waiting to be tried again.
+    private func refreshBehind() {
+        guard tokenExchangeTask == nil else { return }
+        if let nextRefreshAttempt, nextRefreshAttempt.timeIntervalSinceNow > 0 { return }
+        Task { await self.attemptRefresh() }
+    }
+
+    /// One refresh that fails nobody. When it fails, the current token stays
+    /// in use for as long as the gateway still accepts it. A failure that may
+    /// pass — the gateway or the network unavailable — is tried again after the
+    /// token's retry interval, so an outage shorter than the time left on the
+    /// token goes unnoticed by the app. Any other is not tried again behind the
+    /// token: retrying would only repeat it, and some of its recoveries cost
+    /// the app a purchase sync or an Apple attestation each. The next exchange
+    /// is then the one a request waits for once the token runs out, as before.
+    /// The gateway still judges every request the token is sent with.
+    private func attemptRefresh() async {
+        let generation = tokenGeneration
+        do {
+            _ = try await refreshGatewayAccessToken()
+            nextRefreshAttempt = nil
+        } catch {
+            // A discard since this began has settled what the client holds.
+            guard tokenGeneration == generation,
+                  let accessToken,
+                  accessToken.usableUntil.timeIntervalSinceNow > 0
+            else { return }
+            guard Self.mayPass(error) else {
+                nextRefreshAttempt = accessToken.usableUntil
+                return
+            }
+            let next = Date().addingTimeInterval(accessToken.retryInterval)
+            nextRefreshAttempt = next
+            scheduleRefresh(at: next)
+        }
+    }
+
+    /// Whether a failed refresh is worth trying again shortly: the gateway said
+    /// so, or the network failed before it could say anything.
+    static func mayPass(_ error: Error) -> Bool {
+        if let error = error as? GatewayError { return error.isRetryable }
+        return error is URLError
     }
 
     /// Refuses, without a request, while a window the gateway timed is still
@@ -199,7 +273,7 @@ public actor AppAIGatewayClient {
             let token = try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
             if self.tokenGeneration == generation {
                 self.accessToken = token
-                self.scheduleRefresh(for: token)
+                self.scheduleRefresh(at: token.refreshAt)
             }
             return token
         }
@@ -521,6 +595,7 @@ public actor AppAIGatewayClient {
     /// it, and its token is never cached.
     public func discardAccessToken() {
         accessToken = nil
+        nextRefreshAttempt = nil
         tokenGeneration += 1
         tokenExchangeTask = nil
         refreshTask?.cancel()
@@ -554,7 +629,7 @@ public actor AppAIGatewayClient {
             // a 400 on every request rather than a silently unattributed one.
             request.setValue(endUserId, forHTTPHeaderField: endUserHeader)
         }
-        request.setValue(Self.appVersion, forHTTPHeaderField: "X-App-Version")
+        Self.identifyClient(&request)
         guard usesAppAttest else {
             request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
             return request
@@ -744,6 +819,10 @@ public actor AppAIGatewayClient {
 
     /// Mints a token; `refreshGatewayAccessToken` decides whether it is cached.
     private func exchangeToken(forceIssuerRefresh: Bool, retryIssuerOnce: Bool) async throws -> AccessToken {
+        // The gateway counts the token's lifetime from when it mints it, so it
+        // is measured here from before the request: a slow exchange then never
+        // lets the token be sent past the gateway's own expiry.
+        let started = Date()
         do {
             let response: TokenResponse
             var keyID: String?
@@ -756,14 +835,23 @@ public actor AppAIGatewayClient {
                 )
             case .apiKey(let key, nil):
                 // Never reached: `gatewayAccessToken` returns the key itself.
-                return AccessToken(value: key, refreshAt: .distantFuture, keyID: nil, signsEveryRequest: false)
+                return AccessToken(
+                    value: key,
+                    refreshAt: .distantFuture,
+                    usableUntil: .distantFuture,
+                    retryInterval: 0,
+                    keyID: nil,
+                    signsEveryRequest: false
+                )
             case .appAttest, .appAttestInstall:
                 (response, keyID) = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
-            let now = Date()
+            let leeway = Self.refreshLeeway(for: response.expires_in)
             let token = AccessToken(
                 value: response.access_token,
-                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in)),
+                refreshAt: started.addingTimeInterval(Self.refreshDelay(for: response.expires_in)),
+                usableUntil: started.addingTimeInterval(response.expires_in - Self.usableMargin(forLeeway: leeway)),
+                retryInterval: Self.refreshRetryInterval(forLeeway: leeway),
                 keyID: keyID,
                 signsEveryRequest: keyID != nil && response.verify_on == Self.verifyOnEveryRequest
             )
@@ -794,10 +882,20 @@ public actor AppAIGatewayClient {
     /// The token, and the key it is bound to: the gateway mints it for the
     /// install whose key signed the exchange, and where it verifies every
     /// request, refuses each one that another key signed.
+    ///
+    /// The app's App Store transaction is fetched once, up front, and every
+    /// assertion this exchange signs — a replacement key's included — is bound
+    /// to that same value, so the body never names a transaction other than
+    /// the one signed over. Each assertion carries it only where its own
+    /// challenge says the gateway reads one: an older gateway would check a
+    /// four-key client data against the three keys it knows and refuse the
+    /// exchange. Fetching it before any challenge keeps a slow StoreKit from
+    /// eating into a challenge's lifetime.
     private func productionExchange(forceIssuerRefresh: Bool) async throws -> (TokenResponse, String) {
         guard attestProvider.isSupported else {
             throw GatewayError(code: .attestFailed, message: "App Attest is unavailable on this device", statusCode: 0)
         }
+        let appTransaction = await appTransactionProvider.jwsRepresentation()
         var keyID = try credentialStore.appAttestKeyID(for: appID)
         if keyID == nil {
             keyID = try await registerKey(forceIssuerRefresh: forceIssuerRefresh)
@@ -805,14 +903,18 @@ public actor AppAIGatewayClient {
         guard let keyID else {
             throw GatewayError(code: .attestFailed, message: "App Attest key registration failed", statusCode: 0)
         }
-        let signed = try await signedAssertion(for: keyID, forceIssuerRefresh: forceIssuerRefresh)
+        let signed = try await signedAssertion(
+            for: keyID,
+            appTransaction: appTransaction,
+            forceIssuerRefresh: forceIssuerRefresh
+        )
         let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
         do {
             return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed)), signed.keyID)
         } catch let error as GatewayError where error.code == .attestFailed {
             // The gateway holds a key this device is no longer signing with.
             let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
-            let retry = try await sign(with: replacement)
+            let retry = try await sign(with: replacement, appTransaction: appTransaction)
             return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry)), retry.keyID)
         }
     }
@@ -821,6 +923,8 @@ public actor AppAIGatewayClient {
         let keyID: String
         let challenge: String
         let assertion: Data
+        /// The App Store transaction the assertion is bound to, sent beside it.
+        let appTransaction: String?
     }
 
     /// Signs a challenge, replacing the key first if this device can no longer
@@ -841,23 +945,56 @@ public actor AppAIGatewayClient {
     /// Only the signing call is guarded. Fetching a challenge is a network
     /// request, and a flight-mode failure there must not be mistaken for a dead
     /// key and cost the user a perfectly good one.
-    private func signedAssertion(for keyID: String, forceIssuerRefresh: Bool) async throws -> SignedAssertion {
-        let challengeValue = try await challenge()
-        let clientData = Self.assertionClientData(app: appID, challenge: challengeValue, keyID: keyID)
+    private func signedAssertion(
+        for keyID: String,
+        appTransaction: String?,
+        forceIssuerRefresh: Bool
+    ) async throws -> SignedAssertion {
+        let issued = try await challengeResponse()
+        let bound = Self.boundAppTransaction(appTransaction, to: issued)
+        let clientData = Self.assertionClientData(
+            app: appID,
+            challenge: issued.challenge,
+            keyID: keyID,
+            appTransaction: bound
+        )
         do {
             let assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
-            return SignedAssertion(keyID: keyID, challenge: challengeValue, assertion: assertion)
+            return SignedAssertion(
+                keyID: keyID,
+                challenge: issued.challenge,
+                assertion: assertion,
+                appTransaction: bound
+            )
         } catch {
             let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
-            return try await sign(with: replacement)
+            return try await sign(with: replacement, appTransaction: appTransaction)
         }
     }
 
-    private func sign(with keyID: String) async throws -> SignedAssertion {
-        let challengeValue = try await challenge()
-        let clientData = Self.assertionClientData(app: appID, challenge: challengeValue, keyID: keyID)
+    private func sign(with keyID: String, appTransaction: String?) async throws -> SignedAssertion {
+        let issued = try await challengeResponse()
+        let bound = Self.boundAppTransaction(appTransaction, to: issued)
+        let clientData = Self.assertionClientData(
+            app: appID,
+            challenge: issued.challenge,
+            keyID: keyID,
+            appTransaction: bound
+        )
         let assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
-        return SignedAssertion(keyID: keyID, challenge: challengeValue, assertion: assertion)
+        return SignedAssertion(
+            keyID: keyID,
+            challenge: issued.challenge,
+            assertion: assertion,
+            appTransaction: bound
+        )
+    }
+
+    /// The transaction an assertion over `issued` may carry: none unless the
+    /// gateway that issued the challenge said it reads one. Decided per
+    /// challenge, since each is the gateway's answer at the moment it signs.
+    private static func boundAppTransaction(_ appTransaction: String?, to issued: ChallengeResponse) -> String? {
+        issued.accepts_app_transaction == true ? appTransaction : nil
     }
 
     /// Registers a replacement, and lets `registerKey` store it once the
@@ -879,6 +1016,10 @@ public actor AppAIGatewayClient {
     /// Omits `issuer_token` entirely in install mode. The gateway refuses one
     /// there rather than ignoring it, because a client presenting a token
     /// believes it is authenticating a person.
+    ///
+    /// `app_transaction` is sent only beside an assertion bound to it: the
+    /// gateway checks the one against the other, so a transaction lifted from
+    /// another device cannot be swapped in to borrow its Apple Account.
     private func tokenBody(_ issuerToken: String?, _ signed: SignedAssertion) -> [String: String] {
         var body = [
             "key_id": signed.keyID,
@@ -886,6 +1027,7 @@ public actor AppAIGatewayClient {
             "challenge": signed.challenge,
         ]
         if let issuerToken { body["issuer_token"] = issuerToken }
+        if let appTransaction = signed.appTransaction { body["app_transaction"] = appTransaction }
         return body
     }
 
@@ -908,8 +1050,11 @@ public actor AppAIGatewayClient {
     }
 
     private func challenge() async throws -> String {
-        let response: ChallengeResponse = try await postJSON(path: "auth/challenge", body: [:])
-        return response.challenge
+        try await challengeResponse().challenge
+    }
+
+    private func challengeResponse() async throws -> ChallengeResponse {
+        try await postJSON(path: "auth/challenge", body: [:])
     }
 
     /// The issuer token this mode presents, or `nil` where the mode has no user
@@ -945,6 +1090,7 @@ public actor AppAIGatewayClient {
         var request = URLRequest(url: baseURL.appending(path: "v1/apps/\(appID)/\(path)"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        Self.identifyClient(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
@@ -975,23 +1121,66 @@ public actor AppAIGatewayClient {
         return try JSONDecoder().decode(Response.self, from: data)
     }
 
-    private func scheduleRefresh(for token: AccessToken) {
+    private func scheduleRefresh(at date: Date) {
         refreshTask?.cancel()
-        let delay = max(1, token.refreshAt.timeIntervalSinceNow)
+        let delay = max(1, date.timeIntervalSinceNow)
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            _ = try? await self?.refreshGatewayAccessToken()
+            await self?.attemptRefresh()
         }
     }
 
-    static func refreshDelay(for lifetime: TimeInterval) -> TimeInterval {
-        let leeway = min(300, max(15, lifetime * 0.2))
-        return max(1, lifetime - leeway)
+    /// How long before expiry a token is replaced: a quarter of its lifetime,
+    /// at least 15 seconds and at most 15 minutes. For the gateway's one-hour
+    /// token that is fifteen minutes, which a regional outage of the gateway's
+    /// storage rarely outlasts.
+    static func refreshLeeway(for lifetime: TimeInterval) -> TimeInterval {
+        min(900, max(15, lifetime * 0.25))
     }
 
-    static func assertionClientData(app: String, challenge: String, keyID: String) -> Data {
-        Data("{\"app\":\"\(app)\",\"challenge\":\"\(challenge)\",\"key_id\":\"\(keyID)\"}".utf8)
+    static func refreshDelay(for lifetime: TimeInterval) -> TimeInterval {
+        max(1, lifetime - refreshLeeway(for: lifetime))
+    }
+
+    /// How long a failed refresh waits before the next try: a minute for a
+    /// one-hour token, proportionally less for a shorter one.
+    static func refreshRetryInterval(forLeeway leeway: TimeInterval) -> TimeInterval {
+        min(60, max(1, leeway / 15))
+    }
+
+    /// How close to expiry a token is still sent: thirty seconds for a
+    /// one-hour token, proportionally less for a shorter one.
+    static func usableMargin(forLeeway leeway: TimeInterval) -> TimeInterval {
+        min(30, leeway / 30)
+    }
+
+    /// What the token exchange's assertion is signed over: JSON written by
+    /// hand, because the gateway rebuilds it byte for byte and Foundation
+    /// promises neither key order nor how `/` is escaped. No value needs
+    /// escaping: an app id is a slug, a challenge base64url, a key id
+    /// standard base64.
+    ///
+    /// With an App Store transaction, a fourth key closes it: the
+    /// transaction's SHA-256, base64url without padding. Without one it is the
+    /// three-key form, byte for byte, that it has always been.
+    static func assertionClientData(
+        app: String,
+        challenge: String,
+        keyID: String,
+        appTransaction: String? = nil
+    ) -> Data {
+        var json = "{\"app\":\"\(app)\",\"challenge\":\"\(challenge)\",\"key_id\":\"\(keyID)\""
+        if let appTransaction {
+            json += ",\"app_transaction\":\"\(appTransactionHash(appTransaction))\""
+        }
+        return Data((json + "}").utf8)
+    }
+
+    /// SHA-256 of the transaction's UTF-8 bytes, base64url without padding:
+    /// what the exchange's client data binds the transaction by.
+    static func appTransactionHash(_ appTransaction: String) -> String {
+        Data(appTransaction.utf8).sha256.base64URLEncodedString()
     }
 
     static func apiKeyTokenBody(issuerToken: String, apiKey: String) -> [String: String] {
@@ -1007,5 +1196,13 @@ public actor AppAIGatewayClient {
 
     private static var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+
+    /// The headers every request this client sends or builds names itself
+    /// with: the app's version and this package's. Neither is signed: a
+    /// request proof covers the method, URL, body and token, never a header.
+    private static func identifyClient(_ request: inout URLRequest) {
+        request.setValue(appVersion, forHTTPHeaderField: "X-App-Version")
+        request.setValue(ClientSDK.headerValue, forHTTPHeaderField: ClientSDK.headerField)
     }
 }

@@ -1,0 +1,9 @@
+{
+  "files": {
+    "test/migration.test.ts": "Guards the database schema that existing deployments migrate from; it is meant to stay green.",
+    "test/openapi.test.ts": "Guards the published API contract that clients are generated from.",
+    "test/entry-exports.test.ts": "Guards the Worker entry module's exports, which a deployment fails without.",
+    "test/catalog.test.ts": "Guards that every documented operation is mounted, and nothing else."
+  },
+  "tests": {}
+}

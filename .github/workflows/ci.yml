@@ -14,11 +14,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The daily model catalog pull request (.github/workflows/update-models.yml) is
-  # opened with the default token, which starts no `pull_request` run; that
-  # workflow dispatches this one on its branch instead, and `report` below puts
-  # the result on the pull request.
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,18 +28,31 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6 # the version pinned in packageManager
-      - uses: actions/setup-node@v7
+      # Installs the pnpm version pinned in packageManager.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # The test ledger records every test's result; a scheduled job outside
+      # this repository reads the artifacts to find flaky, slow and idle tests.
+      # See scripts/test-ledger/README.md.
       - run: pnpm run verify
+        env:
+          TEST_LEDGER_DIR: ${{ runner.temp }}/test-ledger
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-ledger
+          path: ${{ runner.temp }}/test-ledger
+          retention-days: 30
+          if-no-files-found: ignore
 
       # Builds the Worker exactly as a deployment would, without an account or a
       # token: `--dry-run` never contacts Cloudflare.
@@ -52,13 +60,22 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
+      # The release deploys the hosted gateway prebuilt, from a job that installs
+      # only deploy/ (from its own lockfile). Both would otherwise first fail
+      # after the owner approved a release.
+      - run: pnpm run deploy:prebuilt:dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+      - name: Check the deploy tools install
+        run: pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
+
   versions:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -71,28 +88,57 @@ jobs:
           git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           node scripts/check-version-unchanged.mjs "origin/${BASE_REF}"
 
-  # GitHub does not show the checks of a dispatched run on a pull request, so a
-  # dispatched run reports its result as a commit status on the commit it
-  # tested, which the pull request does show. A job of its own, so that the one
-  # token allowed to write a status never runs the repository's code.
-  report:
-    if: always() && github.event_name == 'workflow_dispatch'
-    needs: verify
+  # Price updates arrive as pull requests from the `app-ai-gateway-prices-bot`
+  # GitHub App that change only src/usage/models.json, and a merged one goes
+  # live without a release (.github/workflows/deploy-prices.yml). This holds
+  # that author to that one file. It is a required check, so the job runs on
+  # every pull request and always reports a result: its steps, not the job,
+  # decide whether there is anything to check. It runs none of the pull
+  # request's code, and fails if it cannot read the pull request's files.
+  price-pr-scope:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      statuses: write
+      contents: read
+      pull-requests: read
     steps:
-      - name: Report the result on the tested commit
+      - name: Not a price update
+        if: github.event.pull_request.user.login != 'app-ai-gateway-prices-bot[bot]'
+        run: echo "Not opened by the prices bot; nothing to check."
+
+      - name: Check the price update changes only the price list
+        if: github.event.pull_request.user.login == 'app-ai-gateway-prices-bot[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
-          RESULT: ${{ needs.verify.result }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          case "$RESULT" in
-            success) state=success; text="Checks and tests passed" ;;
-            failure) state=failure; text="Checks or tests failed" ;;
-            *) state=error; text="CI did not finish ($RESULT)" ;;
-          esac
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-            -f state="$state" -f context="CI / verify" -f description="$text" -f target_url="$RUN_URL"
+          # Each file as a JSON array, which no file name can turn into a
+          # workflow command when it is printed.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            --jq '.[] | [.status, .filename] | @json' > "$RUNNER_TEMP/files.txt"
+          echo "Changed files:"
+          cat "$RUNNER_TEMP/files.txt"
+          if [ "$(cat "$RUNNER_TEMP/files.txt")" != '["modified","src/usage/models.json"]' ]; then
+            echo "::error::A price update may change src/usage/models.json and nothing else."
+            exit 1
+          fi
+
+      # The base branch's own code and price list, never the pull request's
+      # code: only its price list is read, as data.
+      - name: Check out the base branch
+        if: github.event.pull_request.user.login == 'app-ai-gateway-prices-bot[bot]'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Check the price update breaks nothing that worked
+        if: github.event.pull_request.user.login == 'app-ai-gateway-prices-bot[bot]'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin "pull/${PR_NUMBER}/head"
+          git show FETCH_HEAD:src/usage/models.json > "$RUNNER_TEMP/models.json"
+          node scripts/check-price-update.mjs src/usage/models.json "$RUNNER_TEMP/models.json"

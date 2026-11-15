@@ -16,7 +16,7 @@ import type {
 import type { CreatedApiKey, OrganizationSummary } from "../../src/contracts/responses.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { GatewayClient, type CallOptions, type CallResult, type OperationName } from "./client.ts";
-import { CliError, CLOUD, fail, MANAGEMENT_KEY_ENV, origin, randomToken } from "./common.ts";
+import { CliError, CLOUD, fail, MANAGEMENT_KEY_ENV, origin, randomToken, VERSION } from "./common.ts";
 import { secret } from "./input.ts";
 import { browserAvailable, clientDescription, listenLoopback, type Loopback } from "./login.ts";
 import type { OutputSink } from "./main.ts";
@@ -98,6 +98,32 @@ export interface KeyedOperation {
   key: StoredKeyMetadata;
 }
 
+/**
+ * Something a command wants the person running it to know without it being
+ * the command's answer: printed to stderr as it happens, and carried in the
+ * `--json` envelope as `notices`.
+ */
+export interface Notice {
+  code: "newer_deployment" | "unknown_settings_replaced" | "version_mismatch";
+  message: string;
+  /** Where in the documents involved the notice applies, for the notices about settings. */
+  paths?: string[];
+  /** The two releases, for `version_mismatch`. */
+  cliVersion?: string;
+  apiVersion?: string;
+}
+
+/** At most this many paths are named on a terminal; `--json` carries all of them. */
+const NOTICE_PATHS = 5;
+
+/** A notice as a terminal shows it: the message, then the settings it names. */
+export function noticeText(notice: Notice, style: Pick<ReturnType<typeof styleFor>, "warn" | "dim">): string {
+  const paths = notice.paths ?? [];
+  const shown = paths.slice(0, NOTICE_PATHS).join(", ");
+  const more = paths.length > NOTICE_PATHS ? ` and ${paths.length - NOTICE_PATHS} more` : "";
+  return `${style.warn(`Note: ${notice.message}`)}\n${paths.length ? `${style.dim(`  Settings: ${shown}${more}`)}\n` : ""}`;
+}
+
 export interface Onboarding {
   account: OrganizationSummary;
   unclaimedAccess: { endsAt: string; limit?: number } | null;
@@ -175,6 +201,8 @@ export class Context {
   readonly io: ContextIo;
   /** Operations whose result this run has printed, released once stdout has taken it. */
   readonly delivered = new Set<string>();
+  /** What this run has noticed along the way, in the order it was noticed. */
+  readonly notices: Notice[] = [];
   onboarding?: Onboarding;
 
   constructor(
@@ -233,19 +261,47 @@ export class Context {
   }
 
   /** One documented operation, sent with only the credential `options` names; see {@link GatewayClient}. */
-  publicCall<K extends OperationName>(
+  async publicCall<K extends OperationName>(
     name: K,
     options: CallOptions<K> = {},
   ): Promise<CallResult<OperationResponse<K>>> {
-    return this.client.publicCall(name, options);
+    return this.noticed(await this.client.publicCall(name, options));
   }
 
   /** The same call, with the connection's management credential attached. */
-  call<K extends OperationName>(
+  async call<K extends OperationName>(
     name: K,
     options: CallOptions<K> = {},
   ): Promise<CallResult<OperationResponse<K>>> {
-    return this.client.call(name, options);
+    return this.noticed(await this.client.call(name, options));
+  }
+
+  /**
+   * Says, once per run, that the deployment answered with settings this
+   * release does not know. Every later answer that does adds its paths to the
+   * same notice rather than repeating it.
+   */
+  private noticed<T>(result: CallResult<T>): CallResult<T> {
+    if (!result.newer?.length) return result;
+    const existing = this.notices.find((notice) => notice.code === "newer_deployment");
+    if (existing) {
+      const paths = (existing.paths ??= []);
+      for (const path of result.newer) if (!paths.includes(path)) paths.push(path);
+      return result;
+    }
+    this.notice({
+      code: "newer_deployment",
+      message: `This deployment is newer than agw ${VERSION} and has settings this agw does not understand. They are kept unchanged when agw saves, but are not explained or checked. Update agw: npm install -g @maxceem/agw`,
+      paths: [...result.newer],
+    });
+    return result;
+  }
+
+  /** Records a notice, and prints it to stderr unless stdout is one `--json` document. */
+  notice(notice: Notice): void {
+    this.notices.push(notice);
+    if (this.flags.json) return;
+    this.io.stderr.write(noticeText(notice, styleFor(this.io.stderr)));
   }
 
   /**

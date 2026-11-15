@@ -13,6 +13,7 @@ import { openSecret } from "../vault/secrets";
 import type { ProviderRoute } from "../shared/capabilities";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
+import { readOrKnown } from "../core/stale-read";
 import { ttlCache } from "../core/ttl-cache";
 import {
   DIRECT_ROUTE,
@@ -23,6 +24,7 @@ import { isGatewayType, type StoredGateway } from "../shared/gateways";
 import { invalidStoredGateway, readStoredGateway } from "./gateway-adapters";
 import { recordFromEntries } from "../shared/records";
 import type { ProviderType } from "../shared/providers";
+import { errorFacts } from "../core/error-facts";
 
 export interface ResolvedProvider {
   id: string;
@@ -231,10 +233,14 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
   const cached = providerRowsCache.get(organizationId);
   if (cached) return cached;
   // Fill from the authoritative primary. The row-cache TTL is the only
-  // intentional configuration staleness window on the data plane.
-  const rows = await queryOrganizationRows(database(env.DB), organizationId);
-  providerRowsCache.set(organizationId, rows);
-  return rows;
+  // intentional configuration staleness window on the data plane, except that
+  // an expired row set still rides out a D1 stall; see `../core/stale-read`.
+  return readOrKnown("providers", providerRowsCache.peek(organizationId), async () => {
+    const startedAt = Date.now();
+    const rows = await queryOrganizationRows(database(env.DB), organizationId);
+    providerRowsCache.set(organizationId, rows, { storedAt: startedAt });
+    return rows;
+  });
 }
 
 async function plaintextSecret(
@@ -282,7 +288,7 @@ async function plaintextSecret(
         providerSlug: row.slug,
         providerType: row.type,
         ageMs: stale.ageMs,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
       return stale.secret;
     }
@@ -291,7 +297,7 @@ async function plaintextSecret(
       providerId: row.id,
       providerSlug: row.slug,
       providerType: row.type,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "Provider credential could not be read");
   }
@@ -324,14 +330,14 @@ export async function decryptProviderGatewaySecret(
         organizationId,
         providerGatewayId,
         ageMs: stale.ageMs,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
       return stale.secret;
     }
     log("error", "provider_gateway_secret_unavailable", {
       organizationId,
       providerGatewayId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "Provider gateway credential could not be read");
   }

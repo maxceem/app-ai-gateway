@@ -213,13 +213,21 @@ export const pathOf = (path: AllowedPath): string => (typeof path === "string" ?
 export const pathObject = (path: AllowedPath): AllowedPathObject =>
   typeof path === "string" ? { path } : path;
 
-/** Keeps configs tidy: a path with no extras is stored as a plain string. */
+/**
+ * Keeps configs tidy: a path with no extras is stored as a plain string, and a
+ * method list that says only what the default already does — POST alone — is
+ * left out.
+ */
 export function normalizePath(path: AllowedPathObject): AllowedPath {
-  if (!path.fixed_model && (!path.clamp || path.clamp === undefined)) return path.path;
+  const methods = path.methods && !(path.methods.length === 1 && path.methods[0] === "POST")
+    ? path.methods
+    : undefined;
+  if (!path.fixed_model && !path.clamp && !methods) return path.path;
   return {
     path: path.path,
     ...(path.fixed_model ? { fixed_model: path.fixed_model } : {}),
     ...(path.clamp ? { clamp: path.clamp } : {}),
+    ...(methods ? { methods } : {}),
   };
 }
 

@@ -147,13 +147,13 @@ export function AppDetailPage() {
         ) : tab === "users" ? (
           // The users table measures each user against the app's own per-user
           // budget, which lives in the draft this page already holds. An app with
-          // no limits block is unlimited.
+          // no limits block is unlimited. An App Attest app's unwritten scope is
+          // the schema's default, the Apple Account; a server app's is the user.
           <UsersTab
             appId={appId}
             monthlyBudgetUsd={draftLimits(draft.config.limits).per_user.spending.monthly_usd}
             budgetScope={draft.config.authentication.type === "apple_app_attest"
-              && draftLimits(draft.config.limits).per_user.spending.scope !== "user"
-              ? "install"
+              ? draftLimits(draft.config.limits).per_user.spending.scope ?? "apple_account"
               : "user"}
             appAttest={draft.config.authentication.type === "apple_app_attest"}
             installsOnly={installsOnly}
@@ -167,6 +167,9 @@ export function AppDetailPage() {
             {tab === "usage" ? (
               <UsageTab
                 appId={appId}
+                // Traffic is broken down by the user only when the budget is
+                // the user's. An Apple Account has no breakdown of its own, so
+                // under it, as under install, the install is the finest grain.
                 identity={draft.config.authentication.type === "apple_app_attest"
                   ? draftLimits(draft.config.limits).per_user.spending.scope === "user" ? "user" : "install"
                   : "user"}

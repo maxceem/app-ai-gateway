@@ -3,6 +3,7 @@ import type { BillingPlanSelection } from "@contracts/billing";
 import type { OperationParams, OperationQuery, OperationRequest } from "@contracts/catalog";
 import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
+import { plainlySignedOut } from "./auth";
 import { toAppWrite } from "./config-conversion";
 import {
   changePassword,
@@ -12,7 +13,6 @@ import {
   type SignInInput,
   type SignUpInput,
 } from "./auth";
-import { analytics, captureAppCreated, captureProviderAdded, noteAuthMethod } from "./analytics";
 import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
   AppCreateBody,
@@ -69,13 +69,15 @@ export function useCapabilities() {
 /**
  * The operator's identity, active organization and role.
  *
- * A 401 here is the normal unauthenticated case rather than an error worth
- * retrying, so the caller treats a failed query as "signed out".
+ * Better Auth is asked first, and a browser it says is signed out is answered
+ * `null` without a management call, which could only have been refused. A
+ * 401 from the management API is still the unauthenticated case rather than
+ * an error worth retrying, so the caller treats a failed query as "signed out".
  */
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await call("getAdminSession")).session,
+    queryFn: async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session,
     retry: false,
     staleTime: 60_000,
   });
@@ -105,7 +107,6 @@ export function useSignIn() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: SignInInput) => {
-      noteAuthMethod("password");
       return signInWithPassword(input);
     },
     onSuccess: () => client.invalidateQueries(),
@@ -116,7 +117,6 @@ export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: SignUpInput) => {
-      noteAuthMethod("password");
       return signUpWithPassword(input);
     },
     onSuccess: () => client.invalidateQueries(),
@@ -128,11 +128,8 @@ export function useSignOut() {
   return useMutation({
     mutationFn: () => signOut(),
     // Clearing rather than invalidating drops every organization-scoped cache
-    // so the next operator never sees the previous one's data. Analytics is
-    // reset for the same reason: whoever signs in next on this browser is
-    // somebody else until they say otherwise.
+    // so the next operator never sees the previous one's data.
     onSettled: () => {
-      analytics.reset();
       client.clear();
     },
   });
@@ -158,10 +155,18 @@ export function useSelectOrganization() {
   return useMutation({
     mutationFn: (organizationId: string) =>
       call("selectOrganization", { body: { organizationId } }),
-    onSuccess: (result) => {
-      // Every cached list is scoped to the previous organization.
-      client.clear();
+    onSuccess: async (result) => {
       client.setQueryData(keys.session, result.session);
+      // Every cached list is scoped to the previous organization, so its data
+      // is dropped. Reset rather than `clear()`: clearing removes the queries
+      // the mounted pages observe, which then keep rendering the previous
+      // organization's data and never fetch again. A reset empties them in
+      // place and refetches the ones on screen, under the new organization.
+      // The session was just replaced, and capabilities describe the
+      // deployment rather than an organization; resetting either would only
+      // blank the whole shell while it reloads.
+      const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
+      await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) });
     },
   });
 }
@@ -243,9 +248,7 @@ export function useCreateProvider() {
   return useMutation({
     mutationFn: (body: ProviderCreateBody) => call("createProvider", { body }),
     gcTime: 0,
-    onSuccess: (_result, body) => {
-      // The provider type and the route it takes; `body.secret` stays here.
-      captureProviderAdded(body.type, body.providerGatewayId !== undefined);
+    onSuccess: () => {
       invalidateProviderLists(client);
     },
   });
@@ -414,6 +417,12 @@ export function useChangePlan() {
   });
 }
 
+export function useSendSupportMessage() {
+  return useMutation({
+    mutationFn: (body: OperationRequest<"sendSupportMessage">) => call("sendSupportMessage", { body }),
+  });
+}
+
 export function useCancelSubscription() {
   const client = useQueryClient();
   return useMutation({
@@ -469,10 +478,7 @@ export function useCreateApp() {
   return useMutation({
     mutationFn: (body: AppCreateBody): Promise<CreatedApp> =>
       call("createApp", { body: toAppWrite(body) }),
-    onSuccess: (created, body) => {
-      // Which of the two ways in the application was born with, since App
-      // Attest rather than an API key is what this product is built for.
-      captureAppCreated(body.config.authentication.type);
+    onSuccess: (created) => {
       void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
       void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },

@@ -179,8 +179,9 @@ describe("realtime protocol and accounting", () => {
   it("normalizes disjoint cached audio/text and computes independently priced cost", () => {
     const normalized = openAIUsage(usage);
     expect(normalized.inputTokens).toBe(70);
-    expect(normalized.modalityTokens?.input?.audio).toBe(60);
-    expect(normalized.modalityTokens?.cachedInput?.audio).toBe(20);
+    // The modality count covers the whole prompt; the cached part is a variant.
+    expect(normalized.modalityTokens?.input?.audio).toBe(80);
+    expect(normalized.tokenVariants?.cached_input?.audio).toBe(20);
     expect(computeCost("openai", "gpt-realtime", normalized)).toBeCloseTo(
       (10 * 4 + 60 * 32 + 10 * .4 + 20 * .4 + 5 * 16 + 15 * 64) / 1e6,
     );

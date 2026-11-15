@@ -1,6 +1,7 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
+import { requirePlanFeature } from "../billing/features";
 import { getBillingAccess, requireActiveBilling } from "../billing/gateway";
-import type { AppUpdate, AppWrite } from "../contracts/schemas";
+import { AppWriteSchema, type AppPatch, type AppUpdate, type AppWrite } from "../contracts/schemas";
 import type {
   AppDeleteResponse,
   AppListResponse,
@@ -43,9 +44,10 @@ import type { Actor } from "./actor";
 import { appInsertStatement, updateApp as writeAppRow } from "./app-writes";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { databaseErrorMatches } from "./validation";
+import { applyAppPatch } from "./app-patch";
+import { databaseErrorMatches, parseRequest } from "./validation";
 import { assertMonth, EMPTY_USAGE_TOTALS, organizationMonthUsage } from "./usage-queries";
-import { endUserIdentities } from "./users";
+import { endUserCounts } from "./users";
 import { commitResourceWrite, type ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
@@ -127,10 +129,20 @@ function generatedAppId(name: string): string {
 const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();
 
 function validatedConfig(
+  env: Env,
   next: AppConfig,
   providers: OrganizationProviders,
   grandfathered: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
 ): AppConfig {
+  // Refused rather than accepted and ignored: an operator who turned storage
+  // on would otherwise believe conversations were being kept.
+  if (next.conversations.store && env.CONVERSATIONS === undefined) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "conversations.store needs conversation storage, which is not set up on this deployment: see https://docs.appaigateway.com/self-hosting/configuration/#conversation-storage",
+    );
+  }
   try {
     validateConfigurationReferences(next, { instances: providers, grandfathered });
     return next;
@@ -205,6 +217,22 @@ async function requireEntitlement(
   );
 }
 
+/**
+ * Turning conversation history on needs a plan that includes it. Keeping it on
+ * does not: an app that stored conversations before its account moved to a
+ * plan without them stays editable as it is, and stores nothing new until the
+ * plan includes them again; see `../execution/serve.ts`.
+ */
+async function requireConversationStorage(
+  scope: ManagementScope,
+  organizationId: string,
+  next: AppConfig,
+  current?: AppConfig,
+): Promise<void> {
+  if (!next.conversations.store || current?.conversations.store) return;
+  await requirePlanFeature(scope, organizationId, "conversationStorage");
+}
+
 export async function listApps(
   scope: ManagementScope,
   actor: Actor,
@@ -222,11 +250,7 @@ export async function listApps(
     .orderBy(app.id);
   const { results: usage } = await organizationMonthUsage(env.DB, organizationId, month);
   const usageByApp = new Map(usage.map(({ app_id, ...totals }) => [app_id, totals]));
-  const identities = endUserIdentities({ organizationId });
-  const counts = await prepared(env.DB, sql`${identities}
-     SELECT app_id, COUNT(*) AS total,
-            SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
-       FROM identities GROUP BY app_id`).all<{
+  const counts = await prepared(env.DB, endUserCounts(organizationId)).all<{
     app_id: string;
     total: number;
     blocked: number;
@@ -294,9 +318,11 @@ export async function createApp(
   const { name } = body;
   const organizationId = actor.organizationId;
   const config = validatedConfig(
+    env,
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
   );
+  await requireConversationStorage(scope, organizationId, config);
   const cap = await planCap(scope, "app", organizationId);
   for (let attempt = 0; attempt < APP_ID_ATTEMPTS; attempt += 1) {
     const appId = generatedAppId(name);
@@ -373,11 +399,14 @@ export async function validateApp(
   body: AppWrite,
 ): Promise<AppValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  validatedConfig(
+  const current = appRecordFromRow(existing).config;
+  const config = validatedConfig(
+    scope.env,
     body.config,
     await authoritativeOrganizationProviders(scope.env, actor.organizationId),
-    referencedProviderSlugs(appRecordFromRow(existing).config),
+    referencedProviderSlugs(current),
   );
+  await requireConversationStorage(scope, actor.organizationId, config, current);
   return { valid: true, app_id: existing.id };
 }
 
@@ -388,7 +417,12 @@ export async function validateAppDraft(
   body: AppWrite,
 ): Promise<AppDraftValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  validatedConfig(body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
+  const config = validatedConfig(
+    scope.env,
+    body.config,
+    await authoritativeOrganizationProviders(scope.env, actor.organizationId),
+  );
+  await requireConversationStorage(scope, actor.organizationId, config);
   return { valid: true };
 }
 
@@ -402,21 +436,17 @@ export async function updateApp(
   await requireEntitlement(scope, actor.organizationId);
   const appId = existing.id;
   const organizationId = actor.organizationId;
-  // Optional in the shape only so that its absence has a code of its own; see
-  // `AppUpdateSchema`.
-  if (body.revision === undefined) {
-    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
-  }
-  if (body.revision !== existing.revision) {
-    throw new GatewayError(409, "app_revision_conflict", "The application changed; reload it before saving your changes");
-  }
+  requireRevision(existing, body.revision);
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
+  const current = appRecordFromRow(existing).config;
   const config = validatedConfig(
+    env,
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
-    referencedProviderSlugs(appRecordFromRow(existing).config),
+    referencedProviderSlugs(current),
   );
+  await requireConversationStorage(scope, organizationId, config, current);
   // Conditional on the row still being this organization's, so an app deleted
   // or handed over between the read above and this write is not resurrected
   // under the caller's name.
@@ -432,6 +462,41 @@ export async function updateApp(
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
   return { app: serializeApp(written) };
+}
+
+/**
+ * Optional in the shape only so that its absence has a code of its own; see
+ * `AppUpdateSchema`. A stale one is refused before anything is judged.
+ */
+function requireRevision(existing: AppRow, revision: number | undefined): void {
+  if (revision === undefined) {
+    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
+  }
+  if (revision !== existing.revision) {
+    throw new GatewayError(409, "app_revision_conflict", "The application changed; reload it before saving your changes");
+  }
+}
+
+/**
+ * A partial update: the operations applied to the application as stored, and
+ * the resulting whole document then written exactly as `updateApp` writes one
+ * — the same schema, references, storage and revision checks, in the same
+ * words. A patch is therefore never more permissive than a full update, and
+ * a refused one writes nothing.
+ */
+export async function patchApp(
+  scope: ManagementScope,
+  actor: Actor,
+  existing: AppRow,
+  body: AppPatch,
+): Promise<AppResponse> {
+  requireRevision(existing, body.revision);
+  const stored = storedAppFromRow(existing);
+  const patched = applyAppPatch(
+    { name: stored.name, config: stored.config, status: stored.status },
+    body.operations,
+  );
+  return updateApp(scope, actor, existing, { ...parseRequest(AppWriteSchema, patched), revision: body.revision });
 }
 
 export async function deleteApp(

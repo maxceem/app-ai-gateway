@@ -9,7 +9,7 @@ Add `https://github.com/maxceem/app-ai-gateway-swift` in Xcode's **File → Add
 Package Dependencies**, or add this dependency to `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.7.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.8.0")
 ```
 
 Add the `AppAIGateway` product to your target.
@@ -106,6 +106,16 @@ it as `verify_on`:
 Build requests through the package in either case, so a change of the
 setting needs no change in your app.
 
+In the App Attest modes the token exchange also sends the app's App Store
+transaction (StoreKit's `AppTransaction`), signed by Apple and bound into the
+exchange's assertion. That lets an app measure its monthly budget per Apple
+Account, which holds across reinstalls and devices, rather than per install.
+There is nothing to configure, and the user is never asked to sign in: the
+package reads only what StoreKit already has. Where no transaction is
+available, as on a simulator or offline, the exchange goes ahead without one
+and the gateway counts the install. A gateway too old to read the transaction
+is not sent one.
+
 To show the caller where they stand against your app's limits, send
 `withCurrentUserRequest`, a `GET /v1/apps/{app}/me` signed the same way and
 resent once on a `401` (`currentUserRequest()` builds it alone). Build it
@@ -129,9 +139,14 @@ gets it whenever the app verifies every request. If you send requests built
 with `authorizedRequest`, handle a `401` yourself: call `discardAccessToken()`
 and build the request again, once.
 
-### Realtime sessions (1.7)
+Every request the package sends or builds names your app's version in
+`X-App-Version` and the package's in `X-Client-SDK`
+(`app-ai-gateway-swift/<version>`), so the gateway can show which package
+release your installs run. Neither header is sent on to the provider.
 
-1.7 adds provider-native realtime WebSockets. `authorizedRealtimeRequest(provider:model:)`
+### Realtime sessions
+
+The package supports provider-native realtime WebSockets. `authorizedRealtimeRequest(provider:model:)`
 discovers the connection URL with a signed request, then builds the WebSocket
 handshake, signed as well where the app verifies every request. Open it with
 `URLSession.webSocketTask(with:)`, and build a new one for every connection,
@@ -148,10 +163,12 @@ This repository is published from the `app-ai-gateway-swift` directory of
 issues and pull requests there.
 
 To release a new version, update `app-ai-gateway-swift/VERSION` in the source
-repository and merge the pull request into `main`. After tests pass, the
+repository, set `ClientSDK.version` in `Sources/AppAIGateway/ClientSDK.swift`
+to the same value (a test fails until they match), and merge the pull request
+into `main`. After tests pass, the
 publishing workflow syncs this repository and creates the matching immutable
 version tag. Changes without a version bump sync `main` without changing any
-released version. The current version is `1.7.0`. A failed publish can be retried
+released version. The current version is `1.8.0`. A failed publish can be retried
 with the source repository's **Publish Swift package** workflow.
 
 Licensed under the Apache License 2.0.

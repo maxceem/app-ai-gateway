@@ -21,6 +21,7 @@ import {
   type ProviderRoute,
 } from "./capabilities.ts";
 import type { ProviderType } from "./providers.ts";
+import type { ServiceModeField } from "./service-modes.ts";
 
 /** One non-secret connection value, as the console asks for it. */
 export interface GatewayConnectionField {
@@ -60,6 +61,13 @@ export interface GatewayDescriptor {
    * which never arrives would record every request unresolved.
    */
   relaysProviderResponses: boolean;
+  /**
+   * Request fields this gateway reads a service mode from beyond the provider's
+   * own, which it forwards as they are: a gateway with a vocabulary of its own
+   * would otherwise be a way around the provider's table. Read on top of the
+   * provider type's {@link ProviderDescriptor.serviceModes}.
+   */
+  serviceModes: readonly ServiceModeField[];
 }
 
 const GatewayIdSchema = z.string().trim().min(1).max(100);
@@ -81,6 +89,7 @@ export const GATEWAY_DESCRIPTORS = {
     routes: CF_AIG_ROUTES,
     // A proxy in front of the provider's own API: the body is the provider's.
     relaysProviderResponses: true,
+    serviceModes: [],
   },
   vercel: {
     label: "Vercel AI Gateway",
@@ -102,6 +111,36 @@ export const GATEWAY_DESCRIPTORS = {
     // the serving provider's protocol, so a provider's own fields are not part
     // of the contract.
     relaysProviderResponses: false,
+    // Vercel's own tier options, which it maps to each provider's field, and the
+    // per-provider options it passes on: Anthropic's speed, and OpenAI's tier,
+    // the only way to ask for ultrafast there. Vercel hands its `serviceTier` to
+    // the provider as the provider's own `service_tier`, so it is read with the
+    // provider's table: `priority` is fast on OpenAI and priority on Gemini.
+    serviceModes: [
+      {
+        names: ["providerOptions.gateway.serviceTier"],
+        as: "service_tier",
+        axis: "tier",
+        values: { default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "fast" },
+      },
+      {
+        names: ["providerOptions.gateway.speed", "providerOptions.anthropic.speed"],
+        axis: "tier",
+        values: { standard: "standard", fast: "fast" },
+      },
+      {
+        names: ["providerOptions.openai.serviceTier"],
+        axis: "tier",
+        values: {
+          auto: "standard",
+          default: "standard",
+          flex: "flex",
+          priority: "fast",
+          fast: "fast",
+          ultrafast: "ultrafast",
+        },
+      },
+    ],
   },
 } as const satisfies Record<string, GatewayDescriptor>;
 

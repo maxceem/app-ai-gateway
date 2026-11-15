@@ -66,15 +66,24 @@ or approve the claim yourself. Claiming preserves the agent's access.
    for a production-only app: CLI flag-based creation otherwise enables both
    production and development. For server keys, use `--key-output` with an
    unused private path, or retain the CLI's managed private output file.
-4. For a new app file, use `agw app validate --file app.json --json`. For an
-   existing app, use `agw app update <app-id> --file app.json --dry-run --json`
-   so validation is performed as an update of that app. The file contains only
-   `name`, `config` and `status` from `result.app`; exclude metadata such as
-   `id`, `revision` and timestamps. Keep every existing configuration field.
-5. Apply the requested update, then reread the app. File updates replace the
-   whole document. The CLI reads a revision when the update command starts;
-   this protects against a competing write during that command, not edits
-   made since an earlier file export. Refresh and merge an old file first.
+4. To change an existing app, prefer `agw app update <app-id>` with the flags
+   that name the change, such as `--name`, `--status`, `--team-id`,
+   `--verify-on` or `--providers`: they change nothing else and need no
+   revision. A list flag takes repeated values or commas
+   (`--providers openai,anthropic`). For any other setting, pass `--operations @patch.json` with the
+   `--revision` from `app show`; the file is a list of operations, each `add`,
+   `replace` or `remove` at a path such as
+   `/config/limits/per_app/requests/per_minute`, and the result is checked as a
+   whole update would be. Check a document first with `agw app validate
+   [app-id] --config @app.json --json`.
+5. To replace an app's whole document, use `agw app replace <app-id> --config
+   @app.json --json`, with `name`, `config`, `status` and `revision` from
+   `result.app` of `app show`. Keep every existing configuration field,
+   including ones you do not recognize. A stale revision is refused with
+   `app_revision_conflict`: reread, merge and repeat. Then reread the app. A
+   value shown as `[redacted]` is hidden, not stored that way: never send it
+   back. Use `app update` for such an app, and tell the person that setting
+   itself is changed in the console.
 6. Run `agw app check <app-id> --json` and
    `agw app snippet <app-id> --json`. Resolve any placeholders named in
    `result.notes`. The check reads configuration only: no provider key,
@@ -83,9 +92,18 @@ or approve the claim yourself. Claiming preserves the agent's access.
 7. Report the app ID, provider slugs, API base URL, key file location, checks
    and remaining work. Report pending handoffs as pending, never completed.
 
-For every unattended command, use `--json --no-input`; for browser handoffs,
+Commands other than sign-in, deployment, adding providers, apps and keys, and
+browser steps come from the connected gateway: `agw --help` lists them and
+`agw <command> --help` gives their flags. A deletion runs only with `--yes`
+once the person has agreed. For every unattended command, use
+`--json --no-input`; for browser handoffs,
 add `--no-open`. `--json` returns `{schemaVersion:1,ok:true,context,result}` or
-`{schemaVersion:1,ok:false,error}`. Inspect both `ok` and the result: a successful
+`{schemaVersion:1,ok:false,error}`, either with optional `notices`. A
+`newer_deployment` notice means the gateway has settings this `agw` does not
+understand: they are kept when it saves, so tell the person to update `agw`
+before changing them. A `version_mismatch` notice after a failure means the
+CLI and the gateway API are different releases; tell the person which one to
+update. Inspect both `ok` and the result: a successful
 pending operation still needs the browser step and polling. Exit codes are
 0 success, 2 invalid input, 3 remote failure, 4 state/authentication recovery
 and 5 wait timeout. A timeout does not cancel the operation. Follow
@@ -137,6 +155,10 @@ says so, call `claim_account` and give the person its URL. A management key as
 a bearer token works too. Use the tools:
 `get_account` first, then `list_providers`, `list_apps`, `get_app`,
 `validate_app`, `check_app`, usage and event tools, and the change tools.
+For a small change to an app, use `patch_app` rather than `update_app`: it
+sends only the settings you change, as `add`, `replace` or `remove` at a path
+such as `/config/limits/per_app/requests/per_minute`, and leaves the rest,
+including `[redacted]` fields, as stored.
 `add_app` and `add_app_key` take two calls: the first reserves and creates
 nothing, the second, with the same arguments and the answer's `handle`,
 creates it once, and repeating it is safe. An answer that names an operation
@@ -271,17 +293,25 @@ a slug, or the create answers `409 slug_taken`.
 `pricing` is per model, in USD per million tokens:
 
 ```json
-{ "my-model": { "input": 0.5, "output": 1.5 } }
+{ "my-model": { "input": 0.5, "output": 1.5, "cached_input": 0.05 } }
 ```
 
-A model that is in neither the built-in catalog (`GET /v1/admin/prices`)
+`input` and `output` are required. Any other per-token rate the price list uses
+is optional under the same name: `cached_input`, `cached_input_audio`, `cache_write`,
+`cache_write_1h`, `cache_write_12h`, `image_input`, `audio_input`, `video_input`,
+`image_output`, and the `long_*` rates, which also need
+`long_context_threshold`. A custom price replaces the price list's rates for that
+model and inherits none of them: a rate left out bills as on an entry in the price list
+without it, so a cache rate falls back to `input`.
+
+A model that is in neither the built-in price list (`GET /v1/admin/prices`)
 nor the provider's `pricing` cannot be used by any app: requests answer
 `400 pricing_not_configured`, and an app configuration that names it in
 `allowed_models`, `model_rewrites` targets or endpoints is rejected on
 validation. OpenRouter reports its own cost and needs no price, and so does
 xAI on Chat Completions, Responses and image generation, directly or through
 Cloudflare; its Messages API, `v1/stt` and the Vercel route still need one.
-The catalog prices OpenAI's `gpt-image-*` and Gemini's image models per token,
+The price list charges OpenAI's `gpt-image-*` and Gemini's image models per token,
 with separate image rates, and BytePlus Seedream 5.0 flash, 5.0 lite, 4.5 and
 4.0 per generated image. Other image models billed per image or per
 megapixel, such as Together AI's and Seedream 5.0 pro, are not supported, and
@@ -342,7 +372,7 @@ read, which an update requires.
 
 ## Application configuration reference
 
-`config` is one JSON object with four top-level keys. Unknown keys are
+`config` is one JSON object with five top-level keys. Unknown keys are
 rejected.
 
 ```json
@@ -350,7 +380,8 @@ rejected.
   "authentication": { … },
   "routing": { … },
   "limits": { … },
-  "endpoints": { … }
+  "endpoints": { … },
+  "conversations": { … }
 }
 ```
 
@@ -416,7 +447,7 @@ Policy object for one provider:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none` |
+| `allowed_paths` | array | Empty allows inference APIs, and each provider's own image, embedding, speech and legacy completion endpoints; the text ones honour `max_output_tokens`, the rest are never capped. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"?, "methods"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none`. A listed path outside the inference APIs and the provider's own endpoints (files, batches, realtime session keys) is passthrough: forwarded unread, with no model checked or priced, `POST` only unless `methods` lists more of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `methods` is refused on any other path. Allowing `GET` on a list endpoint such as `v1/files` shows the app's users the whole provider account's data, so add it only when the person asks |
 | `allowed_models` | string[] | Empty allows every priced model |
 | `max_output_tokens` | positive integer, optional | Requests above it are refused; requests without an output limit get it injected |
 
@@ -428,10 +459,27 @@ block is accepted without user identity. Request limits
 must be positive; a spend budget may be `0` to stop all spend.
 
 On an iOS app, `per_user` request limits count per install (one copy of the
-app on one device), and so does the budget unless
-`per_user.spending.scope` is `"user"`, which needs `end_user.source`
-`issuer`. `scope` defaults to `"install"` on iOS apps and `"user"` on server
-apps, where `"install"` is refused. The gateway writes the default in.
+app on one device). `per_user.spending.scope` says what the budget is
+measured per:
+
+- `"apple_account"`: every install of one Apple Account, across devices and
+  reinstalls. The default for new iOS apps. It needs the Swift package 1.7
+  or later, which sends the App Store's signed `AppTransaction` with the
+  token exchange; an install that sent none the gateway could verify is
+  counted on its own, as under `"install"`, and is never refused for it.
+- `"install"`: each install alone. iOS apps created before
+  `"apple_account"` existed have this written in.
+- `"user"`: every install of one signed-in user; needs `end_user.source`
+  `issuer`.
+
+Server apps accept only `"user"`, their default. The gateway writes the
+default in. Spend is kept per install, per user and per Apple Account alike,
+so switching scope mid-month counts the month so far; the Apple Account's
+total holds only requests from builds that sent the transaction. A budget
+refusal (`429 app_budget_exhausted`) carries `data.scope` `apple_account`,
+`install`, `user` or `app`, and `GET /v1/apps/{app}/me` reports
+`limits.budget_scope`: whose month `monthly_cost_usd` is, which is `install`
+for an install that sent no verifiable transaction.
 
 ```json
 "limits": {
@@ -454,9 +502,26 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 | `max_output_tokens` | positive integer, optional | Text endpoints only |
 | `fallback` | array of `{ provider, model }`, optional | Tried in order when the primary fails before streaming starts. Same format and kind |
 
-`listModelPrices` gives every catalog model's `kind`: `text`, `image`,
+`listModelPrices` gives every listed model's `kind`: `text`, `image`,
 `speech`, `transcription`, `embedding` or `realtime`. Pick an endpoint's
 models by it; a `realtime` model serves no endpoint.
+
+### `conversations`
+
+Optional; omitted means off.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `store` | boolean, default `false` | Keep a copy of every model call the app makes and its response, with the media `keep` allows: inference endpoints and custom endpoints only, never other `allowed_paths` such as files, batches or realtime session keys. Refused with `400 invalid_request` on a deployment without conversation storage. Turn it on only when the person asks, and remind them to disclose it in their privacy policy |
+| `retention_days` | integer 1-400, default `180` | Days stored conversations are kept before nightly maintenance deletes them |
+| `keep` | object of `images`, `audio`, `files`, each boolean, default `true` | Which attachments are kept beside the records (`files`: PDFs, text documents and any other file); one left out is recorded by its type and size. Messages are always kept |
+
+Clients may send `X-Client-Trace-Id` to group the requests of one unit of work
+and `X-Conversation-Storage: off` to keep a request out of storage. Download
+with `agw app conversations <app-id>`, or list with
+`GET /v1/admin/apps/{app}/conversations` and fetch each file with
+`GET /v1/admin/apps/{app}/conversations/file?name=<name>`. See
+[Conversation history](/applications/conversations).
 
 ### Complete examples
 
@@ -554,9 +619,11 @@ endpoint:
 Usage event `status` values: `ok`, `provider_error`. Refusal sample `reason`
 values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
 `blocked_billing`, `blocked_replay` (a replayed App Attest proof). `scope` is
-`install`, `user`, `app` or `account`. Samples are limited to one per identity per minute, so
+`install`, `apple_account`, `user`, `app` or `account`; `apple_account` is an
+end user's Apple Account budget, unrelated to `account`. Samples are limited to one per identity per minute, so
 sample counts are not exact request totals. Event
-`cost_source` values: `computed`, `reported`, `unresolved`.
+`cost_source` values: `computed`, `reported`, `unresolved`, or null on a
+passthrough call the provider reported no cost for, whose `model` is empty.
 
 ## What clients send
 
@@ -582,11 +649,42 @@ client code.
   the app's own send closure, and on a `401` discards the token and sends a
   rebuilt request once. Pass the request body to it, never set it afterwards.
   `authorizedRequest` builds the request alone, for an app that handles the
-  retry itself. See the human documentation under Integrate your app.
+  retry itself. From 1.7 the token exchange also carries the app's App Store
+  transaction, which an `apple_account` budget needs; nothing is configured
+  in the app for it. See the human documentation under Integrate your app.
 
 For Auth0's API-identifier preset, `issuer_token` must be a JWT access token
 for that API. Firebase uses its ID token. In every case the configured issuer
 and audience must match; see [User authentication](/applications/auth-policy/user-authentication).
+
+## Contacting human support
+
+Where the deployment offers human support, you can write to it on the
+person's behalf: `agw support send` with the CLI, `contact_support` over MCP,
+or `POST /v1/admin/support` with a management key. Support replies to the
+person's own email address, never to you.
+
+1. Only when the person asked you to contact support. Show them the exact
+   message first, and send it only once they agree. Without a terminal,
+   `agw support send` refuses to send unless you pass `--yes`, which says you
+   have done this.
+2. Choose the type: `bug` for something broken, `support` for a question or a
+   request for help, `feedback` for an idea or a missing feature.
+3. Write what happened, what they expected and what was tried. Put ids and
+   codes in context so support can act without asking back:
+   `--context app_id=my-app --context request_id=… --context error_code=…`.
+4. Never include a key, token or password. A message or context value that
+   looks like one is refused with `invalid_request`, and nothing is sent.
+5. Tell the person the answer's `reference`, such as `SUP-7F3K2Q`. The same
+   message sent again within ten minutes sends nothing new: the answer has
+   `duplicate: true` and the first reference, so do not resend to make sure.
+6. If the gateway refuses because the account cannot use human support, tell
+   the person what the message says instead of retrying.
+
+```sh
+agw support send --type bug --message "Streaming responses from my-app stop after about 30 seconds since Monday." \
+  --context app_id=my-app --context error_code=provider_timeout --yes --json --no-input
+```
 
 ## Reporting back
 

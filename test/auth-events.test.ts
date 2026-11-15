@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pruneAuthEvents, recordAuthEvent } from "../src/client-auth/auth-events";
 import { pruneRejectionEvents } from "../src/diagnostics/rejection-events";
 import app from "../src/index";
-import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
+import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedApp, seedServerApp } from "./helpers";
 
 interface AuthEventRow {
   event_id: string | null;
@@ -16,6 +16,7 @@ interface AuthEventRow {
   outcome: string;
   reason: string | null;
   app_version: string | null;
+  client_sdk: string | null;
   latency_ms: number | null;
   claim_delay_ms: number | null;
 }
@@ -237,6 +238,33 @@ describe("auth event recording", () => {
     expect(row?.app_version).toBe(`release-${"x".repeat(56)}`);
     expect(row?.app_version).toHaveLength(64);
   });
+
+  it("stores a client package only in its exact, bounded form", async () => {
+    const cases: [string | null | undefined, string | null][] = [
+      ["app-ai-gateway-swift/1.7.0", "app-ai-gateway-swift/1.7.0"],
+      ["app-ai-gateway-swift/0.0.0", "app-ai-gateway-swift/0.0.0"],
+      ["app-ai-gateway-swift/999999.999999.999999", "app-ai-gateway-swift/999999.999999.999999"],
+      ["app-ai-gateway-swift/1.7.0\n", null],
+      ["app-ai-gateway-swift/v1.7.0", null],
+      ["", null],
+      [null, null],
+      [undefined, null],
+    ];
+    for (const [index, [sent]] of cases.entries()) {
+      await recordAuthEvent({
+        env,
+        appId: `record-client-sdk-${index}`,
+        event: "token_exchange",
+        outcome: "ok",
+        clientSdk: sent,
+        latencyMs: 1,
+      });
+    }
+    for (const [index, [, stored]] of cases.entries()) {
+      const [row] = await eventsFor(`record-client-sdk-${index}`);
+      expect(row?.client_sdk).toBe(stored);
+    }
+  });
 });
 
 describe("token exchange events", () => {
@@ -261,9 +289,93 @@ describe("token exchange events", () => {
       outcome: "ok",
       reason: null,
       app_version: "2.0.0",
+      // Sent without X-Client-SDK, as every client before the header did.
+      client_sdk: null,
       claim_delay_ms: null,
     });
     expect(rows[0]!.latency_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("records the client package a well-formed X-Client-SDK names", async () => {
+    const fixture = await signingFixture("event-client-sdk");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    const key = await seedServerApp("event-client-sdk", { issuer: {} });
+
+    const response = await exchange(
+      "event-client-sdk",
+      { api_key: key, issuer_token: await issuerToken(fixture, { sub: "sdk-user" }) },
+      { "x-app-version": "2.0.0", "x-client-sdk": "app-ai-gateway-swift/1.7.0" },
+    );
+
+    expect(response.status).toBe(200);
+    expect((await eventsFor("event-client-sdk"))[0]).toMatchObject({
+      outcome: "ok",
+      app_version: "2.0.0",
+      client_sdk: "app-ai-gateway-swift/1.7.0",
+    });
+  });
+
+  it("ignores a malformed, oversized or hostile X-Client-SDK, never logs it, and still answers", async () => {
+    const fixture = await signingFixture("event-client-sdk-bad");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    const lines: string[] = [];
+    for (const level of ["log", "info", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation((...values: unknown[]) => {
+        lines.push(values.map(String).join(" "));
+      });
+    }
+    const key = await seedServerApp("event-client-sdk-bad", { issuer: {} });
+    const marker = "sdk-marker";
+    const hostile = [
+      "app-ai-gateway-swift/1.7",
+      "app-ai-gateway-swift/1.7.0-beta.1",
+      "app-ai-gateway-swift/01.7.0",
+      "app-ai-gateway-swift/1234567.0.0",
+      "app-ai-gateway-swift/1.7.0/extra",
+      "APP-AI-GATEWAY-SWIFT/1.7.0",
+      "app-ai-gateway-kotlin/1.7.0",
+      `${marker}/1.0.0`,
+      `app-ai-gateway-swift/1.7.0;${marker}`,
+      `app-ai-gateway-swift/1.7.0'); DROP TABLE app_auth_event; -- ${marker}`,
+      `<script>${marker}</script>`,
+      `app-ai-gateway-swift/${"1".repeat(80)}.0.0`,
+      `${marker}${"x".repeat(16_000)}`,
+    ];
+
+    for (const value of hostile) {
+      const response = await exchange(
+        "event-client-sdk-bad",
+        { api_key: key, issuer_token: await issuerToken(fixture) },
+        { "x-client-sdk": value },
+      );
+      expect(response.status, value.slice(0, 80)).toBe(200);
+    }
+
+    const rows = await eventsFor("event-client-sdk-bad");
+    expect(rows.map((row) => row.outcome)).toEqual(hostile.map(() => "ok"));
+    expect(rows.map((row) => row.client_sdk)).toEqual(hostile.map(() => null));
+    expect(lines.some((line) => line.includes(marker))).toBe(false);
+  });
+
+  it("records the client package on a registration too, refused or not", async () => {
+    await seedApp("event-client-sdk-register");
+    const ctx = createExecutionContext();
+    const response = await app.fetch(
+      new Request("https://example.test/v1/apps/event-client-sdk-register/auth/register", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-client-sdk": "app-ai-gateway-swift/1.8.0" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      ctx,
+    );
+    await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(400);
+    expect(await eventsFor("event-client-sdk-register")).toMatchObject([
+      { event: "register", outcome: "invalid_request", client_sdk: "app-ai-gateway-swift/1.8.0" },
+    ]);
   });
 
   it("records each failure class with the cause that produced it", async () => {

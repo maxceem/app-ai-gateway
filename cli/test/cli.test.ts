@@ -15,7 +15,7 @@ import {
 } from "../src/state.ts";
 import { Transport } from "../src/transport.ts";
 import { Context, operationIdFor } from "../src/context.ts";
-import { date, month, positive } from "../src/usage.ts";
+import { date, positive } from "../src/usage.ts";
 import { main, type OutputSink } from "../src/main.ts";
 import { fail } from "../src/common.ts";
 import { fresh, hasCode, makeStore, served } from "./helpers.ts";
@@ -697,7 +697,6 @@ test("a completed operation reports only declared outcome fields", async () => {
 test("calendar and wait validation rejects impossible dates and unbounded waits", () => {
   assert.equal(date("2024-02-29"), "2024-02-29");
   assert.throws(() => date("2025-02-29"));
-  assert.throws(() => month("2025-13"));
   assert.throws(() => positive("0"));
   assert.throws(() => positive("4000"));
   assert.equal(positive("300"), 300);

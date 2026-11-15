@@ -84,6 +84,10 @@ An iOS app's \`authentication.app_attest.verify_on\` is \`every_request\` (the
 default) or \`token_exchange\`; switch an app to \`every_request\` only after the
 person confirms every build in use is on the AppAIGateway Swift package 1.4 or
 later, because older builds are refused from then on.
+\`conversations.store\` keeps a copy of an app's requests and responses, with
+the media \`conversations.keep\` allows (images, audio, files; all by default),
+for \`conversations.retention_days\` (default 180). Turn it on only when
+the person asks, and remind them to disclose it in their privacy policy.
 
 Changes come in three shapes.
 
@@ -108,8 +112,14 @@ approve. Poll \`get_operation\` with the answer's \`id\` until it is
 URL yourself.
 
 **Changes without a browser step**: \`update_provider\`,
-\`update_provider_gateway\` and \`update_app\` carry the revision you read, so a
-change someone made since is refused rather than overwritten;
+\`update_provider_gateway\`, \`update_app\` and \`patch_app\` carry the revision
+you read, so a change someone made since is refused rather than overwritten.
+To change a few settings of an app, prefer \`patch_app\`: it sends only the
+operations (RFC 6902 \`add\`, \`replace\` or \`remove\` at a path such as
+\`/config/limits/per_app/requests/per_minute\`), leaves every other setting as
+it is, and is judged as a whole update would be. \`null\` is written as
+\`null\`, which means unlimited for a limit; only \`remove\` deletes.
+\`update_app\` replaces the whole document;
 \`remove_provider\`, \`remove_provider_gateway\` and \`remove_app\` delete for
 good and need the id again as \`confirm\`; \`revoke_app_key\`,
 \`block_app_user\` and \`unblock_app_user\` need no browser handoff. App and
@@ -121,6 +131,27 @@ it unless the person asked for the deletion.
 
 \`get_operation\` reads any operation a change tool opened, by its id. It never
 returns a secret.
+
+## Human support
+
+Where the deployment offers human support, \`contact_support\` emails its
+support team on the person's behalf: \`kind\` is \`bug\`, \`support\` or
+\`feedback\`. It is there so the person can ask you to write in for them;
+it is not a way to ask for help yourself.
+
+- Only when the person asked you to contact support. Show them the exact
+  message first and send it only once they agree.
+- Write it as they would: what happened, what they expected, what was tried.
+  Put ids and error codes in \`context\` (\`app_id\`, \`request_id\`,
+  \`error_code\`) so support can act without asking back.
+- Never include a key, token or password. A message or context value that
+  looks like one is refused with \`invalid_request\`, and nothing is sent.
+- Support replies to the person's own email address, never to you. Tell them
+  the answer's \`reference\` (such as \`SUP-7F3K2Q\`), which they can quote.
+- The same message sent again within ten minutes sends nothing new: the answer
+  has \`duplicate: true\` and the first reference. Do not resend it to make sure.
+- \`support_plan_required\` means the account cannot use human support; tell
+  the person what the message says rather than retrying.
 
 ## Secrets
 
@@ -140,8 +171,9 @@ How the server holds to that:
   \`tokenHint\` and \`max_tokens\` do not.
 - **Refused arguments.** Every tool that answers a URL for a browser step
   (\`add_provider\`, \`add_provider_gateway\`, \`rotate_provider_key\`,
-  \`rotate_provider_gateway_key\`), and \`add_app\`, \`update_app\` and
-  \`validate_app\` for the app document they take, refuse a call carrying a
+  \`rotate_provider_gateway_key\`), \`add_app\`, \`update_app\` and
+  \`validate_app\` for the app document they take, and \`patch_app\` for each
+  value it writes, read under the key its path ends with, refuse a call carrying a
   field with such a name anywhere in its arguments: at any depth, inside a
   list, beside the documented arguments or inside them. The refusal names the
   field, never its value, and nothing is stored.
@@ -170,8 +202,9 @@ How the server holds to that:
   document included, is redacted. A field holding \`null\` stays \`null\`, and
   hint fields such as \`secretHint\` are shown as they are. Do not send a
   \`[redacted]\` value back in an update or omit the field from a full
-  replacement. Have the person make the change through the console or another
-  authorized client that can preserve the original values.
+  replacement. Change the other settings with \`patch_app\`, which leaves a
+  redacted field as it is stored; to change the redacted field itself, have the
+  person use the console or another authorized client.
 
 ## Errors
 

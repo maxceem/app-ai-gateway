@@ -86,3 +86,9 @@ change to an app's policy, a rotated key, a disabled provider: all of these
 are live everywhere within a minute. Blocking a user is faster: new token
 exchanges are refused at once, and an already issued token stops working
 within ten seconds.
+
+There is one exception, which keeps your apps' users served when the database
+behind the gateway slows down or fails. While it does, the gateway keeps
+serving an app with the configuration, keys and user status it last read, for
+up to fifteen minutes. A change you make during such an incident can take that
+long to reach every request.

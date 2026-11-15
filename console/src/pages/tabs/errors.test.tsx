@@ -34,6 +34,7 @@ function event(overrides: Partial<AuthEvent> = {}): AuthEvent {
     outcome: "ok",
     reason: null,
     app_version: "1.0.0",
+    client_sdk: null,
     latency_ms: 12,
     claim_delay_ms: null,
     created_at: "2026-08-30T10:00:00.000Z",
@@ -312,6 +313,41 @@ describe("ErrorsTab", () => {
     await waitFor(() => expect(newer.hasAttribute("disabled")).toBe(false));
     await userEvent.click(newer);
     await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+  });
+
+  /*
+   * A budget measured per Apple Account refuses with its own scope, named so
+   * that it cannot be read as the account's plan allowance.
+   */
+  it("names and filters refusals measured per Apple Account", async () => {
+    const rejection: RejectionEvent = {
+      id: 9,
+      user_id: "install-1",
+      install_id: "install-1",
+      api_key_id: null,
+      reason: "blocked_user",
+      scope: "apple_account",
+      provider_slug: "openai",
+      model: "gpt-test",
+      route: "openai/v1/responses",
+      endpoint_slug: null,
+      app_version: "2.0",
+      auth_method: "attest",
+      latency_ms: 12,
+      created_at: "2026-08-30T10:00:00.000Z",
+    };
+    const { fetchMock } = renderTab(summary(), [], [rejection]);
+    expect(await screen.findByRole("cell", { name: "Apple Account" })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Refusal scope" }));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent))
+      .toEqual(["All scopes", "User", "Install", "Apple Account", "App", "Your account"]);
+    await userEvent.click(screen.getByRole("option", { name: "Apple Account" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => {
+      const url = String(input);
+      return url.includes("rejection-events") && url.includes("scope=apple_account");
+    })).toBe(true));
   });
 
   it("shows a retry when refusal samples cannot be loaded", async () => {

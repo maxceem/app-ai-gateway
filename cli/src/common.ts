@@ -24,6 +24,8 @@ export class CliError extends Error {
   readonly nextAction: string;
   readonly exitCode: number;
   readonly details: CliErrorDetails | undefined;
+  /** The headers the refusal arrived with, where the gateway answered one; never printed. */
+  headers?: Headers;
 
   constructor(
     code: string,
@@ -87,12 +89,11 @@ export function origin(value: string): string {
 /** Parses caller-supplied input, reporting every issue the way `agw` does. */
 export function validate<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value);
-  if (!r.success)
-    fail(
-      "invalid_input",
-      r.error.issues
-        .map((i) => `${i.path.join(".") || "body"}: ${i.message}`)
-        .join("; "),
-    );
+  if (!r.success) fail("invalid_input", describeIssues(r.error.issues));
   return r.data;
+}
+
+/** A parse's issues as `agw` reports them: each one's path and message. */
+export function describeIssues(issues: readonly z.core.$ZodIssue[]): string {
+  return issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
 }

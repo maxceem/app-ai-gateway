@@ -11,8 +11,10 @@ export const REJECTION_REASONS = [
 export type RejectionReason = (typeof REJECTION_REASONS)[number];
 /**
  * Whose limit refused: one end user's, one install's (App Attest applications
- * count request limits, and by default the budget, per install), the whole
- * app's, or the account's plan allowance.
+ * count request limits per install), one Apple Account's budget (every install
+ * of one person's Apple Account, the App Attest default), the whole app's, or
+ * the account's plan allowance. `account` is the gateway customer's account and
+ * `apple_account` is their end user's: unrelated, despite the shared word.
  */
-export const REJECTION_SCOPES = ["user", "install", "app", "account"] as const;
+export const REJECTION_SCOPES = ["user", "install", "apple_account", "app", "account"] as const;
 export type RejectionScope = (typeof REJECTION_SCOPES)[number];

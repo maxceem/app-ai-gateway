@@ -47,5 +47,22 @@ routes.handle("cliBrowserDeny", browserDeny, { before: assertConsoleOrigin });
  */
 routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
+/*
+ * The MCP tools as the CLI's commands. The tool table is imported when one of
+ * these is asked for, so no other management request evaluates it.
+ */
+routes.handle("listCliTools", async (_c, { scope }) =>
+  (await import("../../mcp/cli-catalog")).cliToolCatalog(scope));
+routes.handle("callCliTool", async (c, { params, body, scope, actor, state }) => {
+  const { callCliTool, TOOLS_REVISION_HEADER } = await import("../../mcp/cli-catalog");
+  const { response, revision } = await callCliTool(
+    params.tool,
+    body,
+    { scope, auth: { state, actor } },
+    c.req.header("agw-tool-guard"),
+  );
+  c.header(TOOLS_REVISION_HEADER, revision);
+  return response;
+});
 routes.handle("getCliAccount");
 routes.handle("getCliUsage");

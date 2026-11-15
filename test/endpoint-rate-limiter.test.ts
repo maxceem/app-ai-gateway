@@ -7,6 +7,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ENDPOINT_RATE_LIMITS,
+  clientAddress,
   enforceEndpointRateLimit,
 } from "../src/core/endpoint-rate-limit";
 import type { EndpointRateLimiter } from "../src/do/EndpointRateLimiter";
@@ -272,5 +273,33 @@ describe("enforceEndpointRateLimit", () => {
         resetAt: "2031-01-02T00:00:00.000Z",
       },
     });
+  });
+});
+
+describe("clientAddress", () => {
+  const counted = (address?: string) => clientAddress(new Request("https://gateway.test/", {
+    headers: address === undefined ? {} : { "cf-connecting-ip": address },
+  }));
+
+  it("counts every address in one IPv6 /64 as one subject, and nothing else with it", () => {
+    const network = counted("2001:db8:aa:bb::1");
+    expect(network).toBe("2001:db8:aa:bb::/64");
+    for (const sibling of [
+      "2001:db8:aa:bb::2",
+      "2001:0DB8:00AA:00BB:ffff:ffff:ffff:ffff",
+      "2001:db8:aa:bb:1:2:3:4",
+    ]) expect(counted(sibling)).toBe(network);
+    expect(counted("2001:db8:aa:bc::1")).not.toBe(network);
+    expect(counted("::1")).toBe("0:0:0:0::/64");
+    expect(counted("2001:db8::")).toBe("2001:db8:0:0::/64");
+  });
+
+  it("keeps IPv4 whole, reads an IPv4-mapped address as IPv4, and leaves the rest as written", () => {
+    expect(counted("203.0.113.7")).toBe("203.0.113.7");
+    expect(counted("::ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(counted("0:0:0:0:0:FFFF:cb00:7107")).toBe("203.0.113.7");
+    expect(counted("::ffff:cb00:7108")).toBe("203.0.113.8");
+    expect(counted("2001:db8::1::2")).toBe("2001:db8::1::2");
+    expect(counted()).toBe("local");
   });
 });

@@ -7,7 +7,9 @@ import { operationHandlers } from "./operations";
 import { priceHandlers } from "./prices";
 import { providerGatewayHandlers } from "./provider-gateways";
 import { providerHandlers } from "./providers";
+import { supportHandlers } from "./support";
 import { usageHandlers } from "./usage";
+import { conversationHandlers } from "./conversations";
 import { userHandlers } from "./users";
 
 /**
@@ -25,11 +27,13 @@ const HANDLERS = {
   ...keyHandlers,
   ...userHandlers,
   ...usageHandlers,
+  ...conversationHandlers,
   ...authEventHandlers,
   ...providerHandlers,
   ...providerGatewayHandlers,
   ...accountHandlers,
   ...operationHandlers,
+  ...supportHandlers,
 } satisfies OperationHandlerTable;
 
 /** The operations {@link OPERATION_HANDLERS} serves. */

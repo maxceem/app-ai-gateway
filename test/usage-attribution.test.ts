@@ -1035,7 +1035,7 @@ describe("model author resolution", () => {
    * people's models (Together serves Meta's, ByteDance serves DeepSeek's), so
    * author stops tracking provider type. Proved here against an OpenAI entry,
    * which carries no author, so precedence is visible rather than incidental;
-   * the shipped curated authors are asserted in `usage.test.ts`.
+   * the curated authors are asserted in `usage.test.ts`.
    */
   it("prefers the catalog's own author when one is curated", () => {
     const entry = models.openai["gpt-5.6-sol"] as { author?: string };

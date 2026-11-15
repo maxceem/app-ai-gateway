@@ -14,7 +14,7 @@ import {
 async function fixture(t, empty = false) {
   const directory = await mkdtemp(join(tmpdir(), "seamless-release-"));
   const db = new DatabaseSync(":memory:");
-  const migration = new URL("../migrations/0009_realtime_releases.sql", import.meta.url);
+  const migration = new URL("../migrations/0016_realtime_releases.sql", import.meta.url);
   if (!empty) db.exec(await readFile(migration, "utf8"));
   t.after(async () => {
     db.close();
@@ -227,7 +227,7 @@ test("empty control DB bootstrap is retryable and owns lease before migrations",
     ...f.input,
     prepare: async () => {
       assert.ok(active(f).deployment_owner);
-      f.db.exec(await readFile(new URL("../migrations/0009_realtime_releases.sql", import.meta.url), "utf8"));
+      f.db.exec(await readFile(new URL("../migrations/0016_realtime_releases.sql", import.meta.url), "utf8"));
     },
   };
   const first = await seamlessRelease(input, f.driver);

@@ -355,6 +355,25 @@ export function shouldProvisionDefaultOrganization(
   );
 }
 
+/**
+ * The longest account id this gateway creates, which is also the most the
+ * management analytics dataset records as its index: Analytics Engine allows
+ * 96 bytes. A person's account is a UUID, 36 characters; an agent's on a
+ * hosted deployment is `account-` and a SHA-256 in hex, 72; an agent's on a
+ * self-host is `private-` and the deployment id, which the deploy script keeps
+ * to {@link DEPLOYMENT_ID_MAX_LENGTH} so that it fits.
+ */
+export const ACCOUNT_ID_MAX_LENGTH = 96;
+
+const PRIVATE_ACCOUNT_PREFIX = "private-";
+
+/**
+ * The longest deployment id a self-host's `private-` account id still fits
+ * {@link ACCOUNT_ID_MAX_LENGTH} with. `scripts/deploy-lib.mjs` refuses a longer
+ * one, and its test checks the two agree.
+ */
+export const DEPLOYMENT_ID_MAX_LENGTH = ACCOUNT_ID_MAX_LENGTH - PRIVATE_ACCOUNT_PREFIX.length;
+
 export interface BootstrapDecision {
   accountId: string;
   userId: string;
@@ -380,7 +399,7 @@ export function bootstrapDecision(
     : null;
   const accountId = bootstrap.accountId === "hashed"
     ? `account-${input.requestHash}`
-    : `private-${input.deploymentId}`;
+    : `${PRIVATE_ACCOUNT_PREFIX}${input.deploymentId}`;
   return {
     accountId,
     userId: `service-${accountId}`,

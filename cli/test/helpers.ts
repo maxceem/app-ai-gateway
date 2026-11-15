@@ -1,3 +1,4 @@
+import type { CliTool } from "../src/catalog.ts";
 import { Context, type ContextStore } from "../src/context.ts";
 import type { CliState } from "../src/state.ts";
 import { providerCapability, type ProviderType } from "../../src/shared/providers.ts";
@@ -66,3 +67,26 @@ export function hasCode(code: string): (error: unknown) => boolean {
 export function errorOf(error: unknown): { code?: string; details?: Record<string, unknown> } {
   return error as { code?: string; details?: Record<string, unknown> };
 }
+
+/** A tool as `GET /v1/cli/tools` lists it, with the parts a test does not care about filled in. */
+export function cliTool(
+  name: string,
+  cli: CliTool["cli"],
+  input: { properties?: Record<string, unknown>; required?: string[] } = {},
+  annotations: Partial<CliTool["annotations"]> = {},
+): CliTool {
+  return {
+    name,
+    title: name.replaceAll("_", " "),
+    description: `Runs ${name}.`,
+    inputSchema: { type: "object", properties: input.properties ?? {}, ...(input.required ? { required: input.required } : {}) },
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false, ...annotations },
+    cli,
+  };
+}
+
+/** `get_account`, as a gateway offers it as `agw account status`. */
+export const ACCOUNT_TOOL = cliTool("get_account", {
+  command: "account status",
+  view: { record: "account", columns: ["name=Account", "id", "claimed"] },
+});

@@ -29,5 +29,7 @@ totals. The confirmation asks you to type the app ID.
 - `PUT /v1/admin/apps/{app}` with the full body updates the name, the
   configuration and the status. Include the `revision` from your latest read
   and preserve `status` (`active` or `disabled`); omitting status enables the app.
+- `PATCH /v1/admin/apps/{app}` changes only the settings you name, with the
+  same checks. See the [API guide](/automation/api) for its operations.
 - `DELETE /v1/admin/apps/{app}?confirm={app}` deletes the app. The query value
   must repeat the app ID.

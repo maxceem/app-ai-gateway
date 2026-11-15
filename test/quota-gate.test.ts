@@ -4,7 +4,12 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { billingQuota, type BillingQuota } from "../src/billing/quota";
-import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS, requireActiveBilling } from "../src/billing/gateway";
+import { ALLOWANCE_ADMIT_DEADLINE_MS } from "../src/billing/allowance-admission";
+import {
+  APP_TRAFFIC_BILLING_DEADLINE_MS,
+  BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  requireActiveBilling,
+} from "../src/billing/gateway";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
 import { resolveDeployment } from "../src/policy/deployment";
 import { appUserBlocked, blockedUserCache, cachedAppUserBlocked, invalidateBlockedCache } from "../src/client-auth/user-status";
@@ -343,12 +348,11 @@ describe("organization monthly request quota", () => {
 
   /**
    * The distinction the data plane turns on: an organization with no plan at
-   * all has to go and pay, and one whose billing service is down has to
-   * wait. Answering the second with the first tells every paying customer they
-   * are unsubscribed for the length of an outage, and clients are built to treat
-   * `402` as final.
+   * all has to go and pay, and one whose billing service is down is served.
+   * The allowance is unknown, so the request is not counted — billing errs
+   * towards the customer, as it does when the counter itself fails.
    */
-  it("refuses a billing outage as retryable, and recovers on the next request", async () => {
+  it("serves a billing outage uncounted, and counts again once billing answers", async () => {
     const organizationId = "quota-billing-down-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("quota-billing-down", { organizationId });
@@ -367,23 +371,143 @@ describe("organization monthly request quota", () => {
     const start = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(start);
 
-    const refused = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
-    expect(refused.status).toBe(503);
-    await expect(refused.json()).resolves.toMatchObject({
-      error: { code: "billing_unavailable" },
-    });
-    expect(refused.headers.get("retry-after")).toBe("5");
-    expect(upstream).not.toHaveBeenCalled();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const served = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
+    expect(served.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
     expect(await used(organizationId)).toBe(0);
 
-    // The failed lookup is held for exactly the interval the client was told to
-    // wait — not the full cache TTL — so the advertised retry reaches billing
-    // again rather than replaying the same failure.
+    // The failed lookup is held only for the retry interval — not the full
+    // cache TTL — so billing is asked again within seconds and counting resumes.
     clock.mockReturnValue(start + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
     const admitted = await proxyRequest({ appId: "quota-billing-down", key, env: billing });
     expect(admitted.status).toBe(200);
     expect(await used(organizationId)).toBe(1);
     expect(calls).toBe(2);
+  });
+
+  /**
+   * Billing errs towards the customer. A counter the platform lost mid-call
+   * may or may not have counted the request, so retrying could count it twice;
+   * serving it uncounted can only ever undercount.
+   */
+  describe("when the allowance counter itself fails", () => {
+    function failingCounter(flags: { retryable?: boolean; overloaded?: boolean }): Env {
+      const base = hosted({ maxRequestsPerMonth: 5 });
+      const counter = {
+        getByName: () => ({
+          admit: async () => {
+            throw Object.assign(
+              new Error("Connection closed: this Durable Object instance is no longer active."),
+              flags,
+            );
+          },
+        }),
+      };
+      return new Proxy(base, {
+        get: (target, property, receiver) =>
+          property === "ORG_QUOTA" ? counter : Reflect.get(target, property, receiver),
+      }) as Env;
+    }
+
+    it("serves a request the platform failed to count, without counting it", async () => {
+      const organizationId = "quota-counter-lost-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-lost", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+
+      const response = await proxyRequest({
+        appId: "quota-counter-lost",
+        key,
+        env: failingCounter({ retryable: true }),
+      });
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(await used(organizationId)).toBe(0);
+    });
+
+    it("serves an overloaded counter uncounted too", async () => {
+      const organizationId = "quota-counter-overloaded-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-overloaded", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+
+      const response = await proxyRequest({
+        appId: "quota-counter-overloaded",
+        key,
+        env: failingCounter({ retryable: true, overloaded: true }),
+      });
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(await used(organizationId)).toBe(0);
+    });
+
+    /**
+     * A counter that is merely slow throws nothing, which is how 2026-11-12's
+     * regional slowdown held requests for over a minute. The request is served
+     * at the deadline, and the abandoned call still counts it when it lands.
+     */
+    it("serves a slow counter at the deadline, and still counts the request when it answers", async () => {
+      const organizationId = "quota-counter-slow-org";
+      await seedOrganization(organizationId);
+      const key = await seedServerApp("quota-counter-slow", { organizationId });
+      const upstream = vi.fn(async () => ok());
+      vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+      const base = hosted({ maxRequestsPerMonth: 5 });
+      const slow = {
+        getByName: (name: string) => ({
+          admit: async (input: Parameters<ReturnType<Env["ORG_QUOTA"]["getByName"]>["admit"]>[0]) => {
+            await new Promise((resolve) => setTimeout(resolve, ALLOWANCE_ADMIT_DEADLINE_MS + 500));
+            return env.ORG_QUOTA.getByName(name).admit(input);
+          },
+        }),
+      };
+      const slowEnv = new Proxy(base, {
+        get: (target, property, receiver) =>
+          property === "ORG_QUOTA" ? slow : Reflect.get(target, property, receiver),
+      }) as Env;
+
+      const started = Date.now();
+      const response = await proxyRequest({ appId: "quota-counter-slow", key, env: slowEnv });
+      expect(response.status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(ALLOWANCE_ADMIT_DEADLINE_MS + 500);
+      expect(upstream).toHaveBeenCalledOnce();
+      await settle();
+      expect(await used(organizationId)).toBe(1);
+    });
+  });
+
+  /**
+   * Billing only tells app traffic what to count it against, so a billing
+   * service that is slow to answer is not waited on: the request is served the
+   * way an outage of billing serves it.
+   */
+  it("serves app traffic uncounted when billing is slow to answer", async () => {
+    const organizationId = "quota-billing-slow-org";
+    await seedOrganization(organizationId);
+    const key = await seedServerApp("quota-billing-slow", { organizationId });
+    const binding = billingStub(async () => {
+      await new Promise((resolve) => setTimeout(resolve, APP_TRAFFIC_BILLING_DEADLINE_MS + 500));
+      return onPlan({ maxRequestsPerMonth: 5 });
+    });
+    const slowBilling = new Proxy(env, {
+      get: (target, property, receiver) =>
+        property === "BILLING" ? binding : Reflect.get(target, property, receiver),
+    }) as Env;
+    const upstream = vi.fn(async () => ok());
+    vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const started = Date.now();
+    const response = await proxyRequest({ appId: "quota-billing-slow", key, env: slowBilling });
+    expect(response.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(APP_TRAFFIC_BILLING_DEADLINE_MS + 500);
+    expect(upstream).toHaveBeenCalledOnce();
+    expect(await used(organizationId)).toBe(0);
   });
 
   /**
@@ -499,8 +623,8 @@ describe("organization monthly request quota", () => {
 
   /**
    * The same pair when billing cannot be reached at all. The allowance then
-   * resolves as `unmetered`, and it is admission's own `requireActiveBilling`
-   * that refuses — still only after the block has been answered.
+   * resolves as `unmetered` and everyone else is served uncounted, but the
+   * block is still answered.
    */
   it("answers a blocked user as blocked even when billing is unreachable", async () => {
     const organizationId = "quota-blocked-outage-org";
@@ -527,17 +651,17 @@ describe("organization monthly request quota", () => {
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
 
-    const unavailable = await proxyRequest({
+    expect(upstream).not.toHaveBeenCalled();
+
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const served = await proxyRequest({
       appId: "quota-blocked-outage",
       key,
       env: billing,
       userId: "allowed-user",
     });
-    expect(unavailable.status).toBe(503);
-    await expect(unavailable.json()).resolves.toMatchObject({
-      error: { code: "billing_unavailable" },
-    });
-    expect(upstream).not.toHaveBeenCalled();
+    expect(served.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
     expect(await used(organizationId)).toBe(0);
   });
 

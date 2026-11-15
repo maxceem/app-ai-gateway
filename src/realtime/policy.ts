@@ -62,7 +62,7 @@ export function realtimePolicy(app: AppRecord, provider: ResolvedProvider, reque
     "audio_input",
     "audio_output",
     "cached_input",
-    "cached_audio_input",
+    "cached_input_audio",
   ] as const;
   if (!price || required.some(field => !chargeable(price[field]))) {
     throw new GatewayError(

@@ -6,6 +6,7 @@ import { authEventRoutes } from "./auth-events";
 import { keyRoutes } from "./keys";
 import { operationRoutes } from "./operations";
 import { usageRoutes } from "./usage";
+import { conversationRoutes } from "./conversations";
 import { userRoutes } from "./users";
 import { managementKeyRoutes } from "./management-keys";
 import { providerRoutes } from "./providers";
@@ -23,11 +24,15 @@ export const adminRoutes = new Hono<AdminEnv>();
 /** Supplies the priced model catalog used by the proxy-policy editor. */
 adminRouter(adminRoutes).handle("listModelPrices");
 
+/** Human support, for the console, the CLI and the API alike; see `src/management/support.ts`. */
+adminRouter(adminRoutes).handle("sendSupportMessage");
+
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);
 adminRoutes.route("/", operationRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);
+adminRoutes.route("/", conversationRoutes);
 adminRoutes.route("/", authEventRoutes);
 adminRoutes.route("/", managementKeyRoutes);
 adminRoutes.route("/", providerRoutes);

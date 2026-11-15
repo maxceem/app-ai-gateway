@@ -4,7 +4,7 @@ description: The sixteen provider types, the native path each one expects, and w
 ---
 
 Every provider you add has a **type**. The type fixes the upstream API, the
-authentication header the gateway sends, and the price catalog the model is
+authentication header the gateway sends, and the price list the model is
 looked up in. The path after the slug is always the provider's own, verbatim,
 without a leading slash:
 
@@ -29,9 +29,9 @@ anything else, so the exact chat-completions path is listed for each.
 | `groq` | Groq | `openai/v1/chat/completions` | Direct only | OpenAI API namespaced under `openai/`. |
 | `mistral` | Mistral | `v1/chat/completions` | Direct only | |
 | `together` | Together AI | `v1/chat/completions` | Direct only | Models are namespaced, for example `openai/gpt-oss-120b`. |
-| `fireworks` | Fireworks AI | `inference/v1/chat/completions` | Direct only | No catalog; price your models. No test call. |
+| `fireworks` | Fireworks AI | `inference/v1/chat/completions` | Direct only | No price list; price your models. No test call. |
 | `cerebras` | Cerebras | `v1/chat/completions` | Direct only | |
-| `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | Direct only | No catalog; pin the upstream in the model ID. No test call. |
+| `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | Direct only | No price list; pin the upstream in the model ID. No test call. |
 | `baseten` | Baseten Model APIs | `v1/chat/completions` | Direct only | |
 | `bytedance` | BytePlus ModelArk | `chat/completions` | Direct only | Version segment is already in the base URL. No test call. |
 | `openrouter` | OpenRouter | `v1/chat/completions` | Direct only | The only path it accepts. Reports its own cost. |
@@ -75,7 +75,7 @@ not reachable here. For another region, set a
 China platform will not work.
 
 **Fireworks** names models per account (`accounts/{account}/models/{id}`), so
-no shipped catalog could be right for your account. Price the models you use
+no shipped price list could be right for your account. Price the models you use
 under the provider's **Pricing** action. See
 [Model pricing](/providers/model-pricing).
 
@@ -138,10 +138,10 @@ depends on how its provider charges for it:
 
 | Provider | Image models | How the gateway bills them |
 | --- | --- | --- |
-| OpenAI | `gpt-image-*` on `v1/images/generations` and `v1/images/edits` | From the catalog, per token. Prompt text, input images and generated images each bill at their own rate. |
-| Gemini | Gemini image models (Nano Banana) on `v1beta/models/{model}:generateContent` | From the catalog, per token. Generated image tokens bill at the image rate. |
+| OpenAI | `gpt-image-*` on `v1/images/generations` and `v1/images/edits` | From the price list, per token. Prompt text, input images and generated images each bill at their own rate. |
+| Gemini | Gemini image models (Nano Banana) on `v1beta/models/{model}:generateContent` | From the price list, per token. Generated image tokens bill at the image rate. |
 | xAI | `grok-imagine-image` and its siblings on `v1/images/generations` and `v1/images/edits` | From the cost xAI reports. See [xAI](#xai). |
-| ByteDance | Seedream 5.0 flash, 5.0 lite, 4.5 and 4.0 on `images/generations` | From the catalog, per image: each model's price times the `usage.generated_images` the response reports. |
+| ByteDance | Seedream 5.0 flash, 5.0 lite, 4.5 and 4.0 on `images/generations` | From the price list, per image: each model's price times the `usage.generated_images` the response reports. |
 | Together AI, ByteDance (Seedream 5.0 pro) and others | Billed by size, quality or steps, or at an estimated price | Not supported: refused with `pricing_not_configured`. |
 
 If you list an app's endpoints yourself, include the image paths, with
@@ -173,7 +173,7 @@ directly.
 **Cost is reported, not computed.** xAI's Chat Completions, Responses and
 image generation answers carry `usage.cost_in_usd_ticks`, what xAI actually
 billed for that request after any discount. The gateway records it as the
-event's cost with `cost_source: "reported"`, ahead of any catalog price. So on
+event's cost with `cost_source: "reported"`, ahead of any listed price. So on
 those APIs an xAI model proxies with **no local price**, which is what makes
 image models such as `grok-imagine-image` work at all: xAI bills images per
 image and reports no token counts for them. Streaming works the same way; the
@@ -182,7 +182,7 @@ figure arrives in the final chunk.
 Two exceptions bill on local prices, like any other provider type:
 
 - **xAI's Anthropic Messages API and `v1/stt`.** xAI does not document a cost
-  on them, so a model used there needs a price in the catalog or under the
+  on them, so a model used there needs a price in the price list or under the
   provider's **Pricing** action.
 - **The Vercel route.** Vercel answers through its own APIs rather than passing
   xAI's answer back, so the reported figure does not survive it. A Cloudflare
@@ -229,7 +229,7 @@ carries `usage.cost`, what OpenRouter actually charged for that request. The
 gateway records it as the event's cost with `cost_source: "reported"`. So
 OpenRouter models proxy with **no local price**: the pricing rule is satisfied
 by the route reporting its own cost, which is why no OpenRouter section ships
-in the catalog. Streaming works the same way; the figure arrives in the final
+in the price list. Streaming works the same way; the figure arrives in the final
 chunk.
 
 If a response ever comes back without a cost, the event is not recorded at

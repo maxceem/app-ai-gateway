@@ -490,6 +490,7 @@ export class SessionCoordinator {
       model: policy.model,
       apiStyle: "other",
       route: `${provider.slug}/${policy.path}`,
+      passthrough: false,
     };
     const at = Date.now();
     const generationId = crypto.randomUUID();
@@ -960,6 +961,7 @@ export function settledEvent(generation: Generation, status: CompletionStatus, a
       cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
       modalityTokens: usage?.modalityTokens ?? {},
+      tokenVariants: usage?.tokenVariants ?? {},
       costUsd: cost ?? 0,
       costSource: cost === null ? "unresolved" : "computed",
       providerResponseId: generation.responseId,

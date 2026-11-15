@@ -9,8 +9,9 @@
  * derived, and the behaviour that reads them lives in `src/providers`.
  *
  * Shared with the console, which bundles this module directly: it imports only
- * `./capabilities.ts`, `./cost-report.ts` and `./records.ts`, all of which are
- * plain tables and pure functions for the same reason.
+ * `./capabilities.ts`, `./cost-report.ts`, `./records.ts` and
+ * `./service-modes.ts`, all of which are plain tables and pure functions for the
+ * same reason.
  */
 
 import {
@@ -23,6 +24,8 @@ import {
 } from "./capabilities.ts";
 import { type CostReport, OPENROUTER_COST_REPORT, XAI_COST_REPORT } from "./cost-report.ts";
 import { relaysProviderResponses } from "./gateways.ts";
+import type { ServiceModeField, ServiceRegion } from "./service-modes.ts";
+import type { Modality } from "./token-rates.ts";
 
 /**
  * How a provider authenticates a direct call. The header name and the scheme
@@ -130,6 +133,20 @@ export interface ProviderDescriptor {
    */
   apiStyles?: readonly ApiStyle[];
   /**
+   * The input modalities this provider prices apart from text and counts on
+   * every response whose prompt holds them, as `<modality>_tokens` in the
+   * usage's input details (`prompt_tokens_details` or `input_tokens_details`).
+   * Its usage then always breaks the prompt down: a count it leaves out is
+   * zero, and the rest of the prompt is text, which is what it bills everything
+   * else as.
+   *
+   * Absent where a usage that names no modality cannot be taken as text: a
+   * model that prices one apart then bills such a prompt at its highest rate,
+   * so declaring a modality here is what lets one be priced without every
+   * text request paying for it. Only the OpenAI usage shape reads it.
+   */
+  countedInputModalities?: readonly Modality[];
+  /**
    * How this provider reports what a request cost, per request, in its own
    * response — the parsing, the headers that ask for it, and any request rewrite
    * it needs, all owned by the declaration. Absent means it reports nothing,
@@ -142,6 +159,38 @@ export interface ProviderDescriptor {
    * provider never sends — every request billable and every one unresolved.
    */
   costReport?: CostReport;
+  /**
+   * The request fields this type reads a service mode from — a tier such as
+   * flex or priority, or a region — and what each of their values means in the
+   * gateway's own names (`./service-modes.ts`). The client sends these fields
+   * in the provider's own spelling and they are forwarded unchanged; this table
+   * only lets the gateway know what was asked for, so the request is billed at
+   * the mode's price, or at an estimate where the model has none. A value
+   * missing from the table is forwarded, billed at standard, marked estimated
+   * and logged.
+   *
+   * Required, so a new type has to say: a type with no tiers declares
+   * {@link NO_SERVICE_TIERS}.
+   */
+  serviceModes: readonly ServiceModeField[];
+  /**
+   * What this type's responses say about the mode that actually served the
+   * request, where that differs from {@link serviceModes}: a provider may
+   * serve a cheaper tier than the one asked for, or a tier set as an account
+   * default the request never showed. The names are the reported values the
+   * usage readers keep (`REPORTED_MODE_FIELDS` in `src/usage/usage-readers.ts`),
+   * and `header:<name>` for a response header. Absent, the request table is
+   * read against the response too, as an OpenAI-compatible answer echoes the
+   * request's field.
+   */
+  servedModes?: readonly ServiceModeField[];
+  /**
+   * Hosts that serve this type in one region at a price of their own, for a
+   * row whose base URL points at one: the region is not in the request, only
+   * in where it is sent. Keyed by origin, with the trailing `/` a stored base
+   * URL has (`origin-guard.ts`).
+   */
+  regionalOrigins?: Readonly<Record<string, ServiceRegion>>;
   /**
    * Who makes the models this provider type serves, when one answer is right
    * for all of them. Absent for aggregators, which serve many authors' models
@@ -171,6 +220,16 @@ export interface ProviderDescriptor {
    */
   probeHeaders?: Readonly<Record<string, string>>;
 }
+
+/**
+ * The table for a type that publishes no service tiers: the OpenAI-compatible
+ * `service_tier` field is still read, so any value other than a standard one is
+ * logged as unknown — the sign that the provider started selling a tier under
+ * it, and that the table needs it.
+ */
+export const NO_SERVICE_TIERS: readonly ServiceModeField[] = [
+  { names: ["service_tier"], axis: "tier", values: { default: "standard", standard: "standard" } },
+];
 
 /**
  * Gateway routing is deliberately absent: which gateway reaches which provider
@@ -209,6 +268,28 @@ export const PROVIDER_DESCRIPTORS = {
     // models, `{ type: "duration", seconds }` for whisper-1.
     transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
     modelAuthor: "OpenAI",
+    // `priority` is the name Fast mode had until July 2026, and is still
+    // accepted for it. The response's `service_tier` is read with this table
+    // too: fast traffic shed to `default` on a ramp bills as standard. `auto` is the project's default tier, standard unless the
+    // project was set otherwise. `scale` draws on prepaid Scale Tier units,
+    // paid for by contract rather than per token, so it bills as standard.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: {
+        auto: "standard",
+        default: "standard",
+        flex: "flex",
+        priority: "fast",
+        fast: "fast",
+        ultrafast: "ultrafast",
+        scale: "standard",
+      },
+    }],
+    // No `regionalOrigins`: OpenAI's data residency hosts (us., eu., gb. and
+    // others under api.openai.com) cost 10% more only for models released on or
+    // after 2026-03-05, and its pages give no release date for most models, so
+    // requests through them are billed as through the global host.
   },
   anthropic: {
     label: "Anthropic",
@@ -225,6 +306,26 @@ export const PROVIDER_DESCRIPTORS = {
     // set by every Anthropic SDK, and pinning it server-side would strip that
     // choice and silently downgrade every request to the oldest version.
     probeHeaders: { "anthropic-version": "2023-06-01" },
+    // Fast mode is `speed`, and the region is `inference_geo`. `service_tier`
+    // draws on a Priority Tier capacity commitment, which is paid for by
+    // contract rather than per token, so either value of it bills as standard.
+    serviceModes: [
+      { names: ["speed"], axis: "tier", values: { standard: "standard", fast: "fast" } },
+      { names: ["service_tier"], axis: "tier", values: { auto: "standard", standard_only: "standard" } },
+      { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" } },
+    ],
+    // `usage` names the speed and the region that served the request. Its
+    // `service_tier` says whether a Priority Tier commitment carried it, which
+    // is paid for by contract, so every value of it bills as standard.
+    servedModes: [
+      { names: ["speed"], axis: "tier", values: { standard: "standard", fast: "fast" } },
+      {
+        names: ["service_tier"],
+        axis: "tier",
+        values: { standard: "standard", priority: "standard", batch: "standard" },
+      },
+      { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" } },
+    ],
   },
   xai: {
     label: "xAI",
@@ -254,6 +355,11 @@ export const PROVIDER_DESCRIPTORS = {
     // APIs it beats the catalog's estimate, which knows no discounts.
     costReport: XAI_COST_REPORT,
     modelAuthor: "xAI",
+    serviceModes: [
+      { names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } },
+    ],
+    // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
+    regionalOrigins: { "https://us.api.x.ai/": "us" },
   },
   gemini: {
     label: "Gemini",
@@ -277,6 +383,20 @@ export const PROVIDER_DESCRIPTORS = {
       gemini_embedding: "v1beta/models/{model}:embedContent",
     },
     modelAuthor: "Google",
+    // Gemini's REST surface accepts both spellings of a field.
+    serviceModes: [{
+      names: ["service_tier", "serviceTier"],
+      axis: "tier",
+      values: { standard: "standard", flex: "flex", priority: "priority" },
+    }],
+    // The tier that served the request is in a response header, and in
+    // `usageMetadata.serviceTier`: a priority request over its limit is served,
+    // and billed, as standard.
+    servedModes: [{
+      names: ["header:x-gemini-service-tier", "serviceTier"],
+      axis: "tier",
+      values: { standard: "standard", flex: "flex", priority: "priority" },
+    }],
   },
   perplexity: {
     label: "Perplexity",
@@ -296,6 +416,19 @@ export const PROVIDER_DESCRIPTORS = {
     examplePath: "chat/completions",
     endpointPaths: { chat_completions: "chat/completions" },
     modelAuthor: "Perplexity",
+    // `fast` is Perplexity's alias for priority.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: {
+        auto: "standard",
+        default: "standard",
+        standard: "standard",
+        flex: "flex",
+        priority: "priority",
+        fast: "priority",
+      },
+    }],
   },
 
   // OpenAI-compatible chat-completions services. `modelAuthor` is set only
@@ -322,6 +455,7 @@ export const PROVIDER_DESCRIPTORS = {
     examplePath: "chat/completions",
     endpointPaths: { chat_completions: "chat/completions" },
     modelAuthor: "DeepSeek",
+    serviceModes: NO_SERVICE_TIERS,
   },
   groq: {
     label: "Groq",
@@ -346,6 +480,20 @@ export const PROVIDER_DESCRIPTORS = {
       chat_completions: "openai/v1/chat/completions",
       audio_transcription: "openai/v1/audio/transcriptions",
     },
+    // `performance`, and `auto` which may be served from it, draw on reserved
+    // capacity bought by contract rather than per token, so they bill as
+    // standard.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: {
+        default: "standard",
+        on_demand: "standard",
+        flex: "flex",
+        performance: "standard",
+        auto: "standard",
+      },
+    }],
   },
   mistral: {
     label: "Mistral",
@@ -361,6 +509,21 @@ export const PROVIDER_DESCRIPTORS = {
     probePath: "v1/models",
     endpointPaths: { chat_completions: "v1/chat/completions" },
     modelAuthor: "Mistral",
+    // `auto` asks for the Priority Tier wherever the account is eligible for
+    // it; `standard_only`, the default, never uses it.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: { standard_only: "standard", auto: "priority" },
+    }],
+    // `usage.service_tier` says whether the Priority Tier served the request.
+    servedModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: { standard: "standard", standard_only: "standard", priority: "priority" },
+    }],
+    // Regional inference, 10% over the global host.
+    regionalOrigins: { "https://api.eu.mistral.ai/": "eu", "https://api.us.mistral.ai/": "us" },
   },
   together: {
     label: "Together AI",
@@ -386,6 +549,9 @@ export const PROVIDER_DESCRIPTORS = {
     ],
     probePath: "v1/models",
     endpointPaths: { chat_completions: "v1/chat/completions" },
+    serviceModes: NO_SERVICE_TIERS,
+    // The US geo-pinned host, priced apart for the models it serves.
+    regionalOrigins: { "https://us-api.together.ai/": "us" },
   },
   fireworks: {
     label: "Fireworks AI",
@@ -406,6 +572,7 @@ export const PROVIDER_DESCRIPTORS = {
     // `inference/v1/` is documented as a GET.
     examplePath: "inference/v1/chat/completions",
     endpointPaths: { chat_completions: "inference/v1/chat/completions" },
+    serviceModes: NO_SERVICE_TIERS,
   },
   cerebras: {
     label: "Cerebras",
@@ -416,6 +583,13 @@ export const PROVIDER_DESCRIPTORS = {
     inferencePaths: [{ path: "v1/completions", clamp: "chat_completions" }],
     probePath: "v1/models",
     endpointPaths: { chat_completions: "v1/chat/completions" },
+    // Its `priority`, `auto` and `flex` tiers run only on dedicated endpoints,
+    // which are paid for by contract, so they bill as standard.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: { default: "standard", priority: "standard", auto: "standard", flex: "standard" },
+    }],
   },
   moonshot: {
     label: "Moonshot AI",
@@ -429,6 +603,7 @@ export const PROVIDER_DESCRIPTORS = {
     probePath: "v1/models",
     endpointPaths: { chat_completions: "v1/chat/completions" },
     modelAuthor: "Moonshot AI",
+    serviceModes: NO_SERVICE_TIERS,
   },
   huggingface: {
     label: "Hugging Face",
@@ -445,6 +620,7 @@ export const PROVIDER_DESCRIPTORS = {
     // endpoint that does check a token lives on a different origin
     // (`huggingface.co`), which a path under this base URL cannot express.
     endpointPaths: { chat_completions: "v1/chat/completions" },
+    serviceModes: NO_SERVICE_TIERS,
   },
   baseten: {
     label: "Baseten",
@@ -455,6 +631,11 @@ export const PROVIDER_DESCRIPTORS = {
     nativeClampStyle: "chat_completions",
     probePath: "v1/models",
     endpointPaths: { chat_completions: "v1/chat/completions" },
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: { default: "standard", flex: "flex", priority: "priority" },
+    }],
   },
   bytedance: {
     label: "ByteDance Ark",
@@ -478,6 +659,20 @@ export const PROVIDER_DESCRIPTORS = {
     // path answers the same 401 and a probe would prove nothing about the key.
     examplePath: "chat/completions",
     endpointPaths: { chat_completions: "chat/completions", image_generation: "images/generations" },
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: { default: "standard", flex: "flex" },
+    }],
+    // Seed models that hear price audio input apart, and Chat Completions and
+    // Responses report it as `audio_tokens`; images and video bill as text.
+    countedInputModalities: ["audio"],
+    // The served tier, which billing follows, is `response_service_tier`.
+    servedModes: [{
+      names: ["response_service_tier"],
+      axis: "tier",
+      values: { default: "standard", flex: "flex" },
+    }],
   },
 
   openrouter: {
@@ -512,6 +707,19 @@ export const PROVIDER_DESCRIPTORS = {
     // No `modelAuthor`: an aggregator serves everyone's models, and the slug
     // namespace answers per model instead.
     authorNamespacedModels: true,
+    // `priority` and `fast` are one tier there, named fast on OpenAI's models.
+    serviceModes: [{
+      names: ["service_tier"],
+      axis: "tier",
+      values: {
+        default: "standard",
+        standard: "standard",
+        flex: "flex",
+        priority: "priority",
+        fast: "fast",
+        ultrafast: "ultrafast",
+      },
+    }],
   },
 } as const satisfies Record<string, ProviderDescriptor>;
 
@@ -539,6 +747,20 @@ export function providerDescriptor(type: ProviderType): ProviderDescriptor {
 
 export function isProviderType(value: unknown): value is ProviderType {
   return typeof value === "string" && Object.hasOwn(PROVIDER_DESCRIPTORS, value);
+}
+
+/**
+ * The region a row's base URL pins its requests to, or `global` where it pins
+ * none: no base URL, a host the type does not price apart, or a type that has
+ * no regional hosts.
+ */
+export function baseUrlRegion(type: string, baseUrl: string | null | undefined): ServiceRegion {
+  if (!baseUrl || !isProviderType(type)) return "global";
+  const regions = providerDescriptor(type).regionalOrigins;
+  if (!regions) return "global";
+  // By origin, so a base URL stored with a path still names its host.
+  const origin = URL.canParse(baseUrl) ? `${new URL(baseUrl).origin}/` : baseUrl;
+  return (Object.hasOwn(regions, origin) ? regions[origin] : undefined) ?? "global";
 }
 
 /**

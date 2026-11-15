@@ -63,6 +63,7 @@ const OUTCOME_TONES: Record<string, string> = {
   ok: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
   issuer_claims_missing: "border-amber-500/40 text-amber-600 dark:text-amber-400",
   issuer_verification_unavailable: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  service_unavailable: "border-amber-500/40 text-amber-600 dark:text-amber-400",
 };
 
 export function AuthOutcomeBadge({ outcome }: { outcome: string }) {

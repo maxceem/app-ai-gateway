@@ -15,9 +15,11 @@ import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budge
 import { MAINTENANCE_CRON } from "./core/maintenance-cron";
 import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
-import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
+import { ROUTE_NOT_FOUND } from "./core/errors";
+import { asGatewayError } from "./core/platform-errors";
 import { log } from "./core/log";
 import { ttlCache } from "./core/ttl-cache";
+import { requestIdOf } from "./core/request-id";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
 import { serveRealtime, discoverRealtime } from "./realtime/serve";
@@ -27,22 +29,27 @@ import { INFERENCE_ROUTES } from "./contracts/inference-routes";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
+import { ConversationLog } from "./do/ConversationLog";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { billingEntitlementGate } from "./middleware/billing";
+import { clientCallDeadline } from "./middleware/deadline";
 import { emailDeliveryStatus } from "./auth/email-verification";
 import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/serve";
 import { serverTiming } from "./execution/timing";
 import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import { authRoutes } from "./routes/auth";
+import { appAuthRateLimit, authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
+import { errorFacts } from "./core/error-facts";
+import { contained } from "./core/background";
+import { runConversationRetention } from "./conversations/retention";
 
 export { RealtimeBackend } from "./realtime/rpc";
 
-export { EndpointRateLimiter, OrgQuota, UserLimiter, RealtimeSession };
+export { ConversationLog, EndpointRateLimiter, OrgQuota, UserLimiter, RealtimeSession };
 
 type AppEnv = {
   Bindings: Env;
@@ -170,6 +177,12 @@ app.all(
 // schemas, drizzle, the app configuration parser) is on every request's path
 // already. So it needs no wrapper app of its own, and its failures reach the
 // one `onError` below without one.
+// In this order: the deadline, then each endpoint's flood limit, then the
+// account gate, which reads D1, so a refused flood costs no read.
+app.use("/v1/apps/:app/auth/*", clientCallDeadline);
+app.use("/v1/apps/:app/auth/challenge", appAuthRateLimit("app_auth_challenge"));
+app.use("/v1/apps/:app/auth/register", appAuthRateLimit("app_auth_register"));
+app.use("/v1/apps/:app/auth/token", appAuthRateLimit("app_auth_token"));
 app.use("/v1/apps/:app/auth/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
@@ -182,7 +195,7 @@ app.all(INFERENCE_ROUTES.connectRealtime, serveRealtime);
 app.get(INFERENCE_ROUTES.discoverRealtime, discoverRealtime);
 app.post(INFERENCE_ROUTES.callNamedEndpoint, serveEndpoint);
 
-app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);
+app.use("/v1/apps/:app/me", clientCallDeadline, billingEntitlementGate, gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);
 
 /*
@@ -206,43 +219,68 @@ app.onError((error, c) => {
   headers.set("content-type", "application/json; charset=UTF-8");
   const timings = c.get("servedTimings");
   if (timings !== undefined) headers.set("server-timing", serverTiming(timings));
-  if (error instanceof GatewayError) {
-    new Headers(error.headers).forEach((value, name) => headers.set(name, value));
+  // The client already has its deadline refusal: this is the call it
+  // abandoned failing afterwards. Logged once, as what names the call that
+  // hung, and never as a second refusal of the same request.
+  const deadline = c.get("deadline");
+  if (deadline?.aborted && error !== deadline.reason) {
+    log("warn", "abandoned_call_failed", {
+      path: c.req.path,
+      method: c.req.method,
+      app: c.req.param("app"),
+      error: errorFacts(error),
+    });
+    return new Response(null, { status: 503, headers });
+  }
+  // A platform failure is answered as the refusal it is, not as a fault in
+  // the gateway: the client should retry, and the log should not call it a bug.
+  const gateway = asGatewayError(error);
+  if (gateway !== null) {
+    new Headers(gateway.headers).forEach((value, name) => headers.set(name, value));
     // Every business rejection, exactly once, in one shape. Without this a user
     // refused on every attempt produced no server-side trace at all — the
     // response was returned and the reason went nowhere.
     //
     // Deliberately nothing else: no body, no token, no header but the client
-    // version, because this line is emitted for authentication failures whose
-    // request payload is a credential.
-    log(error.status >= 500 ? "error" : "warn", "gateway_error", {
-      code: error.code,
+    // version and Cloudflare's request id, because this line is emitted for
+    // authentication failures whose request payload is a credential.
+    log(gateway.status >= 500 ? "error" : "warn", "gateway_error", {
+      code: gateway.code,
+      // The same id a management analytics data point carries, so a refusal
+      // found there leads straight to this line.
+      ray: requestIdOf(c.req.header("cf-ray")) ?? undefined,
       // Undefined fields are dropped by JSON.stringify, so a rejection with no
       // granular cause simply has no `reason` key.
-      reason: error.reason,
-      status: error.status,
+      reason: gateway.reason,
+      status: gateway.status,
       path: c.req.path,
       method: c.req.method,
       app: c.req.param("app"),
       appVersion: storedAppVersion(c.req.header("x-app-version")) ?? undefined,
+      // The platform failure a `service_unavailable` stands for, as the
+      // constants of `errorFacts`: nothing the error carries is copied, so it
+      // keeps the promise above.
+      cause: gateway.cause === undefined ? undefined : errorFacts(gateway.cause),
     });
     return new Response(
       JSON.stringify({
         error: {
-          code: error.code,
-          message: error.message,
+          code: gateway.code,
+          message: gateway.message,
           // Present only where a code alone is not actionable, so clients that
           // ignore it keep reading exactly the body they read before.
-          ...(error.data === undefined ? {} : { data: error.data }),
+          ...(gateway.data === undefined ? {} : { data: gateway.data }),
         },
       }),
-      { status: error.status, headers },
+      { status: gateway.status, headers },
     );
   }
   log("error", "unhandled_error", {
+    ray: requestIdOf(c.req.header("cf-ray")) ?? undefined,
     path: c.req.path,
     method: c.req.method,
-    error: error instanceof Error ? error.message : String(error),
+    app: c.req.param("app"),
+    error: errorFacts(error),
   });
   return new Response(JSON.stringify({ error: { code: "internal_error", message: "Internal server error" } }), {
     status: 500,
@@ -264,7 +302,7 @@ function sweepFailed(sweep: string, code: string, error: unknown): void {
     return;
   }
   log("error", code, {
-    error: error instanceof Error ? error.message : String(error),
+    error: errorFacts(error),
   });
 }
 
@@ -346,6 +384,18 @@ async function prune(env: Env): Promise<void> {
       sweepFailed("expired_accounts", "expired_accounts_prune_failed", error);
     }
   }
+  // Stored conversations, where the deployment keeps them. Offered half of
+  // what is left, like account cleanup, so usage compaction is never starved;
+  // R2 calls are subrequests too, and are charged to the same allowance.
+  if (env.CONVERSATIONS !== undefined) {
+    const share = budget.limited(Math.floor(budget.remaining / 2));
+    try {
+      const result = await runConversationRetention(env.CONVERSATIONS, share.database(db), Date.now(), share);
+      log("info", "conversations_pruned", { ...result });
+    } catch (error) {
+      sweepFailed("conversations", "conversations_prune_failed", error);
+    }
+  }
   // Reports under its own codes, and swallows its own failures for the same
   // reason the sweeps above do.
   await runUsageRetention(db, Date.now(), budget);
@@ -360,6 +410,6 @@ async function prune(env: Env): Promise<void> {
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     // An unrelated trigger must not spend the maintenance budget.
-    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(prune(env));
+    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(contained("maintenance", prune(env)));
   },
 });

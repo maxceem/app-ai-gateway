@@ -194,6 +194,16 @@ describe("the application configuration grammar", () => {
         .toThrowError("authentication.end_user.issuer.token_header");
     });
 
+    it.each(["x-app-version", "cookie", "x-appattest-proof", "authorization", "x-api-key", "Content-Type"])(
+      "refuses %s as the token header, which the gateway already uses",
+      (header) => {
+        // The version header above all: the gateway logs it, so a token sent
+        // there would be logged too.
+        expect(() => parseAppConfig(withIssuer({ token_header: header })))
+          .toThrowError("the gateway already uses that header");
+      },
+    );
+
     it.each([null, 0, -1, 1.5])("refuses the token lifetime %s", (value) => {
       expect(() => parseAppConfig(withIssuer({ max_token_lifetime_seconds: value })))
         .toThrowError("authentication.end_user.issuer.max_token_lifetime_seconds");
@@ -276,6 +286,10 @@ describe("the application configuration grammar", () => {
       ["a Google provider auth header", "x-goog-api-key"],
       ["the version header", "x-app-version"],
       ["content-type", "content-type"],
+      // A user id is logged with every usage line: a cookie or an App Attest
+      // proof read as one would be logged with it.
+      ["the cookie header", "cookie"],
+      ["the App Attest proof", "x-appattest-proof"],
     ])("refuses %s, which the gateway already uses", (_case, header) => {
       expect(() => parseAppConfig(withHeader(header)))
         .toThrowError("the gateway already uses that header");
@@ -492,10 +506,19 @@ describe("the application configuration grammar", () => {
         },
       };
 
-      it("defaults to install on an App Attest application, and fills it in", () => {
+      it("defaults to apple_account on an App Attest application, and fills it in", () => {
         const parsed = parseAppConfig(attest({ source: "app_install" }, { monthly_usd: 5 }));
-        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "install" });
-        expect(budgetScope(parsed)).toBe("install");
+        expect(parsed.limits.per_user.spending).toEqual({ monthly_usd: 5, scope: "apple_account" });
+        expect(budgetScope(parsed)).toBe("apple_account");
+      });
+
+      it("takes install or apple_account on any App Attest application", () => {
+        for (const endUser of [{ source: "app_install" }, issuerUser]) {
+          for (const scopeName of ["install", "apple_account"] as const) {
+            expect(budgetScope(parseAppConfig(attest(endUser, { monthly_usd: 5, scope: scopeName }))))
+              .toBe(scopeName);
+          }
+        }
       });
 
       it("moves to user only on an issuer-backed App Attest application", () => {
@@ -505,17 +528,22 @@ describe("the application configuration grammar", () => {
           .toThrowError(/limits\.per_user\.spending\.scope.*end_user\.source is issuer/u);
       });
 
-      it("refuses install on a server application, which has none", () => {
-        expect(() => parseAppConfig(withLimits({
-          per_user: scope({ spending: { monthly_usd: 5, scope: "install" } }),
-          per_app: scope(),
-        }))).toThrowError(/server applications have no install; the budget is per user/u);
+      it("refuses install and apple_account on a server application, which has neither", () => {
+        for (const scopeName of ["install", "apple_account"]) {
+          expect(() => parseAppConfig(withLimits({
+            per_user: scope({ spending: { monthly_usd: 5, scope: scopeName } }),
+            per_app: scope(),
+          }))).toThrowError(
+            new RegExp(`cannot be ${scopeName}: server applications have no install or Apple Account; the budget is per user`, "u"),
+          );
+        }
       });
 
-      it("keeps a stored configuration written before it existed", () => {
-        // Rows stored before the field still parse, and read the default.
+      it("reads a configuration without the field as the default, and writes it back", () => {
+        // Rows stored before the field had install written into them by
+        // migration 0012, so only a new write reaches this default.
         const parsed = parseAppConfig(attest(issuerUser, { monthly_usd: 5 }));
-        expect(parsed.limits.per_user.spending.scope).toBe("install");
+        expect(parsed.limits.per_user.spending.scope).toBe("apple_account");
         expect(parseAppConfig(parsed)).toEqual(parsed);
       });
 
@@ -611,6 +639,28 @@ describe("the application configuration grammar", () => {
       };
       expect(validateConfig(serverConfig({ endpoints: { chat, transcribe } })).endpoints)
         .toEqual({ chat: { ...chat, kind: "text" }, transcribe: { ...transcribe, kind: "transcription" } });
+    });
+
+    it("refuses parameters that choose a service mode no target can price, as an unpriced model is", () => {
+      const responses = { api_style: "responses", provider: "openai", model: "gpt-5.6-sol" };
+      const withTier = (tier: string) => serverConfig({
+        endpoints: { chat: { ...responses, params: { service_tier: tier } } },
+      });
+      expect(() => validateConfig(withTier("flex"))).toThrowError(
+        'endpoints.chat: Model gpt-5.6-sol has no price on openai in service mode flex, which the parameters set with service_tier: "flex"',
+      );
+      // OpenAI calls Fast mode `priority` too; Scale Tier units bill as standard;
+      // a value the gateway does not know can never be priced.
+      expect(() => validateConfig(withTier("priority"))).toThrowError("service mode fast");
+      expect(() => validateConfig(withTier("scale"))).not.toThrow();
+      expect(() => validateConfig(withTier("turbo"))).toThrowError('endpoints.chat: service_tier: "turbo" is not a service mode the gateway knows for openai');
+      // The price list prices o3 flex: a fallback to it saves, one to a model it does not price in flex does not.
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...responses, model: "o3", params: { service_tier: "flex" } } },
+      }))).not.toThrow();
+      expect(() => validateConfig(serverConfig({
+        endpoints: { chat: { ...responses, model: "o3", params: { service_tier: "flex" }, fallback: [{ provider: "openai", model: "gpt-5.6-sol" }] } },
+      }))).toThrowError("endpoints.chat.fallback[0]: Model gpt-5.6-sol has no price on openai in service mode flex");
     });
 
     it("takes the kind a multi-kind style is told to serve, and refuses one it cannot", () => {

@@ -1,4 +1,3 @@
-import { AppConfigSchema } from "../../src/contracts/schemas.ts";
 import type { CommandName } from "./parser.ts";
 import type { GatewayCapability, ProviderCapability } from "./resources.ts";
 import type { RenderedResult } from "./results.ts";
@@ -67,6 +66,13 @@ function table(
 const yesNo = (value: boolean): string => (value ? "yes" : "no");
 
 /**
+ * A deployment's mode as a person says it. A newer gateway may name a mode
+ * this release has no words for, which is then shown as it was sent.
+ */
+const deploymentMode = (mode: string): string =>
+  mode === "cloud" ? "cloud" : mode === "self_hosted" ? "self-hosted" : mode;
+
+/**
  * The human rendering of one command's result.
  *
  * Dispatched on the command and then narrowed on the result union: the results
@@ -126,7 +132,6 @@ function render(
   )
     return [style.headline(`Signed in to ${context.url}.`), ...operation(result, style)];
   switch (command) {
-    case "account status":
     case "account login":
     case "account claim":
     case "deployment connect":
@@ -134,15 +139,9 @@ function render(
       return status(command, result, context, style);
     case "provider types":
     case "provider-gateway types":
-    case "provider list":
-    case "provider-gateway list":
-    case "app list":
-    case "app key list":
       return list(command, result, style);
-    case "provider show":
     case "provider-gateway show":
-    case "app show":
-      return show(command, result, style);
+      return show(result, style);
     case "provider update":
     case "provider-gateway update":
     case "provider rotate-key":
@@ -151,21 +150,13 @@ function render(
     case "provider-gateway add":
     case "provider remove":
     case "provider-gateway remove":
-    case "app remove":
     case "app key add":
-    case "app key revoke":
     case "account logout":
       return mutation(command, result, context, style);
-    case "usage show":
-    case "usage breakdown":
-      return usage(command, result, style);
     case "operation status":
     case "operation wait":
       return operation(result, style);
     case "app add":
-    case "app update":
-    case "app validate":
-    case "app check":
     case "app snippet":
       return app(command, result, context, style);
     case "deployment setup":
@@ -174,7 +165,41 @@ function render(
     case "deployment cleanup":
     case "deployment rollback":
       return deployment(result, style);
+    case "support send":
+      return support(result, style);
+    case "app conversations":
+      return conversations(result, style);
   }
+}
+
+/** `app conversations`: where the export went, and how much of it was new. */
+function conversations(result: RenderedResult, style: Style): string[] {
+  if (!("downloaded" in result)) return [];
+  return [
+    style.headline(
+      result.files === 0
+        ? `No stored conversations for ${result.app_id} in that range.`
+        : `Exported ${result.files} conversation files for ${result.app_id}.`,
+    ),
+    ...kv([
+      ["Folder", result.output],
+      ["Downloaded", `${result.downloaded} files${result.media ? `, ${result.media} media` : ""}`],
+      ["Range", `${result.from ?? "oldest"} to ${result.to}`],
+    ], style),
+  ];
+}
+
+/** `support send`: the reference to quote, and where the reply goes. */
+function support(result: RenderedResult, style: Style): string[] {
+  if (!("reference" in result)) return [];
+  return [
+    style.headline(
+      result.duplicate
+        ? `Already sent as ${result.reference} in the last ten minutes; nothing new was sent.`
+        : `Sent to human support as ${result.reference}.`,
+    ),
+    ...kv([["Replies go to", result.replyTo]], style),
+  ];
 }
 
 /** `account status`, `deployment status`, and the two commands that connect. */
@@ -200,7 +225,7 @@ function status(
           ["Gateway", context.url],
           ["Account", `${result.account.name} (${result.account.id})`],
           ["Claimed", yesNo(result.account.claimed)],
-          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Deployment", deploymentMode(result.deployment.mode)],
           ["Console", result.deployment.consoleOrigin],
         ],
         style,
@@ -215,7 +240,8 @@ function status(
           ["Connected", yesNo(result.connected)],
           ["Authenticated", yesNo(result.authenticated)],
           ["Version", result.serverVersion],
-          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Prices", result.prices ? `${result.prices.revision} (${result.prices.updated ?? "date unknown"})` : undefined],
+          ["Deployment", deploymentMode(result.deployment.mode)],
           ["Console", result.consoleOrigin],
           ["Provider types", result.providers.length],
           ["Provider gateway types", result.providerGateways.length],
@@ -245,101 +271,11 @@ function list(command: CommandName, result: RenderedResult, style: Style): strin
       style,
     );
   }
-  if (command === "provider list") {
-    // Three results in the union carry `providers`: this list, an `app check`
-    // report (`appId`) and a deployment's capabilities (`protocolVersion`).
-    // Naming the other two out is what leaves `ProviderSummary[]` here rather
-    // than a union of three different arrays.
-    if (!("providers" in result) || "appId" in result || "protocolVersion" in result)
-      return [style.json(result)];
-    if (!result.providers.length) return ["No providers."];
-    return table(
-      ["ID", "SLUG", "TYPE", "NAME", "STATUS", "CREATED"],
-      result.providers.map((provider) => [
-        provider.id,
-        provider.slug,
-        provider.type,
-        provider.name,
-        provider.status,
-        provider.createdAt,
-      ]),
-      style,
-    );
-  }
-  if (command === "provider-gateway list" && "gateways" in result) {
-    if (!result.gateways.length) return ["No provider gateways."];
-    return table(
-      ["ID", "TYPE", "NAME", "STATUS", "PROVIDERS", "CREATED"],
-      result.gateways.map((gateway) => [
-        gateway.id,
-        gateway.type,
-        gateway.name,
-        gateway.status,
-        String(gateway.providerCount),
-        gateway.createdAt,
-      ]),
-      style,
-    );
-  }
-  // `apps` is also the account-wide usage report's per-app list, which is the
-  // one other result carrying that key.
-  if (command === "app list" && "apps" in result && !("totals" in result)) {
-    if (!result.apps.length) return ["No apps."];
-    return table(
-      ["ID", "NAME", "AUTH", "STATUS", "PROVIDERS", "CREATED"],
-      result.apps.map((entry) => [
-        entry.id,
-        entry.name,
-        entry.authentication_type,
-        entry.status,
-        String(entry.providers.length),
-        entry.created_at,
-      ]),
-      style,
-    );
-  }
-  // Matched on `app_id` as well as `keys`, because every array in the union
-  // answers to `keys` too: it is a method on `Array.prototype`.
-  if (command === "app key list" && "keys" in result && "app_id" in result) {
-    if (!result.keys.length) return [`No keys for ${result.app_id}.`];
-    return table(
-      ["ID", "NAME", "PREFIX", "STATUS", "CREATED", "LAST USED"],
-      result.keys.map((key) => [
-        key.id,
-        key.name,
-        key.key_prefix,
-        key.status,
-        key.created_at,
-        key.last_used_at ?? "never",
-      ]),
-      style,
-    );
-  }
   return [style.json(result)];
 }
 
-/**
- * The full stored configuration, under a line naming what it is.
- *
- * The document stays indented JSON on purpose: `app show --json` output is what
- * the guides tell people to save and edit, and the plain run is how they read
- * the same thing before deciding to.
- */
-function show(command: CommandName, result: RenderedResult, style: Style): string[] {
-  if (command === "app show" && "app" in result && !("guidance" in result)) {
-    return [
-      style.headline(`${result.app.name} (${result.app.id})`),
-      ...warnings(result.app.warnings ?? [], style),
-      "",
-      style.json(result),
-    ];
-  }
-  if ("slug" in result)
-    return [
-      style.headline(`${result.name} (${result.id}), type ${result.type}, slug ${result.slug}`),
-      "",
-      style.json(result),
-    ];
+/** `provider-gateway show`: what it is, then the whole record. */
+function show(result: RenderedResult, style: Style): string[] {
   if ("referencedCount" in result)
     return [
       style.headline(`${result.name} (${result.id}), type ${result.type}`),
@@ -368,17 +304,8 @@ function mutation(
       return [style.headline(`Removed provider ${result.provider_id}.`)];
     if ("provider_gateway_id" in result)
       return [style.headline(`Removed provider gateway ${result.provider_gateway_id}.`)];
-    return [
-      style.headline(`Removed app ${result.app_id}.`) +
-        ` ${result.removed_users} users removed; usage events retained.`,
-    ];
+    return [style.json(result)];
   }
-  if ("key" in result)
-    return [
-      style.headline(
-        `Revoked key ${result.key.name} (${result.key.id}) for app ${result.app_id}.`,
-      ),
-    ];
   if ("applicationKey" in result && "appId" in result)
     return [
       style.headline(
@@ -427,80 +354,6 @@ function mutation(
   return [style.json(result)];
 }
 
-function usage(command: CommandName, result: RenderedResult, style: Style): string[] {
-  if (command === "usage breakdown" && "rows" in result) {
-    const head = kv(
-      [
-        ["App", result.app_id],
-        ["Grouped by", result.by],
-        ["Period", `${result.from} to ${result.to}`],
-      ],
-      style,
-    );
-    const rows = result.rows.length
-      ? table(
-          ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
-          result.rows.map((row) => [
-            row.key ?? "(none)",
-            String(row.requests),
-            String(row.input_tokens),
-            String(row.output_tokens),
-            row.cost_usd.toFixed(4),
-            String(row.errors),
-          ]),
-          style,
-        )
-      : ["No usage in this period."];
-    return [...head, "", ...rows, "", result.coverage.source];
-  }
-  if ("totals" in result)
-    return [
-      ...kv(
-        [
-          ["Month", result.month],
-          ["Requests", result.totals.requests],
-          ["Input tokens", result.totals.input_tokens],
-          ["Output tokens", result.totals.output_tokens],
-          ["Cost USD", result.totals.cost_usd.toFixed(4)],
-          ["Errors", result.totals.errors],
-        ],
-        style,
-      ),
-      "",
-      // The totals are the sum of these rows, so the apps they came from are
-      // printed rather than counted: a month is read to find which app spent it.
-      ...(result.apps.length
-        ? table(
-            ["APP", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
-            result.apps.map((entry) => [
-              entry.deleted ? `${entry.appId} (deleted)` : entry.appId,
-              String(entry.requests),
-              String(entry.input_tokens),
-              String(entry.output_tokens),
-              entry.cost_usd.toFixed(4),
-              String(entry.errors),
-            ]),
-            style,
-          )
-        : ["No app usage recorded."]),
-    ];
-  if ("requests" in result)
-    return kv(
-      [
-        ["App", result.app_id],
-        ["Month", result.month],
-        ["Requests", result.requests],
-        ["Input tokens", result.input_tokens],
-        ["Cached input tokens", result.cached_input_tokens],
-        ["Cache write tokens", result.cache_write_tokens],
-        ["Output tokens", result.output_tokens],
-        ["Cost USD", result.cost_usd.toFixed(4)],
-      ],
-      style,
-    );
-  return [style.json(result)];
-}
-
 /** An operation that is no longer pending: `operation status`, `operation wait`. */
 function operation(result: RenderedResult, style: Style): string[] {
   if (!("state" in result)) return [style.json(result)];
@@ -518,13 +371,6 @@ function operation(result: RenderedResult, style: Style): string[] {
   );
 }
 
-/** Why an account would refuse an app's requests, as `app check` says it. */
-const ACCOUNT_REFUSALS = {
-  email_unverified: "refuses requests until its owner verifies their email (email_unverified)",
-  unclaimed_access_expired: "refuses requests until a person claims it (unclaimed_access_expired)",
-  account_expired: "refuses requests: its recovery deadline has passed (account_expired)",
-} as const;
-
 function app(
   command: CommandName,
   result: RenderedResult,
@@ -532,26 +378,6 @@ function app(
   style: Style,
 ): string[] {
   if ("output" in result) return [style.headline(`Saved: ${result.output}`)];
-  if ("ready" in result)
-    return [
-      style.headline(
-        `${result.appId} is ${result.ready ? "ready to serve requests" : "not ready to serve requests"}.`,
-      ),
-      ...kv(
-        [
-          ["Status", result.status],
-          ["Providers", result.providers.length],
-          ["Active providers", result.providers.filter((p) => p.status === "active").length],
-          // Absent from a gateway older than the field, which reports none.
-          ...(result.accountRefusal
-            ? [["Account", ACCOUNT_REFUSALS[result.accountRefusal]] as [string, string]]
-            : []),
-        ],
-        style,
-      ),
-      ...notes(result.limitations),
-      ...warnings(result.warnings ?? [], style),
-    ];
   if ("definition" in result) {
     const dryRun = "dryRun" in result;
     return [
@@ -580,24 +406,6 @@ function app(
   return [style.json(result)];
 }
 
-/**
- * An application's warnings: behaviour that stops on a stated date. Said
- * apart from the verdict, because none of them is a failure yet, and each
- * with its date and where to read about it.
- */
-function warnings(
-  values: readonly { message: string; until?: string; docs_url?: string }[],
-  style: Style,
-): string[] {
-  if (!values.length) return [];
-  return [
-    "",
-    style.warn("Warnings"),
-    ...values.map((warning) =>
-      `- ${warning.message}${warning.docs_url ? ` See ${warning.docs_url}` : ""}`),
-  ];
-}
-
 /** The issue list a verdict is followed by, one per line, or nothing at all. */
 const notes = (values: readonly string[]): string[] =>
   values.length ? ["", ...values.map((value) => `- ${value}`)] : [];
@@ -614,39 +422,45 @@ function written(
   context: OutputContext,
   style: Style,
 ): string[] {
-  const parsed = AppConfigSchema.safeParse(result.app.config);
+  // Read as the gateway answered, which a newer gateway may have filled with
+  // types and sources this release does not know: those are shown as sent,
+  // never described as one this release does know.
+  const config = result.app.config;
+  const type: string = config.authentication.type;
   const details: [string, Cell][] = [];
   let language = "shell";
-  if (parsed.success) {
-    const config = parsed.data;
-    if (config.authentication.type === "apple_app_attest") {
-      language = "swift";
-      const endUser = config.authentication.end_user;
-      details.push(
-        [
-          "App Attest",
-          (config.authentication.app_attest.environments ?? ["production"]).join(" + "),
-        ],
-        [
-          "User identity",
-          endUser.source === "app_install"
-            ? "per installation; sign-in not required"
-            : "verified issuer; integrate your sign-in SDK",
-        ],
-        [
-          "Paid subscription check",
-          endUser.source === "issuer" && endUser.issuer.required_claims.length
-            ? "configured claim requirements"
-            : "off",
-        ],
-      );
-    } else details.push(["Authentication", "server application API key"]);
-    const limits = config.limits?.per_user;
+  if (config.authentication.type === "apple_app_attest") {
+    language = "swift";
+    const endUser = config.authentication.end_user;
+    const source: string = endUser.source;
+    details.push(
+      [
+        "App Attest",
+        (config.authentication.app_attest.environments ?? ["production"]).join(" + "),
+      ],
+      [
+        "User identity",
+        endUser.source === "app_install"
+          ? "per installation; sign-in not required"
+          : endUser.source === "issuer"
+            ? "verified issuer; integrate your sign-in SDK"
+            : source,
+      ],
+      [
+        "Paid subscription check",
+        endUser.source === "issuer"
+          ? endUser.issuer.required_claims.length ? "configured claim requirements" : "off"
+          : endUser.source === "app_install" ? "off" : undefined,
+      ],
+    );
+  } else if (type === "api_key") details.push(["Authentication", "server application API key"]);
+  else details.push(["Authentication", type]);
+  const limits = config.limits?.per_user;
+  if (limits)
     details.push([
       "Per-user limits",
-      `${limits?.requests.per_minute ?? "unlimited"} requests/minute, ${limits?.requests.per_day ?? "unlimited"}/day`,
+      `${limits.requests?.per_minute ?? "unlimited"} requests/minute, ${limits.requests?.per_day ?? "unlimited"}/day`,
     ]);
-  }
   if (result.applicationKey)
     details.push(["Key saved", result.applicationKey.storagePath]);
   return [

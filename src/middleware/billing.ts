@@ -1,9 +1,6 @@
 import { assertAccountAccess } from "../core/account-lifecycle";
 import type { MiddlewareHandler } from "hono";
-import {
-  getBillingAccess,
-  requireActiveBilling,
-} from "../billing/gateway";
+import { admitAppTraffic, getAppTrafficBillingAccess } from "../billing/gateway";
 import { loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import type { RequestVariables } from "./request-scope";
@@ -35,11 +32,12 @@ export const billingEntitlementGate: MiddlewareHandler<{
   const app = await loadApp(c.env, appId);
   await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   if (deployment.billing !== null) {
-    requireActiveBilling(await getBillingAccess(
+    admitAppTraffic(await getAppTrafficBillingAccess(
       deployment,
       app.organizationId,
       c.get("billingRequestCache"),
-    ));
+      (promise) => c.executionCtx.waitUntil(promise),
+    ), app.organizationId);
   }
   await next();
 };

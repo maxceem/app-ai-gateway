@@ -1,7 +1,7 @@
 import { billingQuota, quotaUsage } from "../../billing/quota";
 import type { CliCapabilitiesResponse } from "../../contracts/cli";
 import { accountLifecycle } from "../../core/account-lifecycle";
-import { SERVER_VERSION } from "../../core/version";
+import { PRICES, SERVER_VERSION } from "../../core/version";
 import { examplePath } from "../../shared/first-request";
 import { GATEWAY_TYPES, gatewayDescriptor } from "../../shared/gateways";
 import { providerCapability, providerDescriptor, PROVIDER_TYPES } from "../../shared/providers";
@@ -16,6 +16,7 @@ export const accountHandlers = {
     const capabilities: CliCapabilitiesResponse = {
       protocolVersion: 1,
       serverVersion: SERVER_VERSION,
+      prices: PRICES,
       deployment: identity,
       consoleOrigin: identity.consoleOrigin,
       providers: PROVIDER_TYPES.map((type) => {

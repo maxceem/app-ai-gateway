@@ -5,10 +5,11 @@ import type {
   CliOperation,
 } from "../../src/contracts/cli.ts";
 import type { AppResult } from "./apps.ts";
+import type { ConversationsExportResult } from "./conversations.ts";
 import type { Onboarding } from "./context.ts";
 import type { DeploymentResult } from "./deployment.ts";
 import type { ResourceResult } from "./resources.ts";
-import type { UsageResult } from "./usage.ts";
+import type { SupportResult } from "./support.ts";
 
 /** What `agw deployment status` reports about the selected connection. */
 export type DeploymentStatusResult = CliCapabilitiesResponse & {
@@ -21,7 +22,8 @@ export type DeploymentStatusResult = CliCapabilitiesResponse & {
 export type CommandResult =
   | ResourceResult
   | AppResult
-  | UsageResult
+  | ConversationsExportResult
+  | SupportResult
   | DeploymentResult
   | DeploymentStatusResult
   | CliAccountResponse

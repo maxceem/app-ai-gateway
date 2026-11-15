@@ -1,0 +1,9 @@
+{
+  "name": "@app-ai-gateway/deploy-tools",
+  "private": true,
+  "description": "The only packages the release's deploy job installs: Wrangler and the config reader scripts/wrangler-config.mjs uses. Versions match the root lockfile; test/deploy-script.node.mjs checks it.",
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "wrangler": "4.156.2"
+  }
+}

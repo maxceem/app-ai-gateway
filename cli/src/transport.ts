@@ -1,4 +1,4 @@
-import { fail, origin, VERSION } from "./common.ts";
+import { CliError, fail, origin, VERSION } from "./common.ts";
 import type { CliErrorDetails } from "./errors.ts";
 
 export interface RequestOptions {
@@ -6,10 +6,16 @@ export interface RequestOptions {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Answer a success with its raw bytes rather than parsed JSON; a refusal is still JSON. */
+  binary?: true;
+  /** How long the request may take before it is aborted; 30 seconds unless given. */
+  timeoutMs?: number;
 }
 
 export interface WireResponse {
   data: unknown;
+  /** The success's headers; a test transport may leave them out. */
+  headers?: Headers;
 }
 
 /** The HTTP surface a `Transport` is built on; swapped out wholesale in tests. */
@@ -79,6 +85,10 @@ function nextActionFor(status: number, code: string, details: CliErrorDetails): 
   if (status === 401) return "Run agw account login.";
   if (code === "billing_plan_limit_reached")
     return "Delete one you no longer need, or move to a plan whose limits are higher.";
+  if (code === "support_plan_required")
+    return "Tell the person their plan does not include human support; an account owner can choose one that does on the console's Billing page.";
+  if (code === "billing_feature_not_included")
+    return "The account's plan does not include this feature; an account owner can choose one that does on the console's Billing page.";
   if (status === 429) {
     const seconds = details.retryAfterSeconds;
     if (seconds === undefined)
@@ -103,7 +113,7 @@ export class Transport {
   async request(
     url: string,
     path: string,
-    { key, method = "GET", body, headers = {} }: RequestOptions = {},
+    { key, method = "GET", body, headers = {}, binary, timeoutMs = 30000 }: RequestOptions = {},
   ): Promise<WireResponse> {
     const base = origin(url);
     if (!path.startsWith("/") || path.startsWith("//"))
@@ -113,9 +123,9 @@ export class Transport {
       response = await this.fetch(base + path, {
         method,
         redirect: "manual",
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: {
-          accept: "application/json",
+          accept: binary ? "*/*" : "application/json",
           "user-agent": `agw/${VERSION}`,
           ...(body ? { "content-type": "application/json" } : {}),
           ...(key ? { authorization: `Bearer ${key}` } : {}),
@@ -138,6 +148,7 @@ export class Transport {
         "Connect explicitly to the intended deployment.",
         3,
       );
+    if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()), headers: response.headers };
     let data: unknown;
     try {
       data = await response.json();
@@ -174,7 +185,7 @@ export class Transport {
         }
       }
       const explanation = reported(wire.error?.message ?? wire.message, body);
-      fail(
+      const refusal = new CliError(
         code,
         `Deployment rejected the request (HTTP ${response.status})` +
           (explanation ? `: ${explanation}` : "."),
@@ -182,7 +193,9 @@ export class Transport {
         3,
         details,
       );
+      refusal.headers = response.headers;
+      throw refusal;
     }
-    return { data };
+    return { data, headers: response.headers };
   }
 }

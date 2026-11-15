@@ -13,7 +13,7 @@ import { browserAvailable, listenLoopback } from "../src/login.ts";
 import { main } from "../src/main.ts";
 import type { RequestOptions } from "../src/transport.ts";
 import { StateStore, type CliState } from "../src/state.ts";
-import { fresh, makeStore } from "./helpers.ts";
+import { ACCOUNT_TOOL, fresh, makeStore } from "./helpers.ts";
 
 /** Where a fresh CLI logs in. */
 const URL_ = CLOUD;
@@ -131,6 +131,11 @@ function deploymentFake({ browserLogin = true }: { browserLogin?: boolean } = {}
         return refuse(401, "invalid_proof");
       login.collected = true;
       return { data: { credential: { token: ISSUED }, account } };
+    }
+    if (path === "/v1/cli/tools") return { data: { revision: "r1", tools: [ACCOUNT_TOOL] } };
+    if (path === "/v1/cli/tools/get_account" && method === "POST") {
+      if (!options.key || revoked.has(options.key)) return refuse(401, "invalid_key");
+      return { data: { tool: "get_account", summary: "Account Example.", result: accountResponse } };
     }
     if (path === "/v1/cli/account") {
       if (!options.key || revoked.has(options.key)) return refuse(401, "invalid_key");

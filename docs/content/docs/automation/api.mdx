@@ -112,6 +112,25 @@ would.
 - `PUT /v1/admin/apps/{app}` replaces the whole app: send `name`, the full
   `config`, `status`, and the `revision` from your latest read. Omitted `status`
   defaults to `active`, so preserve it to avoid enabling a paused app.
+- `PATCH /v1/admin/apps/{app}` changes only what you name, and is the better
+  fit for a small edit. Send the `revision` and a list of `operations`, each
+  an RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`,
+  `/status` or `/config`:
+
+  ```json
+  { "revision": 7, "operations": [
+    { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
+    { "op": "replace", "path": "/config/limits/per_app/spending/monthly_usd", "value": null },
+    { "op": "remove", "path": "/config/routing/model_rewrites/old-name" }
+  ] }
+  ```
+
+  The operations apply in order to the app as `GET` returns it, and the
+  result is checked exactly as a `PUT` of the whole app would be. Nothing is
+  saved unless every operation applies and the result is accepted. A value is
+  written as given: `null` means unlimited for a limit, and only `remove`
+  deletes. `add` writes a key, an array position, or `-` to append; `replace`
+  and `remove` need something to already be there.
 - App deletion requires `DELETE /v1/admin/apps/{app}?confirm={app}`, repeating
   the app ID in the query.
 - An app's API key is returned once, as `api_key.key` on create or `key` on

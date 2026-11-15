@@ -15,6 +15,7 @@ import {
   HandoffProviderUpdatePayloadSchema,
   HandoffRotatePayloadSchema,
   ProviderGatewayUpdateRequestSchema,
+  SupportMessageRequestSchema,
 } from "../contracts/schemas";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import type { AdminActor } from "../management/actor";
@@ -31,8 +32,13 @@ import {
   reserveResourceOperation,
   type RecentOperation,
 } from "../management/resource-operations";
+import type { ManagementScope } from "../management/scope";
+import { supportInbox } from "../management/support";
 import { parseRequest } from "../management/validation";
-import { isSecretFieldName, secretField, type ResultPath } from "./secret-fields";
+import { applyAppPatch } from "../management/app-patch";
+import { runToolOperation } from "./run";
+import { isSecretFieldName, REDACTED, secretField, type ResultPath } from "./secret-fields";
+import { APP_SHORTCUTS, shortcutInput, shortcutOperations, usedShortcuts } from "./shortcuts";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
 
@@ -86,6 +92,7 @@ export type ReadOperation = {
  */
 export const MCP_WRITE_OPERATIONS = [
   "updateApp",
+  "patchApp",
   "deleteApp",
   "revokeAppKey",
   "blockAppUser",
@@ -94,6 +101,7 @@ export const MCP_WRITE_OPERATIONS = [
   "updateProviderGateway",
   "deleteProvider",
   "deleteProviderGateway",
+  "sendSupportMessage",
 ] as const satisfies readonly RegisteredOperation[];
 
 export type WriteOperation = (typeof MCP_WRITE_OPERATIONS)[number];
@@ -135,6 +143,12 @@ export interface McpTool {
   /** Whether a person completes what it opens by entering a secret in a browser. */
   readonly browserStep?: true;
   /**
+   * Whether the deployment offers what the tool does at all. A tool that says
+   * no is left out of `tools/list` rather than listed and refused on every
+   * call; the answer is the deployment's, so the list stays fixed for it.
+   */
+  available?(scope: ManagementScope): boolean;
+  /**
    * Path parameters and query fields of the operation, reusing the catalog's
    * own field schemas. What `tools/list` advertises, and only that: the
    * arguments of a call reach the executor as they were sent, so it refuses
@@ -148,6 +162,11 @@ export interface McpTool {
    * redacted. See `redactSecrets`.
    */
   readonly keyMetadataAt?: readonly ResultPath[];
+  /**
+   * Its input fields that are shorthands for a deeper setting, declared in
+   * `./shortcuts`: listed first by `agw`'s help.
+   */
+  readonly shortcuts?: readonly string[];
   /** What to do after a refusal, where this tool knows better than {@link nextAction}. */
   readonly next?: Partial<Record<ErrorCode, string>>;
   /** The catalog operation to run for one call's arguments, and its request. */
@@ -403,11 +422,30 @@ function refuseSecret(input: Record<string, unknown>, tool: string): void {
 function refuseCredential(input: Record<string, unknown>, remedy: string): void {
   const field = secretField(input);
   if (field === null) return;
+  // A value get_app hid, sent back as it was shown: say that, rather than
+  // that a credential was passed.
+  if (valueAtPath(input, field) === REDACTED) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `${field}: still ${REDACTED}, as it was shown. A value named like a credential never passes through a tool, so this document cannot be sent back whole. Make the change with patch_app, which leaves this setting as it is; change the setting itself in the console or through the API.`,
+    );
+  }
   throw new GatewayError(
     400,
     "invalid_request",
     `${field}: a provider key or gateway token is never a tool argument. ${remedy}`,
   );
+}
+
+/** The value at a dotted path `secretField` reported. */
+function valueAtPath(value: unknown, path: string): unknown {
+  let current: unknown = value;
+  for (const key of path.split(".")) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }
 
 /**
@@ -416,6 +454,16 @@ function refuseCredential(input: Record<string, unknown>, remedy: string): void 
  * parameters stay open for the API, where a caller may hold a credential, but
  * nothing an agent sends is one.
  */
+/** Each written value of a patch under the key its path ends with, for {@link refuseAppCredential}. */
+function patchValues(operations: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(operations)) return [];
+  return operations.flatMap((operation: unknown) => {
+    if (!isObject(operation) || typeof operation.path !== "string" || !("value" in operation)) return [];
+    const key = operation.path.split("/").at(-1)!.replaceAll("~1", "/").replaceAll("~0", "~");
+    return [{ [key]: operation.value }];
+  });
+}
+
 function refuseAppCredential(input: Record<string, unknown>): void {
   refuseCredential(
     input,
@@ -850,7 +898,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_models",
     title: "List priced models",
     description:
-      "Returns the model catalog this deployment prices, grouped by provider type: per-token prices and, where known, the day a model retires. Use it to choose a model an app may allow, or to explain a cost. A model missing here has no price, and an app that allows it by name is refused when validated.",
+      "Returns the model price list this deployment uses, grouped by provider type: per-token prices and, where known, the day a model retires. Use it to choose a model an app may allow, or to explain a cost. A model missing here has no price, and an app that allows it by name is refused when validated.",
     operation: "listModelPrices",
     summary: (result) => {
       const providers = Object.keys(result.prices);
@@ -1247,7 +1295,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "update_app",
     title: "Update an app",
     description:
-      "Replaces an app's whole document {name, config, status?} with the one given, which carries the revision get_app returned: start from get_app's document, change it, check it with validate_app, then send it. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app reversibly.",
+      "Replaces an app's whole document {name, config, status?} with the one given, which carries the revision get_app returned: start from get_app's document, change it, check it with validate_app, then send it. To change a few settings, patch_app is shorter and cannot touch anything else. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app reversibly.",
     operation: "updateApp",
     input: z.object({
       app: PATH_ARGUMENTS.app!,
@@ -1263,6 +1311,71 @@ export const MCP_TOOLS: readonly McpTool[] = [
     call: (input) => withCheck(operationCall("updateApp", { app: input.app }, input.config), () => refuseAppCredential(input)),
     summary: (result) => {
       const { app } = result as OperationResponse<"updateApp">;
+      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+    },
+  },
+  {
+    name: "patch_app",
+    title: "Change part of an app",
+    description:
+      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. The common settings have shortcut arguments — name, status, team_id, bundle_id, attest_environments, verify_on, providers and all_providers — which may be sent without a revision: they apply to the app as it is now. For anything else, operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. add writes a new key, an array position or - to append; replace overwrites what is there; remove deletes it. A value is written as given, so null means unlimited for a limit; only remove deletes. Operations need the revision get_app returned; shortcuts sent beside them apply after them. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted.",
+    operation: "patchApp",
+    input: z.object({
+      app: PATH_ARGUMENTS.app!,
+      revision: CATALOG.patchApp.request.shape.revision.meta({
+        description: "The revision get_app returned. Needed with operations; shortcuts alone apply to the app as it is now.",
+      }),
+      operations: CATALOG.patchApp.request.shape.operations.optional().meta({
+        description: "RFC 6902 add, replace or remove operations at JSON Pointers into get_app's app document, applied in order.",
+      }),
+    }).extend(shortcutInput(APP_SHORTCUTS)),
+    annotations: writing("patch_app", "patchApp", { destructive: false, idempotent: false }),
+    shortcuts: Object.keys(APP_SHORTCUTS),
+    next: {
+      app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
+      app_revision_required: "Send the revision get_app returned, or make the change with shortcut arguments alone.",
+      invalid_request: "The message names the operation by index, or the setting the result got wrong. Call get_app to see what is at each path, fix that operation and send the patch again; nothing was saved.",
+    },
+    perform: async (input, caller) => {
+      const app = String(input.app ?? "");
+      const used = usedShortcuts(APP_SHORTCUTS, input);
+      let { revision, operations } = input;
+      if (used.length > 0) {
+        if (used.includes("providers") && used.includes("all_providers")) {
+          throw new GatewayError(400, "invalid_request", "providers: pass providers or all_providers, not both");
+        }
+        // Read first, as the patch itself would: an app that is not the
+        // caller's is not there, and the shortcuts need what is there now.
+        const { app: current } = await runToolOperation("getApp", { params: { app }, query: {} }, caller) as OperationResponse<"getApp">;
+        // Shortcuts apply after any explicit operations, so they read the
+        // document those leave, refused in the patch's own words.
+        const explicit = operations === undefined
+          ? []
+          : parseRequest(CATALOG.patchApp.request.shape.operations, operations);
+        const patched = explicit.length === 0
+          ? current
+          : { ...current, ...applyAppPatch({ name: current.name, config: current.config, status: current.status }, explicit) } as typeof current;
+        const shortcutOps = shortcutOperations(APP_SHORTCUTS, input, patched);
+        // Shortcuts alone are leaves the table names in full, so they apply to
+        // the app as it is now; operations still need the revision they were
+        // written against.
+        if (revision === undefined && operations === undefined) revision = current.revision;
+        operations = [...(Array.isArray(operations) ? operations : []), ...shortcutOps];
+        if ((operations as unknown[]).length === 0) {
+          return { app: current };
+        }
+      }
+      return runToolOperation(
+        "patchApp",
+        { params: { app }, query: {}, body: async () => ({ revision, operations }) },
+        caller,
+        // A value's own key is the last segment of its path, so the credential
+        // check reads each written value under the name it is written as.
+        () => refuseAppCredential({ operations: patchValues(operations) }),
+      ) as Promise<Record<string, unknown>>;
+    },
+    summary: (result) => {
+      const { app } = result as OperationResponse<"patchApp">;
       return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
     },
   },
@@ -1359,6 +1472,45 @@ export const MCP_TOOLS: readonly McpTool[] = [
       return `Opened claim ${result.id}. The person who should own the account opens ${result.url} in their own browser before ${result.expiresAt} and approves; then call get_operation.`;
     },
   },
+  {
+    name: "contact_support",
+    title: "Contact human support",
+    description:
+      "Emails the gateway's human support team on the person's behalf: a bug report, a question, or feedback. Only when the person asked you to contact support. First show them the exact message you will send and wait for their yes; send it in their words, as plainly as they would. Support replies to the person's own email address, never to you. Put what helps support act in context — app id, request id, error code, what was tried — and never a key, token or password: a message carrying one is refused. Sending the same message again within ten minutes sends nothing new and answers the first reference. Not for questions you can answer with the other tools or the guide.",
+    operation: "sendSupportMessage",
+    input: z.object({
+      kind: SupportMessageRequestSchema.shape.kind.meta({
+        description: "bug for something that is broken, support for a question or a request for help, feedback for an idea or a missing feature.",
+      }),
+      message: SupportMessageRequestSchema.shape.message,
+      context: SupportMessageRequestSchema.shape.context,
+    }),
+    // It reaches a person outside the gateway, and each call that is not a
+    // repeat sends a new email; it removes nothing.
+    annotations: {
+      ...writing("contact_support", "sendSupportMessage", { destructive: false, idempotent: false }),
+      openWorldHint: true,
+    },
+    available: (scope) => supportInbox(scope.env, scope.deployment) !== null,
+    next: {
+      support_plan_required: "Tell the person that their plan does not include human support, and that an account owner can choose one that does on the Billing page of the console. Do not retry.",
+      invalid_request: "Remove whatever looks like a credential, show the person the corrected message, and send it only once they agree.",
+      not_found: "This deployment does not offer human support. Tell the person.",
+      conflict: "The credential's owner has no email address for support to reply to. Ask the person to contact support from the console instead.",
+      rate_limited: "Too many messages were sent. Tell the person, and do not retry until the wait the message names has passed.",
+    },
+    call: (input) => operationCall("sendSupportMessage", {}, {
+      kind: input.kind,
+      message: input.message,
+      ...(input.context === undefined ? {} : { context: input.context }),
+    }),
+    summary: (raw) => {
+      const result = raw as OperationResponse<"sendSupportMessage">;
+      return result.duplicate
+        ? `This message was already sent as ${result.reference} in the last ten minutes; nothing new was sent. Support will reply to ${result.replyTo} by email.`
+        : `Sent to human support as ${result.reference}. Support will reply to ${result.replyTo} by email; tell the person the reference.`;
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1385,6 +1537,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   account_expired: "This account passed its recovery deadline and can no longer be used.",
   email_unverified: "Ask the account's owner to open the link in the verification email sent to their address, or to send a new one from the console. Requests are served once they do; nothing needs to be reconfigured.",
   rate_limited: "Wait a minute and call the tool again.",
+  service_unavailable: "The gateway's infrastructure failed for a moment; nothing about the call was wrong. Wait a few seconds and call the tool again. For a change, first read it back with the matching get or list tool: it may have landed.",
   not_found: "Check the id and call the matching list tool.",
   operation_not_found: "Check the id: get_operation takes the id a change tool answered with, and sees only your account's operations.",
   operation_expired: "It lapsed before it completed. Call the tool that opened it again to start a new one.",
@@ -1394,6 +1547,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   app_revision_conflict: "Call get_app for the current document and revision, reapply your change and call update_app again.",
   app_revision_required: "Send the revision get_app returned.",
   billing_plan_limit_reached: "The account cannot hold more of these. Remove one it no longer needs, or ask the person.",
+  billing_feature_not_included: "The account's plan does not include the feature the message names. Tell the person; an account owner can choose a plan that includes it on the Billing page of the console. Do not retry.",
   slug_taken: "Choose another slug; list_providers shows the ones in use.",
   gateway_in_use: "Move or remove the providers that route through it first; list_providers shows them.",
 };

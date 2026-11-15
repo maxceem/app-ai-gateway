@@ -111,11 +111,33 @@ export const GatewayBillingAccessSchema = z.discriminatedUnion("state", [
 ]).meta({ id: "BillingAccess" });
 
 /**
+ * The features a plan can include or leave out. Every gated feature is one
+ * entry here, plus its policy in `src/billing/features.ts` and one enforcement
+ * point; which plan includes it is plan data alone, in `limits.includes`.
+ *
+ * Renaming an entry is a breaking change for every plan that lists it.
+ */
+export const PLAN_FEATURES = ["conversationStorage", "humanSupport"] as const;
+
+export const PlanFeatureSchema = z.enum(PLAN_FEATURES);
+
+/**
+ * Whether the account's plan includes each feature, as the gateway decided it.
+ * Clients read this rather than `limits.includes`, so none of them restates
+ * what an absent list means.
+ */
+export const PlanFeatureAccessSchema = z.object(
+  Object.fromEntries(PLAN_FEATURES.map((feature) => [feature, z.boolean()])) as
+    Record<z.infer<typeof PlanFeatureSchema>, z.ZodBoolean>,
+);
+
+/**
  * What a plan allows, read out of its opaque `limits` JSON.
  *
  * Every limit is a whole count and every one is optional; absent means
  * unlimited, which is what a self-hosted deployment, a plan with no `limits`
- * block, and a plan that simply does not mention the key all get.
+ * block, and a plan that simply does not mention the key all get. `includes`
+ * follows the same rule: absent means every feature.
  */
 export const PlanLimitsSchema = z.object({
   maxRequestsPerMonth: z.number().int().optional()
@@ -128,10 +150,17 @@ export const PlanLimitsSchema = z.object({
     .meta({ description: "Provider gateways the account may own." }),
   maxActiveKeysPerApp: z.number().int().optional()
     .meta({ description: "Active API keys each of the account's applications may hold." }),
+  includes: z.array(PlanFeatureSchema).optional()
+    .meta({ description: "The features the plan includes. Absent means every feature; an empty list means none." }),
 }).meta({
   description:
-    "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached.",
+    "The plan's ceilings and included features, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings that includes every feature. A write that would exceed a ceiling is refused with billing_plan_limit_reached.",
 });
+
+/** The keys of {@link PlanLimitsSchema} that are counts. */
+type PlanCountKey = Exclude<keyof z.infer<typeof PlanLimitsSchema>, "includes">;
+const PLAN_COUNT_KEYS = PlanLimitsSchema.keyof().options
+  .filter((key): key is PlanCountKey => key !== "includes");
 
 /**
  * One plan limit as the billing service's plan data may carry it. JSON has no
@@ -145,14 +174,27 @@ const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1)])
   .optional();
 
 /**
- * The lenient grammar {@link PlanLimitsSchema} is read out of a plan's opaque
- * `limits` with: the published schema's keys, each through
- * `PlanLimitInputSchema`. Keys it does not know are dropped.
+ * A plan's `includes` as plan data may carry it: a list of feature names. A
+ * name this gateway does not know is dropped rather than refused, so a plan
+ * can list a feature before the release that gates it is deployed. Anything
+ * other than a list of strings is a misconfiguration.
  */
-export const PlanLimitsInputSchema = z.object(
-  Object.fromEntries(PlanLimitsSchema.keyof().options.map((key) => [key, PlanLimitInputSchema])) as
-    Record<keyof z.infer<typeof PlanLimitsSchema>, typeof PlanLimitInputSchema>,
-);
+const PlanIncludesInputSchema = z.array(z.string())
+  .transform((names) => [...new Set(names)].filter((name): name is z.infer<typeof PlanFeatureSchema> =>
+    (PLAN_FEATURES as readonly string[]).includes(name)))
+  .optional();
+
+/**
+ * The lenient grammar {@link PlanLimitsSchema} is read out of a plan's opaque
+ * `limits` with: the published schema's count keys, each through
+ * `PlanLimitInputSchema`, and `includes` through `PlanIncludesInputSchema`.
+ * Keys it does not know are dropped.
+ */
+export const PlanLimitsInputSchema = z.object({
+  ...(Object.fromEntries(PLAN_COUNT_KEYS.map((key) => [key, PlanLimitInputSchema])) as
+    Record<PlanCountKey, typeof PlanLimitInputSchema>),
+  includes: PlanIncludesInputSchema,
+});
 
 /**
  * The organization's current monthly allowance period against the one allowance
@@ -181,6 +223,9 @@ export const SubscriptionActionsSchema = z.object({
 export const BillingStatusResponseSchema = z.object({
   access: GatewayBillingAccessSchema,
   limits: PlanLimitsSchema,
+  features: PlanFeatureAccessSchema.meta({
+    description: "Whether the plan includes each gated feature, as the gateway enforces it.",
+  }),
   quota: OrganizationQuotaStatusSchema.nullable().meta({
     description: "Null when billing is unavailable, no plan entitlement resolves, or the plan sets no monthly request limit, which counts nothing.",
   }),
@@ -249,6 +294,8 @@ export type SubscriptionState = z.infer<typeof SubscriptionStateSchema>;
 export type BillingAccess = z.infer<typeof BillingAccessSchema>;
 export type GatewayBillingAccess = z.infer<typeof GatewayBillingAccessSchema>;
 export type PlanLimits = z.infer<typeof PlanLimitsSchema>;
+export type PlanFeature = z.infer<typeof PlanFeatureSchema>;
+export type PlanFeatureAccess = z.infer<typeof PlanFeatureAccessSchema>;
 export type OrganizationQuotaStatus = z.infer<typeof OrganizationQuotaStatusSchema>;
 export type BillingStatusResponse = z.infer<typeof BillingStatusResponseSchema>;
 export type SubscriptionActions = z.infer<typeof SubscriptionActionsSchema>;

@@ -51,6 +51,18 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
+  // An Analytics Engine dataset told about every management call: its channel,
+  // its operation and how it ended. Unbound means nothing is recorded. Only
+  // src/analytics/management.ts writes it; see there for every field.
+  MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
+  // A Worker of the deployment's own, told when an account is created; see
+  // src/analytics/hook.ts for everything it is sent. Unset means nothing is.
+  ANALYTICS?: import("./analytics/hook").AnalyticsHook;
+  // The R2 bucket conversation storage writes to; see src/conversations/. Unbound
+  // means no application can turn conversation storage on. Deliberately absent
+  // from wrangler.jsonc: R2 must be enabled on an account before a bucket can be
+  // created there, and the one-click deploy must not fail on an account without it.
+  CONVERSATIONS?: R2Bucket;
   // How the deployment sends email, if it does; see src/email/sender.ts. Any of
   // these set means it does, and then an account serves application traffic
   // only once its owner has verified their address. All deliberately absent
@@ -73,6 +85,13 @@ interface Env {
   EMAIL_FROM?: string;
   // Where replies go instead, for example a support inbox. Optional.
   EMAIL_REPLY_TO?: string;
+  // A help desk Worker that keeps support tickets and emails the support
+  // inbox; see src/helpdesk/contract.ts. Unbound means no human support.
+  HELPDESK?: import("./helpdesk/contract").HelpdeskRuntime;
+  // The support inbox the console's Support menu shows, for people who prefer
+  // their own mail app. Support needs it, HELPDESK and billing; unset hides
+  // the menu. Not a secret.
+  SUPPORT_EMAIL?: string;
   // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
   // var to the literal it finds there, which is wrong for any deployment that
@@ -111,6 +130,9 @@ declare namespace Cloudflare {
     OAUTH_CIMD?: string;
     OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
+    HELPDESK?: import("./helpdesk/contract").HelpdeskRuntime;
+    MANAGEMENT_ANALYTICS?: AnalyticsEngineDataset;
+    ANALYTICS?: import("./analytics/hook").AnalyticsHook;
     EMAIL?: SendEmail;
     SMTP_HOST?: string;
     SMTP_PORT?: string;
@@ -119,6 +141,7 @@ declare namespace Cloudflare {
     EMAIL_SENDER?: string;
     EMAIL_FROM?: string;
     EMAIL_REPLY_TO?: string;
+    SUPPORT_EMAIL?: string;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
     ALLOWED_REGISTRATION_EMAILS: string;

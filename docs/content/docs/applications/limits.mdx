@@ -1,6 +1,6 @@
 ---
 title: Limits
-description: Cap how many requests and how much spend each install, each user and the whole app may have.
+description: Cap how many requests and how much spend each install, each Apple Account, each user and the whole app may have.
 ---
 
 The **Limits** page sets the limits you place on your app's own callers and on
@@ -15,22 +15,34 @@ devices is two installs.
 
 - **Requests per minute**: per install on an iOS app, per user on a server app.
 - **Requests per day**: the same.
-- **Monthly spending budget (USD)**: per install on an iOS app unless you
-  choose otherwise, per user on a server app.
-- **Budget measured per** (iOS apps only): **Install**, the default, or
-  **User**. **User** adds up every install of one signed-in person, and is
-  available only when the app uses **Signed-in users only**; with
-  **Unauthenticated users** every install is its own user. The switch is
-  yours to make: nothing changes it for you.
+- **Monthly spending budget (USD)**: per Apple Account on an iOS app unless
+  you choose otherwise, per user on a server app.
+- **Budget measured per** (iOS apps only):
+  - **Apple Account**, the default for new apps, adds up every install of
+    one Apple Account, on all of that person's devices and across
+    reinstalls. It needs no sign-in: the Swift package 1.7 or later sends
+    the app's App Store transaction, which Apple signs, and an install whose client
+    sent none the gateway could verify is counted on its own.
+  - **Install** counts each install alone, so reinstalling starts a fresh
+    budget. Apps created before **Apple Account** was added keep this until
+    you change it.
+  - **Signed-in user** adds up every install of one signed-in person, and is
+    available only when the app uses **Signed-in users only**; with
+    **Unauthenticated users** every install is its own user.
+
+  The switch is yours to make: nothing changes it for you. See
+  [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
 
 Rate limits answer `429 app_rate_limited`. An exhausted budget answers
 `429 app_budget_exhausted`. Both carry a `Retry-After` header and
 `data.scope`: `install` for a request limit on an iOS app or an install
-budget, `user` for a server app's limits or a budget measured per user. The
-budget is settled from completed requests, so it stops a request within about
-ten seconds of the one that crosses it. Spend is recorded per install and per
-user alike, so switching the budget's scope part-way through a month counts
-what the month has already spent.
+budget, `apple_account` for an Apple Account budget, `user` for a server
+app's limits or a budget measured per user. The budget is settled from
+completed requests, so it stops a request within about ten seconds of the
+one that crosses it. Spend is recorded per install, per user and per Apple
+Account alike, so switching the budget's scope part-way through a month
+counts what the month has already spent. The Apple Account's share holds
+only requests from builds that sent that transaction.
 
 This card needs an app that identifies its callers. For an app with **No user
 identity** its fields are disabled, and a notice at its top links to the
@@ -56,7 +68,7 @@ are counted.
 "limits": {
   "per_user": {
     "requests": { "per_minute": 30, "per_day": 1000 },
-    "spending": { "monthly_usd": 10, "scope": "install" }
+    "spending": { "monthly_usd": 10, "scope": "apple_account" }
   },
   "per_app": {
     "requests": { "per_minute": null, "per_day": null },
@@ -69,8 +81,10 @@ The block is optional: omit it and the app is unlimited. Every field is
 nullable, and `null` means unlimited for that field alone. Non-null per-user limits
 on an app with no user identity are refused; an all-null block is accepted.
 
-The key stays `per_user` on every app type. `spending.scope` is `install` or
-`user`. It defaults to `install` on an iOS app and to `user` on a server app,
-and the gateway writes the default in when it stores the configuration.
-`user` on an iOS app needs `end_user.source` `issuer`, and `install` on a
-server app is refused: a server app has no installs.
+The key stays `per_user` on every app type. `spending.scope` is
+`apple_account`, `install` or `user`. It defaults to `apple_account` on a new
+iOS app and to `user` on a server app, and the gateway writes the default in
+when it stores the configuration; iOS apps created before `apple_account`
+was added have `install` written in. `user` on an iOS app needs
+`end_user.source` `issuer`, and a server app accepts only `user`: it has no
+installs and no Apple Accounts.

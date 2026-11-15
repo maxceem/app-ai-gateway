@@ -61,15 +61,64 @@
     {
       "idx": 8,
       "version": "6",
-      "when": 1792373568060,
-      "tag": "0008_realtime_usage",
+      "when": 1793421988024,
+      "tag": "0008_cf_auth_0_10",
       "breakpoints": true
     },
     {
       "idx": 9,
       "version": "6",
-      "when": 1792373573859,
-      "tag": "0009_realtime_releases",
+      "when": 1793510823564,
+      "tag": "0009_token_variants",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1793591928583,
+      "tag": "0010_usage_day_totals",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1793764497195,
+      "tag": "0011_client_trace_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1794366803685,
+      "tag": "0012_apple_account_budget",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1794460932481,
+      "tag": "0013_auth_event_client_sdk",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1794707230873,
+      "tag": "0014_service_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1794725804004,
+      "tag": "0015_realtime_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1794725809059,
+      "tag": "0016_realtime_releases",
       "breakpoints": true
     }
   ]

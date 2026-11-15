@@ -59,7 +59,9 @@ your clients or set it in the endpoint's parameters.
 Streaming works as on the proxy: set `"stream": true` and read the event
 stream. On a Gemini generateContent endpoint, add `?alt=sse` to the endpoint
 URL instead, as Gemini's own API does; the gateway calls the streaming method
-for you. A fallback happens only if nothing has been streamed yet.
+for you. A fallback happens only if nothing has been streamed yet. A streamed
+Chat Completions endpoint always asks for usage, as on the proxy, so its
+stream ends with a chunk whose `choices` is empty.
 
 From Swift, pass the query to the request helper rather than adding it to the
 URL afterwards: an App Attest proof is signed over the URL, query included.

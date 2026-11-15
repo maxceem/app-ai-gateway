@@ -48,18 +48,46 @@ describe("gateway JWT auth method", () => {
     await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "key-1" }), secret, "method-app"))
       .resolves.toMatchObject({ authMethod: "attest", installId: "key-1" });
     await expect(verifyGatewayToken(await sign({ auth_method: "api_key" }), secret, "method-app"))
-      .resolves.toMatchObject({ authMethod: "api_key", installId: null });
+      .resolves.toMatchObject({ authMethod: "api_key", installId: null, appleAccountId: null });
+
+    // An Apple Account is optional on an attest token, never empty, and never on another.
+    await expect(verifyGatewayToken(await sign({ auth_method: "attest", install: "key-1" }), secret, "method-app"))
+      .resolves.toMatchObject({ appleAccountId: null });
+    await expect(verifyGatewayToken(
+      await sign({ auth_method: "attest", install: "key-1", apple_account: "acct" }),
+      secret,
+      "method-app",
+    )).resolves.toMatchObject({ installId: "key-1", appleAccountId: "acct" });
+    for (const claims of [
+      { auth_method: "attest", install: "key-1", apple_account: "" },
+      { auth_method: "attest", install: "key-1", apple_account: 7 },
+      { auth_method: "api_key", apple_account: "acct" },
+    ]) {
+      await expect(verifyGatewayToken(await sign(claims), secret, "method-app"))
+        .rejects.toMatchObject({ status: 401, code: "auth_required" });
+    }
   });
 
-  it("issues the install claim on attest tokens", async () => {
+  it("issues the install claim on attest tokens, and the Apple Account where there is one", async () => {
+    const decode = (token: string) =>
+      JSON.parse(atob(token.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/"))) as Record<string, unknown>;
     const { token } = await issueGatewayToken(secret, {
       appId: "method-app",
       userId: "method-user",
       authMethod: "attest",
       installId: "key-2",
     });
-    const payload = JSON.parse(atob(token.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/")));
+    const payload = decode(token);
     expect(payload).toMatchObject({ auth_method: "attest", install: "key-2", sub: "method-user" });
+    expect(payload).not.toHaveProperty("apple_account");
+    const withAccount = await issueGatewayToken(secret, {
+      appId: "method-app",
+      userId: "method-user",
+      authMethod: "attest",
+      installId: "key-2",
+      appleAccountId: "acct",
+    });
+    expect(decode(withAccount.token)).toMatchObject({ install: "key-2", apple_account: "acct" });
   });
 });
 

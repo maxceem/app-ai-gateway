@@ -2,11 +2,16 @@ import type { CfAuth, CfAuthError, CfAuthEvent, OperationSweepStatements } from 
 import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
+import { errorFacts } from "../core/error-facts";
+import { log } from "../core/log";
+import { requestIdOf } from "../core/request-id";
+import { BETTER_AUTH_MESSAGES } from "./better-auth-messages";
 import {
   registrationAllowed,
   shouldProvisionDefaultOrganization,
   type Deployment,
 } from "../policy/deployment";
+import { accountNotifier, type AccountNotifier } from "../analytics/hook";
 import { activateAccount } from "./email-verification";
 import { oauthClients } from "./oauth-clients";
 import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
@@ -66,6 +71,8 @@ export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
 export const OAUTH_ACCESS_TOKEN_PREFIX = "agw_oat_";
 export const OAUTH_REFRESH_TOKEN_PREFIX = "agw_ort_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
+/** What the console's sign-in cookies are named after; cf-auth names Better Auth's session `<prefix>_auth.session_token`. */
+export const IDENTITY_COOKIE_PREFIX = "agw_identity";
 
 /**
  * Refuses a new person the deployment does not admit. A claim registers
@@ -188,6 +195,41 @@ function oauthOptions(deployment: Deployment, realm: string | null) {
   };
 }
 
+/**
+ * Reports a failure cf-auth recovered from. Without it cf-auth writes the raw
+ * error to the console, and an error can quote what it was given — a failed
+ * query lists its bound values — so it is logged as facts. `scope` is
+ * cf-auth's own constant.
+ */
+function reportIdentityError(
+  requestId: string | null,
+  error: unknown,
+  { scope }: { scope: string },
+): void {
+  log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) });
+}
+
+/**
+ * Where better-auth's own log calls go. Its message is logged only when it is
+ * one of the fixed strings in {@link BETTER_AUTH_MESSAGES}: others interpolate
+ * request data, such as an `Origin` header. Its other arguments never are,
+ * only the facts of an error among them. The request's id lets the line be
+ * found beside the gateway's own for the same request.
+ */
+function reportBetterAuthLog(
+  requestId: string | null,
+  level: "debug" | "info" | "warn" | "error",
+  message: string,
+  ...args: unknown[]
+): void {
+  const error = args.find((arg) => arg instanceof Error);
+  log(level === "debug" ? "info" : level, "better_auth_log", {
+    ray: requestId ?? undefined,
+    betterAuth: BETTER_AUTH_MESSAGES.has(message) ? message : undefined,
+    ...(error === undefined ? {} : { error: errorFacts(error) }),
+  });
+}
+
 export async function createIdentityAuth(
   deployment: Deployment,
   env: Env,
@@ -198,6 +240,9 @@ export async function createIdentityAuth(
     claimRegistration = false,
     onRegistrationDenied,
   }: IdentityAuthOptions = {},
+  notifyAccount: AccountNotifier | null = null,
+  /** Cloudflare's id for the request this instance serves, for its log lines. */
+  requestId: string | null = null,
 ): Promise<CfAuth> {
   const { createCfAuth } = await cfAuth();
   const origin = new URL(requestUrl).origin;
@@ -227,6 +272,13 @@ export async function createIdentityAuth(
       }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
+    // When each person last used their account, from the console, the CLI, MCP
+    // or the API: one timestamp on their membership, written at most once an
+    // hour after the response. Never on the application request path, which
+    // does not run cf-auth at all.
+    memberActivity: true,
+    onError: (error, context) => reportIdentityError(requestId, error, context),
+    logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
     // The CLI's operations: the engine, its table and the built-in `login`
     // are cf-auth's; the kinds and what completes them are this gateway's.
     operations: {
@@ -243,17 +295,26 @@ export async function createIdentityAuth(
       limits: OPERATION_LIMITS,
     },
     ...oauthOptions(deployment, realm),
-    cookies: { prefix: "agw_identity" },
+    cookies: { prefix: IDENTITY_COOKIE_PREFIX },
     // A deployment that sends no email activates every account a person comes
     // to own, as it comes to own it, so that adding a sender later stops none
     // of them; see `account_activation`. cf-auth runs this after the commit
     // and reports a failure to its own error hook rather than undoing
     // anything, which is the right way round: an account this misses only
     // has to verify its owner's address once a sender exists.
-    ...(deployment.emailVerification === "off"
+    //
+    // With an `ANALYTICS` binding, the same two events are also reported to it;
+    // see `src/analytics/hook.ts` for exactly what that sends.
+    ...(deployment.emailVerification === "off" || notifyAccount
       ? {
           onEvent: async (event: CfAuthEvent) => {
-            if (event.type === "organization.created" || event.type === "organization.claimed") {
+            if (event.type !== "organization.created" && event.type !== "organization.claimed") return;
+            notifyAccount?.({
+              accountId: event.organizationId,
+              userId: event.userId,
+              kind: event.type === "organization.created" ? "created" : "claimed",
+            });
+            if (deployment.emailVerification === "off") {
               await activateAccount(env.DB, event.organizationId);
             }
           },
@@ -325,7 +386,8 @@ export async function operationSweepStatements(
 /** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
 export interface IdentityAuthScope {
   env: Env;
-  req: { url: string };
+  req: { url: string; header(name: string): string | undefined; raw: Request };
+  executionCtx: { waitUntil(promise: Promise<unknown>): void };
   get(key: "deployment"): Deployment;
   get(key: "identityAuthCache"): Map<string, Promise<CfAuth>>;
 }
@@ -346,8 +408,21 @@ export function identityAuthFor(
   options: IdentityAuthOptions = {},
 ): Promise<CfAuth> {
   const deployment = c.get("deployment");
+  const requestId = requestIdOf(c.req.header("cf-ray"));
+  const notifyAccount = accountNotifier(c.env, {
+    cookieHeader: () => c.req.header("Cookie"),
+    doNotTrackHeader: () => c.req.header("DNT"),
+    country: () => c.req.raw.cf?.country,
+    waitUntil: (promise) => {
+      try {
+        c.executionCtx.waitUntil(promise);
+      } catch {
+        // No execution context (tests): the promise still runs, unheld.
+      }
+    },
+  });
   if (options.onRegistrationDenied) {
-    return createIdentityAuth(deployment, c.env, c.req.url, options);
+    return createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount, requestId);
   }
   const key = JSON.stringify({
     suppressDefaultOrganization: options.suppressDefaultOrganization ?? false,
@@ -362,7 +437,7 @@ export function identityAuthFor(
   // kept, for the reason `cfAuth()` forgets its own: a pinned failed promise
   // would answer the rest of this request with a transient failure a second
   // attempt might not hit.
-  const built = createIdentityAuth(deployment, c.env, c.req.url, options).catch(
+  const built = createIdentityAuth(deployment, c.env, c.req.url, options, notifyAccount, requestId).catch(
     (error: unknown) => {
       cache.delete(key);
       throw error;

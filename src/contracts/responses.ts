@@ -18,6 +18,7 @@ import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
 import { MODEL_KINDS } from "../shared/model-kinds.ts";
+import { TOKEN_RATE_FIELDS, type TokenRateField, rateDescription } from "../shared/token-rates.ts";
 import {
   GATEWAY_DESCRIPTORS,
   GATEWAY_TYPES,
@@ -27,6 +28,7 @@ import {
 import {
   APP_ATTEST_VERIFY_ON,
   AppConfigSchema,
+  BUDGET_SCOPES,
   CredentialGrantSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
@@ -96,6 +98,14 @@ export const ConsoleCapabilitiesResponseSchema = z.object({
    * the console offers the link to do it.
    */
   emailVerification: z.boolean(),
+  /**
+   * The inbox the Support menu writes to, present only where the deployment
+   * has billing and can send email. The console still offers the menu only to
+   * an organization on a paid plan, and the gateway refuses anyone else.
+   */
+  supportEmail: z.email().optional(),
+  /** Whether this deployment can store conversations: an R2 bucket is bound for it. */
+  conversationStorage: z.boolean(),
 });
 
 /** The provider URL returned when a Google OAuth sign-in is initiated. */
@@ -109,6 +119,9 @@ export const GoogleSignInResponseSchema = z.object({
 export const AppAttestChallengeResponseSchema = z.object({
   challenge: z.string(),
   expires_in: z.number(),
+  accepts_app_transaction: z.boolean().optional().meta({
+    description: "True when the token exchange accepts app_transaction, the App Store's signed AppTransaction. A client sends one, and signs over its hash, only when this says so: a gateway that predates it would ignore the field and then refuse the assertion.",
+  }),
 });
 
 export const AppAttestRegisterResponseSchema = z.object({ user_id: z.string() });
@@ -138,8 +151,9 @@ export const CurrentUserResponseSchema = z.object({
     requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
     requests_per_minute: z.number().nullable().meta({ description: "The per-minute limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
     requests_per_day: z.number().nullable().meta({ description: "The per-day limit this app sets on each install (App Attest) or user (server). Null means unlimited." }),
-    monthly_cost_usd: z.number().meta({ description: "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user." }),
-    monthly_budget_usd: z.number().nullable().meta({ description: "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited." }),
+    monthly_cost_usd: z.number().meta({ description: "What has been spent so far in the current UTC calendar month against the budget below, by whoever budget_scope names." }),
+    monthly_budget_usd: z.number().nullable().meta({ description: "The monthly spending budget this app sets on each Apple Account, install or user, per limits.per_user.spending.scope. Null means unlimited." }),
+    budget_scope: z.enum(BUDGET_SCOPES).meta({ description: "Whose month monthly_cost_usd is: apple_account (every install of this person's Apple Account together), install (this install alone), or user (this signed-in or backend-named user). Usually the app's limits.per_user.spending.scope; install where that is apple_account but this install's client sent no verifiable App Store transaction." }),
     blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
   }).meta({
     description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",
@@ -176,7 +190,9 @@ export const UsageEventSchema = z.object({
   served_model: z.string().nullable().meta({
     description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
   }),
-  model: z.string(),
+  model: z.string().meta({
+    description: "The model the request was priced and judged as. Empty on a passthrough path: a provider path outside the APIs the gateway reads and the provider's own inference operations, which the gateway forwards without reading a model.",
+  }),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
   realtime_session_id: z.string().nullable().optional(),
@@ -192,8 +208,11 @@ export const UsageEventSchema = z.object({
   reported_cost_usd: z.number().nullable().meta({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
-  cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed.",
+  service_mode: z.string().nullable().optional().meta({
+    description: "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded.",
+  }),
+  cost_source: z.enum(["computed", "estimated", "reported", "unresolved"]).nullable().meta({
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `estimated` is the catalog too, but for a service mode it has no exact price for (a mode the model is not priced in, or a value the gateway does not know), billed at the estimate the model pricing guide describes; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
@@ -202,8 +221,31 @@ export const UsageEventSchema = z.object({
     description: "1 when the client disconnected before the upstream finished streaming, which cancelled the provider call; null otherwise. Not a failure — the request was served as far as the caller wanted it — but an aborted stream often takes the provider's end-of-response usage with it, which is why such an event may carry cost_source unresolved.",
   }),
   latency_ms: z.number().int().nullable(),
+  client_trace_id: z.string().nullable().meta({
+    description: "The client's X-Client-Trace-Id for this request, or null where it sent none.",
+  }),
   created_at: z.string(),
 }).meta({ id: "UsageEvent" });
+
+/** One stored batch of conversation records. */
+export const ConversationFileSchema = z.object({
+  name: z.string().meta({
+    description: "The file's name within the app, `YYYY-MM-DD/HHMMSS-<batch>.jsonl.gz`; pass it to the download operation.",
+  }),
+  size: z.number().int().meta({ description: "Bytes, gzipped." }),
+  records: z.number().int().nullable().meta({ description: "Records in the file, where it says." }),
+  uploaded_at: z.string(),
+}).meta({ id: "ConversationFile" });
+
+export const ConversationFileListSchema = z.object({
+  app_id: z.string(),
+  files: z.array(ConversationFileSchema),
+  next_cursor: z.string().nullable().meta({
+    description: "Pass as cursor to continue the listing; null when it is complete.",
+  }),
+}).meta({ id: "ConversationFileList" });
+
+export type ConversationFileList = z.infer<typeof ConversationFileListSchema>;
 
 export const UsageEventListSchema = z.object({
   app_id: z.string(),
@@ -226,6 +268,9 @@ export const AuthEventSchema = z.object({
     description: "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it.",
   }),
   app_version: z.string().nullable(),
+  client_sdk: z.string().nullable().meta({
+    description: "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version.",
+  }),
   latency_ms: z.number().int().nullable(),
   claim_delay_ms: z.number().int().nullable().meta({
     description: "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection.",
@@ -695,6 +740,17 @@ export const ConfirmEmailVerificationResponseSchema = z.object({
   }),
 });
 
+export const SupportMessageResponseSchema = z.object({
+  status: z.literal("sent"),
+  reference: z.string().meta({
+    description: "The request's reference, such as SUP-7F3K2Q, in the email's subject too. Quote it when following up.",
+  }),
+  replyTo: z.string().meta({ description: "The address support will reply to: the sender's own." }),
+  duplicate: z.boolean().meta({
+    description: "True when the same message was sent in the last ten minutes: nothing new was sent, and reference is the earlier one's.",
+  }),
+});
+
 export const OrganizationListResponseSchema = z.object({
   organizations: z.array(OrganizationMembershipSchema),
 });
@@ -704,6 +760,7 @@ export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 export type GatewayTokenResponse = z.infer<typeof GatewayTokenResponseSchema>;
 export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
 export type ConsoleCapabilitiesResponse = z.infer<typeof ConsoleCapabilitiesResponseSchema>;
+export type SupportMessageResponse = z.infer<typeof SupportMessageResponseSchema>;
 export type UsageEvent = z.infer<typeof UsageEventSchema>;
 export type UsageEventList = z.infer<typeof UsageEventListSchema>;
 export type AuthEvent = z.infer<typeof AuthEventSchema>;
@@ -969,41 +1026,67 @@ export const UsageRepriceResponseSchema = z.object({
   delta_usd: z.number(),
 });
 
+/** Every per-token rate, optional, from the one list the cost arithmetic reads. */
+const CATALOG_TOKEN_RATES = Object.fromEntries(
+  TOKEN_RATE_FIELDS.map((field) => {
+    const description = rateDescription(field);
+    return [field, description ? z.number().optional().meta({ description }) : z.number().optional()];
+  }),
+) as Record<TokenRateField, z.ZodOptional<z.ZodNumber>>;
+
+/** A catalog entry's price in one service mode; see `ModePrice` in `src/shared/token-rates.ts`. */
+const CatalogModePriceSchema = z.object({
+  factor: z.number().optional().meta({
+    description: "Multiplies every rate of the model's standard price in this mode. 1 where left out.",
+  }),
+  ...CATALOG_TOKEN_RATES,
+  per_minute: z.number().optional(),
+  per_hour: z.number().optional(),
+  per_image: z.number().optional(),
+  unlisted_since: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly.",
+  }),
+});
+
+const CatalogModePricesSchema = z.record(z.string(), CatalogModePriceSchema).meta({
+  description:
+    "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's.",
+});
+
 export const ModelPriceSchema = z.object({
   kind: z.enum(MODEL_KINDS).meta({
     description:
       "What the model does: text, image (generation), speech (text to speech), transcription (speech to text), embedding, or realtime (served only over a realtime session). A custom endpoint serves models of its own kind only.",
   }),
-  input: z.number().optional(),
-  output: z.number().optional(),
-  image_input: z.number().optional().meta({
-    description: "USD per 1M image input tokens, where they are priced apart from text input.",
-  }),
-  audio_input: z.number().optional().meta({
-    description: "USD per 1M audio input tokens, where they are priced apart from text input.",
-  }),
-  video_input: z.number().optional().meta({
-    description: "USD per 1M video input tokens, where they are priced apart from text input.",
-  }),
-  image_output: z.number().optional().meta({
-    description: "USD per 1M generated image tokens, where they cost more than text output.",
-  }),
-  cached_input: z.number().optional(),
-  cache_write: z.number().optional(),
+  ...CATALOG_TOKEN_RATES,
   per_minute: z.number().optional(),
   per_hour: z.number().optional(),
   per_image: z.number().optional().meta({
     description: "USD per generated image, for a model billed per image rather than per token.",
   }),
   long_context_threshold: z.number().optional(),
-  long_input: z.number().optional(),
-  long_output: z.number().optional(),
-  long_cached_input: z.number().optional(),
-  long_cache_write: z.number().optional(),
   retirement_date: z.string().optional().meta({
     description:
       "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",
   }),
+  unlisted_since: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider's official price page stopped listing or pricing this model. Its rates are the last ones that page gave; the model stays priced.",
+  }),
+  price_changes: z.array(z.object({
+    from: z.string().meta({ description: "The day (YYYY-MM-DD) the change takes effect, from 00:00 UTC." }),
+    ...CATALOG_TOKEN_RATES,
+    per_minute: z.number().optional(),
+    per_hour: z.number().optional(),
+    per_image: z.number().optional(),
+    long_context_threshold: z.number().optional(),
+    modes: CatalogModePricesSchema.optional(),
+  })).optional().meta({
+    description:
+      "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today.",
+  }),
+  modes: CatalogModePricesSchema.optional(),
 });
 
 export const PricesResponseSchema = z.object({

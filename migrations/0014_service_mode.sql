@@ -1,0 +1,1 @@
+ALTER TABLE `app_usage_event` ADD `service_mode` text;

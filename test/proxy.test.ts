@@ -9,7 +9,7 @@ const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyl
   clampStyleFor(PROTOCOLS[style], provider);
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
 import { defaultInferencePaths } from "../src/shared/app-config";
-import { costReportBodyMutation } from "../src/providers/request-body";
+import { costReportBodyMutation, requestStreamUsage } from "../src/providers/request-body";
 import { examplePath } from "../src/shared/first-request";
 import {
   API_STYLE_PATHS,
@@ -526,6 +526,35 @@ describe("default inference endpoints", () => {
     expect(captured).toHaveLength(1);
   });
 
+  it("bills a BytePlus prompt's audio at the audio rate and the rest of it as text", async () => {
+    const appId = `proxy-byteplus-audio-${crypto.randomUUID()}`;
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const model = "seed-2-0-lite-260428";
+    const rates = shippedRates("bytedance", model);
+    for (const [details, cost] of [
+      [{ cached_tokens: 0, audio_tokens: 900 }, (900 * rates.audio_input + 100 * rates.input + 10 * rates.output) / 1e6],
+      // A text prompt BytePlus reports no audio for bills as text, never at the audio rate.
+      [{ cached_tokens: 0 }, (1000 * rates.input + 10 * rates.output) / 1e6],
+    ] as const) {
+      vi.restoreAllMocks();
+      upstream({ usage: { prompt_tokens: 1000, prompt_tokens_details: details, completion_tokens: 10 } });
+      const response = await proxyRequest({
+        appId,
+        token,
+        path: "bytedance/chat/completions",
+        body: { model, messages: [{ role: "user", content: "hi" }] },
+      });
+      await response.text();
+      expect(response.status).toBe(200);
+      await settleUsage();
+      const row = await env.DB.prepare(
+        "SELECT cost_usd FROM app_usage_event WHERE app_id = ? ORDER BY id DESC",
+      ).bind(appId).first<{ cost_usd: number }>();
+      expect(row?.cost_usd).toBeCloseTo(cost, 12);
+    }
+  });
+
   it("allows them in all mode too", async () => {
     const appId = "proxy-default-inference-all";
     await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
@@ -990,7 +1019,8 @@ describe("provider-native proxy", () => {
       body: { model: "gpt-5.6-sol" },
     });
     expect(deniedPath.status).toBe(403);
-    expect(deniedPath.headers.get("server-timing")).toMatch(/auth.*limiter.*provider_ttfb/u);
+    // Refused while preparing: the steps after it never ran, so they are not named.
+    expect(deniedPath.headers.get("server-timing")).toMatch(/^auth;dur=[\d.]+, prepare;dur=[\d.]+$/u);
     await expect(deniedPath.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
     const deniedModel = await proxyRequest({
       appId: "proxy-deny",
@@ -1511,6 +1541,9 @@ describe("provider-native proxy", () => {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
           "x-app-version": "1.2.3",
+          "x-client-sdk": "app-ai-gateway-swift/1.7.0",
+          "x-client-trace-id": "message-1",
+          "x-conversation-storage": "off",
           // Nothing below is the provider's business: the first group would
           // disclose the end user, the second would redirect the operator's
           // spend, the third is the gateway's own protocol.
@@ -1555,6 +1588,9 @@ describe("provider-native proxy", () => {
       "x-goog-user-project",
       "accept-encoding",
       "x-app-version",
+      "x-client-sdk",
+      "x-client-trace-id",
+      "x-conversation-storage",
     ]) {
       expect(upstreamHeaders.get(name)).toBeNull();
     }
@@ -1608,6 +1644,73 @@ describe("provider-native proxy", () => {
     expect(upstreamHeaders.get("cookie")).toBeNull();
 
     await env.DB.prepare("DELETE FROM provider WHERE id = 'proxy-aig-control-openai'").run();
+    clearProviderCaches();
+  });
+
+  it("never forwards X-Client-SDK, whichever route or entry point the request takes", async () => {
+    const appId = "proxy-client-sdk-routes";
+    await seedApp(appId, {
+      proxy: { provider_mode: "all", model_rewrites: {} },
+      endpoints: { chat: { api_style: "responses", provider: "openai-sdk-vercel", model: "gpt-5.6-sol" } },
+    });
+    await seedProvider({
+      type: "openai",
+      id: "proxy-client-sdk-aig",
+      slug: "openai-sdk-aig",
+      gateway: "cf_aig",
+      providerGatewayId: "proxy-client-sdk-aig-gateway",
+    });
+    await seedProvider({
+      type: "openai",
+      id: "proxy-client-sdk-vercel",
+      slug: "openai-sdk-vercel",
+      gateway: "vercel",
+      providerGatewayId: "proxy-client-sdk-vercel-gateway",
+    });
+    const upstream: { url: string; headers: Headers }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      upstream.push({
+        url: request instanceof Request ? request.url : String(request),
+        headers: new Headers(init?.headers),
+      });
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const send = async (path: string) => {
+      const response = await workerFetch(`https://example.test/v1/apps/${appId}/${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(appId)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+          "x-client-sdk": "app-ai-gateway-swift/1.7.0",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      });
+      await response.text();
+      return response.status;
+    };
+    // Direct, through Cloudflare AI Gateway, through Vercel, and a custom
+    // endpoint: every way a request reaches a provider.
+    expect(await send("proxy/openai/v1/responses")).toBe(200);
+    expect(await send("proxy/openai-sdk-aig/v1/responses")).toBe(200);
+    expect(await send("proxy/openai-sdk-vercel/v1/responses")).toBe(200);
+    expect(await send("endpoints/chat")).toBe(200);
+
+    expect(upstream.map(({ url }) => new URL(url).host)).toEqual([
+      "api.openai.com",
+      "gateway.ai.cloudflare.com",
+      "ai-gateway.vercel.sh",
+      "ai-gateway.vercel.sh",
+    ]);
+    for (const { headers } of upstream) {
+      expect(headers.get("x-client-sdk")).toBeNull();
+      expect(headers.get("x-app-version")).toBeNull();
+    }
+
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('proxy-client-sdk-aig', 'proxy-client-sdk-vercel')",
+    ).run();
     clearProviderCaches();
   });
 
@@ -1910,6 +2013,79 @@ describe("provider-native proxy", () => {
       (12 * banana.input + 10 * banana.output + 1120 * banana.image_output) / 1e6,
       12,
     );
+  });
+
+  it("records an Anthropic one-hour cache write and bills it at its own rate", async () => {
+    const appId = "proxy-anthropic-cache-1h";
+    await seedApp(appId);
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
+      type: "message",
+      usage: {
+        input_tokens: 4,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 100,
+        cache_creation: { ephemeral_5m_input_tokens: 70, ephemeral_1h_input_tokens: 30 },
+        output_tokens: 3,
+      },
+    }));
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "anthropic/v1/messages",
+      body: { model: "claude-sonnet-5", messages: [], max_tokens: 32 },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT cache_write_tokens, token_variants, cost_usd FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ cache_write_tokens: number; token_variants: string | null; cost_usd: number }>();
+    expect(row?.cache_write_tokens).toBe(100);
+    expect(JSON.parse(row!.token_variants!)).toEqual({ cache_write: { "1h": 30 } });
+    const sonnet = shippedRates("anthropic", "claude-sonnet-5");
+    expect(row?.cost_usd).toBeCloseTo(
+      (4 * sonnet.input + 70 * sonnet.cache_write + 30 * sonnet.cache_write_1h + 3 * sonnet.output) / 1e6,
+      12,
+    );
+  });
+
+  it("records a Kimi one-hour cache write that a Chat Completions response reports in its headers", async () => {
+    const appId = "proxy-moonshot-cache-1h";
+    await seedApp(appId, {
+      proxy: { moonshot: { allowed_paths: [], allowed_models: [] }, model_rewrites: {} },
+    });
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
+      {
+        object: "chat.completion",
+        choices: [],
+        usage: { prompt_tokens: 120, completion_tokens: 3, prompt_tokens_details: { cache_write_tokens: 100 } },
+      },
+      { headers: { "Msh-Usage-Cache-Write-Tokens-5m": "70", "Msh-Usage-Cache-Write-Tokens-1h": "30" } },
+    ));
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "moonshot/v1/chat/completions",
+      body: { model: "kimi-k3", messages: [], max_tokens: 32 },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT cache_write_tokens, token_variants FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ cache_write_tokens: number; token_variants: string | null }>();
+    expect(row?.cache_write_tokens).toBe(100);
+    expect(JSON.parse(row!.token_variants!)).toEqual({ cache_write: { "1h": 30 } });
   });
 
   it("bills a BytePlus Seedream request per generated image", async () => {
@@ -2529,6 +2705,130 @@ describe("cost report body mutation", () => {
 });
 
 /**
+ * An OpenAI-format stream reports usage only when asked to, and an answer with
+ * no usage is recorded at $0, outside every budget. So the gateway asks for it
+ * on every streamed Chat Completions request, whatever the client sent.
+ */
+describe("streamed chat completions usage", () => {
+  it("asks only a streamed Chat Completions body for its usage", () => {
+    for (const style of API_STYLES) {
+      const body: Record<string, unknown> = { model: "m", stream: true };
+      const changed = requestStreamUsage(style, body);
+      if (style === "chat_completions") {
+        expect(changed).toBe(true);
+        expect(body).toEqual({ model: "m", stream: true, stream_options: { include_usage: true } });
+      } else {
+        expect([style, changed, body]).toEqual([style, false, { model: "m", stream: true }]);
+      }
+    }
+  });
+
+  it.each([
+    { name: "a body that does not stream", body: { model: "m" } },
+    { name: "an explicit non-streamed body", body: { model: "m", stream: false } },
+    { name: "a stream flag that is not literally true", body: { model: "m", stream: "true" } },
+    {
+      name: "a body that already asks for usage",
+      body: { model: "m", stream: true, stream_options: { include_usage: true, include_obfuscation: false } },
+    },
+  ])("leaves $name alone", ({ body }) => {
+    const copy = structuredClone(body) as Record<string, unknown>;
+    expect(requestStreamUsage("chat_completions", copy)).toBe(false);
+    expect(copy).toEqual(body);
+  });
+
+  it.each([
+    {
+      name: "overrides an explicit false and keeps the client's other options",
+      options: { include_usage: false, include_obfuscation: false },
+      expected: { include_usage: true, include_obfuscation: false },
+    },
+    {
+      name: "replaces stream options that are not an object",
+      options: ["include_usage"],
+      expected: { include_usage: true },
+    },
+    { name: "replaces null stream options", options: null, expected: { include_usage: true } },
+  ])("$name", ({ options, expected }) => {
+    const body: Record<string, unknown> = { model: "m", stream: true, stream_options: options };
+    expect(requestStreamUsage("chat_completions", body)).toBe(true);
+    expect(body.stream_options).toEqual(expected);
+  });
+
+  it.each([
+    { name: "omits stream_options", extra: {} },
+    { name: "sets include_usage to false", extra: { stream_options: { include_usage: false } } },
+  ])("meters a proxied stream whose client $name", async ({ name, extra }) => {
+    const appId = `proxy-stream-usage-${name.includes("false") ? "false" : "omitted"}`;
+    await seedApp(appId);
+    const token = await gatewayToken(appId);
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const options = upstreamBody.stream_options as { include_usage?: unknown } | undefined;
+      // What an OpenAI-format upstream does: the usage chunk only on request.
+      const chunks = [
+        { choices: [{ delta: { content: "hello" } }] },
+        ...(options?.include_usage === true
+          ? [{ choices: [], usage: { prompt_tokens: 11, completion_tokens: 4 } }]
+          : []),
+      ];
+      const sse = [...chunks.map((chunk) => `data: ${JSON.stringify(chunk)}`), "data: [DONE]", ""]
+        .join("\n\n");
+      return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+    });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/openai/chat/completions",
+      body: {
+        model: "gemini-3.5-flash",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 100,
+        stream: true,
+        ...extra,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstreamBody.stream_options).toEqual({ include_usage: true });
+    await settleUsage();
+    const row = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    )
+      .bind(appId)
+      .first<{ cost_usd: number; cost_source: string }>();
+    expect(row?.cost_source).toBe("computed");
+    expect(row?.cost_usd).toBeGreaterThan(0);
+  });
+
+  it("adds no stream options to a proxied request that does not stream", async () => {
+    await seedApp("proxy-stream-usage-unary");
+    const token = await gatewayToken("proxy-stream-usage-unary");
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        choices: [{ message: { role: "assistant", content: "hello" } }],
+        usage: { prompt_tokens: 11, completion_tokens: 4 },
+      });
+    });
+
+    const response = await proxyRequest({
+      appId: "proxy-stream-usage-unary",
+      token,
+      path: "gemini/v1beta/openai/chat/completions",
+      body: { model: "gemini-3.5-flash", messages: [{ role: "user", content: "hello" }], max_tokens: 100 },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(upstreamBody).not.toHaveProperty("stream_options");
+  });
+});
+
+/**
  * An application whose `end_user` source is `none` has no end users, and that
  * is a position rather than a missing value. Nothing downstream may invent one: the
  * usage row records no user, the per-user machinery is skipped rather than
@@ -2695,5 +2995,207 @@ describe("a custom end-user header", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "invalid_request", message: "x-tenant-user is required" },
     });
+  });
+});
+
+/**
+ * A request field that asks the provider for a service mode — flex, priority,
+ * fast, ultrafast, a pinned region — has no price yet. For now it is forwarded,
+ * billed at standard, and logged as `service_mode_unpriced`, so apps that send
+ * one are found before any request is refused; `test/service-modes.test.ts`
+ * covers the refusal itself. A value the gateway does not know is forwarded and
+ * logged as `service_mode_unknown`. The client's field always reaches the
+ * provider untouched.
+ */
+describe("service modes", () => {
+  const ALL_PROVIDERS = { proxy: { provider_mode: "all", model_rewrites: {} } } as const;
+
+  /** A fetch stub answering every call, recording the bodies it was sent. */
+  function upstream(answer: unknown = { usage: { input_tokens: 1, output_tokens: 1 } }): string[] {
+    const bodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      bodies.push(typeof init?.body === "string" ? init.body : "");
+      return Response.json(answer);
+    });
+    return bodies;
+  }
+
+  /** The structured warnings the Worker writes from now on. */
+  function warnings(): Record<string, unknown>[] {
+    const lines: Record<string, unknown>[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      if (typeof line !== "string") return;
+      try {
+        lines.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Not one of ours.
+      }
+    });
+    return lines;
+  }
+
+  const logged = (lines: Record<string, unknown>[], message: string) =>
+    lines.filter((line) => line.message === message);
+
+  async function send(path: string, body: Record<string, unknown>, appId = `proxy-mode-${crypto.randomUUID()}`) {
+    await seedApp(appId, ALL_PROVIDERS);
+    return proxyRequest({ appId, token: await gatewayToken(appId), path, body });
+  }
+
+  it.each([
+    ["OpenAI fast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "fast" }, "openai", "fast"],
+    ["OpenAI fast by its old name", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "priority" }, "openai", "fast"],
+    ["OpenAI ultrafast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ultrafast" }, "openai", "ultrafast"],
+    ["Anthropic fast mode", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast" }, "anthropic", "fast"],
+    ["Anthropic US inference", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], inference_geo: "us" }, "anthropic", "us"],
+    ["Anthropic fast mode in the US", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast", inference_geo: "us" }, "anthropic", "fast+us"],
+    ["Gemini priority, camel-cased", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], serviceTier: "priority" }, "gemini", "priority"],
+    ["Mistral's priority-when-eligible", "mistral/v1/chat/completions", { model: "mistral-large-latest", messages: [], service_tier: "auto" }, "mistral", "priority"],
+    ["xAI priority on its Anthropic-format API", "xai/v1/messages", { model: "grok-4.7", max_tokens: 16, messages: [], service_tier: "priority" }, "xai", "priority"],
+    ["Gemini priority behind a flex alias", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex", serviceTier: "priority" }, "gemini", "priority"],
+    ["a tier in capitals", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ULTRAFAST" }, "openai", "ultrafast"],
+    ["OpenAI flex", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "flex" }, "openai", "flex"],
+    ["Gemini flex", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex" }, "gemini", "flex"],
+    ["Groq flex", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "flex" }, "groq", "flex"],
+  ])("forwards %s, which has no price yet, and logs it", async (_label, path, body, provider, mode) => {
+    const bodies = upstream();
+    const lines = warnings();
+    const appId = `proxy-mode-${crypto.randomUUID()}`;
+
+    const response = await send(path, body, appId);
+    await response.text();
+
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(bodies[0]!) as Record<string, unknown>;
+    for (const field of ["service_tier", "serviceTier", "speed", "inference_geo"]) {
+      if (field in body) expect(sent[field]).toEqual((body as Record<string, unknown>)[field]);
+    }
+    expect(logged(lines, "service_mode_unpriced")).toEqual([
+      expect.objectContaining({ appId, provider, serviceMode: mode }),
+    ]);
+  });
+
+  it.each([
+    ["an OpenAI tier the table has not learned", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "turbo" }, "openai", "turbo"],
+    ["a tier on a provider that publishes none", "deepseek/chat/completions", { model: "deepseek-v4-flash", messages: [], service_tier: "flex" }, "deepseek", "flex"],
+    ["a tier that is not a string", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: { tier: "fast" } }, "openai", "(other)"],
+  ])("forwards %s, which the gateway does not know, and logs it", async (_label, path, body, provider, value) => {
+    const bodies = upstream();
+    const lines = warnings();
+
+    const response = await send(path, body);
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(bodies[0]!).service_tier).toEqual(body.service_tier);
+    expect(logged(lines, "service_mode_unknown")).toEqual([
+      expect.objectContaining({ provider, field: "service_tier", value }),
+    ]);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([]);
+  });
+
+  it("still notes a known dearer mode beside an unknown value", async () => {
+    upstream();
+    const lines = warnings();
+
+    const response = await send("anthropic/v1/messages", {
+      model: "claude-opus-5-5",
+      max_tokens: 16,
+      messages: [],
+      service_tier: "something-new",
+      speed: "fast",
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unknown")).toHaveLength(1);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: "fast" })]);
+  });
+
+  it.each([
+    ["OpenAI's project default", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "auto" }],
+    ["an explicit null", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: null }],
+    ["Anthropic standard speed, global", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "standard", inference_geo: "global" }],
+    ["Anthropic's Priority Tier commitment", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], service_tier: "auto" }],
+    ["Mistral standard only", "mistral/v1/chat/completions", { model: "mistral-large-latest", messages: [], service_tier: "standard_only" }],
+    ["Groq's reserved capacity, paid for by contract", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "performance" }],
+    ["OpenAI Scale Tier units, paid for by contract", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "scale" }],
+    ["xAI priority, whose cost xAI reports", "xai/v1/chat/completions", { model: "grok-4.7", messages: [], service_tier: "priority" }],
+  ])("forwards %s with the client's field untouched, and logs nothing", async (_label, path, body) => {
+    const bodies = upstream();
+    const lines = warnings();
+
+    const response = await send(path, body);
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(bodies).toHaveLength(1);
+    const sent = JSON.parse(bodies[0]!) as Record<string, unknown>;
+    for (const field of ["service_tier", "serviceTier", "speed", "inference_geo"]) {
+      if (field in body) expect(sent[field]).toEqual((body as Record<string, unknown>)[field]);
+    }
+    expect(lines.filter((line) => String(line.message).startsWith("service_mode_"))).toEqual([]);
+  });
+
+  it.each([
+    ["Vercel's own tier option, read as OpenAI's own", { gateway: { serviceTier: "priority" } }, "fast"],
+    ["Vercel's speed option", { gateway: { speed: "fast" } }, "fast"],
+    ["OpenAI's tier passed on by Vercel", { openai: { serviceTier: "ultrafast" } }, "ultrafast"],
+  ])("notes %s on a route through Vercel", async (_label, providerOptions, mode) => {
+    const appId = `proxy-mode-vercel-${crypto.randomUUID()}`;
+    const slug = `openai-vercel-${appId.slice(-8)}`;
+    await seedApp(appId, ALL_PROVIDERS);
+    await seedProvider({
+      type: "openai",
+      id: `${appId}-provider`,
+      slug,
+      gateway: "vercel",
+      providerGatewayId: `${appId}-gateway`,
+    });
+    upstream();
+    const lines = warnings();
+
+    const response = await proxyRequest({
+      appId,
+      token: await gatewayToken(appId),
+      path: `${slug}/v1/responses`,
+      body: { model: "gpt-5.6-sol", input: "hi", providerOptions },
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: mode })]);
+  });
+
+  it("notes a transcription upload that asks for a tier", async () => {
+    const appId = "proxy-mode-multipart";
+    await seedApp(appId, ALL_PROVIDERS);
+    const token = await gatewayToken(appId);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ text: "hello", usage: { input_tokens: 2, output_tokens: 1 } }));
+    const lines = warnings();
+    const form = new FormData();
+    form.set("model", "gpt-4o-transcribe");
+    form.set("service_tier", "fast");
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "sample.m4a", { type: "audio/mp4" }));
+
+    const response = await workerFetch(`https://example.test/v1/apps/${appId}/proxy/openai/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3" },
+      body: form,
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: "fast" })]);
+  });
+
+  it("judges the model before the mode", async () => {
+    const response = await send("openai/v1/responses", { model: "no-such-model", input: "hi", service_tier: "fast" });
+
+    expect(response.status).toBe(400);
+    const { error } = (await response.json()) as { error: { message: string; data?: unknown } };
+    expect(error.message).toContain("no-such-model has no pricing");
+    expect(error.data).toBeUndefined();
   });
 });

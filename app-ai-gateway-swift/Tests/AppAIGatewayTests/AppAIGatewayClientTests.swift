@@ -109,6 +109,46 @@ actor RecoveryRecorder {
     func snapshot() -> Int { count }
 }
 
+/// Hands out `jws-1`, `jws-2`, … one per call, so a test can tell whether an
+/// exchange fetched the transaction once or again part way through.
+struct FakeAppTransactionProvider: AppTransactionProviding {
+    var returnsNil = false
+    var calls = LockedCounter()
+
+    func jwsRepresentation() async -> String? {
+        let call = calls.increment()
+        return returnsNil ? nil : "jws-\(call)"
+    }
+}
+
+/// Every `auth/token` body sent, decoded.
+final class TokenBodyLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bodies: [[String: String]] = []
+    func record(_ request: URLRequest) {
+        let object = (try? JSONSerialization.jsonObject(with: requestBody(request))) as? [String: String]
+        lock.withLock { bodies.append(object ?? [:]) }
+    }
+    func snapshot() -> [[String: String]] { lock.withLock { bodies } }
+}
+
+/// The body a `URLProtocol` sees: `URLSession` moves `httpBody` into a stream
+/// before the request reaches it.
+private func requestBody(_ request: URLRequest) -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while stream.hasBytesAvailable {
+        let read = stream.read(&buffer, maxLength: buffer.count)
+        guard read > 0 else { break }
+        data.append(buffer, count: read)
+    }
+    return data
+}
+
 private func session() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MockURLProtocol.self]
@@ -646,9 +686,184 @@ struct AppAIGatewayClientTests {
         #expect(try await client.gatewayAccessToken() == "token-1")
         try await Task.sleep(for: .seconds(1.2))
         #expect(tokenCalls.snapshot() == 1)
-        #expect(AppAIGatewayClient.refreshDelay(for: 120) == 96)
-        #expect(AppAIGatewayClient.refreshDelay(for: 3600) == 3300)
+        #expect(AppAIGatewayClient.refreshDelay(for: 120) == 90)
+        // The gateway's one-hour token is replaced fifteen minutes early.
+        #expect(AppAIGatewayClient.refreshDelay(for: 3600) == 2700)
         _ = client
+    }
+
+    /// A token of 16 seconds: replaced after 1 second, still sent until 15.5,
+    /// and a failed refresh is tried again every second.
+    private static let shortToken = 16
+
+    private static func timedClient() -> AppAIGatewayClient {
+        AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
+            session: session()
+        )
+    }
+
+    /// Polls `condition` until it holds, for up to `seconds`.
+    private static func eventually(within seconds: Double, _ condition: () -> Bool) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return condition()
+    }
+
+    /// Polls `token()` until it answers `expected`, for up to `seconds`.
+    private static func eventually(
+        _ expected: String,
+        within seconds: Double,
+        _ token: () async throws -> String
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if try await token() == expected { return true }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    @Test
+    func keepsTheCurrentTokenWhileARefreshFailsAndRetriesIt() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            let call = tokenCalls.increment()
+            if call == 1 {
+                return response(request, status: 200, body: "{\"access_token\":\"token-1\",\"expires_in\":\(Self.shortToken)}")
+            }
+            if call <= 3 {
+                return response(request, status: 503, body: #"{"error":{"code":"service_unavailable","message":"retry"}}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"token-2","expires_in":3600}"#)
+        }
+        let client = Self.timedClient()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+
+        // The refresh behind it has failed: the token it was replacing is
+        // still accepted, so requests keep it, without waiting for an exchange.
+        #expect(try await Self.eventually(within: 3) { tokenCalls.snapshot() == 2 })
+        let started = Date()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(Date().timeIntervalSince(started) < 0.5)
+
+        // It is tried again, about once a second here, until it succeeds.
+        #expect(try await Self.eventually("token-2", within: 6) { try await client.gatewayAccessToken() })
+        #expect(tokenCalls.snapshot() == 4)
+    }
+
+    @Test
+    func doesNotHoldARequestBehindASlowRefresh() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(request, status: 200, body: "{\"access_token\":\"token-1\",\"expires_in\":\(Self.shortToken)}")
+            }
+            Thread.sleep(forTimeInterval: 2)
+            return response(request, status: 200, body: #"{"access_token":"token-2","expires_in":3600}"#)
+        }
+        let client = Self.timedClient()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+
+        // The refresh behind it is under way and slow; the request does not wait for it.
+        #expect(try await Self.eventually(within: 3) { tokenCalls.snapshot() == 2 })
+        let started = Date()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(Date().timeIntervalSince(started) < 0.5)
+        #expect(try await Self.eventually("token-2", within: 5) { try await client.gatewayAccessToken() })
+        #expect(tokenCalls.snapshot() == 2)
+    }
+
+    @Test
+    func doesNotRetryARefreshTheGatewayRefusedForGood() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(request, status: 200, body: "{\"access_token\":\"token-1\",\"expires_in\":\(Self.shortToken)}")
+            }
+            return response(request, status: 403, body: #"{"error":{"code":"auth_required","message":"User is blocked"}}"#)
+        }
+        let client = Self.timedClient()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(try await Self.eventually(within: 3) { tokenCalls.snapshot() == 2 })
+        // A refusal no wait would change is not tried again behind the token,
+        // which the gateway goes on judging request by request.
+        try await Task.sleep(for: .seconds(2.5))
+        #expect(tokenCalls.snapshot() == 2)
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(tokenCalls.snapshot() == 2)
+    }
+
+    @Test
+    func waitsForAndSurfacesAFailedExchangeOnceTheTokenRunsOut() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(request, status: 200, body: #"{"access_token":"token-1","expires_in":3}"#)
+            }
+            return response(request, status: 503, body: #"{"error":{"code":"service_unavailable","message":"retry"}}"#)
+        }
+        let client = Self.timedClient()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        // Past `usableUntil` (2.5 s for a 3 s token) the request waits for the
+        // exchange, and its failure is the request's.
+        try await Task.sleep(for: .seconds(2.8))
+        var failed = false
+        do {
+            _ = try await client.gatewayAccessToken()
+        } catch let error as GatewayError {
+            failed = error.statusCode == 503
+        }
+        #expect(failed)
+    }
+
+    @Test
+    func aDiscardDoesNotWaitOutAFailedRefresh() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            let call = tokenCalls.increment()
+            if call == 1 {
+                return response(request, status: 200, body: "{\"access_token\":\"token-1\",\"expires_in\":\(Self.shortToken)}")
+            }
+            if call == 2 {
+                return response(request, status: 503, body: #"{"error":{"code":"service_unavailable","message":"retry"}}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"token-2","expires_in":3600}"#)
+        }
+        let client = Self.timedClient()
+        #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(try await Self.eventually(within: 3) { tokenCalls.snapshot() == 2 })
+        // A discarded token — the gateway refused it — is replaced at once,
+        // not after the failed refresh's retry interval.
+        await client.discardAccessToken()
+        #expect(try await client.gatewayAccessToken() == "token-2")
+    }
+
+    @Test
+    func onlyAFailureThatMayPassIsRetriedBehindTheToken() {
+        #expect(AppAIGatewayClient.mayPass(URLError(.timedOut)))
+        #expect(AppAIGatewayClient.mayPass(GatewayError(code: .unknown, message: "", statusCode: 503)))
+        #expect(!AppAIGatewayClient.mayPass(GatewayError(code: .unknown, message: "", statusCode: 403)))
+        #expect(!AppAIGatewayClient.mayPass(CancellationError()))
+    }
+
+    @Test
+    func waitsForANewTokenOnceTheCurrentOneIsNoLongerAccepted() {
+        // Past `usableUntil` a request waits for the exchange, as it always
+        // did: the margins here are what decide when that is.
+        #expect(AppAIGatewayClient.refreshLeeway(for: 3600) == 900)
+        #expect(AppAIGatewayClient.usableMargin(forLeeway: 900) == 30)
+        #expect(AppAIGatewayClient.refreshRetryInterval(forLeeway: 900) == 60)
+        #expect(AppAIGatewayClient.refreshLeeway(for: 16) == 15)
+        #expect(AppAIGatewayClient.refreshRetryInterval(forLeeway: 15) == 1)
     }
 
     @Test
@@ -712,6 +927,212 @@ struct AppAIGatewayClientTests {
     func assertionClientDataMatchesServerCanonicalForm() {
         let value = AppAIGatewayClient.assertionClientData(app: "app", challenge: "challenge", keyID: "key")
         #expect(String(data: value, encoding: .utf8) == #"{"app":"app","challenge":"challenge","key_id":"key"}"#)
+    }
+
+    // MARK: App Store transaction in the token exchange
+
+    /// The gateway rebuilds these bytes to check the exchange's assertion. The
+    /// hash is the SHA-256 of the JWS's UTF-8 bytes, base64url without
+    /// padding, worked out apart from the client (`openssl dgst -sha256`).
+    @Test
+    func assertionClientDataWithAnAppTransactionAppendsItsHashLast() {
+        let jws = "eyJhbGciOiJFUzI1NiJ9.eyJhcHBUcmFuc2FjdGlvbklkIjoiNzA0In0.c2lnbmF0dXJl"
+        #expect(AppAIGatewayClient.appTransactionHash(jws) == "JOSPw8U8KLYYI52foPZXbaeHPFAeHPmUQtE5iEcwn0g")
+        let value = AppAIGatewayClient.assertionClientData(
+            app: "my-app",
+            challenge: "Y2hhbGxlbmdl",
+            keyID: "a+b/c=",
+            appTransaction: jws
+        )
+        #expect(
+            String(data: value, encoding: .utf8)
+                == #"{"app":"my-app","challenge":"Y2hhbGxlbmdl","key_id":"a+b/c=","app_transaction":"JOSPw8U8KLYYI52foPZXbaeHPFAeHPmUQtE5iEcwn0g"}"#
+        )
+        // No transaction is the three-key form, unchanged.
+        #expect(
+            AppAIGatewayClient.assertionClientData(app: "app", challenge: "challenge", keyID: "key", appTransaction: nil)
+                == AppAIGatewayClient.assertionClientData(app: "app", challenge: "challenge", keyID: "key")
+        )
+    }
+
+    /// The transaction travels in the body and is bound into the assertion,
+    /// so it cannot be swapped for another device's.
+    @Test
+    func theExchangeSendsTheAppTransactionAndSignsOverIt() async throws {
+        let tokenBodies = TokenBodyLog()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(
+                    request,
+                    status: 200,
+                    body: #"{"challenge":"Y2hhbGxlbmdl","accepts_app_transaction":true}"#
+                )
+            }
+            tokenBodies.record(request)
+            return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+        }
+        let transactions = FakeAppTransactionProvider()
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            appTransactionProvider: transactions,
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token")
+
+        let body = try #require(tokenBodies.snapshot().first)
+        #expect(body["app_transaction"] == "jws-1")
+        #expect(body["key_id"] == "existing-key")
+        let expected = Data(
+            #"{"app":"test-app","challenge":"Y2hhbGxlbmdl","key_id":"existing-key","app_transaction":"\#(AppAIGatewayClient.appTransactionHash("jws-1"))"}"#.utf8
+        )
+        #expect(signatures.snapshot().map(\.hash) == [expected.sha256])
+        #expect(transactions.calls.snapshot() == 1)
+    }
+
+    /// Without a transaction — offline, no App Store, a simulator — the
+    /// exchange goes ahead exactly as it always has.
+    @Test
+    func anExchangeWithoutAnAppTransactionKeepsTheThreeKeyForm() async throws {
+        let tokenBodies = TokenBodyLog()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(
+                    request,
+                    status: 200,
+                    body: #"{"challenge":"Y2hhbGxlbmdl","accepts_app_transaction":true}"#
+                )
+            }
+            tokenBodies.record(request)
+            return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            appTransactionProvider: FakeAppTransactionProvider(returnsNil: true),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token")
+
+        let body = try #require(tokenBodies.snapshot().first)
+        #expect(body["app_transaction"] == nil)
+        #expect(Set(body.keys) == ["key_id", "assertion", "challenge"])
+        let expected = AppAIGatewayClient.assertionClientData(
+            app: "test-app",
+            challenge: "Y2hhbGxlbmdl",
+            keyID: "existing-key"
+        )
+        #expect(signatures.snapshot().map(\.hash) == [expected.sha256])
+    }
+
+    /// An older gateway ignores the body field but checks the assertion over
+    /// the three keys it knows, so a transaction is sent only where the
+    /// challenge says the gateway reads one.
+    @Test
+    func aGatewayThatDoesNotAcceptTheAppTransactionIsSentNone() async throws {
+        let tokenBodies = TokenBodyLog()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            tokenBodies.record(request)
+            return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            appTransactionProvider: FakeAppTransactionProvider(),
+            credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token")
+
+        let body = try #require(tokenBodies.snapshot().first)
+        #expect(body["app_transaction"] == nil)
+        let expected = AppAIGatewayClient.assertionClientData(
+            app: "test-app",
+            challenge: "Y2hhbGxlbmdl",
+            keyID: "existing-key"
+        )
+        #expect(signatures.snapshot().map(\.hash) == [expected.sha256])
+    }
+
+    /// The retry after the gateway rejects the key signs the replacement over
+    /// the same transaction the exchange fetched, not a second one.
+    @Test
+    func aReplacementKeyIsSignedOverTheSameAppTransaction() async throws {
+        let tokenBodies = TokenBodyLog()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(
+                    request,
+                    status: 200,
+                    body: #"{"challenge":"Y2hhbGxlbmdl","accepts_app_transaction":true}"#
+                )
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                return response(request, status: 200, body: #"{"user_id":"user-1"}"#)
+            }
+            tokenBodies.record(request)
+            if tokenBodies.snapshot().count == 1 {
+                return response(
+                    request,
+                    status: 403,
+                    body: #"{"error":{"code":"attest_failed","message":"unknown key"}}"#
+                )
+            }
+            return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+        }
+        let transactions = FakeAppTransactionProvider()
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            appTransactionProvider: transactions,
+            credentialStore: MemoryCredentialStore(keyID: "rejected-key"),
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "token")
+
+        let bodies = tokenBodies.snapshot()
+        #expect(bodies.map { $0["key_id"] } == ["rejected-key", "generated-key"])
+        #expect(bodies.map { $0["app_transaction"] } == ["jws-1", "jws-1"])
+        let hashes = ["rejected-key", "generated-key"].map {
+            AppAIGatewayClient.assertionClientData(
+                app: "test-app",
+                challenge: "Y2hhbGxlbmdl",
+                keyID: $0,
+                appTransaction: "jws-1"
+            ).sha256
+        }
+        #expect(signatures.snapshot().map(\.keyID) == ["rejected-key", "generated-key"])
+        #expect(signatures.snapshot().map(\.hash) == hashes)
+        #expect(transactions.calls.snapshot() == 1)
+    }
+
+    /// A StoreKit that never answers must not hold up the exchange.
+    @Test
+    func aSlowAppTransactionIsGivenUpOn() async {
+        let late = await SystemAppTransactionProvider.first(within: .milliseconds(50)) {
+            try? await Task.sleep(for: .seconds(2))
+            return "late"
+        }
+        #expect(late == nil)
+        let prompt = await SystemAppTransactionProvider.first(within: .seconds(2)) { "prompt" }
+        #expect(prompt == "prompt")
     }
 
     @Test
@@ -1629,6 +2050,140 @@ struct AppAIGatewayClientTests {
         #expect(events == ["event-2-a", "event-2-b"])
         #expect(calls.snapshot() == 2)
     }
+
+    // MARK: The package's own version
+
+    /// A release is cut from `VERSION`, so the version the package names itself
+    /// with has to be that one: bump both together.
+    @Test
+    func theClientSDKVersionIsThePackageVersion() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "VERSION")
+        let version = try String(contentsOf: file, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(ClientSDK.version == version)
+        #expect(ClientSDK.headerValue == "app-ai-gateway-swift/\(version)")
+    }
+
+    /// Every request an App Attest client sends — challenge, register, token —
+    /// and every one it builds — provider, endpoint, `/me` — names the package,
+    /// and a signed one is signed exactly as it was before the header existed.
+    @Test
+    func everyAppAttestRequestNamesThePackageAndStillSignsTheSameBytes() async throws {
+        let sent = SentHeaders()
+        let signatures = SignatureLog()
+        MockURLProtocol.handler = { request in
+            sent.record(request)
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                return response(request, status: 200, body: #"{"user_id":"generated-key"}"#)
+            }
+            return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600,"verify_on":"every_request"}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(signatures: signatures),
+            // No key yet, so the exchange registers one first.
+            credentialStore: MemoryCredentialStore(),
+            session: session()
+        )
+        let body = Data(#"{"model":"gpt-5.6-sol","input":"hi"}"#.utf8)
+        let built = [
+            try await client.authorizedRequest(provider: .openai, providerPath: "v1/responses", body: body),
+            try await client.authorizedRequest(endpointSlug: "chat", body: body),
+            try await client.currentUserRequest(),
+        ]
+
+        let paths = sent.snapshot().map(\.path)
+        #expect(paths.contains { $0.hasSuffix("/auth/challenge") })
+        #expect(paths.contains { $0.hasSuffix("/auth/register") })
+        #expect(paths.contains { $0.hasSuffix("/auth/token") })
+        for request in sent.snapshot() {
+            #expect(request.clientSDK == ClientSDK.headerValue, "\(request.path)")
+            #expect(request.appVersion != nil, "\(request.path)")
+        }
+        for request in built {
+            #expect(request.value(forHTTPHeaderField: "X-Client-SDK") == ClientSDK.headerValue)
+            #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
+        }
+
+        // The proof is over the method, URL, body and token alone: the bytes
+        // the gateway rebuilds, with no header among them.
+        let proxy = try #require(built.first)
+        let proof = try #require(proxy.value(forHTTPHeaderField: "X-AppAttest-Proof"))
+        let parts = proof.split(separator: ".").map(String.init)
+        let expected = AppAIGatewayClient.requestClientData(
+            appID: "test-app",
+            method: "POST",
+            pathAndQuery: "/v1/apps/test-app/proxy/openai/v1/responses",
+            body: body,
+            token: "gateway-token",
+            timestamp: try #require(Int(parts[1])),
+            nonce: parts[2]
+        ).sha256
+        let requestSignatures = signatures.snapshot().suffix(3)
+        #expect(requestSignatures.first?.hash == expected)
+    }
+
+    @Test
+    func apiKeyRequestsAndTheirExchangeNameThePackage() async throws {
+        let sent = SentHeaders()
+        MockURLProtocol.handler = { request in
+            sent.record(request)
+            return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600}"#)
+        }
+        let exchanging = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(key: "agw_test-key", issuerTokenProvider: { _ in "firebase-token" }),
+            session: session()
+        )
+        let proxied = try await exchanging.authorizedRequest(provider: .openai, providerPath: "v1/responses")
+        #expect(proxied.value(forHTTPHeaderField: "X-Client-SDK") == ClientSDK.headerValue)
+        let exchange = try #require(sent.snapshot().first)
+        #expect(exchange.path.hasSuffix("/auth/token"))
+        #expect(exchange.clientSDK == ClientSDK.headerValue)
+
+        // A key sent directly has no exchange, so the request it builds is
+        // the only one that can name the package.
+        let direct = AppAIGatewayClient(
+            appID: "machine-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(key: "agw_machine-key"),
+            session: session()
+        )
+        let me = try await direct.currentUserRequest()
+        #expect(me.value(forHTTPHeaderField: "X-Client-SDK") == ClientSDK.headerValue)
+        let endpoint = try await direct.authorizedRequest(endpointSlug: "chat")
+        #expect(endpoint.value(forHTTPHeaderField: "X-Client-SDK") == ClientSDK.headerValue)
+    }
+}
+
+/// The identifying headers of every request that reached the network.
+final class SentHeaders: @unchecked Sendable {
+    struct Entry {
+        let path: String
+        let clientSDK: String?
+        let appVersion: String?
+    }
+    private let lock = NSLock()
+    private var entries: [Entry] = []
+    func record(_ request: URLRequest) {
+        let entry = Entry(
+            path: request.url?.path ?? "",
+            clientSDK: request.value(forHTTPHeaderField: "X-Client-SDK"),
+            appVersion: request.value(forHTTPHeaderField: "X-App-Version")
+        )
+        lock.withLock { entries.append(entry) }
+    }
+    func snapshot() -> [Entry] { lock.withLock { entries } }
 }
 
 /// An App Attest provider whose numbered `generateAssertion` calls wait until

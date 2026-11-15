@@ -111,9 +111,15 @@ function samePath(left: ResultPath, right: ResultPath): boolean {
  * Applied to what a tool answers, whatever wrote it: an app document stored
  * through the API may carry provider-native parameters of any name.
  */
-export function redactSecrets<T>(value: T, keyMetadataAt: readonly ResultPath[] = [], path: ResultPath = []): T {
+export function redactSecrets<T>(
+  value: T,
+  keyMetadataAt: readonly ResultPath[] = [],
+  path: ResultPath = [],
+  /** Collects the dotted path of every field this redacts. */
+  hidden: string[] = [],
+): T {
   if (Array.isArray(value)) {
-    return value.map((item, index) => redactSecrets(item, keyMetadataAt, [...path, String(index)])) as T;
+    return value.map((item, index) => redactSecrets(item, keyMetadataAt, [...path, String(index)], hidden)) as T;
   }
   if (!isObject(value)) return value;
   const copy: Record<string, unknown> = {};
@@ -123,7 +129,8 @@ export function redactSecrets<T>(value: T, keyMetadataAt: readonly ResultPath[] 
       || item === null
       || item === undefined
       || (keyMetadataAt.some((exempt) => samePath(exempt, at)) && isAppKeyMetadata(item));
-    copy[key] = kept ? redactSecrets(item, keyMetadataAt, at) : REDACTED;
+    if (!kept) hidden.push(at.join("."));
+    copy[key] = kept ? redactSecrets(item, keyMetadataAt, at, hidden) : REDACTED;
   }
   return copy as T;
 }

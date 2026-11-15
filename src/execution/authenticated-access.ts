@@ -30,31 +30,39 @@ export async function authenticatedAccess(input: {
 }> {
   const start = performance.now();
   const { env, deployment, appId } = input;
-  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadApp(env, appId);
-  const providers = organizationProviders(env, app.organizationId);
-  // A rejection nobody awaits yet — the request may still be refused for its
-  // account or its credential first — must not surface as an unhandled one.
-  providers.catch(() => {});
-  // Only a hosted deployment writes an account deadline, and only one that
-  // sends email waits for a verified one, so only those can refuse here. It
-  // decides before the app, the credential or any limit the organization set
-  // on its own users is consulted: an account that may not be served has no
-  // claim on them.
-  if (deployment.rules.accountDeadlines || deployment.emailVerification === "required") {
-    await assertAccountAccess(deployment, env, app.organizationId, "proxy");
+  // Timed whether it succeeds or refuses, as every step is: a refused caller
+  // reports how long the refusal took.
+  let app: AppRecord;
+  let authenticatedRequest: Awaited<ReturnType<typeof authenticateRequest>>;
+  try {
+    if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+    app = await loadApp(env, appId);
+    const providers = organizationProviders(env, app.organizationId);
+    // A rejection nobody awaits yet — the request may still be refused for its
+    // account or its credential first — must not surface as an unhandled one.
+    providers.catch(() => {});
+    // Only a hosted deployment writes an account deadline, and only one that
+    // sends email waits for a verified one, so only those can refuse here. It
+    // decides before the app, the credential or any limit the organization set
+    // on its own users is consulted: an account that may not be served has no
+    // claim on them.
+    if (deployment.rules.accountDeadlines || deployment.emailVerification === "required") {
+      await assertAccountAccess(deployment, env, app.organizationId, "proxy");
+    }
+    assertAppActive(app);
+    authenticatedRequest = await authenticateRequest({
+      env,
+      app,
+      request: input.request,
+      body: input.body,
+      providerSlug: input.providerSlug,
+      providers,
+      proofVerified: input.proofVerified,
+    });
+  } finally {
+    if (input.timings) input.timings.authMs = performance.now() - start;
   }
-  assertAppActive(app);
-  const { identity, credential, assertionCounter } = await authenticateRequest({
-    env,
-    app,
-    request: input.request,
-    body: input.body,
-    providerSlug: input.providerSlug,
-    providers,
-    proofVerified: input.proofVerified,
-  });
-  if (input.timings) input.timings.authMs = performance.now() - start;
+  const { identity, credential, assertionCounter } = authenticatedRequest;
   if (identity.credentialType === "gateway_token" && !input.request.headers.get("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }

@@ -95,8 +95,8 @@ schedule, or apply the previous plan's limit, for as long as it lives: up to 30
 seconds normally, and up to an hour while the billing service is unreachable
 and the last known answer is served instead. That includes a stale unlimited
 plan, which counts nothing while it is served. It is an availability trade
-taken on purpose — the alternative is refusing every request during a billing
-outage — and a change is enforced everywhere once each isolate's cache has
+taken on purpose — the alternative is counting nothing and refusing every
+management call during a billing outage — and a change is enforced everywhere once each isolate's cache has
 turned over.
 
 A plan with no monthly limit counts nothing and touches no quota object, so
@@ -132,16 +132,81 @@ billing caches. The console reads the free window from the account summary it
 already holds — `createdAt` plus a non-null `expiresAt` — rather than from
 billing data.
 
+### Plan features
+
+Some features are part of a plan rather than of the product: a plan includes
+them or leaves them out. Which plan includes which is plan data too, in the
+same `limits` JSON, as a list of feature names:
+
+```json
+{ "maxRequestsPerMonth": 100000, "includes": ["conversationStorage", "humanSupport"] }
+```
+
+`includes` follows the rule every other key does: absent means unlimited, so
+a plan with no `includes` — and a self-hosted deployment, which reads no plan
+at all — has every feature. A plan that lists any feature has only those, and
+an empty list has none. A name the gateway does not know is dropped, so a plan
+may list a feature before the release that gates it is deployed; anything but
+a list of strings is a misconfiguration and answers `502`, as a malformed
+ceiling does.
+
+The names are `PLAN_FEATURES` in `src/contracts/billing.ts`. Each one's policy
+— its name in a refusal, its error code, and whether it waits for billing — is
+in `src/billing/features.ts`, which is the only place that answers "does this
+plan include it". Gating a new feature is one name there, one policy entry, and
+one call where the feature is used; no plan is named in gateway code.
+
+| Feature | Refused with | While billing is unreachable |
+| --- | --- | --- |
+| `conversationStorage` | `403 billing_feature_not_included` | refused, `503 billing_unavailable`; a served request stores nothing |
+| `humanSupport` | `403 support_plan_required` | allowed: an outage is when a paying customer most needs to write in |
+
+A feature is checked where it is turned on, never by removing what an account
+already has. An app that stores conversations keeps its setting when its
+account moves to a plan without them, stays editable, and stores nothing new
+until its plan includes them again; what it stored stays readable until
+retention removes it.
+
+When a new feature is gated, a plan that already has a list does not get it
+until the name is added, and a plan without a list gets it straight away. So
+before deploying a release that gates a feature, give every plan that should
+not have it a list. The billing status reports the gateway's decision as `features`, one
+boolean per name, so the console never restates this rule.
+
 ## Failure and enforcement policy
 
-Both failure modes fail closed, under codes that mean different things to a
-client. No resolved plan answers `402 billing_payment_required`, which the
+No resolved plan answers `402 billing_payment_required` everywhere, which the
 customer has to act on; with a default plan configured this is rare, since a
-lapsed subscription drops to the free tier rather than to a paywall. An
-unreachable billing service says nothing about the subscription, so it answers
-`503 billing_unavailable` with a short `Retry-After` and is worth retrying.
-Neither deletes or disables application records, so access resumes when billing
-becomes readable again.
+lapsed subscription drops to the free tier rather than to a paywall.
+
+An unreachable billing service says nothing about the subscription, and is
+answered by who is asking. Traffic from an organization's applications and
+their end users — served requests, the application token exchange and `/me` —
+is admitted through `admitAppTraffic`: served, counted against nothing, and
+logged as `billing_unavailable_admitted`. An outage of ours must not take
+every customer's apps down with it, and an organization this isolate has read
+in the last hour is still counted against its last known plan. App traffic
+waits for billing at most `APP_TRAFFIC_BILLING_DEADLINE_MS` (1 s); a slower
+answer is treated as a failed one and logged as `billing_access_slow`.
+
+The allowance counter never fails app traffic either
+(`allowance-admission.ts`). When it does not answer within
+`ALLOWANCE_ADMIT_DEADLINE_MS` (2 s), or fails for any reason — the platform
+lost it, it is overloaded, or it threw — the request is served uncounted and
+logged as `allowance_uncounted` with the reason; a fault in the gateway is
+also logged as the error `allowance_counter_fault`, even when it comes after
+the deadline. The one exception is a plan this isolate last saw used
+up, counting what it has since served uncounted: that stays a `429`. A call
+abandoned at the deadline keeps running and usually still counts its request;
+nothing is retried, so nothing is counted twice. Requests are cheap and an
+app's users failing is not, so the allowance undercounts rather than refuses. The management API
+fails closed instead, with `503 billing_unavailable` and a short `Retry-After`,
+because a write against an unknown plan would be a guess. Plan features keep
+their own policy above, so an app that stores conversations is served and
+stores nothing.
+
+Neither failure deletes or disables application records, so access resumes
+when billing becomes readable again.
 
 Configuration ceilings count stored rows rather than traffic, so nothing resets
 them on a schedule. Each is enforced inside the statement that inserts the row,
@@ -149,7 +214,9 @@ as an extra condition on its `WHERE`, alongside whatever CLI operation
 already guards that write — count and write are one statement, so two concurrent
 creates cannot both read a count below the ceiling and then both succeed. A
 refused write answers `409 billing_plan_limit_reached` and never succeeds on
-retry. No ceiling ever removes or disables an existing row: an account that
+retry. While no plan can be resolved, a capped create is refused like the rest
+of the management API (`503` during an outage, `402` with no plan) rather than
+written without a ceiling. No ceiling ever removes or disables an existing row: an account that
 drops to a lower plan keeps what it has and simply cannot add more.
 
 The allowance is not a per-user limit and never caps what an account grants its

@@ -173,28 +173,60 @@ describe("LimitsTab on an App Attest app", () => {
     },
   };
 
-  it("calls the card per-install and measures the budget per install by default", async () => {
+  it("counts requests per install and measures the budget per Apple Account by default", async () => {
     renderAttest({ source: "app_install" });
-    expect(await screen.findByText("Per-install limits")).toBeTruthy();
-    expect(screen.getByText(/per install per month/u)).toBeTruthy();
+    expect(await screen.findByText("End-user limits")).toBeTruthy();
+    expect(screen.getByText(/requests are counted per install/iu)).toBeTruthy();
+    expect(screen.getByText(/per Apple Account per month/u)).toBeTruthy();
     const scope = screen.getByRole("combobox", { name: "Budget measured per" });
-    expect(scope.textContent).toBe("Install");
+    expect(scope.textContent).toBe("Apple Account");
   });
 
-  it("offers per user only where an issuer names the user", async () => {
+  it("lists the Apple Account first, and explains every option in the open list", async () => {
     renderAttest({ source: "app_install" });
     await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
-    const user = await screen.findByRole("option", { name: "User" });
-    expect(user.getAttribute("aria-disabled")).toBe("true");
+    const options = await screen.findAllByRole("option");
+    const label = (option: HTMLElement) =>
+      option.querySelector("[data-slot='select-item-description']")?.previousSibling?.textContent;
+    expect(options.map(label)).toEqual(["Apple Account", "Install", "Signed-in user"]);
+    expect(options[0]!.textContent).toMatch(/One budget per Apple Account, across all devices and reinstalls\./u);
+    expect(options[1]!.textContent).toMatch(/One budget per install\. Reinstalling the app resets it\./u);
   });
 
-  it("moves the budget to the user on an issuer-backed app", async () => {
+  it("keeps a budget measured per install, which existing apps were moved to", async () => {
+    renderAttest({ source: "app_install" }, { monthly_usd: 5, scope: "install" });
+    const scope = await screen.findByRole("combobox", { name: "Budget measured per" });
+    expect(scope.textContent).toBe("Install");
+    expect(screen.getByText(/per install per month/u)).toBeTruthy();
+  });
+
+  it("moves a budget measured per install to the Apple Account", async () => {
+    renderAttest({ source: "app_install" }, { monthly_usd: 5, scope: "install" });
+    await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Apple Account" }));
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Budget measured per" }).textContent).toBe("Apple Account"));
+    expect(screen.getByText(/per Apple Account per month/u)).toBeTruthy();
+  });
+
+  it("offers the signed-in user only where an issuer names the user, and says how to get one", async () => {
+    renderAttest({ source: "app_install" });
+    await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
+    const user = await screen.findByRole("option", { name: "Signed-in user" });
+    expect(user.getAttribute("aria-disabled")).toBe("true");
+    // Shown in the list itself: a disabled option never receives a hover.
+    expect(user.textContent).toMatch(/Needs sign-in\. Set it up under Auth policy → User authentication\./u);
+  });
+
+  it("moves the budget to the signed-in user on an issuer-backed app", async () => {
     renderAttest(issuer, { monthly_usd: 5, scope: "install" });
     await userEvent.click(await screen.findByRole("combobox", { name: "Budget measured per" }));
-    await userEvent.click(await screen.findByRole("option", { name: "User" }));
+    const user = await screen.findByRole("option", { name: "Signed-in user" });
+    expect(user.textContent).toMatch(/One budget per signed-in person, on all their devices\./u);
+    await userEvent.click(user);
     await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Budget measured per" }).textContent).toBe("User"));
-    expect(screen.getByText(/per user per month/u)).toBeTruthy();
+      expect(screen.getByRole("combobox", { name: "Budget measured per" }).textContent).toBe("Signed-in user"));
+    expect(screen.getByText(/per signed-in user per month/u)).toBeTruthy();
   });
 
   it("keeps the per-user card and no scope choice on a server app", async () => {

@@ -6,6 +6,7 @@ import { storedAppVersion } from "../core/app-version";
 import type { GatewayIdentity } from "../core/types";
 import type { AttemptAttribution } from "../usage/usage-record";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
+import { errorFacts } from "../core/error-facts";
 
 export interface RejectionEventInput {
   env: Env;
@@ -56,7 +57,7 @@ export async function recordRejectionEvent(input: RejectionEventInput): Promise<
     log("warn", "rejection_record_failed", {
       appId: identity.appId,
       eventId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
   }
   if (identity.apiKeyId) {
@@ -66,7 +67,7 @@ export async function recordRejectionEvent(input: RejectionEventInput): Promise<
       log("warn", "rejection_api_key_used_failed", {
         appId: identity.appId,
         eventId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorFacts(error),
       });
     }
   }

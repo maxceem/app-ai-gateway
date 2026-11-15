@@ -13,11 +13,23 @@ import {
 import { Field } from "@/components/field";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import { draftLimits, type LimitsConfig } from "@/lib/config-types";
-import { identifiesEndUsers } from "@shared/app-config";
+import { identifiesEndUsers, type BudgetScope } from "@shared/app-config";
 import { formatCost } from "@/lib/format";
 
 /** Empty means unlimited, so an unparseable or blank field clears the limit. */
 const asLimit = (value: string): number | null => (value === "" ? null : Number(value));
+
+/**
+ * Whose month a budget is, as the hint under it finishes "per … per month".
+ * On an App Attest app `user` is always a signed-in person, and a bare "user"
+ * says too little next to installs and Apple Accounts; a server app's user is
+ * whoever its backend names, so there it stays plain.
+ */
+const BUDGET_SCOPE_NOUNS: Record<BudgetScope, string> = {
+  apple_account: "Apple Account",
+  install: "install",
+  user: "signed-in user",
+};
 
 export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) {
   const draft = state.draft!;
@@ -33,14 +45,16 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
   const identifiesUsers = identifiesEndUsers(draft.config.authentication);
   /*
    * An App Attest application's callers are installs — one copy of the app on
-   * one device — so its request limits count per install, and so does its
-   * budget unless it is moved to the signed-in user, which only an issuer
-   * gives a meaning of its own. The JSON key stays `per_user` either way.
+   * one device — so its request limits count per install. Its budget is
+   * measured per Apple Account unless it is moved to the install alone, or to
+   * the signed-in user, which only an issuer gives a meaning of its own. The
+   * fallback mirrors the schema's default, for a draft with no scope written
+   * yet. The JSON key stays `per_user` either way.
    */
   const authentication = draft.config.authentication;
   const perInstall = authentication.type === "apple_app_attest";
   const userScopeAllowed = perInstall && authentication.end_user.source === "issuer";
-  const budgetScope = perInstall ? (limits.per_user.spending.scope ?? "install") : "user";
+  const budgetScope: BudgetScope = perInstall ? (limits.per_user.spending.scope ?? "apple_account") : "user";
   const updateScope = <K extends "per_user" | "per_app">(scope: K, partial: Partial<LimitsConfig[K]>) =>
     state.updateLimits({
       ...limits,
@@ -52,10 +66,12 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">{perInstall ? "Per-install limits" : "Per-user limits"}</CardTitle>
+            {/* Not "per-install" on an App Attest app: only its request
+                limits are, and its budget follows the scope chosen below. */}
+            <CardTitle className="text-sm">{perInstall ? "End-user limits" : "Per-user limits"}</CardTitle>
             {perInstall ? (
               <p className="text-xs text-muted-foreground">
-                Counted for each install: one copy of the app on one device. Reinstalling the app starts a new one.
+                Requests are counted per install: one copy of the app on one device. The budget is measured as chosen below.
               </p>
             ) : null}
           </CardHeader>
@@ -104,7 +120,7 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
                 htmlFor="budget"
                 hint={
                   limits.per_user.spending.monthly_usd !== null
-                    ? `${formatCost(limits.per_user.spending.monthly_usd)} per ${budgetScope} per month. Settled from completed requests, so it stops the request after the one that crosses it.`
+                    ? `${formatCost(limits.per_user.spending.monthly_usd)} per ${perInstall ? BUDGET_SCOPE_NOUNS[budgetScope] : "user"} per month. Settled from completed requests, so it stops the request after the one that crosses it.`
                     : undefined
                 }
               >
@@ -128,26 +144,44 @@ export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) 
                 <Field
                   label="Budget measured per"
                   htmlFor="budget-scope"
-                  hint={
-                    userScopeAllowed
-                      ? "Per user adds up every install of one signed-in person."
-                      : "Per user needs sign-in through an identity provider; under app installation every install is its own user."
-                  }
+                  hint="Who one monthly budget belongs to. Open the list for what each option counts together."
                 >
                   <Select
                     value={budgetScope}
                     onValueChange={(next) =>
                       updateScope("per_user", {
-                        spending: { ...limits.per_user.spending, scope: next as "install" | "user" },
+                        spending: { ...limits.per_user.spending, scope: next as BudgetScope },
                       })
                     }
                   >
                     <SelectTrigger id="budget-scope" className="w-[180px]" size="sm" aria-label="Budget measured per">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="install">Install</SelectItem>
-                      <SelectItem value="user" disabled={!userScopeAllowed}>User</SelectItem>
+                    {/* Each option explains itself in the open list, the
+                        disabled one included: it never receives the pointer,
+                        so a hover tooltip could not reach it. */}
+                    <SelectContent className="w-80 max-w-[calc(100vw-2rem)]">
+                      <SelectItem
+                        value="apple_account"
+                        description="One budget per Apple Account, across all devices and reinstalls."
+                      >
+                        Apple Account
+                      </SelectItem>
+                      <SelectItem
+                        value="install"
+                        description="One budget per install. Reinstalling the app resets it."
+                      >
+                        Install
+                      </SelectItem>
+                      <SelectItem
+                        value="user"
+                        disabled={!userScopeAllowed}
+                        description={userScopeAllowed
+                          ? "One budget per signed-in person, on all their devices."
+                          : "Needs sign-in. Set it up under Auth policy → User authentication."}
+                      >
+                        Signed-in user
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>

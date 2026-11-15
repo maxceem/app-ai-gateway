@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Check, ChevronDown, CircleSlash, Plus, Trash2 } from "lucide-react";
 import { OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
 import type { KindCatalog } from "@shared/model-kinds";
 import { emptyPolicy } from "@shared/app-defaults";
-import { defaultInferencePaths } from "@shared/app-config";
+import { defaultInferencePaths, isPassthroughPath, PASSTHROUGH_METHODS, type PassthroughMethod } from "@shared/app-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -189,6 +190,130 @@ export function policySummary(policy: ProviderPolicy): string {
 }
 
 /**
+ * One listed endpoint. A path the gateway reads as a model call takes a fixed
+ * model and an output cap style; a passthrough path — anything else — takes
+ * the methods it is opened for instead, because the gateway forwards it
+ * without reading a model or a body. Settings a passthrough path stored from
+ * before are kept untouched.
+ *
+ * Every row shares one grid, so a path field is as wide on a passthrough row,
+ * whose methods span the model columns, as on a model row.
+ */
+function PathRow({
+  entry,
+  type,
+  onChange,
+  onRemove,
+}: {
+  entry: AllowedPathObject;
+  type: Provider | undefined;
+  onChange: (next: AllowedPathObject) => void;
+  onRemove: () => void;
+}) {
+  const passthrough = type !== undefined && entry.path.trim() !== "" && isPassthroughPath(type, entry.path.trim());
+  const methods = entry.methods ?? ["POST"];
+  const idPrefix = useId();
+  const toggleMethod = (method: PassthroughMethod, on: boolean) => {
+    const next = PASSTHROUGH_METHODS.filter((item) => (item === method ? on : methods.includes(item)));
+    if (next.length > 0) onChange({ ...entry, methods: next });
+  };
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_170px_auto]">
+        <div className="min-w-0">
+          <Label className="mb-1.5 text-xs text-muted-foreground">Path</Label>
+          <Input
+            value={entry.path}
+            placeholder="v1/responses"
+            className="font-mono text-xs"
+            onChange={(event) => {
+              const path = event.target.value;
+              // Methods belong to passthrough paths only, and a model path's row
+              // has no control left to clear them with, so they go when the path
+              // becomes one. An emptied field keeps them for what is typed next.
+              const modelPath = type !== undefined && path.trim() !== "" && !isPassthroughPath(type, path.trim());
+              const { methods: _methods, ...rest } = entry;
+              onChange(modelPath ? { ...rest, path } : { ...entry, path });
+            }}
+          />
+        </div>
+        {passthrough ? (
+          <div className="min-w-0 sm:col-span-2">
+            <Label className="mb-1.5 text-xs text-muted-foreground">Methods</Label>
+            <div className="flex h-9 flex-wrap items-center gap-x-3 gap-y-1">
+              {PASSTHROUGH_METHODS.map((method) => {
+                const checked = methods.includes(method);
+                const id = `${idPrefix}-${method}`;
+                return (
+                  <div key={method} className="flex items-center gap-1.5">
+                    <Checkbox
+                      id={id}
+                      checked={checked}
+                      // At least one method stays open, or the path would be
+                      // listed and unreachable.
+                      disabled={checked && methods.length === 1}
+                      onCheckedChange={(next) => toggleMethod(method, next === true)}
+                    />
+                    <Label htmlFor={id} className="font-mono text-xs font-normal">
+                      {method}
+                    </Label>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="min-w-0">
+              <Label className="mb-1.5 text-xs text-muted-foreground">Fixed model</Label>
+              <Input
+                value={entry.fixed_model ?? ""}
+                placeholder="none"
+                className="font-mono text-xs"
+                onChange={(event) => onChange({ ...entry, fixed_model: event.target.value || undefined })}
+              />
+            </div>
+            <div className="min-w-0">
+              <Label className="mb-1.5 text-xs text-muted-foreground">Output cap style</Label>
+              <Select
+                value={entry.clamp ?? "auto"}
+                onValueChange={(next) =>
+                  onChange({
+                    ...entry,
+                    clamp: next === "auto" ? undefined : (next as AllowedPathObject["clamp"]),
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">auto (by body)</SelectItem>
+                  {OUTPUT_CLAMP_STYLES.map((style) => (
+                    <SelectItem key={style} value={style}>
+                      {style}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
+        <Button variant="ghost" size="icon" aria-label="Remove endpoint" className="justify-self-end" onClick={onRemove}>
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+      {passthrough ? (
+        <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+          Non-standard path, forwarded as sent. No model check. Its cost counts toward spending
+          limits only if the provider reports it. Request limits still apply.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The restriction fields of one enabled instance, shown when its row is
  * expanded: which endpoints, which models, and an output cap.
  *
@@ -260,78 +385,15 @@ function PolicyPanel({
         {endpointMode === "selected" ? (
           <div className="space-y-2">
             {paths.map((entry, index) => (
-              <div key={index} className="flex flex-wrap items-end gap-2">
-                <div className="min-w-[200px] flex-[2]">
-                  <Label className="mb-1.5 text-xs text-muted-foreground">Path</Label>
-                  <Input
-                    value={entry.path}
-                    placeholder="v1/responses"
-                    className="font-mono text-xs"
-                    onChange={(event) =>
-                      setPaths(
-                        paths.map((item, position) =>
-                          position === index ? { ...item, path: event.target.value } : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div className="min-w-[150px] flex-1">
-                  <Label className="mb-1.5 text-xs text-muted-foreground">Fixed model</Label>
-                  <Input
-                    value={entry.fixed_model ?? ""}
-                    placeholder="none"
-                    className="font-mono text-xs"
-                    onChange={(event) =>
-                      setPaths(
-                        paths.map((item, position) =>
-                          position === index
-                            ? { ...item, fixed_model: event.target.value || undefined }
-                            : item,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <div className="w-[170px]">
-                  <Label className="mb-1.5 text-xs text-muted-foreground">Output cap style</Label>
-                  <Select
-                    value={entry.clamp ?? "auto"}
-                    onValueChange={(next) =>
-                      setPaths(
-                        paths.map((item, position) =>
-                          position === index
-                            ? {
-                                ...item,
-                                clamp: next === "auto" ? undefined : (next as AllowedPathObject["clamp"]),
-                              }
-                            : item,
-                        ),
-                      )
-                    }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">auto (by body)</SelectItem>
-                      {OUTPUT_CLAMP_STYLES.map((style) => (
-                        <SelectItem key={style} value={style}>
-                          {style}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Remove endpoint"
-                  onClick={() => setPaths(paths.filter((_, position) => position !== index))}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
+              <PathRow
+                key={index}
+                entry={entry}
+                type={row.type}
+                onChange={(next) =>
+                  setPaths(paths.map((item, position) => (position === index ? next : item)))
+                }
+                onRemove={() => setPaths(paths.filter((_, position) => position !== index))}
+              />
             ))}
             <Button variant="outline" size="sm" onClick={() => setPaths([...paths, { path: "" }])}>
               <Plus className="size-3.5" />

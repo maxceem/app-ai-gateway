@@ -34,6 +34,10 @@ import { execute } from "./execute";
 import type { ExecutionPlan } from "./plan";
 import { prepareEndpointPlan, prepareProxyPlan, type PrepareInput } from "./prepare";
 import type { ServedTimings } from "./timing";
+import { contained } from "../core/background";
+import { readConversationHeaders } from "../conversations/client-headers";
+import { planIncludes } from "../billing/features";
+import { getBillingAccess } from "../billing/gateway";
 
 export interface ServedVariables extends RequestVariables {
   /**
@@ -57,7 +61,7 @@ async function serve(
   providerSlug: string | undefined,
   prepare: (input: PrepareInput) => Promise<ExecutionPlan>,
 ): Promise<Response> {
-  const timings: ServedTimings = { authMs: 0, limiterMs: 0 };
+  const timings: ServedTimings = {};
   c.set("servedTimings", timings);
   const body = bodyOnce(c.req.raw);
   const { app, identity, credentialHeader, assertionCounter } = await authenticatedAccess({
@@ -69,11 +73,23 @@ async function serve(
     providerSlug,
     timings,
   });
-  const plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
+  // Read after the credential, so an unauthenticated caller learns nothing
+  // from a refusal of its headers; before the plan, so a malformed one is
+  // refused before anything is spent on the request.
+  const conversation = readConversationHeaders(c.req.raw.headers);
+  // Timed whether it succeeds or refuses, as every step is.
+  const prepareStart = performance.now();
+  let plan: ExecutionPlan;
+  try {
+    plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
+  } finally {
+    timings.prepareMs = performance.now() - prepareStart;
+  }
   const appVersion = c.req.header("x-app-version") ?? null;
-  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
-  await admitRequest(
-    {
+  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(contained("served_request", promise));
+  const limiterStart = performance.now();
+  try {
+    await admitRequest({
       env: c.env,
       deployment: c.get("deployment"),
       billingCache: c.get("billingRequestCache"),
@@ -83,12 +99,35 @@ async function serve(
       plan,
       appVersion,
       waitUntil,
-    },
-    (durationMs) => {
-      timings.limiterMs = durationMs;
-    },
-  );
-  return execute(plan, { env: c.env, app, identity, appVersion, timings, waitUntil });
+    });
+  } finally {
+    timings.limiterMs = performance.now() - limiterStart;
+  }
+  // Conversation storage needs the app to have turned it on, the deployment to
+  // have somewhere to keep it, the client not to have opted this request out,
+  // and the account's plan to include it: an app that turned it on under a plan
+  // that did keeps its setting, and stores nothing while its plan does not.
+  // Admission has just read the plan into the request's cache, so asking
+  // again reads nothing.
+  const capture = app.config.conversations.store
+    && c.env.CONVERSATIONS !== undefined
+    && !conversation.optedOut
+    && planIncludes(
+      await getBillingAccess(c.get("deployment"), app.organizationId, c.get("billingRequestCache")),
+      "conversationStorage",
+    )
+    ? { contentType: c.req.header("content-type") ?? "", keep: app.config.conversations.keep, body }
+    : null;
+  return execute(plan, {
+    env: c.env,
+    app,
+    identity,
+    appVersion,
+    timings,
+    waitUntil,
+    clientTraceId: conversation.clientTraceId,
+    capture,
+  });
 }
 
 /** `/v1/apps/:app/proxy/:provider/*`: the client names the provider and its path. */

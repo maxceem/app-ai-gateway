@@ -1,0 +1,1 @@
+ALTER TABLE `app_auth_event` ADD `client_sdk` text;

@@ -1,7 +1,7 @@
-import { requireActiveBilling, type BillingRequestCache } from "../billing/gateway";
-import { billingQuota } from "../billing/quota";
+import { admitAllowance } from "../billing/allowance-admission";
+import { admitAppTraffic, getAppTrafficBillingAccess, type BillingRequestCache } from "../billing/gateway";
+import { billingQuotaFor } from "../billing/quota";
 import {
-  budgetScope,
   hasAppLevelLimits,
   hasUserLevelLimits,
   monthlyBudgetMicrousd,
@@ -11,7 +11,7 @@ import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckInput, LimiterCheckResult } from "../do/UserLimiter";
-import type { SpendKey } from "../usage/app-usage-accounting";
+import { attestLedger, type PerUserSpendKey } from "../usage/app-usage-accounting";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { attemptAttribution, type AttemptAttribution, type ExecutionPlan } from "./plan";
@@ -92,16 +92,15 @@ export interface AdmissionInput {
  * and its object is called on every signed request, because it also owns the
  * install's assertion counter; an application that verifies App Attest on the
  * token exchange signs nothing per request, so its object is called only
- * where limits exist. Its budget is the install's month by default,
- * or the user's when the application says so. A server application's request
- * is counted per user, and only where per-user limits exist, as before
- * installs did.
+ * where limits exist. Its budget is measured over whichever month
+ * {@link attestLedger} names. A server application's request is counted per
+ * user, and only where per-user limits exist, as before installs did.
  */
 export function callerLimiter(
   app: AppRecord,
   identity: GatewayIdentity,
   assertionCounter: number | null,
-): { name: string; scope: "install" | "user"; spend: SpendKey & { scope: "install" | "user" } } | null {
+): { name: string; scope: "install" | "user"; spend: PerUserSpendKey } | null {
   const config = app.config;
   const { appId, userId } = identity;
   // An attest identity is an App Attest application's — client
@@ -112,10 +111,7 @@ export function callerLimiter(
     return {
       name: `${appId}:install:${identity.installId}`,
       scope: "install",
-      // An App Attest identity always names somebody, so `user` has a key.
-      spend: budgetScope(config) === "user" && userId !== null
-        ? { appId, scope: "user", key: userId }
-        : { appId, scope: "install", key: identity.installId },
+      spend: attestLedger(config, identity),
     };
   }
   // `identity.userId` is non-null whenever per-user limits exist: configuring
@@ -127,20 +123,21 @@ export function callerLimiter(
 
 /**
  * Admits one prepared request, or refuses it. Resolves with how long the
- * limiters took, which the response reports as `server-timing`; a refusal
- * throws, and `onDuration` has reported the same figure by then.
+ * limiters took; a refusal throws, and records the same figure on its
+ * rejection event. The caller times the call itself for `server-timing`.
  */
 export async function admitRequest(
   input: Omit<AdmissionInput, "attribution" | "endpointSlug"> & { plan: ExecutionPlan },
-  onDuration: (durationMs: number) => void = () => {},
 ): Promise<number> {
-  return admitGeneration({ ...input, attribution: attemptAttribution(input.plan.attempts[0]), endpointSlug: input.plan.endpointSlug }, onDuration);
+  return admitGeneration({
+    ...input,
+    attribution: attemptAttribution(input.plan.attempts[0]),
+    endpointSlug: input.plan.endpointSlug,
+  });
 }
 
-export async function admitGeneration(
-  input: AdmissionInput,
-  onDuration: (durationMs: number) => void = () => {},
-): Promise<number> {
+/** {@link admitRequest} for one attribution: a served request's first attempt, or a realtime generation. */
+export async function admitGeneration(input: AdmissionInput): Promise<number> {
   const start = performance.now();
   const { env, app, identity } = input;
   const ensureLive = () => {
@@ -166,15 +163,13 @@ export async function admitGeneration(
     );
 
   const finish = (): number => {
-    const durationMs = performance.now() - start;
-    onDuration(durationMs);
-    return durationMs;
+    return performance.now() - start;
   };
 
   /** Refuses the request the way the app's own limits decided to. */
   const refuseByAppLimits = (
     result: Extract<LimiterCheckResult, { allowed: false }>,
-    scope: "user" | "install" | "app",
+    scope: "user" | "install" | "apple_account" | "app",
     now: number,
   ): never => {
     const durationMs = finish();
@@ -190,7 +185,7 @@ export async function admitGeneration(
       throw new GatewayError(
         429,
         "app_budget_exhausted",
-        `The application's monthly ${scope} spending budget is exhausted`,
+        `The application's monthly ${scope === "apple_account" ? "Apple Account" : scope} spending budget is exhausted`,
         { "Retry-After": String(retryAfter) },
         { data: { scope } },
       );
@@ -215,17 +210,20 @@ export async function admitGeneration(
    * Only the allowance *read* overlaps the block check. Claiming it cannot,
    * because it must not happen at all if an app limit refuses first.
    *
-   * A self-hosted deployment pays nothing for this: `billingQuota` answers
-   * `unmetered` without reading anything when there is no billing binding. In a
-   * hosted one a warm isolate answers the plan out of its own TTL cache, so
-   * this is not an RPC per request either.
+   * A self-hosted deployment pays nothing for this: billing access is
+   * `self_hosted` without reading anything when there is no billing binding. In
+   * a hosted one a warm isolate answers the plan out of its own TTL cache, so
+   * this is not an RPC per request either, and a billing service that is slow
+   * to answer is waited for only briefly before the request is answered as
+   * though it had failed.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
     // A userless request has no identified person whose status to read.
     identity.userId === null
       ? Promise.resolve(false)
       : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
-    billingQuota(input.deployment, env, app.organizationId, input.billingCache, input.now),
+    getAppTrafficBillingAccess(input.deployment, app.organizationId, input.billingCache, input.waitUntil)
+      .then((access) => billingQuotaFor(access, env, app.organizationId, input.now)),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -289,9 +287,10 @@ export async function admitGeneration(
   if (allowanceResult.status === "rejected") throw allowanceResult.reason;
 
   const quota = allowanceResult.value;
-  // Billing that cannot be read, or an organization no plan resolves for, is
-  // refused here rather than served uncounted.
-  requireActiveBilling(quota.access);
+  // An organization no plan resolves for is refused here. Billing that cannot
+  // be read is not: it resolves as `unmetered`, so the request is served
+  // uncounted rather than refused for an outage that is ours.
+  admitAppTraffic(quota.access, app.organizationId);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
   if (quota.kind === "unmetered") {
@@ -311,19 +310,31 @@ export async function admitGeneration(
   // A journaled claim is always attempted: the session reconciles it through
   // its receipt, so refusing it here would leave nothing to reconcile.
   await input.beforeClaim?.(claim);
-  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit(claim);
+  /*
+   * The counter is billing, and billing errs towards the customer: a counter
+   * that cannot answer promptly, for whatever reason, never fails the request.
+   * It is served uncounted, unless this isolate last saw the plan used up.
+   */
+  const outcome = await admitAllowance(
+    env.ORG_QUOTA.getByName(app.organizationId),
+    app.organizationId,
+    claim,
+    input.waitUntil,
+  );
   const durationMs = finish();
-  if (!admission.allowed) {
+  if (outcome.kind === "uncounted") return durationMs;
+  const refusal = outcome.kind === "exhausted" ? outcome : outcome.admission;
+  if (!refusal.allowed) {
     blockedEvent("blocked_billing", "account", durationMs);
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",
-      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${period.resetAt}`,
-      { "Retry-After": String(admission.retryAfterSeconds) },
+      `The plan's monthly request allowance of ${refusal.limit} is exhausted until ${period.resetAt}`,
+      { "Retry-After": String(refusal.retryAfterSeconds) },
       {
         data: {
-          limit: admission.limit,
-          used: admission.used,
+          limit: refusal.limit,
+          used: refusal.used,
           periodId: period.periodId,
           periodStart: period.periodStart,
           periodEnd: period.periodEnd,

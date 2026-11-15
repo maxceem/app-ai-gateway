@@ -39,6 +39,9 @@ import {
   CliBrowserLookupRequestSchema,
   CliBrowserLookupResponseSchema,
   CliCapabilitiesResponseSchema,
+  CliToolCallRequestSchema,
+  CliToolCallResponseSchema,
+  CliToolCatalogResponseSchema,
   CliCredentialRevokeResponseSchema,
   CliLoginRedeemRequestSchema,
   CliLoginRedeemResponseSchema,
@@ -55,14 +58,17 @@ import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   AppSnippetQuerySchema,
+  AppPatchSchema,
   AppUpdateSchema,
   AppWriteSchema,
+  CLIENT_TRACE_ID_PATTERN,
   GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
   OAuthConsentAllowRequestSchema,
   OAuthConsentProofSchema,
   SendVerificationEmailRequestSchema,
+  SupportMessageRequestSchema,
   ConfirmEmailVerificationRequestSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
@@ -106,6 +112,7 @@ import {
   OAuthConsentDetailsResponseSchema,
   OAuthConsentRedirectResponseSchema,
   SendVerificationEmailResponseSchema,
+  SupportMessageResponseSchema,
   ConfirmEmailVerificationResponseSchema,
   OrganizationListResponseSchema,
   PricesResponseSchema,
@@ -121,6 +128,7 @@ import {
   RevealedOperationResponseSchema,
   TimeseriesResponseSchema,
   UsageEventListSchema,
+  ConversationFileListSchema,
   UsageRepriceResponseSchema,
   UserBlockResponseSchema,
   UserListResponseSchema,
@@ -207,6 +215,9 @@ export interface OperationSpec {
 // ---------------------------------------------------------------------------
 
 const NO_PLAN = "No billing plan resolves for the account.";
+/** A configuration that turns on a feature the account's plan does not include. */
+const CONVERSATIONS_NOT_INCLUDED =
+  "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.";
 const APP_AUTH_RATE_LIMITED =
   "Too many application authentication requests from this network address for this application. Carries Retry-After.";
 const NO_END_USERS =
@@ -223,6 +234,13 @@ const ISSUER_ERRORS = {
   403: "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
   503: "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
 } as const;
+
+/**
+ * Every client call that is not a served request can meet this: the platform
+ * failing underneath the gateway, or the call running past its deadline.
+ */
+const SERVICE_UNAVAILABLE =
+  "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.";
 
 /** The three refusals every CLI handoff endpoint shares. */
 const CLI_ERRORS = {
@@ -271,6 +289,17 @@ const TranscriptionStyleBodySchema = z.object({
   response_format: z.string().optional(),
 }).meta({ description: "Body for endpoints whose api_style is audio_transcription." });
 
+const CLIENT_SDK_HEADER_DESCRIPTION =
+  "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.";
+
+/** What an App Attest or issuer-backed client sends beside its proof. */
+const AppAuthClientHeadersSchema = z.object({
+  "x-app-version": z.string().optional().meta({
+    description: "The app's own version, recorded on the auth event.",
+  }),
+  "x-client-sdk": z.string().optional().meta({ description: CLIENT_SDK_HEADER_DESCRIPTION }),
+});
+
 /** What an application client sends beside its credential. */
 const GatewayClientHeadersSchema = z.object({
   "x-app-version": z.string().optional().meta({
@@ -282,6 +311,15 @@ const GatewayClientHeadersSchema = z.object({
   }),
   "x-end-user-id": z.string().optional().meta({
     description: "Optional configured end-user identity for issuer-less API-key applications.",
+  }),
+  "x-client-sdk": z.string().optional().meta({ description: CLIENT_SDK_HEADER_DESCRIPTION }),
+  "x-client-trace-id": z.string().regex(CLIENT_TRACE_ID_PATTERN).optional().meta({
+    description:
+      "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+  }),
+  "x-conversation-storage": z.enum(["off"]).optional().meta({
+    description:
+      "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
   }),
 });
 
@@ -415,7 +453,7 @@ export const CATALOG = {
     params: APP_PARAM,
     response: AppAttestChallengeResponseSchema,
     responseDescription: "A five-minute, single-use challenge.",
-    errors: { 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED, 404: NO_END_USERS },
+    errors: { 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED, 404: NO_END_USERS, 503: SERVICE_UNAVAILABLE },
   },
 
   registerAppAttestKey: {
@@ -425,10 +463,16 @@ export const CATALOG = {
     summary: "Register an App Attest key",
     security: "public",
     params: APP_PARAM,
+    headers: AppAuthClientHeadersSchema,
     request: AppAttestRegisterRequestSchema,
     response: AppAttestRegisterResponseSchema,
     responseDescription: "The key was registered for the verified issuer identity.",
-    errors: { ...ISSUER_ERRORS, 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED },
+    errors: {
+      ...ISSUER_ERRORS,
+      402: NO_PLAN,
+      429: APP_AUTH_RATE_LIMITED,
+      503: `${ISSUER_ERRORS[503]} ${SERVICE_UNAVAILABLE}`,
+    },
   },
 
   exchangeGatewayToken: {
@@ -439,10 +483,16 @@ export const CATALOG = {
     description: "App Attest clients send key_id, assertion, and challenge; the assertion is verified here whatever the application's verify_on, and the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
     security: "public",
     params: APP_PARAM,
+    headers: AppAuthClientHeadersSchema,
     request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
     response: GatewayTokenResponseSchema,
     responseDescription: "A short-lived gateway access token.",
-    errors: { ...ISSUER_ERRORS, 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED },
+    errors: {
+      ...ISSUER_ERRORS,
+      402: NO_PLAN,
+      429: APP_AUTH_RATE_LIMITED,
+      503: `${ISSUER_ERRORS[503]} ${SERVICE_UNAVAILABLE}`,
+    },
   },
 
   getCurrentUser: {
@@ -456,7 +506,7 @@ export const CATALOG = {
     headers: GatewayClientHeadersSchema,
     response: CurrentUserResponseSchema,
     responseDescription: "Current user state.",
-    errors: { 402: NO_PLAN, 404: NO_END_USERS },
+    errors: { 402: NO_PLAN, 404: NO_END_USERS, 503: SERVICE_UNAVAILABLE },
   },
 
   discoverRealtime: {
@@ -562,6 +612,7 @@ export const CATALOG = {
     response: CreatedAppResponseSchema,
     responseDescription: "Application created. `app.id` is the assigned id and the segment every gateway URL for this app uses. `api_key` is the one-time plaintext initial key for an API-key application, and null for any other.",
     errors: {
+      403: CONVERSATIONS_NOT_INCLUDED,
       409: "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
     },
   },
@@ -657,6 +708,39 @@ export const CATALOG = {
     responseDescription: "Trial access state.",
   },
 
+  /*
+   * Support is part of a paid plan, so it sits with billing: it is offered
+   * only to an organization on one, and refused to everyone else. A person in
+   * the console, the CLI and an MCP client all send through this one entry, so
+   * the plan check, the secret check and the limits are the same for each.
+   *
+   * Any role may write, read-only members included: a message changes nothing
+   * in the account. The grant is the default `manage` all the same, because it
+   * emails a person, and a `read` credential changes nothing outside the
+   * gateway either.
+   */
+  sendSupportMessage: {
+    method: "POST",
+    path: "/v1/admin/support",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Send a message to support",
+    description: "Opens a support ticket for the person the credential belongs to: they get an email with its reference and their message, copied to the deployment's support inbox, and support answers them by replying to it. Send only what the person asked to send, and never a credential: a message or context value that looks like a key, token or password is refused. The same message sent again within ten minutes is not sent twice; the answer says so and repeats the reference.",
+    security: "management",
+    policy: { role: "member", access: "read" },
+    request: SupportMessageRequestSchema,
+    response: SupportMessageResponseSchema,
+    responseDescription: "The ticket was opened; support replies to the sender's email address.",
+    errors: {
+      400: "The body is malformed, or carries something that looks like a credential (`invalid_request`).",
+      403: "The account's plan does not include human support (`support_plan_required`), or the credential has the read grant (`grant_insufficient`).",
+      404: "This deployment does not offer human support (`not_found`).",
+      409: "The credential's owner has no email address to reply to (`conflict`).",
+      429: "Too many messages were sent by this person. Carries Retry-After.",
+      503: "The help desk could not be reached; try again later (`email_unavailable`).",
+    },
+  },
+
   getApp: {
     method: "GET",
     path: "/v1/admin/apps/{app}",
@@ -679,7 +763,21 @@ export const CATALOG = {
     request: AppUpdateSchema,
     response: AppResponseSchema,
     responseDescription: "Application state.",
-    errors: { 409: "The application changed since it was read." },
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED, 409: "The application changed since it was read." },
+  },
+
+  patchApp: {
+    method: "PATCH",
+    path: "/v1/admin/apps/{app}",
+    tags: ["Admin applications"],
+    summary: "Change part of an application",
+    description: "Applies `operations` in order to the application as `getApp` answers it under `app`, then saves the result exactly as `PUT` would save that whole document: the same validation, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Requires `revision`, as `PUT` does. An operation that cannot apply, such as a `replace` of a key that is not there, answers `400 invalid_request` naming its index.",
+    security: "management",
+    params: APP_PARAM,
+    request: AppPatchSchema,
+    response: AppResponseSchema,
+    responseDescription: "Application state after the change.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED, 409: "The application changed since it was read." },
   },
 
   validateApp: {
@@ -696,6 +794,7 @@ export const CATALOG = {
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
     responseDescription: "Resolved valid configuration.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED },
   },
 
   validateAppDraft: {
@@ -709,6 +808,7 @@ export const CATALOG = {
     request: AppWriteSchema,
     response: AppDraftValidateResponseSchema,
     responseDescription: "The configuration would be accepted.",
+    errors: { 403: CONVERSATIONS_NOT_INCLUDED },
   },
 
   checkApp: {
@@ -987,10 +1087,53 @@ export const CATALOG = {
       user: z.string().optional(),
       install: z.string().optional().meta({ description: "Only events of this install: an App Attest key id." }),
       model: z.string().optional(),
+      trace: z.string().regex(CLIENT_TRACE_ID_PATTERN).optional().meta({
+        description: "Only the requests the client sent with this X-Client-Trace-Id.",
+      }),
       before_id: BeforeIdSchema,
     }),
     response: UsageEventListSchema,
     responseDescription: "Paginated application usage events.",
+  },
+
+  listAppConversations: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/conversations",
+    tags: ["Admin operations"],
+    summary: "List stored conversation files",
+    description:
+      "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Media the app keeps (conversations.keep) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>` and named in the records as `agw-media:<name>`.",
+    security: "management",
+    params: APP_PARAM,
+    policy: { role: "admin", access: "read", grant: "read" },
+    query: z.object({
+      from: DaySchema("from").optional().meta({
+        description: "First UTC day, YYYY-MM-DD; defaults to the oldest stored.",
+      }),
+      to: DaySchema("to").optional().meta({
+        description: "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+      }),
+      cursor: z.string().max(1024).optional(),
+    }),
+    response: ConversationFileListSchema,
+    responseDescription: "One page of stored conversation files.",
+  },
+
+  getAppConversationFile: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/conversations/file",
+    tags: ["Admin operations"],
+    summary: "Download a stored conversation file",
+    description:
+      "One file named by the listing, or an image a record names: a batch answers as application/gzip, an image as its own type.",
+    security: "management",
+    params: APP_PARAM,
+    policy: { role: "admin", access: "read", grant: "read" },
+    query: z.object({
+      name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
+    }),
+    response: z.unknown(),
+    responseDescription: "The file's bytes.",
   },
 
   getAppAuthEventSummary: {
@@ -1201,7 +1344,7 @@ export const CATALOG = {
     summary: "List known model prices",
     security: "management",
     response: PricesResponseSchema,
-    responseDescription: "The priced model catalog this deployment enforces.",
+    responseDescription: "The model price list this deployment enforces.",
   },
 
   getOperation: {
@@ -1243,6 +1386,42 @@ export const CATALOG = {
     response: CliCapabilitiesResponseSchema,
     responseDescription: "Public deployment capabilities. No credentials or inference calls.",
     errors: "none",
+  },
+
+  listCliTools: {
+    method: "GET",
+    path: "/v1/cli/tools",
+    tags: ["CLI"],
+    summary: "List the tools the CLI builds its commands from",
+    description: "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI caches this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+    security: "public",
+    response: CliToolCatalogResponseSchema,
+    responseDescription: "The tools and the revision that identifies this list.",
+    errors: "none",
+  },
+
+  callCliTool: {
+    method: "POST",
+    path: "/v1/cli/tools/{tool}",
+    tags: ["CLI"],
+    summary: "Run one tool, as the CLI does",
+    description: "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer, a refusal included, carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
+    security: "management",
+    // Any key may ask; the tool's own operation then applies its policy.
+    policy: { role: "member", access: "read", grant: "read" },
+    params: { tool: { description: "The tool's name, as listCliTools returns it.", example: "list_apps" } },
+    headers: z.object({
+      "agw-tool-guard": z.string().optional().meta({
+        description: "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared.",
+      }),
+    }),
+    request: CliToolCallRequestSchema,
+    response: CliToolCallResponseSchema,
+    responseDescription: "The tool's structured result and its one-line summary.",
+    errors: {
+      404: "`tool_not_found`: this deployment has no tool of that name; fetch the list again. Any other code: what the tool names does not exist.",
+      409: "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran, so fetch the list and decide again. Otherwise the change conflicts with the current state.",
+    },
   },
 
   bootstrapCliAccount: {

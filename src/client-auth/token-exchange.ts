@@ -10,6 +10,7 @@
  */
 
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { contained } from "../core/background";
 import { z } from "zod";
 import { lookupApiKeyUncached } from "./api-keys";
 import type { ExchangeType, TokenExchange } from "./client-auth";
@@ -31,6 +32,7 @@ import type {
   AppAttestEnvironment,
   IssuerAuthentication,
 } from "../shared/app-config";
+import { errorFacts } from "../core/error-facts";
 
 /**
  * What a handler learns about the attempt as it runs, for the event row it will
@@ -134,6 +136,8 @@ interface ExchangeInput<K extends ExchangeType, Body> {
   exchange: TokenExchange<K>;
   body: Body;
   attempt: AuthAttempt;
+  /** For bookkeeping the answer must not wait on, or fail over. */
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 /** One token exchange: the bodies it accepts from an application, and what it does with them. */
@@ -304,7 +308,7 @@ export async function markClaimPending(env: Env, appId: string, userId: string):
     log("warn", "claim_pending_mark_failed", {
       app: appId,
       userId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
   }
 }
@@ -341,7 +345,7 @@ async function settleClaimDelay(
       app: appId,
       userId,
       delayMs,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorFacts(error),
     });
     // Not reported as recovered, and not recorded on the event: a window that
     // is still open has not been measured, and a figure written next to one
@@ -350,6 +354,27 @@ async function settleClaimDelay(
   }
   log("info", "claim_propagation_recovered", { app: appId, userId, delayMs });
   return delayMs;
+}
+
+/**
+ * The Apple Account an App Store transaction names, or null where it names
+ * none. Never throws: an exchange whose assertion has verified is not refused
+ * over the transaction beside it, and the install is then counted on its own,
+ * as it was before Apple Accounts were read at all. Only the bounded reason
+ * is logged, never anything the transaction says.
+ */
+async function appleAccount(appId: string, bundleId: string, jws: string): Promise<string | null> {
+  try {
+    const { verifyAppTransaction } = await import("./app-transaction");
+    const result = await verifyAppTransaction({ jws, appId, bundleId });
+    if (result.account === null) {
+      log("info", "app_transaction_unverified", { app: appId, reason: result.rejection });
+    }
+    return result.account;
+  } catch (error) {
+    log("warn", "app_transaction_check_failed", { app: appId, error: errorFacts(error) });
+    return null;
+  }
 }
 
 /** An API key and a user's issuer token, exchanged for a gateway token naming both. */
@@ -432,7 +457,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     }
   },
   tokenBody: ({ authentication }) => attestBodiesFor(authentication.end_user).token,
-  async token({ env, appId, exchange: { authentication: auth }, body, attempt }) {
+  async token({ env, appId, exchange: { authentication: auth }, body, attempt, waitUntil }) {
     const { userId, trusted } = await attestedUserId(body);
     if (trusted) attempt.userId = userId;
     const db = database(env.DB);
@@ -465,11 +490,15 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     }
     await consumeChallenge(env, appId, body.challenge);
     const { assertionClientData, sha256, verifyAppAssertion } = await import("./app-assertion");
+    const appTransaction = body.app_transaction;
+    const appTransactionHash = appTransaction === undefined
+      ? undefined
+      : (await sha256(new TextEncoder().encode(appTransaction))).toString("base64url");
     const counter = await verifyAppAssertion({
       rpId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
       assertion: body.assertion,
       publicKeyPem: key.publicKey,
-      clientDataHash: await sha256(assertionClientData(appId, body.challenge, body.key_id)),
+      clientDataHash: await sha256(assertionClientData(appId, body.challenge, body.key_id, appTransactionHash)),
     });
     // The install's limiter owns its counter, for this exchange and for every
     // request the token it mints will sign: both come from the same key.
@@ -479,20 +508,32 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     if (!accepted) {
       throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
     }
-    await db.batch([
+    // When the install and its user were last seen is for the console only:
+    // the token neither waits on it nor fails over it, so a slow or failing
+    // D1 write never costs an exchange whose challenge and counter are spent.
+    waitUntil(contained("auth_last_seen", db.batch([
       db.update(appAttestKey)
         .set({ lastSeenAt: sql`datetime('now')` })
         .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id))),
       db.update(appUser)
         .set({ lastSeenAt: sql`datetime('now')` })
         .where(and(eq(appUser.appId, appId), eq(appUser.id, userId))),
-    ]);
+    ])));
+    const appleAccountId = appTransaction === undefined
+      ? null
+      : await appleAccount(appId, auth.app_attest.bundle_id, appTransaction);
     // Proved now: the assertion verified against the stored public key for this
     // key id, so the identity is the gateway's own conclusion rather than a
     // string the caller supplied.
     attempt.userId = userId;
     attempt.claimDelayMs = await settleClaimDelay(env, appId, userId, user?.claimPendingSince ?? null);
-    return issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest", installId: body.key_id });
+    return issueGatewayToken(env.JWT_SECRET, {
+      appId,
+      userId,
+      authMethod: "attest",
+      installId: body.key_id,
+      appleAccountId,
+    });
   },
 };
 

@@ -29,7 +29,7 @@ export async function prompt(
   flags: Flags,
   { hidden = false, defaultValue }: { hidden?: boolean; defaultValue?: string } = {},
 ): Promise<string> {
-  if (flags["no-input"] || !stdin.isTTY || !stderr.isTTY)
+  if (!canPrompt(flags))
     fail(
       "input_required",
       `${label} is required.`,
@@ -116,6 +116,11 @@ export async function secret(flags: Flags, label = "API key"): Promise<string | 
   if (!value || /[\r\n\0]/.test(value))
     fail("invalid_input", "Supply one nonempty secret line.");
   return value;
+}
+
+/** Whether there is a person at a terminal to ask: no `--no-input`, and both ends interactive. */
+export function canPrompt(flags: Flags): boolean {
+  return !flags["no-input"] && Boolean(stdin.isTTY) && Boolean(stderr.isTTY);
 }
 
 export async function confirm(message: string, flags: Flags): Promise<void> {

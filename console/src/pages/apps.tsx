@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -22,8 +22,6 @@ import { NewAppDialog } from "@/pages/new-app-dialog";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useApps } from "@/lib/queries";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
-import { noteProxiedRequests } from "@/lib/analytics";
-import { useConsoleSession } from "@/lib/console-session";
 
 /**
  * What the list says when there is nothing in it. Setup as a whole is walked
@@ -56,20 +54,6 @@ export function AppsPage() {
   useCheckoutSuccessToast();
   const apps = useApps(month);
 
-  /*
-   * Whether the organization has ever proxied a request is what the hosted
-   * deployment counts as activation, so it is reported from the page that
-   * already asks for it rather than from a reading of its own. The rail's
-   * first-run checklist polls the same list while it waits for that answer, so
-   * this sees it arrive without a poll of its own.
-   */
-  const { organization } = useConsoleSession();
-  const organizationId = organization?.id;
-  const proxied = apps.data?.has_proxied_requests;
-  useEffect(() => {
-    if (organizationId === undefined || proxied === undefined) return;
-    noteProxiedRequests(organizationId, proxied);
-  }, [organizationId, proxied]);
   const hasApps = (apps.data?.apps.length ?? 0) > 0;
 
   const totals = (apps.data?.apps ?? []).reduce(

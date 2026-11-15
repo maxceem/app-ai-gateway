@@ -121,6 +121,30 @@ export function bodyWindows(): {
 export interface ObservedBody extends BodyWindows {
   /** True only when the client stopped reading before the upstream was done. */
   aborted: boolean;
+  /**
+   * Every byte of the body, kept only when the caller asked for it and only
+   * while it stayed within the size the caller allowed; null otherwise. It is
+   * what conversation storage keeps, and nothing else reads it.
+   */
+  whole?: Uint8Array<ArrayBuffer> | null;
+}
+
+/** Collects a body whole up to a limit, and gives up on all of it past that. */
+function wholeCollector(limit: number): { push(chunk: Uint8Array): void; read(): Uint8Array<ArrayBuffer> | null } {
+  let chunks: Uint8Array[] | null = [];
+  let bytes = 0;
+  return {
+    push(chunk) {
+      if (chunks === null) return;
+      bytes += chunk.byteLength;
+      if (bytes > limit) {
+        chunks = null;
+        return;
+      }
+      chunks.push(chunk.slice());
+    },
+    read: () => (chunks === null ? null : concatBytes(chunks, bytes) as Uint8Array<ArrayBuffer>),
+  };
 }
 
 /**
@@ -133,11 +157,18 @@ export interface ObservedBody extends BodyWindows {
  * the client's stream *is* the pipe: cancelling it cancels the upstream, and
  * the observer settles with whatever had arrived by then.
  */
-export function observeUpstreamBody(body: ResponseBodyStream): {
+export function observeUpstreamBody(
+  body: ResponseBodyStream,
+  options: {
+    /** Also keep the whole body, up to this many bytes, for conversation storage. */
+    keepWholeUpTo?: number;
+  } = {},
+): {
   stream: ResponseBodyStream;
   observed: Promise<ObservedBody>;
 } {
   const windows = bodyWindows();
+  const whole = options.keepWholeUpTo === undefined ? null : wholeCollector(options.keepWholeUpTo);
   // Set both when the client cancels its side and when the pipe tears the
   // transform down after an upstream failure; the two are told apart below by
   // whether the pipe itself finished cleanly.
@@ -148,12 +179,17 @@ export function observeUpstreamBody(body: ResponseBodyStream): {
       // rewrites a byte and never holds one back.
       controller.enqueue(chunk);
       windows.push(chunk);
+      whole?.push(chunk);
     },
     cancel() {
       cancelled = true;
     },
   });
-  const settle = (aborted: boolean): ObservedBody => ({ ...windows.read(), aborted });
+  const settle = (aborted: boolean): ObservedBody => ({
+    ...windows.read(),
+    aborted,
+    whole: whole?.read() ?? null,
+  });
   const observed = body.pipeTo(transform.writable).then(
     // A pipe that ran to completion either delivered the whole body or ended
     // because the client cancelled; an upstream that broke mid-body rejects

@@ -199,6 +199,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "app_transaction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify against Apple's root names no account, and the install is counted on its own."
           }
         },
         "required": [
@@ -712,6 +718,20 @@
                                           "anthropic",
                                           "none"
                                         ]
+                                      },
+                                      "methods": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "enum": [
+                                            "POST",
+                                            "GET",
+                                            "PUT",
+                                            "PATCH",
+                                            "DELETE"
+                                          ]
+                                        },
+                                        "minItems": 1
                                       }
                                     },
                                     "required": [
@@ -808,9 +828,10 @@
                         "type": "string",
                         "enum": [
                           "install",
-                          "user"
+                          "user",
+                          "apple_account"
                         ],
-                        "description": "Whose month monthly_usd is measured over: install (the default on App Attest applications) or user (the default, and the only value, on server applications). user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration."
+                        "description": "Whose month monthly_usd is measured over: apple_account (the default on App Attest applications), install, or user (the default, and the only value, on server applications). apple_account counts every install of one Apple Account together, across devices and reinstalls; an install whose client sent no verifiable App Store transaction is counted on its own, as under install. user on an App Attest application needs authentication.end_user.source issuer. Filled in on every parsed configuration."
                       }
                     },
                     "required": [
@@ -1002,6 +1023,47 @@
               "additionalProperties": false
             },
             "default": {}
+          },
+          "conversations": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "boolean",
+                "default": false,
+                "description": "Keep a copy of every request and response this app sends through the gateway, with the media `keep` allows."
+              },
+              "keep": {
+                "type": "object",
+                "properties": {
+                  "images": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep images beside the conversation. Off, each is recorded by its type and size alone."
+                  },
+                  "audio": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep audio: recordings sent for transcription, audio in a request, spoken replies beside the conversation. Off, each is recorded by its type and size alone."
+                  },
+                  "files": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep every other attached file, such as a PDF or a text document beside the conversation. Off, each is recorded by its type and size alone."
+                  }
+                },
+                "default": {},
+                "additionalProperties": false
+              },
+              "retention_days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 400,
+                "default": 180,
+                "description": "Days a stored conversation is kept before nightly maintenance deletes it."
+              }
+            },
+            "default": {},
+            "additionalProperties": false
           }
         },
         "required": [
@@ -1396,6 +1458,99 @@
         ],
         "additionalProperties": false
       },
+      "AppPatch": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict."
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppPatchOperation"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "AppPatchOperation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "add"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "replace"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "remove"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "ManagementKeyCreateRequest": {
         "type": "object",
         "properties": {
@@ -1641,7 +1796,39 @@
               "type": "number",
               "minimum": 0
             },
+            "cached_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cached_input_audio": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cache_write": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cache_write_1h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cache_write_12h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "image_input": {
+              "type": "number",
+              "minimum": 0
+            },
             "audio_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "video_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "image_output": {
               "type": "number",
               "minimum": 0
             },
@@ -1649,13 +1836,168 @@
               "type": "number",
               "minimum": 0
             },
-            "cached_input": {
+            "long_input": {
               "type": "number",
               "minimum": 0
             },
-            "cached_audio_input": {
+            "long_cached_input": {
               "type": "number",
               "minimum": 0
+            },
+            "long_cached_input_audio": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_cache_write": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_cache_write_1h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_cache_write_12h": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_image_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_audio_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_video_input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_image_output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_audio_output": {
+              "type": "number",
+              "minimum": 0
+            },
+            "long_context_threshold": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "modes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "factor": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                  },
+                  "input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cached_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cached_input_audio": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write_1h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write_12h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "image_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "audio_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "video_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "image_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "audio_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cached_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cached_input_audio": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write_1h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write_12h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_image_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_audio_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_video_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_image_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_audio_output": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "description": "Prices in service modes other than standard. Left out, the price list's mode factors for the model apply to these rates. A mode with no price is still served, billed at an estimate and marked estimated."
             }
           },
           "required": [
@@ -2265,7 +2607,8 @@
             "description": "The serving model the upstream named, canonicalized back to the provider's own model ID."
           },
           "model": {
-            "type": "string"
+            "type": "string",
+            "description": "The model the request was priced and judged as. Empty on a passthrough path: a provider path outside the APIs the gateway reads and the provider's own inference operations, which the gateway forwards without reading a model."
           },
           "route": {
             "type": "string"
@@ -2333,6 +2676,13 @@
             ],
             "description": "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way."
           },
+          "service_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded."
+          },
           "cost_source": {
             "type": [
               "string",
@@ -2340,11 +2690,12 @@
             ],
             "enum": [
               "computed",
+              "estimated",
               "reported",
               "unresolved",
               null
             ],
-            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed."
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `estimated` is the catalog too, but for a service mode it has no exact price for (a mode the model is not priced in, or a value the gateway does not know), billed at the estimate the model pricing guide describes; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed."
           },
           "app_version": {
             "type": [
@@ -2383,6 +2734,13 @@
               "null"
             ]
           },
+          "client_trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's X-Client-Trace-Id for this request, or null where it sent none."
+          },
           "created_at": {
             "type": "string"
           }
@@ -2415,7 +2773,63 @@
           "status",
           "client_aborted",
           "latency_ms",
+          "client_trace_id",
           "created_at"
+        ]
+      },
+      "ConversationFileList": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationFile"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as cursor to continue the listing; null when it is complete."
+          }
+        },
+        "required": [
+          "app_id",
+          "files",
+          "next_cursor"
+        ]
+      },
+      "ConversationFile": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file's name within the app, `YYYY-MM-DD/HHMMSS-<batch>.jsonl.gz`; pass it to the download operation."
+          },
+          "size": {
+            "type": "integer",
+            "description": "Bytes, gzipped."
+          },
+          "records": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Records in the file, where it says."
+          },
+          "uploaded_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "records",
+          "uploaded_at"
         ]
       },
       "AuthEventSummary": {
@@ -2520,6 +2934,7 @@
                   "enum": [
                     "user",
                     "install",
+                    "apple_account",
                     "app",
                     "account",
                     null
@@ -2660,6 +3075,13 @@
               "null"
             ]
           },
+          "client_sdk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version."
+          },
           "latency_ms": {
             "type": [
               "integer",
@@ -2685,6 +3107,7 @@
           "outcome",
           "reason",
           "app_version",
+          "client_sdk",
           "latency_ms",
           "claim_delay_ms",
           "created_at"
@@ -2733,6 +3156,7 @@
             "enum": [
               "user",
               "install",
+              "apple_account",
               "app",
               "account",
               null
@@ -3214,13 +3638,21 @@
                     },
                     "emailVerification": {
                       "type": "boolean"
+                    },
+                    "supportEmail": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "conversationStorage": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "billing",
                     "registrationOpen",
                     "googleAuth",
-                    "emailVerification"
+                    "emailVerification",
+                    "conversationStorage"
                   ]
                 }
               }
@@ -3677,6 +4109,10 @@
                     },
                     "expires_in": {
                       "type": "number"
+                    },
+                    "accepts_app_transaction": {
+                      "type": "boolean",
+                      "description": "True when the token exchange accepts app_transaction, the App Store's signed AppTransaction. A client sends one, and signs over its hash, only when this says so: a gateway that predates it would ignore the field and then refuse the assertion."
                     }
                   },
                   "required": [
@@ -3746,6 +4182,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -3766,6 +4212,26 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app's own version, recorded on the auth event."
+            },
+            "required": false,
+            "description": "The app's own version, recorded on the auth event.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3858,7 +4324,7 @@
             }
           },
           "503": {
-            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff. `service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3887,6 +4353,26 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app's own version, recorded on the auth event."
+            },
+            "required": false,
+            "description": "The app's own version, recorded on the auth event.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3998,7 +4484,7 @@
             }
           },
           "503": {
-            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff. `service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4063,6 +4549,40 @@
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
+            "in": "header"
           }
         ],
         "responses": {
@@ -4116,14 +4636,23 @@
                         },
                         "monthly_cost_usd": {
                           "type": "number",
-                          "description": "What has been spent so far in the current UTC calendar month against the budget below: by this install, or by this user when the budget's scope is user."
+                          "description": "What has been spent so far in the current UTC calendar month against the budget below, by whoever budget_scope names."
                         },
                         "monthly_budget_usd": {
                           "type": [
                             "number",
                             "null"
                           ],
-                          "description": "The monthly spending budget this app sets on each install or user, per limits.per_user.spending.scope. Null means unlimited."
+                          "description": "The monthly spending budget this app sets on each Apple Account, install or user, per limits.per_user.spending.scope. Null means unlimited."
+                        },
+                        "budget_scope": {
+                          "type": "string",
+                          "enum": [
+                            "install",
+                            "user",
+                            "apple_account"
+                          ],
+                          "description": "Whose month monthly_cost_usd is: apple_account (every install of this person's Apple Account together), install (this install alone), or user (this signed-in or backend-named user). Usually the app's limits.per_user.spending.scope; install where that is apple_account but this install's client sent no verifiable App Store transaction."
                         },
                         "blocked": {
                           "type": "boolean",
@@ -4137,6 +4666,7 @@
                         "requests_per_day",
                         "monthly_cost_usd",
                         "monthly_budget_usd",
+                        "budget_scope",
                         "blocked"
                       ],
                       "description": "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it."
@@ -4193,6 +4723,16 @@
           },
           "404": {
             "description": "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4276,6 +4816,40 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
             "in": "header"
           }
         ],
@@ -4439,6 +5013,40 @@
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
+            "in": "header"
           }
         ],
         "responses": {
@@ -4591,6 +5199,40 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
             "in": "header"
           }
         ],
@@ -4773,6 +5415,40 @@
             "required": false,
             "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "Optional identifier of the client's own unit of work, such as one chat message that takes several requests. Recorded on the usage event and on the stored conversation, so both can be grouped and joined with the app's own data. 1-128 characters from A-Z, a-z, 0-9, `.`, `_`, `:` and `-`; anything else answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-client-trace-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "off"
+              ],
+              "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "`off` keeps this request out of conversation storage even where the app stores conversations, for a user who has opted out. Any other value answers 400 invalid_request. Never forwarded to the provider.",
+            "name": "x-conversation-storage",
             "in": "header"
           }
         ],
@@ -5267,7 +5943,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5427,9 +6103,36 @@
                         "maxActiveKeysPerApp": {
                           "type": "integer",
                           "description": "Active API keys each of the account's applications may hold."
+                        },
+                        "includes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "conversationStorage",
+                              "humanSupport"
+                            ]
+                          },
+                          "description": "The features the plan includes. Absent means every feature; an empty list means none."
                         }
                       },
-                      "description": "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached."
+                      "description": "The plan's ceilings and included features, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings that includes every feature. A write that would exceed a ceiling is refused with billing_plan_limit_reached."
+                    },
+                    "features": {
+                      "type": "object",
+                      "properties": {
+                        "conversationStorage": {
+                          "type": "boolean"
+                        },
+                        "humanSupport": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "conversationStorage",
+                        "humanSupport"
+                      ],
+                      "description": "Whether the plan includes each gated feature, as the gateway enforces it."
                     },
                     "quota": {
                       "type": [
@@ -5505,6 +6208,7 @@
                   "required": [
                     "access",
                     "limits",
+                    "features",
                     "quota",
                     "actions",
                     "unclaimedAccessEndsAt"
@@ -6068,6 +6772,184 @@
         }
       }
     },
+    "/v1/admin/support": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "sendSupportMessage",
+        "summary": "Send a message to support",
+        "description": "Opens a support ticket for the person the credential belongs to: they get an email with its reference and their message, copied to the deployment's support inbox, and support answers them by replying to it. Send only what the person asked to send, and never a credential: a message or context value that looks like a key, token or password is refused. The same message sent again within ten minutes is not sent twice; the answer says so and repeats the reference.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "bug",
+                      "support",
+                      "feedback"
+                    ]
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 10000,
+                    "description": "What the person wants support to know, in their words. Never include a key, token or password."
+                  },
+                  "page": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "pattern": "^\\/(?![/\\\\])[^\\\\\\s]*$",
+                    "description": "A path on the console to return to once the address is verified, such as an approval page."
+                  },
+                  "context": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "description": "Facts that help support act without asking back, such as app_id, request_id, error_code or agw_version. Never a credential."
+                  },
+                  "client": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "What sent the message, such as `agw 0.10.3`, as the client reports it. A label only."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ticket was opened; support replies to the sender's email address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "sent"
+                      ]
+                    },
+                    "reference": {
+                      "type": "string",
+                      "description": "The request's reference, such as SUP-7F3K2Q, in the email's subject too. Quote it when following up."
+                    },
+                    "replyTo": {
+                      "type": "string",
+                      "description": "The address support will reply to: the sender's own."
+                    },
+                    "duplicate": {
+                      "type": "boolean",
+                      "description": "True when the same message was sent in the last ten minutes: nothing new was sent, and reference is the earlier one's."
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reference",
+                    "replyTo",
+                    "duplicate"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is malformed, or carries something that looks like a credential (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account's plan does not include human support (`support_plan_required`), or the credential has the read grant (`grant_insufficient`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This deployment does not offer human support (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The credential's owner has no email address to reply to (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many messages were sent by this person. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The help desk could not be reached; try again later (`email_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps/{app}": {
       "get": {
         "tags": [
@@ -6215,7 +7097,106 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The application changed since it was read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "patchApp",
+        "summary": "Change part of an application",
+        "description": "Applies `operations` in order to the application as `getApp` answers it under `app`, then saves the result exactly as `PUT` would save that whole document: the same validation, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Requires `revision`, as `PUT` does. An operation that cannot apply, such as a `replace` of a key that is not there, answers `400 invalid_request` naming its index.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Application state after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6443,7 +7424,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6534,7 +7515,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "The authenticated identity is not allowed to perform this operation, or the configuration turns conversations.store on and the account's plan does not include conversation history (`billing_feature_not_included`). An application that already stores conversations may keep the setting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9282,6 +10263,17 @@
           },
           {
             "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "description": "Only the requests the client sent with this X-Client-Trace-Id."
+            },
+            "required": false,
+            "description": "Only the requests the client sent with this X-Client-Trace-Id.",
+            "name": "trace",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "integer",
               "exclusiveMinimum": 0,
               "description": "Page backwards: only events older than this id."
@@ -9326,6 +10318,207 @@
                     "events"
                   ]
                 }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/conversations": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "listAppConversations",
+        "summary": "List stored conversation files",
+        "description": "The batches of stored conversations for an app with conversations.store on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one request and its response per line. Media the app keeps (conversations.keep) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>` and named in the records as `agw-media:<name>`.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of stored conversation files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationFileList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/conversations/file": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "getAppConversationFile",
+        "summary": "Download a stored conversation file",
+        "description": "One file named by the listing, or an image a record names: a batch answers as application/gzip, an image as its own type.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`."
+            },
+            "required": true,
+            "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`.",
+            "name": "name",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's bytes.",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -9680,6 +10873,7 @@
               "enum": [
                 "user",
                 "install",
+                "apple_account",
                 "app",
                 "account"
               ]
@@ -11531,7 +12725,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The priced model catalog this deployment enforces.",
+            "description": "The model price list this deployment enforces.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11559,6 +12753,24 @@
                             "input": {
                               "type": "number"
                             },
+                            "cached_input": {
+                              "type": "number"
+                            },
+                            "cached_input_audio": {
+                              "type": "number",
+                              "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                            },
+                            "cache_write": {
+                              "type": "number"
+                            },
+                            "cache_write_1h": {
+                              "type": "number",
+                              "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                            },
+                            "cache_write_12h": {
+                              "type": "number",
+                              "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                            },
                             "output": {
                               "type": "number"
                             },
@@ -11578,10 +12790,44 @@
                               "type": "number",
                               "description": "USD per 1M generated image tokens, where they cost more than text output."
                             },
-                            "cached_input": {
+                            "audio_output": {
+                              "type": "number",
+                              "description": "USD per 1M generated audio tokens, where they are priced apart from text output."
+                            },
+                            "long_input": {
                               "type": "number"
                             },
-                            "cache_write": {
+                            "long_cached_input": {
+                              "type": "number"
+                            },
+                            "long_cached_input_audio": {
+                              "type": "number"
+                            },
+                            "long_cache_write": {
+                              "type": "number"
+                            },
+                            "long_cache_write_1h": {
+                              "type": "number"
+                            },
+                            "long_cache_write_12h": {
+                              "type": "number"
+                            },
+                            "long_output": {
+                              "type": "number"
+                            },
+                            "long_image_input": {
+                              "type": "number"
+                            },
+                            "long_audio_input": {
+                              "type": "number"
+                            },
+                            "long_video_input": {
+                              "type": "number"
+                            },
+                            "long_image_output": {
+                              "type": "number"
+                            },
+                            "long_audio_output": {
                               "type": "number"
                             },
                             "per_minute": {
@@ -11597,21 +12843,333 @@
                             "long_context_threshold": {
                               "type": "number"
                             },
-                            "long_input": {
-                              "type": "number"
-                            },
-                            "long_output": {
-                              "type": "number"
-                            },
-                            "long_cached_input": {
-                              "type": "number"
-                            },
-                            "long_cache_write": {
-                              "type": "number"
-                            },
                             "retirement_date": {
                               "type": "string",
                               "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."
+                            },
+                            "unlisted_since": {
+                              "type": "string",
+                              "description": "The day (YYYY-MM-DD) the provider's official price page stopped listing or pricing this model. Its rates are the last ones that page gave; the model stays priced."
+                            },
+                            "price_changes": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "from": {
+                                    "type": "string",
+                                    "description": "The day (YYYY-MM-DD) the change takes effect, from 00:00 UTC."
+                                  },
+                                  "input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input_audio": {
+                                    "type": "number",
+                                    "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                                  },
+                                  "cache_write": {
+                                    "type": "number"
+                                  },
+                                  "cache_write_1h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "cache_write_12h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "output": {
+                                    "type": "number"
+                                  },
+                                  "image_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                  },
+                                  "audio_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                  },
+                                  "video_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                  },
+                                  "image_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                  },
+                                  "audio_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated audio tokens, where they are priced apart from text output."
+                                  },
+                                  "long_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input_audio": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_1h": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_12h": {
+                                    "type": "number"
+                                  },
+                                  "long_output": {
+                                    "type": "number"
+                                  },
+                                  "long_image_input": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_input": {
+                                    "type": "number"
+                                  },
+                                  "long_video_input": {
+                                    "type": "number"
+                                  },
+                                  "long_image_output": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_output": {
+                                    "type": "number"
+                                  },
+                                  "per_minute": {
+                                    "type": "number"
+                                  },
+                                  "per_hour": {
+                                    "type": "number"
+                                  },
+                                  "per_image": {
+                                    "type": "number"
+                                  },
+                                  "long_context_threshold": {
+                                    "type": "number"
+                                  },
+                                  "modes": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "properties": {
+                                        "factor": {
+                                          "type": "number",
+                                          "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                                        },
+                                        "input": {
+                                          "type": "number"
+                                        },
+                                        "cached_input": {
+                                          "type": "number"
+                                        },
+                                        "cached_input_audio": {
+                                          "type": "number",
+                                          "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                                        },
+                                        "cache_write": {
+                                          "type": "number"
+                                        },
+                                        "cache_write_1h": {
+                                          "type": "number",
+                                          "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                        },
+                                        "cache_write_12h": {
+                                          "type": "number",
+                                          "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                        },
+                                        "output": {
+                                          "type": "number"
+                                        },
+                                        "image_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                        },
+                                        "audio_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                        },
+                                        "video_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                        },
+                                        "image_output": {
+                                          "type": "number",
+                                          "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                        },
+                                        "audio_output": {
+                                          "type": "number",
+                                          "description": "USD per 1M generated audio tokens, where they are priced apart from text output."
+                                        },
+                                        "long_input": {
+                                          "type": "number"
+                                        },
+                                        "long_cached_input": {
+                                          "type": "number"
+                                        },
+                                        "long_cached_input_audio": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write_1h": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write_12h": {
+                                          "type": "number"
+                                        },
+                                        "long_output": {
+                                          "type": "number"
+                                        },
+                                        "long_image_input": {
+                                          "type": "number"
+                                        },
+                                        "long_audio_input": {
+                                          "type": "number"
+                                        },
+                                        "long_video_input": {
+                                          "type": "number"
+                                        },
+                                        "long_image_output": {
+                                          "type": "number"
+                                        },
+                                        "long_audio_output": {
+                                          "type": "number"
+                                        },
+                                        "per_minute": {
+                                          "type": "number"
+                                        },
+                                        "per_hour": {
+                                          "type": "number"
+                                        },
+                                        "per_image": {
+                                          "type": "number"
+                                        },
+                                        "unlisted_since": {
+                                          "type": "string",
+                                          "description": "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly."
+                                        }
+                                      }
+                                    },
+                                    "description": "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's."
+                                  }
+                                },
+                                "required": [
+                                  "from"
+                                ]
+                              },
+                              "description": "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today."
+                            },
+                            "modes": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                  "factor": {
+                                    "type": "number",
+                                    "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                                  },
+                                  "input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input_audio": {
+                                    "type": "number",
+                                    "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                                  },
+                                  "cache_write": {
+                                    "type": "number"
+                                  },
+                                  "cache_write_1h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "cache_write_12h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "output": {
+                                    "type": "number"
+                                  },
+                                  "image_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                  },
+                                  "audio_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                  },
+                                  "video_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                  },
+                                  "image_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                  },
+                                  "audio_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated audio tokens, where they are priced apart from text output."
+                                  },
+                                  "long_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input_audio": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_1h": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_12h": {
+                                    "type": "number"
+                                  },
+                                  "long_output": {
+                                    "type": "number"
+                                  },
+                                  "long_image_input": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_input": {
+                                    "type": "number"
+                                  },
+                                  "long_video_input": {
+                                    "type": "number"
+                                  },
+                                  "long_image_output": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_output": {
+                                    "type": "number"
+                                  },
+                                  "per_minute": {
+                                    "type": "number"
+                                  },
+                                  "per_hour": {
+                                    "type": "number"
+                                  },
+                                  "per_image": {
+                                    "type": "number"
+                                  },
+                                  "unlisted_since": {
+                                    "type": "string",
+                                    "description": "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly."
+                                  }
+                                }
+                              },
+                              "description": "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's."
                             }
                           },
                           "required": [
@@ -11874,6 +13432,27 @@
                     "serverVersion": {
                       "type": "string"
                     },
+                    "prices": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "updated"
+                      ]
+                    },
                     "deployment": {
                       "type": "object",
                       "properties": {
@@ -11984,6 +13563,284 @@
                     "providers",
                     "providerGateways"
                   ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/tools": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "listCliTools",
+        "summary": "List the tools the CLI builds its commands from",
+        "description": "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI caches this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+        "responses": {
+          "200": {
+            "description": "The tools and the revision that identifies this list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string"
+                    },
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": {}
+                          },
+                          "annotations": {
+                            "type": "object",
+                            "properties": {
+                              "readOnlyHint": {
+                                "type": "boolean"
+                              },
+                              "destructiveHint": {
+                                "type": "boolean"
+                              },
+                              "idempotentHint": {
+                                "type": "boolean"
+                              },
+                              "openWorldHint": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "readOnlyHint",
+                              "idempotentHint",
+                              "openWorldHint"
+                            ]
+                          },
+                          "cli": {
+                            "type": "object",
+                            "properties": {
+                              "command": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "summary": {
+                                "type": "string"
+                              },
+                              "args": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "confirm": {
+                                "type": "string"
+                              },
+                              "shortcuts": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "requires": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "view": {
+                                "type": "object",
+                                "properties": {
+                                  "rows": {
+                                    "type": "string"
+                                  },
+                                  "record": {
+                                    "type": "string"
+                                  },
+                                  "columns": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "notes": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "document": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            },
+                            "required": [
+                              "command"
+                            ]
+                          },
+                          "guard": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "title",
+                          "description",
+                          "inputSchema",
+                          "annotations",
+                          "cli"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "tools"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/tools/{tool}": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "callCliTool",
+        "summary": "Run one tool, as the CLI does",
+        "description": "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as a `tools/call`: a read needs any management key, and a change needs what that change needs over the API. A refusal is answered as an HTTP error with the gateway's error code, rather than as a tool result. Every answer, a refusal included, carries the catalog's revision in `Agw-Tools-Revision`; a CLI holding another refreshes its list.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The tool's name, as listCliTools returns it.",
+              "example": "list_apps"
+            },
+            "required": true,
+            "description": "The tool's name, as listCliTools returns it.",
+            "name": "tool",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared."
+            },
+            "required": false,
+            "description": "The tool's `guard` from the list the caller holds. When it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs. Omitted, nothing is compared.",
+            "name": "agw-tool-guard",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tool's structured result and its one-line summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tool": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "result": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "tool",
+                    "summary",
+                    "result"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`tool_not_found`: this deployment has no tool of that name; fetch the list again. Any other code: what the tool names does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran, so fetch the list and decide again. Otherwise the change conflicts with the current state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }

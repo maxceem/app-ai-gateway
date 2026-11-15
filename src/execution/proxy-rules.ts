@@ -15,10 +15,13 @@ import {
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
-import { isBillable } from "../usage/pricing";
+import { isBillable, requestedServiceMode } from "../usage/pricing";
+import { STANDARD_MODE, type ServiceMode, type ServiceModeValue } from "../shared/service-modes";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
 import {
   defaultInferencePaths,
+  isPassthroughPath,
+  passthroughMethods,
   providerPolicyFor,
   DEFAULT_END_USER_HEADER,
   type ProviderPolicy,
@@ -32,14 +35,25 @@ export interface PreparedProxyRequest {
   /**
    * The canonical model: what was priced, what the allowlist judged, and what
    * the usage event records. The route may put a different string on the wire.
+   * Empty on a passthrough path, where the gateway reads no model at all.
    */
   model: string;
+  /**
+   * True for a passthrough path (`isPassthroughPath`): forwarded as the client
+   * sent it, with no model judged and nothing priced unless the provider itself
+   * reports a cost.
+   */
+  passthrough: boolean;
   /**
    * The API this request speaks, classified from the path here and carried
    * through to the attempt: the response reader is chosen by it, so the answer
    * is never sniffed for a shape the request already named.
    */
   apiStyle: ApiStyle;
+  /** The service mode the body asks for; see `ExecutionAttempt.serviceMode`. */
+  serviceMode: ServiceMode;
+  /** A value of it the gateway does not know; see `ExecutionAttempt.serviceModeUnknown`. */
+  serviceModeUnknown?: ServiceModeValue;
   body: BodyInit | null;
   headers: Headers;
   query: string;
@@ -339,9 +353,10 @@ export function clientResponseHeaders(upstream: Response): Headers {
  * The one model decision, for both shapes of proxied request.
  *
  * Which model a request is for, whether the app may ask for it, what the
- * organization rewrote it to, whether that can be billed, and what the route
- * puts on the wire — in that order, because each step judges the answer the one
- * before it settled. One function for both shapes, so the multipart path and
+ * organization rewrote it to, whether that can be billed, which service mode
+ * the body asks for, and what the route puts on the
+ * wire — in that order, because each step judges the answer the one before it
+ * settled. One function for both shapes, so the multipart path and
  * the JSON path cannot drift into two policies.
  */
 function resolveModel(input: {
@@ -353,7 +368,15 @@ function resolveModel(input: {
   resolved: ResolvedProvider;
   /** The API the request speaks, which decides whether a cost report covers it. */
   style: ApiStyle;
-}): { requestedModel: string; actualModel: string; wireModel: string } {
+  /** One body field, for the service mode; see {@link requestedServiceMode}. */
+  read: (name: string) => unknown;
+}): {
+  requestedModel: string;
+  actualModel: string;
+  wireModel: string;
+  serviceMode: ServiceMode;
+  serviceModeUnknown?: ServiceModeValue;
+} {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
     ?? input.bodyModel
@@ -368,12 +391,20 @@ function resolveModel(input: {
   if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
+  const { mode, unknown } = requestedServiceMode({
+    type: provider,
+    route: input.resolved.route.kind,
+    baseUrl: input.resolved.baseUrl,
+    read: input.read,
+  });
   // Everything above judged the canonical model; only the outbound request
   // speaks the route's own namespace, and only where the adapter declares one.
   return {
     requestedModel,
     actualModel,
     wireModel: routeWireModel(input.resolved.route, provider, actualModel),
+    serviceMode: mode,
+    ...(unknown && { serviceModeUnknown: unknown }),
   };
 }
 
@@ -446,15 +477,52 @@ export async function prepareProxyRequest(input: {
   const bytes = await input.body();
   const contentType = input.request.headers.get("content-type") ?? "";
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
-  const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({
+  const prepared = (
+    body: BodyInit,
+    providerPath: string,
+    model: string,
+    serviceMode: ServiceMode,
+    serviceModeUnknown: ServiceModeValue | undefined,
+  ): PreparedProxyRequest => ({
     provider,
     providerPath,
     model,
+    passthrough: false,
     apiStyle,
+    serviceMode,
+    ...(serviceModeUnknown && { serviceModeUnknown }),
     body,
     headers,
     query: sanitizedQuery(input.request),
   });
+
+  if (isPassthroughPath(provider, input.providerPath)) {
+    // Only a listed path reaches here: the defaults name recognised APIs and
+    // inference operations alone. The entry's own settings for model calls —
+    // `fixed_model`, `clamp` — are not read, because there is no model call to
+    // apply them to; a stored entry keeps them and keeps working.
+    if (!(passthroughMethods(match.entry) as readonly string[]).includes(input.request.method)) {
+      throw new GatewayError(
+        403,
+        "path_not_allowed",
+        `Provider path is not allowed for ${input.request.method}`,
+      );
+    }
+    // The bytes the client sent, which App Attest has already verified: no
+    // model, price, rewrite or output cap applies to an API the gateway does
+    // not read. A GET carries no body upstream.
+    return {
+      provider,
+      providerPath: input.providerPath,
+      model: "",
+      passthrough: true,
+      apiStyle,
+      serviceMode: STANDARD_MODE,
+      body: input.request.method === "GET" ? null : bytes,
+      headers,
+      query: sanitizedQuery(input.request),
+    };
+  }
 
   // The body's format is the client's, whatever the path: a classified
   // transcription is multipart, but so are provider-native uploads under
@@ -475,6 +543,9 @@ export async function prepareProxyRequest(input: {
       rewrites: input.app.config.routing.model_rewrites,
       resolved,
       style: apiStyle,
+      // An upload left unparsed is a provider-native one whose path names the
+      // model; none of those takes a service tier.
+      read: (name) => parsed?.get(name),
     });
     const placement = modelPlacement(match, model);
     // A transcription is only forwarded in a format whose answer can be priced.
@@ -488,10 +559,10 @@ export async function prepareProxyRequest(input: {
       if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
       if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
-      return prepared(parsed, input.providerPath, model.actualModel);
+      return prepared(parsed, input.providerPath, model.actualModel, model.serviceMode, model.serviceModeUnknown);
     }
     const path = placement && "path" in placement ? placement.path : input.providerPath;
-    return prepared(bytes, path, model.actualModel);
+    return prepared(bytes, path, model.actualModel, model.serviceMode, model.serviceModeUnknown);
   }
 
   if (apiStyle === "audio_transcription" && judgesTranscriptionFormat(provider)) {
@@ -512,6 +583,7 @@ export async function prepareProxyRequest(input: {
     rewrites: input.app.config.routing.model_rewrites,
     resolved,
     style: apiStyle,
+    read: (name) => parsed[name],
   });
   const placement = modelPlacement(match, model);
   let bodyChanged = false;
@@ -531,6 +603,8 @@ export async function prepareProxyRequest(input: {
     bodyChanged ? JSON.stringify(parsed) : text,
     placement && "path" in placement ? placement.path : input.providerPath,
     model.actualModel,
+    model.serviceMode,
+    model.serviceModeUnknown,
   );
 }
 

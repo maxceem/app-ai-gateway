@@ -6,6 +6,7 @@ import App from "./App";
 import { CAPABILITIES_URL, capabilities, renderPublic, stubApi, testSession } from "@/test/render";
 
 const SESSION_URL = "/v1/admin/session";
+const GET_SESSION_URL = "/v1/auth/get-session";
 const PLANS_URL = "/v1/admin/billing/plans";
 const STATUS_URL = "/v1/admin/billing/status";
 const CHECKOUT_URL = "/v1/admin/billing/checkout";
@@ -123,6 +124,36 @@ describe("console bootstrap", () => {
     await waitFor(() => expect(router.location.pathname).toBe("/login"));
     expect(router.location.search).toBe("?from=%2Fapps%2Fmy-app%2Fusage");
     expect(await screen.findByRole("button", { name: /sign in/i })).toBeTruthy();
+  });
+
+  it("asks Better Auth first, and makes no management call for a browser it says is signed out", async () => {
+    const fetchMock = stubApi({
+      [CAPABILITIES_URL]: capabilities(),
+      [GET_SESSION_URL]: { body: null },
+      [SESSION_URL]: { status: 401, body: { error: { code: "auth_required" } } },
+    });
+
+    const { router } = renderPublic(<App />, { route: "/apps" });
+
+    await waitFor(() => expect(router.location.pathname).toBe("/login"));
+    expect(await screen.findByRole("button", { name: /sign in/i })).toBeTruthy();
+    // The management API would only have refused it, and every refusal is recorded.
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith(SESSION_URL))).toHaveLength(0);
+  });
+
+  it("still loads the console for a browser Better Auth says is signed in", async () => {
+    const fetchMock = stubApi({
+      [CAPABILITIES_URL]: capabilities(),
+      [GET_SESSION_URL]: { body: { session: { id: "session" }, user: { id: "user" } } },
+      [SESSION_URL]: { body: { session: testSession() } },
+      "/v1/admin/apps": { body: { apps: [], totals: null } },
+    });
+
+    const { router } = renderPublic(<App />, { route: "/apps" });
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith(SESSION_URL))).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(router.location.pathname).toBe("/apps");
   });
 
   it("settles on the sign-in screen rather than looping between routes", async () => {

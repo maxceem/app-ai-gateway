@@ -31,6 +31,9 @@ export default defineConfig({
             SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             TEST_MIGRATIONS: migrations,
           },
+          // Conversation storage's bucket is optional and absent from
+          // wrangler.jsonc, so the tests bind one of their own.
+          r2Buckets: ["CONVERSATIONS"],
         },
       };
     }),
@@ -43,7 +46,12 @@ export default defineConfig({
     // here without oversubscribing a smaller machine. Re-checked once the barrels
     // reduced the suite to nine files: nine workers measured the same as six.
     maxWorkers: testWorkers,
-    setupFiles: ["./test/apply-migrations.ts"],
+    // The frozen price list first, so it is in place before the next setup
+    // file's imports load the catalog; see test/frozen-prices.ts.
+    setupFiles: ["./test/frozen-prices.ts", "./test/apply-migrations.ts"],
+    // Records each run's results when a ledger directory is chosen, and does
+    // nothing otherwise; see scripts/test-ledger/README.md.
+    reporters: ["default", ["./scripts/test-ledger/reporter.mjs", { suite: "worker" }]],
     // The console is a browser app with its own jsdom Vitest project, run by
     // `pnpm run console:test`. Without this it is swept up by the default glob
     // and executed inside the Workers runtime, where there is no DOM.

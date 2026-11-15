@@ -106,6 +106,15 @@ when the destination is a terminal, and `NO_COLOR` turns it off. Add
 { "schemaVersion": 1, "ok": false, "error": { "code": "...", "message": "...", "nextAction": "...", "details": { } } }
 ```
 
+Either document may also carry `notices`: things to know that are not the
+answer, each with a `code`, a `message` and the `paths` it applies to. The
+CLI prints them to stderr without `--json`. `newer_deployment` means the
+gateway is newer than this `agw` and has settings it does not understand: they
+are shown and kept unchanged when it saves, but not checked. Update `agw` to
+manage them. `version_mismatch` follows a failure the gateway answered when
+the CLI and the gateway API are different releases, and says which one to
+update.
+
 Every error names a `code` and a `nextAction`. Follow the `nextAction`.
 
 | Exit | Meaning |
@@ -135,13 +144,24 @@ agw operation wait <operation-id> --timeout 300 --json      # resumes when done
 Share the URL with the person who holds the credential. Nothing typed on that
 page reaches the CLI or its output.
 
-**Editing apps.** Read before you write. `app show --json` returns the full
-config; save `{name, config, status}` from `result.app`, edit it, and pass it
-back with `app update <id> --file`. The command reads a revision when it
-starts and rejects competing writes during that command; refresh and merge
-an older export first. `app validate --file` checks a new app document;
-`app update <id> --file app.json --dry-run` validates an existing app's update.
-Finish with `app check <id>` and `app snippet <id>`, which send no inference.
+**Editing apps.** Read before you write. `app update <id>` changes only what
+its flags name — `--name`, `--status`, `--team-id`, `--bundle-id`,
+`--attest-environments`, `--verify-on`, `--providers`, `--all-providers` —
+and leaves everything else as it is. For any other setting, pass
+`--operations @patch.json`, a list of `add`, `replace` or `remove` operations
+at paths such as `/config/limits/per_app/requests/per_minute`, with the
+`--revision` from `app show`. `app replace <id> --config @app.json` replaces the
+whole document, with `name`, `config`, `status` and `revision` from
+`app show --json`'s `result.app`. `app validate [id] --config @app.json` checks
+a document without saving it. Finish with `app check <id>` and
+`app snippet <id>`, which send no inference.
+
+**Commands from your gateway.** Apart from signing in, deploying, adding
+providers, apps and keys, and browser steps, `agw`'s commands come from the
+gateway it is connected to. It keeps their list for a day and reads it again as
+soon as the gateway changes, so a newer gateway's commands work without
+updating `agw`. `agw --help` lists them; a structured value is JSON, inline or
+as `@file`, and `--input` takes every argument as one JSON object.
 
 **State.** Connection, credentials and pending operations live in
 `~/.local/state/agw` (`$XDG_STATE_HOME/agw`, or `%LOCALAPPDATA%/agw` on

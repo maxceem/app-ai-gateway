@@ -1,3 +1,7 @@
+import type { CredentialRefusalReason } from "../auth/credential-refusal";
+import type { IssuerRejectionReason } from "../client-auth/issuer";
+import type { PlatformFailureReason } from "./platform-errors";
+
 export type ErrorCode =
   | "auth_required"
   | "forbidden"
@@ -42,6 +46,19 @@ export type ErrorCode =
   | "rate_limited"
   | "conflict"
   | "not_found"
+  /**
+   * `POST /v1/cli/tools/{tool}` names a tool this deployment does not have:
+   * apart from `not_found`, which a tool answers for what it was asked about,
+   * so a CLI can tell its own list is out of date.
+   */
+  | "tool_not_found"
+  /**
+   * A CLI ran a tool by a description in which it was safer than it is now:
+   * it has become destructive, or needs a feature of the CLI it did not. The
+   * call is refused before anything runs; the CLI fetches the list again and
+   * decides anew.
+   */
+  | "tool_changed"
   | "not_a_member"
   | "last_owner"
   /**
@@ -61,6 +78,19 @@ export type ErrorCode =
    */
   | "email_unverified"
   | "billing_payment_required"
+  /**
+   * Human support is offered by this deployment, but not on the account's
+   * plan. Its own code rather than `forbidden`, which is about the caller's
+   * role: no role changes this, and an agent has to tell the person why.
+   */
+  | "support_plan_required"
+  /**
+   * The account's plan does not include the feature this call uses; the
+   * message names it. No role changes this and retrying never helps: an
+   * account owner has to choose a plan that includes it. Human support keeps
+   * its own `support_plan_required`.
+   */
+  | "billing_feature_not_included"
   | "billing_unavailable"
   | "billing_not_found"
   | "billing_action_forbidden"
@@ -178,6 +208,13 @@ export type ErrorCode =
    * Worth trying again later; the person managing the deployment fixes it.
    */
   | "email_unavailable"
+  /**
+   * The platform the gateway runs on failed underneath it — its database or
+   * one of its Durable Objects was unreachable or overloaded — or the request
+   * ran past its deadline waiting on one. Nothing about the request is known
+   * to be wrong: retry after `Retry-After`.
+   */
+  | "service_unavailable"
   | "internal_error";
 
 /**
@@ -189,6 +226,12 @@ export type ErrorCode =
 export type GatewayErrorData = Record<string, string | number | boolean>;
 
 /**
+ * The granular causes a refusal may carry: a closed set, so a `reason` is
+ * always a constant this codebase spells, and logging one copies no text.
+ */
+export type GatewayErrorReason = IssuerRejectionReason | PlatformFailureReason | CredentialRefusalReason;
+
+/**
  * What a rejection knows about itself beyond the wire contract. `reason` and
  * `userId` are never serialized: they are for the operator's logs and the auth
  * event log. `data` is, and is part of the public contract.
@@ -196,10 +239,11 @@ export type GatewayErrorData = Record<string, string | number | boolean>;
 export interface GatewayErrorDetails {
   /**
    * The granular cause behind a behaviour-class code — `claims_missing`,
-   * `bad_signature`, `jwks_unreachable`, and so on. Deliberately a free string:
-   * the vocabulary grows without any client having to learn a new code.
+   * `bad_signature`, `jwks_unreachable`, and so on. Never sent to a client, so
+   * the vocabulary grows without any client having to learn a new code; a
+   * closed set all the same, so a log line names one without copying text.
    */
-  reason?: string;
+  reason?: GatewayErrorReason;
   /**
    * The end-user identity the verification had already established when it
    * failed. Only set where the signature was checked first, so it is a verified
@@ -208,12 +252,33 @@ export interface GatewayErrorDetails {
   userId?: string;
   /** Serialized into the response body as `error.data`. */
   data?: GatewayErrorData;
+  /**
+   * The request field a validation refusal is about, for management analytics.
+   * Never serialized: the message already names it for the client.
+   */
+  field?: RequestFieldIssue;
+  /**
+   * The failure this refusal stands for, which the error log describes. Never
+   * serialized.
+   */
+  cause?: unknown;
+}
+
+/**
+ * Which field a schema refused, in constants only: the field's top-level name,
+ * which is the schema's own — null where it is not, such as an unknown key the
+ * caller sent — and the schema's issue code. Never the value.
+ */
+export interface RequestFieldIssue {
+  name: string | null;
+  issue: string;
 }
 
 export class GatewayError extends Error {
-  readonly reason?: string;
+  readonly reason?: GatewayErrorReason;
   readonly userId?: string;
   readonly data?: GatewayErrorData;
+  readonly field?: RequestFieldIssue;
 
   constructor(
     readonly status: number,
@@ -222,11 +287,12 @@ export class GatewayError extends Error {
     readonly headers?: HeadersInit,
     details: GatewayErrorDetails = {},
   ) {
-    super(message);
+    super(message, details.cause === undefined ? undefined : { cause: details.cause });
     this.name = "GatewayError";
     this.reason = details.reason;
     this.userId = details.userId;
     this.data = details.data;
+    this.field = details.field;
   }
 }
 

@@ -87,6 +87,8 @@ const heldRuntime = new Proxy(runtime, {
 
 /** Bound parameters that make the database fail, quoting them, as drizzle's errors do. */
 const FAILING_MARKER = "fault-marker-";
+/** Bound parameters that make the database lose its connection, as D1 reports it. */
+const LOST_MARKER = "lost-marker-";
 
 function failingStatement(statement: D1PreparedStatement, query: string, values: unknown[] = []): D1PreparedStatement {
   return new Proxy(statement, {
@@ -99,6 +101,9 @@ function failingStatement(statement: D1PreparedStatement, query: string, values:
         return async (...args: unknown[]) => {
           if (values.some((value) => String(value).includes(FAILING_MARKER))) {
             throw new Error(`Failed query: ${query}\nparams: ${values.join(",")}`);
+          }
+          if (values.some((value) => String(value).includes(LOST_MARKER))) {
+            throw new Error("D1_ERROR: Network connection lost.");
           }
           return method.apply(target, args);
         };
@@ -808,9 +813,16 @@ describe("MCP browser steps", () => {
     expectRefusal(result!, "internal_error");
     expect(JSON.stringify(result)).not.toContain(marker);
     const logged = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(logged).toContainEqual(expect.objectContaining({ message: "unhandled_error", tool: "get_app", error: "Error" }));
+    expect(logged).toContainEqual(expect.objectContaining({ message: "unhandled_error", tool: "get_app", error: expect.objectContaining({ class: "DrizzleQueryError", cause: expect.objectContaining({ class: "Error" }) }) }));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) expect(line.includes(marker)).toBe(false);
+  });
+
+  it("refuses a platform failure as service_unavailable, telling the caller to retry", async () => {
+    const result = await callTool(TEST_MANAGEMENT_KEY, "get_app", { app: `${LOST_MARKER}${crypto.randomUUID()}` }, failingRuntime);
+    expectRefusal(result, "service_unavailable");
+    expect(result.structuredContent).toMatchObject({ status: 503 });
+    expect(String(result.structuredContent.next)).toContain("call the tool again");
   });
 
   it("judges a URL anywhere in a browser step as it will be stored: trimmed, and refused only for what leaks", async () => {
@@ -991,6 +1003,53 @@ describe("MCP direct changes", () => {
       await callTool(owner.read, "update_app", { app: owner.app, config: { ...document, revision: revision + 1 } }),
       "grant_insufficient",
     );
+  });
+
+  it("patches only the settings named, against the revision it was read at", async () => {
+    const owner = await withApp("mcp-patch-app@example.test");
+    const read = await callTool(owner.key, "get_app", { app: owner.app });
+    const { revision, config } = read.structuredContent.app;
+    const operations = [
+      { op: "replace", path: "/name", value: "Patched" },
+      { op: "replace", path: "/config/limits/per_app/requests/per_day", value: 5000 },
+    ];
+    const patched = await callTool(owner.key, "patch_app", { app: owner.app, revision, operations });
+    expect(patched.isError, patched.content[0]?.text).toBeFalsy();
+    expect(patched.structuredContent.app).toMatchObject({ name: "Patched", revision: revision + 1 });
+    const expected = structuredClone(config);
+    expected.limits.per_app.requests.per_day = 5000;
+    expect(patched.structuredContent.app.config).toEqual(expected);
+
+    const stale = await callTool(owner.key, "patch_app", { app: owner.app, revision, operations });
+    expectRefusal(stale, "app_revision_conflict");
+    expect(stale.structuredContent.next).toContain("get_app");
+    const missing = await callTool(owner.key, "patch_app", {
+      app: owner.app,
+      revision: revision + 1,
+      operations: [{ op: "replace", path: "/config/nothing", value: 1 }],
+    });
+    expectRefusal(missing, "invalid_request");
+    expect(missing.structuredContent.message).toMatch(/^operations\[0\]/u);
+    expectRefusal(
+      await callTool(owner.read, "patch_app", { app: owner.app, revision: revision + 1, operations }),
+      "grant_insufficient",
+    );
+  });
+
+  it("refuses a patch that writes a credential, under the name the path gives it", async () => {
+    const owner = await withApp("mcp-patch-credential@example.test");
+    const leaked = "sk-proj-SENTINELPATCHVALUE000000";
+    for (const operation of [
+      { op: "add", path: "/config/endpoints/chat/params/api_key", value: leaked },
+      { op: "add", path: "/config/endpoints/chat/params", value: { credentials: { token: leaked } } },
+    ]) {
+      const refused = await callTool(owner.key, "patch_app", { app: owner.app, revision: 1, operations: [operation] });
+      expectRefusal(refused, "invalid_request");
+      expect(refused.structuredContent.message).toMatch(/never a tool argument/u);
+      expect(JSON.stringify(refused)).not.toContain(leaked);
+    }
+    const row = await env.DB.prepare("SELECT revision FROM app WHERE id = ?").bind(owner.app).first<{ revision: number }>();
+    expect(row!.revision).toBe(1);
   });
 
   it("removes an app only with confirm equal to its id", async () => {
@@ -1255,6 +1314,8 @@ describe("MCP every change tool", () => {
       args: () => Record<string, unknown>;
       /** The key the step runs with; the account's own unless the step needs another. */
       keys?: () => { manage: string; read: string };
+      /** The deployment the step runs on; this file's own unless the step needs another. */
+      through?: Env;
       after?: (result: ToolResult) => Promise<void> | void;
     }
     const opened = (result: ToolResult) => {
@@ -1357,6 +1418,17 @@ describe("MCP every change tool", () => {
         },
       },
       {
+        tool: "patch_app",
+        args: () => ({
+          app: state.app.id,
+          revision: state.app.revision,
+          operations: [{ op: "replace", path: "/name", value: "Every app, patched" }],
+        }),
+        after: (result) => {
+          state.app = result.structuredContent.app;
+        },
+      },
+      {
         tool: "add_app_key",
         args: () => ({ app: state.app.id, name: "Every key" }),
         after: (result) => {
@@ -1405,14 +1477,45 @@ describe("MCP every change tool", () => {
       },
     ];
 
+    // Offered only by a deployment with billing, a help desk and an inbox, to
+    // an account on a paid plan; `test/support.test.ts` covers the refusals.
+    const supported = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key === "BILLING") {
+          return {
+            getTenantAccess: async () => ({
+              plan: { planKey: "pro", planName: "Pro", isDefault: false },
+              subscription: null,
+            }),
+          };
+        }
+        if (key === "HELPDESK") {
+          return {
+            createTicket: async () => ({ ok: true, reference: "SUP-7F3K2Q", duplicate: false, delivered: true, replyTo: "x@example.test" }),
+          };
+        }
+        if (key === "SUPPORT_EMAIL") return "support@example.test";
+        return Reflect.get(target, key, receiver);
+      },
+    }) as Env;
+    steps.push({
+      tool: "contact_support",
+      args: () => ({ kind: "feedback", message: `Every change tool ran (${crypto.randomUUID()}).` }),
+      through: supported,
+      after: (result) => {
+        expect(result.structuredContent).toMatchObject({ status: "sent", duplicate: false });
+        expect(result.structuredContent.reference).toMatch(/^SUP-[2-9A-Z]{6}$/u);
+      },
+    });
+
     const changeTools = MCP_TOOLS.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name);
     expect([...new Set(steps.map((step) => step.tool))].sort()).toEqual([...changeTools].sort());
 
     for (const step of steps) {
       const keys = step.keys?.() ?? { manage: owner.key, read: owner.read };
       const args = step.args();
-      expectRefusal(await callTool(keys.read, step.tool, args), "grant_insufficient");
-      const result = await callTool(keys.manage, step.tool, args);
+      expectRefusal(await callTool(keys.read, step.tool, args, step.through), "grant_insufficient");
+      const result = await callTool(keys.manage, step.tool, args, step.through);
       expect(result.isError, `${step.tool}: ${result.content[0]?.text}`).toBeFalsy();
       await step.after?.(result);
     }

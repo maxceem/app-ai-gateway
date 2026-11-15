@@ -57,15 +57,20 @@ async function issuerToken(
     .sign(fixture.privateKey);
 }
 
-async function exchangeToken(appId: string, body: Record<string, unknown>): Promise<Response> {
+async function exchangeToken(
+  appId: string,
+  body: Record<string, unknown>,
+  bindings: Env = env,
+  ctx: ExecutionContext = createExecutionContext(),
+): Promise<Response> {
   return app.fetch(
     new Request(`https://example.test/v1/apps/${appId}/auth/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
-    env,
-    createExecutionContext(),
+    bindings,
+    ctx,
   );
 }
 
@@ -869,6 +874,55 @@ describe("application authentication throttling", () => {
     expect(rows!.n).toBe(0);
   });
 
+  it("counts an endpoint spelled with percent-encoding the same as its plain spelling", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-encoded-path";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+
+    // The router decodes `%74oken` to `token`, so it reaches the token
+    // handler, and the limit counted on the route's own pattern refuses it.
+    expect((await appAuthRequest(appId, "%74oken", address)).status).toBe(429);
+  });
+
+  it("counts a flood at an invented app before the billing gate reads anything", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-invented-app-billed";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+
+    // A billing binding puts the account gate, which loads the app, in front of
+    // the routes. The limit is counted ahead of it, so a refused request never
+    // reaches D1 to find the app does not exist.
+    let prepares = 0;
+    const countedDatabase = {
+      prepare(query: string) {
+        prepares += 1;
+        return env.DB.prepare(query);
+      },
+      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+      exec: (query: string) => env.DB.exec(query),
+    } as unknown as D1Database;
+    const ctx = createExecutionContext();
+    const response = await app.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/auth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": address },
+        body: "{}",
+      }),
+      { ...env, DB: countedDatabase, BILLING: {} as Env["BILLING"] },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(429);
+    expect(prepares).toBe(0);
+  });
+
   it("does no D1 work after refusing a throttled request for an existing app", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(RATE_WINDOW_ANCHOR);
@@ -918,10 +972,18 @@ describe("App Attest token exchange and installs", () => {
     return value;
   }
 
-  async function assertionFor(install: TestInstall, value: string, counter: number): Promise<string> {
+  async function assertionFor(
+    install: TestInstall,
+    value: string,
+    counter: number,
+    appTransaction?: string,
+  ): Promise<string> {
+    const appTransactionHash = appTransaction === undefined
+      ? undefined
+      : Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(appTransaction))).toString("base64url");
     const clientDataHash = new Uint8Array(await crypto.subtle.digest(
       "SHA-256",
-      Uint8Array.from(assertionClientData(install.appId, value, install.keyId)),
+      Uint8Array.from(assertionClientData(install.appId, value, install.keyId, appTransactionHash)),
     ));
     return (await testAssertion({
       privateKey: install.privateKey,
@@ -934,6 +996,35 @@ describe("App Attest token exchange and installs", () => {
   function claims(token: string): Record<string, unknown> {
     return JSON.parse(atob(token.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/")));
   }
+
+  /**
+   * When the install and its user were last seen is bookkeeping for the
+   * console. By the time it is written the challenge is spent and the counter
+   * advanced, so failing the exchange over it would only make the app start
+   * again.
+   */
+  it("mints the token even when recording the last-seen time fails", async () => {
+    const appId = "exchange-last-seen-fails";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "install-key-1", { keyId: "install-key-1" });
+    const value = await challenge(appId);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failingBatch = new Proxy(env.DB, {
+      get: (target, property, receiver) => property === "batch"
+        ? () => Promise.reject(new Error("D1 batch failed"))
+        : Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver),
+    });
+    const ctx = createExecutionContext();
+    const response = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: value,
+      assertion: await assertionFor(install, value, 1),
+    }, { ...env, DB: failingBatch }, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(errors.mock.calls.flat().join("\n")).toContain("auth_last_seen");
+  });
 
   it("names the install in the token it mints", async () => {
     const appId = "exchange-install-claim";
@@ -951,6 +1042,88 @@ describe("App Attest token exchange and installs", () => {
     expect(claims(access_token)).toMatchObject({ sub: "install-key-1", install: "install-key-1", auth_method: "attest" });
     await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
       .resolves.toMatchObject({ installId: "install-key-1", userId: "install-key-1" });
+  });
+
+  it("says on every challenge that it accepts an App Store transaction", async () => {
+    // A client sends one only when told: an older gateway would ignore the
+    // field and then refuse the assertion signed over it.
+    const appId = "exchange-challenge-flag";
+    await seedApp(appId, { endUser: "app_install" });
+    const response = await app.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/auth/challenge`, { method: "POST" }),
+      env,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ expires_in: 300, accepts_app_transaction: true });
+  });
+
+  it("takes an App Store transaction only under the install's signature", async () => {
+    const appId = "exchange-app-transaction";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "at-key", { keyId: "at-key" });
+    // Not one Apple signed, so it names no account, but the exchange that
+    // carries it, signed over it, still succeeds.
+    const jws = "eyJhbGciOiJFUzI1NiJ9.eyJidW5kbGVJZCI6IngifQ.c2lnbmF0dXJl";
+    const signed = await challenge(appId);
+    const response = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: signed,
+      assertion: await assertionFor(install, signed, 1, jws),
+      app_transaction: jws,
+    });
+    expect(response.status).toBe(200);
+    const { access_token } = await response.json<{ access_token: string }>();
+    expect(claims(access_token)).not.toHaveProperty("apple_account");
+    await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
+      .resolves.toMatchObject({ installId: "at-key", appleAccountId: null });
+
+    // Added after signing, or swapped for another, it breaks the assertion.
+    const unsigned = await challenge(appId);
+    const added = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: unsigned,
+      assertion: await assertionFor(install, unsigned, 2),
+      app_transaction: jws,
+    });
+    expect(added.status).toBe(403);
+    await expect(added.json()).resolves.toMatchObject({ error: { code: "attest_failed" } });
+    const swapped = await challenge(appId);
+    const replaced = await exchangeToken(appId, {
+      key_id: install.keyId,
+      challenge: swapped,
+      assertion: await assertionFor(install, swapped, 3, jws),
+      app_transaction: `${jws}x`,
+    });
+    expect(replaced.status).toBe(403);
+  });
+
+  it("signs the Apple Account a verified transaction names into the token", async () => {
+    const appId = "exchange-apple-account";
+    await seedApp(appId, { endUser: "app_install" });
+    const install = await registerTestInstall(appId, "aa-key", { keyId: "aa-key" });
+    // Apple will not sign for a test; the verifier itself is covered on its
+    // own in app-transaction.test.ts, so here it answers as for a good one.
+    vi.doMock("../src/client-auth/app-transaction", () => ({
+      verifyAppTransaction: async () => ({ account: "hashed-account", environment: "Production" }),
+    }));
+    try {
+      const jws = "header.payload.signature";
+      const value = await challenge(appId);
+      const response = await exchangeToken(appId, {
+        key_id: install.keyId,
+        challenge: value,
+        assertion: await assertionFor(install, value, 1, jws),
+        app_transaction: jws,
+      });
+      expect(response.status).toBe(200);
+      const { access_token } = await response.json<{ access_token: string }>();
+      expect(claims(access_token)).toMatchObject({ install: "aa-key", apple_account: "hashed-account" });
+      await expect(verifyGatewayToken(access_token, env.JWT_SECRET, appId))
+        .resolves.toMatchObject({ installId: "aa-key", appleAccountId: "hashed-account" });
+    } finally {
+      vi.doUnmock("../src/client-auth/app-transaction");
+    }
   });
 
   it("verifies the assertion and names the install on token_exchange too, and says so", async () => {

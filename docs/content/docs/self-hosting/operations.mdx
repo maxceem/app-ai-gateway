@@ -41,11 +41,13 @@ and above at `error`. A `usage_unresolved_cost` line at `error` level means a
 request was served but its cost could not be read from the provider's
 response.
 
-Proxied responses also carry a `Server-Timing` header with three measurements:
-`auth` for authentication, `limiter` for limit evaluation, and
-`provider_ttfb` for the provider's time to first byte. It is useful when a
-client reports slowness and you want to know which side of the gateway it is
-on.
+Proxied responses also carry a `Server-Timing` header with four measurements:
+`auth` for authentication, `prepare` for resolving the provider, unlocking its
+stored key and building the upstream request, `limiter` for limit evaluation,
+and `provider_ttfb` for the provider's time to first byte. A refused request
+reports how long the step that refused it took, and leaves out the steps it
+never reached: a bad credential reports only `auth`. It is useful when a client reports slowness and you want to know
+which side of the gateway it is on.
 
 ## Rotate the vault key
 
@@ -92,6 +94,7 @@ database bounded:
 | App Attest challenges | Deleted once their five-minute window has passed. An expired challenge cannot be redeemed, so nothing a client sees changes. |
 | Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
 | CLI authorizations | A finished browser handoff is deleted, and the short-lived copy of a one-time CLI response is cleared once its recovery window has passed. |
+| Conversation history | Where `CONVERSATIONS` is bound: each app's stored days older than its `conversations.retention_days` are deleted with their images, and everything of an app that no longer exists. A run that reaches its budget continues the next night, starting after the last app it finished. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.
@@ -150,6 +153,13 @@ The current gateway reads app configuration, provider rows, credentials and
 account state from the D1 primary. Bounded Worker caches provide the documented
 propagation windows. Enabling D1 read replication does not make these reads use
 replicas; the gateway does not opt them into replica sessions.
+
+When D1 stalls or fails, a read whose cached entry has expired waits at most one
+second; past that, the last record this isolate read, up to fifteen minutes old,
+is served instead, and the log line `known_record_served` names it. A read
+with no such record still waits for D1. So during a D1 incident, a revoked key,
+a disabled app or a blocked user can take up to fifteen minutes to reach a warm
+isolate.
 
 ## Routine verification
 

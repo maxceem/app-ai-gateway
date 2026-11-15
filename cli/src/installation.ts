@@ -290,6 +290,7 @@ async function currentInventory(
     ORG_QUOTA: "durable_object_namespace",
     ENDPOINT_RATE_LIMITER: "durable_object_namespace",
     REALTIME_SESSION: "durable_object_namespace",
+    CONVERSATION_LOG: "durable_object_namespace",
   };
   if (
     bindings.some(
@@ -306,6 +307,7 @@ async function currentInventory(
     ORG_QUOTA: "OrgQuota",
     ENDPOINT_RATE_LIMITER: "EndpointRateLimiter",
     REALTIME_SESSION: "RealtimeSession",
+    CONVERSATION_LOG: "ConversationLog",
   };
   if (
     bindings.some(

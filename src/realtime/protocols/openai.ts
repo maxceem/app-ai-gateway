@@ -380,10 +380,13 @@ export function openAIUsage(value: unknown): UsageObservation {
     cachedInputTokens: cached,
     cacheWriteTokens: 0,
     outputTokens: output,
+    // The modality count covers the whole prompt, cached part included; the
+    // cached audio is the `cached_input` bucket's audio variant. See
+    // `splitCachedModalities` in `src/usage/pricing.ts`.
     modalityTokens: {
-      input: { audio: audio - cachedAudio },
-      cachedInput: { audio: cachedAudio },
+      input: { audio },
       output: { audio: outputAudio },
     },
+    tokenVariants: { cached_input: { audio: cachedAudio } },
   };
 }

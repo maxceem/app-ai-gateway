@@ -165,7 +165,7 @@ function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "admitted
       audio_input: 32,
       audio_output: 64,
       cached_input: .4,
-      cached_audio_input: .4,
+      cached_input_audio: .4,
     },
     event: buildUsageEvent({
       organizationId: bootstrap.organizationId,
@@ -1012,7 +1012,7 @@ describe("realtime failure boundaries", () => {
       outputTokens: 1,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
-      modalityTokens: { input: {}, output: {}, cachedInput: {} },
+      modalityTokens: { input: {}, output: {} },
     };
     const event = settledEvent(g, "completed", false);
     let lost = false;
@@ -1193,7 +1193,7 @@ describe("realtime failure boundaries", () => {
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
       outputTokens: 1,
-      modalityTokens: { input: {}, output: {}, cachedInput: {} },
+      modalityTokens: { input: {}, output: {} },
     };
     expect(settledEvent(g, "cancelled", true).row).toMatchObject({
       createdAt: "2026-09-30T23:59:59Z",

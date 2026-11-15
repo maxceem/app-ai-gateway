@@ -204,8 +204,9 @@ export function maintenanceQueryBudget(env: Env): QueryBudget {
     return budget(DEFAULT_MAINTENANCE_QUERY_BUDGET);
   const parsed = Number(configured);
   if (!Number.isSafeInteger(parsed) || parsed < MINIMUM_MAINTENANCE_QUERY_BUDGET) {
+    // The value itself is not logged: a setting is text, and one pasted into
+    // the wrong variable may be a secret.
     log("warn", "maintenance_query_budget_invalid", {
-      configured,
       minimum: MINIMUM_MAINTENANCE_QUERY_BUDGET,
       using: DEFAULT_MAINTENANCE_QUERY_BUDGET,
     });

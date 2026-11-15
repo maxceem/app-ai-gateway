@@ -11,6 +11,50 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
 - The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
+## Serving requests
+
+An app's users must never get a failed request because of a problem in the
+gateway's own counting, pricing or billing. It is better to count a request
+wrong than to fail it.
+
+- **Check who is calling, always.** Serve a request only after the caller is
+  verified: application key, App Attest, user auth, paid entitlement. If a
+  check can't finish, refuse the request. The rules below never change this.
+- **Refuse only for a deliberate reason.** These are the only good reasons:
+  - the caller is not verified;
+  - the app doesn't allow this provider, model or mode;
+  - the customer's own limit for their app's users is reached;
+  - the plan allowance is known to be used up.
+
+  If the provider returns an error, pass it to the app as it is.
+- **If counting or pricing breaks, serve the request anyway.** This covers
+  usage recording, pricing, the allowance counter, billing lookups and
+  analytics: if one fails, is slow or has no answer, serve the request and
+  count it less precisely. This applies to the hosted version's billing too.
+  Always log it as a `warn` or `error` so the monitor can alert on it. When
+  the customer should know, also mark it on the usage event. Never miscount
+  silently.
+- **Don't make a request wait for counting.** Give counting a time limit, or
+  do it after the response is sent.
+- **Be strict when saving settings, and forgiving when serving requests.** When
+  the customer saves an app or provider, check everything they name
+  explicitly. Refuse to save a model or mode that has no price. If the plan
+  can't be read, answer `503` instead of guessing. A mistake caught on save
+  costs nothing. The same mistake caught on a live request fails real users.
+- **Never start refusing something that used to work.** Refuse a request only
+  if it could never have worked before. For example, a model without a price
+  was never served, so refusing it breaks nothing. Anything that was served
+  must keep being served:
+  - never remove a price from the price list; mark it `unlisted_since`
+    instead;
+  - apply a new or stricter check when settings are saved, not to requests
+    that already work.
+- **When the exact price is unknown, estimate it. Never bill it as free.**
+  Sometimes a request asks for something without an exact price, such as a
+  service mode. Serve it, and bill it at the closest known price, never less
+  than the model's standard price. Mark the event `cost_source: "estimated"`
+  so the customer can see it.
+
 ## Code
 
 - Every API operation is declared once in `src/contracts/catalog.ts`; the
@@ -20,7 +64,32 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Reach `@maxceem/cf-auth` only through `cfAuth()` in `src/auth/identity.ts` and
   never import `better-auth` directly: a static import puts them on every
   proxied request's cold start. Type-only imports are fine.
+- Keep one Workers `compatibility_date`, in `wrangler.jsonc`, for every
+  deployment, self-hosted, hosted and tests alike. Don't set another in a
+  deployment profile overlay unless it is absolutely necessary and the user
+  has confirmed it; the release's prebuilt deploy refuses one anyway.
 - There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
+
+## Compatibility with older clients
+
+An installed `agw` outlives many gateway releases, so a newer gateway must
+never break an older CLI's work.
+
+- Additions to API responses and the app configuration are additive and
+  optional. Never make an existing field required, change what one means, or
+  remove one that older clients read.
+- Write a new configuration field only when it differs from its default, so
+  older clients meet it only once the feature is used. Put a new writable app
+  setting inside `config`: the CLI writes back only `name`, `config` and
+  `status`.
+- Add an enum value only where clients tolerate unknown values: a string they
+  display or store. A value that drives a client's control flow, such as an
+  operation's `state` or a protocol version, needs a new field instead.
+- The CLI keeps and resends fields it does not know (`cli/src/tolerant.ts`).
+  It edits only what a flag names, and asks before an `--file` update drops
+  them. Add every new optional config field to `EVERY_OPTION` in
+  `smoke/tests/deploy/management/cli.smoke.ts`, which published CLIs read and
+  write back.
 
 ## Documentation changes
 
@@ -47,6 +116,13 @@ The primary target is iOS applications, with secure measures for calling AI APIs
   submitted secret, only its `secretHint`.
 - Use Wrangler secret commands, stdin, hidden prompts, or ignored local files for
   secret values. Do not place secret values in command arguments.
+- Everything the optional `MANAGEMENT_ANALYTICS` dataset is written is declared
+  in `src/analytics/management.ts`, built field by field there: constants and
+  bounded tokens, never an error message, a request value or a credential.
+  Never write it from the application request path.
+- Everything the optional `ANALYTICS` binding is sent is declared in
+  `src/analytics/hook.ts`, built field by field there. Never pass it anything
+  else, and never call it from the application request path.
 
 ## Verification
 
@@ -62,8 +138,21 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - `pnpm run verify` — both of the above, once, before a commit or hand-off. It
   costs essentially no more than `pnpm run test` alone, because the checks run
   alongside the suites rather than after them.
-- `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`) or
+- `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`, and
+  `pnpm run deploy:prebuilt:dry-run` for the release's prebuilt deploy) or
   `docs/` (`pnpm run docs:build`).
+- `smoke/` holds checks that run against a live deployment, not the code; see
+  `smoke/README.md`. `verify` only typechecks them and runs the mock's offline
+  tests. Each check is a contract with existing clients, and older releases'
+  checks keep running against newer deployments: add a check for new
+  behaviour, and change an existing assertion only when that contract changes
+  on purpose, saying so in the pull request. Never print what `smoke/.state/`
+  holds: it contains application keys.
 - In tests, use `seedHuman` from `test/helpers.ts` rather than signing up, which
   costs about two and a half seconds.
+- Vitest runs can record their results in a ledger (`scripts/test-ledger/`),
+  which finds flaky, slow and never-failing tests over time. It writes nothing
+  unless `TEST_LEDGER_DIR` is set or `~/.local/state/test-ledger/` exists. A
+  test that stays on purpose although it never fails belongs in
+  `scripts/test-ledger/keep.json`, with its reason.
 - Do not verify a change by driving the app in a browser unless explicitly asked.

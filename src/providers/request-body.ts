@@ -169,11 +169,38 @@ export function costReportBodyMutation(
 }
 
 /**
+ * Asks a streamed Chat Completions request for its usage. An OpenAI-format
+ * stream carries usage only when the request sets
+ * `stream_options.include_usage`, and OpenAI's own SDKs leave it unset.
+ * Without that flag the answer has nothing to price, so the request would be
+ * recorded as unresolved at $0 and stay outside every budget: the same reason
+ * `refuseDetachedJob` refuses a detached job.
+ *
+ * The flag is set over an explicit `false` too, and every other stream option
+ * the client sent is kept. A body that does not stream is left alone, because
+ * the API refuses `stream_options` without `stream: true`. The client receives
+ * one extra final chunk that has an empty `choices` and the `usage`. Returns
+ * whether the body changed.
+ */
+export function requestStreamUsage(style: ApiStyle, body: Record<string, unknown>): boolean {
+  if (style !== "chat_completions" || body.stream !== true) return false;
+  const current = body.stream_options;
+  const options =
+    typeof current === "object" && current !== null && !Array.isArray(current)
+      ? (current as Record<string, unknown>)
+      : {};
+  if (options.include_usage === true) return false;
+  body.stream_options = { ...options, include_usage: true };
+  return true;
+}
+
+/**
  * Everything the gateway itself writes into a JSON body once its model is set,
- * in order: the output cap, the provider type's cost-report rewrite, and the
- * route's own routing directive last, so it wins over anything a client put in
- * the same field. Every step is same-protocol — the provider behind the route
- * sees the payload it would have seen anyway. Returns whether the body changed.
+ * in order: the output cap, the request for a streamed answer's usage, the
+ * provider type's cost-report rewrite, and the route's own routing directive
+ * last, so it wins over anything a client put in the same field. Every step is
+ * same-protocol — the provider behind the route sees the payload it would have
+ * seen anyway. Returns whether the body changed.
  */
 export function finishJsonBody(
   body: Record<string, unknown>,
@@ -186,11 +213,12 @@ export function finishJsonBody(
   },
 ): boolean {
   const capped = clampOutput(input.clamp, input.provider, body, input.cap);
+  const metered = requestStreamUsage(input.style, body);
   const reported = costReportBodyMutation(input.provider, input.style, body);
   const routed = input.route.adapter.mutateBody?.({
     routeConfig: input.route.config,
     style: input.style,
     body,
   }) ?? false;
-  return capped || reported || routed;
+  return capped || metered || reported || routed;
 }

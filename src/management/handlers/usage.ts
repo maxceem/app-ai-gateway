@@ -79,6 +79,7 @@ export const usageHandlers = {
     if (query.user) filters.push(eq(appUsageEvent.userId, query.user));
     if (query.install) filters.push(eq(appUsageEvent.installId, query.install));
     if (query.model) filters.push(eq(appUsageEvent.model, query.model));
+    if (query.trace) filters.push(eq(appUsageEvent.clientTraceId, query.trace));
     if (query.before_id !== undefined) filters.push(lt(appUsageEvent.id, query.before_id));
 
     const rows = await database(scope.env.DB)
@@ -119,12 +120,14 @@ export const usageHandlers = {
         output_tokens: row.outputTokens,
         cost_usd: row.costUsd,
         reported_cost_usd: row.reportedCostUsd,
+        ...(row.serviceMode && { service_mode: row.serviceMode }),
         cost_source: row.costSource,
         app_version: row.appVersion,
         auth_method: row.authMethod,
         status: row.status,
         client_aborted: row.clientAborted,
         latency_ms: row.latencyMs,
+        client_trace_id: row.clientTraceId,
         created_at: row.createdAt,
       })),
     };

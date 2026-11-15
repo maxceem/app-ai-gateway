@@ -1,5 +1,4 @@
 import { request } from "./api";
-import { noteAuthMethod } from "./analytics";
 import { DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
 
 /**
@@ -28,6 +27,22 @@ export interface SignUpInput extends SignInInput {
 /** Better Auth's endpoints all take a JSON body and answer with one. */
 function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+/**
+ * Whether Better Auth says plainly that this browser is signed out: it answers
+ * `get-session` for a browser with no live session with `200` and `null`
+ * rather than a refusal. The console asks this before the management API, so a
+ * signed-out visit makes no call that could only be refused. Any other answer
+ * — a session, an error, a body it did not expect — is not "signed out", and
+ * the management API decides as it always has.
+ */
+export async function plainlySignedOut(): Promise<boolean> {
+  try {
+    return (await request<unknown>(`${AUTH_BASE}/get-session`)) === null;
+  } catch {
+    return false;
+  }
 }
 
 export function signInWithPassword(input: SignInInput): Promise<unknown> {
@@ -69,9 +84,6 @@ export function changePassword(input: {
  */
 export async function startGoogleSignIn(returnPath?: string): Promise<void> {
   const destination = isSafeReturnPath(returnPath) ? returnPath : DEFAULT_LANDING;
-  // Recorded now because the provider's redirect is what returns the operator,
-  // and it carries no indication of how they got here.
-  noteAuthMethod("google");
   const result = await post<{ url?: string; redirect?: boolean }>(
     `${AUTH_BASE}/sign-in/social`,
     {

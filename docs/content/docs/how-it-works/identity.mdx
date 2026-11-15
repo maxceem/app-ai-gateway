@@ -52,7 +52,8 @@ audience against your configuration before it trusts the user ID inside.
 **Unauthenticated users** is the quick start for an iOS app with no sign-in.
 Each install counts as one user, so per-install limits and blocks work. The
 identity does not survive reinstalling the app, so a determined user can shed
-a block by starting over.
+a block by starting over. A budget measured per Apple Account, the default,
+does survive it; see [Limits and blocking](/how-it-works/limits#whose-month-an-ios-budget-is).
 
 **Your backend sends the user id** belongs on a server you control. The
 gateway takes the value as given, so it is never appropriate for a client an
@@ -95,8 +96,9 @@ configuration, with two values.
 | **Every request** (`every_request`, the default) | The assertion at each token exchange, and a fresh assertion on every request |
 | **Token exchange** (`token_exchange`) | The assertion at each token exchange only; requests carry the gateway token alone |
 
-Either way the gateway token names the install it was issued to, so request
-limits, budgets and usage are counted per install in both modes.
+Either way the gateway token names the install it was issued to, and its
+Apple Account when the app sent its App Store transaction, so limits, budgets
+and usage are counted the same way in both modes.
 
 Apps created before this setting was added were set to **Token exchange**,
 so installs already shipped keep working. A new app, or a configuration that

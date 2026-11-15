@@ -125,14 +125,78 @@ agw app --help
 agw provider --help
 ```
 
-Use the command's `--help` for its exact flags. Read an app before editing it.
-Application updates carry the revision read when the command starts and reject
-a competing write during that command. A `--file` exported earlier can still
-replace more recent settings: reread and merge before using it. Add and update
-with `--file` preserve the complete validated configuration, including native endpoint
-parameters. They do not transfer credentials or usage
-to another deployment. Build that file from `agw app show <app-id> --json`,
-keeping `name`, `config` and `status` from `result.app`.
+Most commands come from the gateway you are connected to rather than from
+`agw` itself. `agw` reads the list of commands your gateway offers, keeps it
+for a day, and reads it again as soon as the gateway changes, so a command a
+newer gateway adds works without updating `agw`, and `agw --help` lists it.
+Their flags are the gateway's own arguments: `team_id` is `--team-id`, a list
+is given by repeating its flag or with commas (`--providers openai,anthropic`),
+and a structured value is JSON, inline or as `@file`. Every command, built in or
+not, names a flag the same way. `--input` takes every argument as one JSON object. Use a command's
+`--help` for its exact flags. The commands that need your machine — signing
+in, deploying, adding a provider or an app, and anything that writes a key to
+a file — are built into `agw` and change with it. An `agw` needs a gateway at least as new
+as its own release: against an older one, the gateway's commands answer
+`gateway_outdated`, and `agw deployment update` brings a self-hosted gateway up
+to date.
+
+A release of your gateway that changes no command costs `agw` nothing. When
+a command has changed since `agw` last read the list, the run that notices it
+finishes as usual and then reads the list again, so the next run uses the new
+one; that takes one extra request, after the output. A flag the kept list does
+not know makes `agw` read the list before refusing it. If a command has come
+to delete something or to need a newer `agw`, the gateway refuses the old
+description before running anything: `agw` reads the list again and asks you
+to confirm, or to update `agw`, instead of running it as it was. An argument
+the command no longer takes is refused rather than ignored.
+
+Read an app before editing it. `agw app update <app-id>` changes only what you
+name, and leaves everything else as it is:
+
+```sh
+agw app update <app-id> --name "Production" --status active
+agw app update <app-id> --team-id ABCDE12345 --verify-on every_request
+agw app update <app-id> --providers openai,anthropic
+```
+
+`--name` and `--status` apply to any app; `--team-id`, `--bundle-id`,
+`--attest-environments` and `--verify-on` to an iOS app; `--providers` or
+`--all-providers` choose which providers it may use, as `--providers` does on
+`agw app add`. A
+provider it already selected keeps its allowed paths and models. These apply
+to the app as it is when the command runs.
+
+For any other setting, pass `--operations`, a list of operations, each
+`add`, `replace` or `remove` at a path into the app as `app show` returns it,
+with the `--revision` you read it at:
+
+```json
+[
+  { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
+  { "op": "replace", "path": "/status", "value": "disabled" }
+]
+```
+
+```sh
+agw app update <app-id> --revision 7 --operations @patch.json
+```
+
+Everything you do not name stays as it is, and the result is checked as a
+whole update would be: either every operation applies and is saved, or
+nothing is. `null` is written as `null`, which means unlimited for a limit. A
+change made since you read the app is refused with `app_revision_conflict`;
+read it again and repeat.
+
+`agw app replace <app-id> --config @app.json` replaces the whole document.
+Build the file from `agw app show <app-id> --json`, keeping `name`, `config`,
+`status` and `revision` from `result.app`; it does not transfer credentials or
+usage to another deployment.
+
+A setting named like a credential, such as a provider parameter called
+`api_key`, is never shown: `app show` prints `[redacted]` in its place and its
+summary says which settings it hid. Such an app cannot be sent back whole with
+`app replace`, which says so; change its other settings with `app update`, which
+leaves the hidden one as it is, and change that one in the console or the API.
 
 `agw app snippet <app-id>` prints a request that app can send: curl for a
 server app, Swift for an iOS one. Creating an app prints it too. It is built
@@ -140,11 +204,12 @@ from that app's own providers, allowed endpoints and priced models, and stands
 named placeholders in — `PROVIDER_SLUG`, `MODEL` — for anything not set up yet,
 so you always get something to run and can see what is still missing.
 
-For file changes, validate a new app with `agw app validate --file app.json
---json`. For an existing app, use `agw app update <app-id> --file app.json
---dry-run --json`, which validates it as an update. Check the returned
-`validation.remote`: without a login, draft validation checks only the local
-schema and cannot verify provider references or pricing.
+To check a document without saving it, run `agw app validate --config
+@app.json --json` for a new app, or `agw app validate <app-id> --config
+@app.json --json` for a change to an existing one, with `name`, `config` and
+`status` in the file. `agw app add --dry-run --json` checks a new app built from
+flags; without a login it can check only the local schema, which
+`validation.remote` says.
 
 After saving, run `agw app check <app-id> --json`. It reads configuration
 without sending inference; it does not verify upstream keys, App Attest on a
@@ -152,6 +217,12 @@ device, sign-in or entitlements. Generate the matching client example with
 `app snippet` and address any placeholder notes before using it.
 
 `agw app show` and `agw app check` print an app's warnings.
+
+`agw app conversations <app-id> --from YYYY-MM-DD --to YYYY-MM-DD --output
+<folder>` downloads an app's [conversation history](/applications/conversations)
+as gzipped JSON Lines, one folder per day; `--media` also fetches the media
+they name. Files already in the folder are skipped, so the same command
+fetches only what is new.
 
 Flag-based `agw app add --type ios` enables both production and development
 App Attest environments. Use `--attest-environments production` for a shipped
@@ -173,13 +244,36 @@ see [Sign in](#sign-in). Never put secrets in command arguments, source control,
 The CLI does not make inference requests as a setup check. Provider inference
 must be requested explicitly.
 
+## Human support
+
+Where your deployment offers human support, `agw support send` emails it for
+you, and the reply comes to your account's email address:
+
+```sh
+agw support send --type bug --message "Streaming responses stop after 30 seconds" --context app_id=my-app
+```
+
+`--type` is `bug`, `support` or `feedback`. Pipe a longer message in with
+`--message-stdin`, and add facts with repeated `--context name=value`. In a
+terminal the CLI shows the message and asks before sending; without one it
+sends only with `--yes`, so an agent has to have shown you the message first.
+A message that looks like it contains a key, token or password is refused, and
+the same message sent twice within ten minutes is sent once. The answer
+carries a reference such as `SUP-7F3K2Q` to quote when you follow up.
+
 ## Output and recovery
 
 `--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
-`result` or `error`. Progress goes to stderr. Without `--json` the same result is
+`result` or `error`, plus `notices` when there is something to know that is
+not the answer. A command that comes from the gateway also carries `summary`,
+one sentence about the result, and its `result` is what the gateway's MCP tool
+of the same name returns. When a request fails and the CLI and the gateway API are
+different releases, a `version_mismatch` notice says which one to update. Progress goes to stderr. Without `--json` the same result is
 printed as plain text to read, and a failure is printed to stderr instead of
 stdout. A successful result with `state: "pending"` still needs its browser
-step and `operation wait`; it does not mean the change finished. Exit codes are
+step and `operation wait`; it does not mean the change finished. A deletion
+asks for confirmation in a terminal; without one it runs only with `--yes`, so
+an agent has to have asked you first. Exit codes are
 0 for success, 2 for input errors, 3 for remote failures,
 4 for state or authentication recovery, and 5 for a wait timeout. A timeout
 leaves the operation pending.

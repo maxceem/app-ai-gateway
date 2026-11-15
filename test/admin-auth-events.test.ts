@@ -23,6 +23,7 @@ async function recordAuth(
     outcome: string;
     reason: string | null;
     claimDelayMs: number | null;
+    clientSdk: string | null;
     createdAt: string;
   }> = {},
 ) {
@@ -32,14 +33,15 @@ async function recordAuth(
     outcome = "ok",
     reason = null,
     claimDelayMs = null,
+    clientSdk = null,
     createdAt = daysAgo(0),
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_auth_event(
-       event_id, app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, latency_ms, created_at
-     ) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'api_key', ?, ?, ?, 5, ?)`,
+       event_id, app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, client_sdk, latency_ms, created_at
+     ) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'api_key', ?, ?, ?, ?, 5, ?)`,
   )
-    .bind(appId, userId, event, outcome, reason, claimDelayMs, createdAt)
+    .bind(appId, userId, event, outcome, reason, claimDelayMs, clientSdk, createdAt)
     .run();
 }
 
@@ -190,7 +192,7 @@ describe("application auth event summary", () => {
 
   it("lists raw attempts newest first, filtered by outcome", async () => {
     await seedApp("auth-events-list");
-    await recordAuth("auth-events-list", { userId: "user-a" });
+    await recordAuth("auth-events-list", { userId: "user-a", clientSdk: "app-ai-gateway-swift/1.7.0" });
     await recordAuth("auth-events-list", {
       userId: "user-b",
       outcome: "issuer_claims_missing",
@@ -206,7 +208,9 @@ describe("application auth event summary", () => {
       outcome: "issuer_claims_missing",
       reason: "claims_missing",
       claim_delay_ms: null,
+      client_sdk: null,
     });
+    expect(all.body.events[1]).toMatchObject({ client_sdk: "app-ai-gateway-swift/1.7.0" });
 
     const filtered = await get(
       "/v1/admin/apps/auth-events-list/auth-events?outcome=issuer_claims_missing",

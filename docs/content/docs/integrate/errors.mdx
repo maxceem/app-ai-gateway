@@ -48,9 +48,9 @@ app below, and nothing in the console changes it.
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
 | `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. An `install` or `user` scope means slow this caller down; an `app` scope means the whole app is busy |
-| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. Same `data.scope` | Wait for the next month, or raise the budget in the console |
+| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. `data.scope` is `apple_account`, `install`, `user` or `app`: `apple_account` when an iOS app measures its budget per Apple Account, across that person's installs | Wait for the next month, or raise the budget in the console |
 | `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
-| `billing_unavailable` | 503 | The gateway could not check the account, so it refused rather than guess | Retry after `Retry-After`. Not an account problem |
+| `billing_unavailable` | 503 | Rare and brief: the account's details were momentarily inconsistent, so the gateway did not serve this call. It is not an outage: while the gateway cannot check the account at all, your app's calls are still served | Retry after `Retry-After`. Not an account problem |
 | `billing_payment_required` | 402 | Account access needs attention in the console | Ask the person managing the gateway account to resolve it; retrying on the device will not help |
 | `payload_too_large` | 413 | The request body is over 20 MB | Send less |
 
@@ -75,7 +75,7 @@ These refusals concern the gateway account, not your app's end-user sign-in:
 | `model_not_allowed` | 403 | The model is not in the app's allowlist | Use an allowed model |
 | `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Lower the output limit in the request |
 | `api_style_not_supported` | 403 | This path does not exist on the route the provider uses, such as Gemini's native API through Vercel | Use a supported path or a direct provider |
-| `pricing_not_configured` | 400 | The model has no price in the catalog or the provider's custom pricing | Add a price in the console, or use a catalogued model |
+| `pricing_not_configured` | 400 | The model has no price in the price list or the provider's custom pricing | Add a price in the console, or use a listed model |
 | `endpoint_not_found` | 404 | No custom endpoint has this slug | Check the slug |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
 | `app_disabled` | 403 | The app is switched off in its settings | Nothing on the device fixes it |
@@ -88,6 +88,7 @@ These refusals concern the gateway account, not your app's end-user sign-in:
 | `provider_disabled` | 502 | The provider with this slug is paused | Enable it in the console |
 | `provider_unavailable` | 502 | The provider's key could not be read | Check the gateway's health |
 | `provider_error` | 502 or 504 | The provider could not be reached, or sent no response headers before the timeout (120 seconds by default) | Retry with backoff |
+| `service_unavailable` | 503 | The infrastructure the gateway runs on failed or was overloaded, or a sign-in or `/me` call took longer than 10 seconds. Nothing about the request is known to be wrong | Retry after `Retry-After` with backoff |
 | `internal_error` | 500 | Something failed inside the gateway | Retry with backoff |
 
 ## A sensible client policy

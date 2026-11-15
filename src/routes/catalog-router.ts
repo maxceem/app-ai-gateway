@@ -18,6 +18,7 @@ import {
 } from "../management/executor";
 import { OPERATION_HANDLERS, type RegisteredOperation } from "../management/handlers";
 import type { AdminVariables } from "../middleware/admin";
+import { noteManagementCall } from "../middleware/management-analytics";
 import { jsonBody, managementScope } from "./admin/body";
 
 /**
@@ -113,6 +114,7 @@ export function catalogRouter<E extends HonoEnv>(
       throw new Error(`${name} is a ${spec.security} operation and must be mounted through an authorizing router`);
     }
     const served = async (c: Context<E>) => {
+      noteManagementCall(c, name);
       if (guarded(spec) && options.authenticate) await options.authenticate(c);
       return handler(c);
     };

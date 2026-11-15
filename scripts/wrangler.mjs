@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Runs Wrangler with an optional deployment profile:
 //
-//   node scripts/wrangler.mjs [--profile <name>] [--cwd <dir>] <wrangler arguments>
+//   node scripts/wrangler.mjs [--profile <name>] [--prebuilt <dir>] [--cwd <dir>] <wrangler arguments>
 //
 // `--profile` merges `wrangler.<name>.overlay.jsonc` over `wrangler.jsonc` (see
-// scripts/wrangler-config.mjs) and passes the result with `--config`. `--cwd`
-// selects another Worker in this repository, such as `docs`.
+// scripts/wrangler-config.mjs) and passes the result with `--config`.
+// `--prebuilt` points that config at a Worker built by scripts/build-prebuilt.mjs.
+// `--cwd` selects another Worker in this repository, such as `docs`.
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
@@ -23,9 +24,10 @@ function takeOption(args, name) {
 
 try {
   const { profile, rest: withoutProfile } = takeProfileArgument(process.argv.slice(2));
-  const { value: cwd, rest } = takeOption(withoutProfile, "--cwd");
+  const { value: prebuilt, rest: withoutPrebuilt } = takeOption(withoutProfile, "--prebuilt");
+  const { value: cwd, rest } = takeOption(withoutPrebuilt, "--cwd");
   const dir = cwd ? resolve(projectRoot, cwd) : projectRoot;
-  const { configArgs } = resolveWranglerConfig(profile, dir);
+  const { configArgs } = resolveWranglerConfig(profile, dir, { prebuilt });
 
   const result = spawnSync(wranglerBin, [...rest, ...configArgs], { cwd: dir, stdio: "inherit" });
   if (result.error) throw result.error;

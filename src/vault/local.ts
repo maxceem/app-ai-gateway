@@ -14,21 +14,29 @@ const KEK_BYTES = 32;
 
 const importedKeks = new Map<string, Promise<CryptoKey>>();
 
-function decodeBase64(value: string, binding: string): Uint8Array<ArrayBuffer> {
+function invalidKek(message: string, kekVersion: number): SecretVaultConfigurationError {
+  return new SecretVaultConfigurationError(message, {
+    setting: "SECRET_VAULT_LOCAL_KEK_V<n>",
+    problem: "invalid",
+    kekVersion,
+  });
+}
+
+function decodeBase64(value: string, binding: string, version: number): Uint8Array<ArrayBuffer> {
   const material = value.trim();
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(material)) {
-    throw new SecretVaultConfigurationError(`${binding} is not valid base64`);
+    throw invalidKek(`${binding} is not valid base64`, version);
   }
   let binary: string;
   try {
     binary = atob(material);
   } catch {
-    throw new SecretVaultConfigurationError(`${binding} is not valid base64`);
+    throw invalidKek(`${binding} is not valid base64`, version);
   }
   const bytes = new Uint8Array(new ArrayBuffer(binary.length));
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   if (bytes.length !== KEK_BYTES) {
-    throw new SecretVaultConfigurationError(`${binding} must decode to ${KEK_BYTES} bytes`);
+    throw invalidKek(`${binding} must decode to ${KEK_BYTES} bytes`, version);
   }
   return bytes;
 }
@@ -63,11 +71,11 @@ function contextAad(context: SecretVaultContext): Uint8Array<ArrayBuffer> {
   return new Uint8Array(new TextEncoder().encode(JSON.stringify(Object.fromEntries(entries))));
 }
 
-function importKek(material: string, binding: string): Promise<CryptoKey> {
+function importKek(material: string, binding: string, version: number): Promise<CryptoKey> {
   const cached = importedKeks.get(material);
   if (cached) return cached;
   const imported = crypto.subtle
-    .importKey("raw", decodeBase64(material, binding), { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+    .importKey("raw", decodeBase64(material, binding, version), { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
     .catch((error: unknown) => {
       importedKeks.delete(material);
       throw error;
@@ -79,7 +87,10 @@ function importKek(material: string, binding: string): Promise<CryptoKey> {
 function currentVersion(value: unknown): number {
   if (value === undefined) return 1;
   if (typeof value !== "string" || !/^[1-9][0-9]{0,3}$/u.test(value.trim())) {
-    throw new SecretVaultConfigurationError(`${CURRENT_VERSION} must be a positive integer string`);
+    throw new SecretVaultConfigurationError(`${CURRENT_VERSION} must be a positive integer string`, {
+      setting: CURRENT_VERSION,
+      problem: "invalid",
+    });
   }
   return Number(value.trim());
 }
@@ -90,29 +101,42 @@ export function createLocalSecretVault(env: Record<string, unknown>): SecretVaul
     if (!binding.startsWith(KEK_PREFIX) || binding === CURRENT_VERSION) continue;
     const match = KEK_PATTERN.exec(binding);
     if (!match?.[1]) {
-      throw new SecretVaultConfigurationError(`${binding} is not a valid local KEK secret name`);
+      throw new SecretVaultConfigurationError(`${binding} is not a valid local KEK secret name`, {
+        setting: "SECRET_VAULT_LOCAL_KEK_V<n>",
+        problem: "invalid",
+      });
     }
+    const version = Number(match[1]);
     if (typeof value !== "string" || value.trim() === "") {
-      throw new SecretVaultConfigurationError(`${binding} must be a non-empty base64 string`);
+      throw new SecretVaultConfigurationError(`${binding} must be a non-empty base64 string`, {
+        setting: "SECRET_VAULT_LOCAL_KEK_V<n>",
+        problem: "missing",
+        kekVersion: version,
+      });
     }
     const material = value.trim();
-    decodeBase64(material, binding);
-    materials.set(Number(match[1]), { binding, material });
+    decodeBase64(material, binding, version);
+    materials.set(version, { binding, material });
   }
   if (!materials.has(1)) {
-    throw new SecretVaultConfigurationError("SECRET_VAULT_LOCAL_KEK_V1 is required in local mode");
+    throw new SecretVaultConfigurationError("SECRET_VAULT_LOCAL_KEK_V1 is required in local mode", {
+      setting: "SECRET_VAULT_LOCAL_KEK_V<n>",
+      problem: "missing",
+      kekVersion: 1,
+    });
   }
   const selectedVersion = currentVersion(env[CURRENT_VERSION]);
   if (!materials.has(selectedVersion)) {
     throw new SecretVaultConfigurationError(
       `${CURRENT_VERSION} is ${selectedVersion} but SECRET_VAULT_LOCAL_KEK_V${selectedVersion} is not set`,
+      { setting: "SECRET_VAULT_LOCAL_KEK_V<n>", problem: "missing", kekVersion: selectedVersion },
     );
   }
 
   const key = async (version: number): Promise<CryptoKey> => {
     const entry = materials.get(version);
     if (!entry) throw new SecretVaultBlobError("local blob uses an unavailable KEK version");
-    return importKek(entry.material, entry.binding);
+    return importKek(entry.material, entry.binding, version);
   };
 
   return {

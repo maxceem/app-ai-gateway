@@ -23,8 +23,9 @@ import {
  * `unmetered` means nothing is counted, not that traffic is admissible: a
  * self-hosted deployment and a plan with no monthly limit answer it, but so do
  * billing being unavailable and no plan resolving. A caller that admits traffic
- * must still call `requireActiveBilling(quota.access)`. `metered` is a limit
- * and the period it is counted over.
+ * must still call `admitAppTraffic` (or, outside the application path,
+ * `requireActiveBilling`) on `quota.access`. `metered` is a limit and the
+ * period it is counted over.
  */
 export type BillingQuota =
   | { kind: "unmetered"; access: GatewayBillingAccess }
@@ -80,7 +81,19 @@ export async function billingQuota(
   cache?: BillingRequestCache,
   now: number = Date.now(),
 ): Promise<BillingQuota> {
-  const access = await getBillingAccess(deployment, organizationId, cache);
+  return billingQuotaFor(await getBillingAccess(deployment, organizationId, cache), env, organizationId, now);
+}
+
+/**
+ * {@link billingQuota} from billing access already read, for a caller that
+ * read it its own way: admission bounds how long app traffic waits for it.
+ */
+export async function billingQuotaFor(
+  access: GatewayBillingAccess,
+  env: Env,
+  organizationId: string,
+  now: number = Date.now(),
+): Promise<BillingQuota> {
   if (access.state !== "billed" || access.plan === null) return { kind: "unmetered", access };
   const limit = billingPlanLimits(access).maxRequestsPerMonth;
   if (limit === undefined) return { kind: "unmetered", access };

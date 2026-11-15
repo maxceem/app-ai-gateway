@@ -143,6 +143,8 @@ export type {
   EntitledPlan,
   GatewayBillingAccess as BillingAccess,
   OrganizationQuotaStatus as OrganizationQuota,
+  PlanFeature,
+  PlanFeatureAccess,
   PlanLimits,
   SubscriptionActions,
   SubscriptionState,

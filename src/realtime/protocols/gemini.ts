@@ -180,7 +180,6 @@ export function geminiSnapshot(value: unknown): UsageObservation {
     modalityTokens: {
       input: modalityUsage(raw.promptTokensDetails, input),
       output: modalityUsage(raw.responseTokensDetails, output),
-      cachedInput: {},
     },
   };
 }

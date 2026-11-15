@@ -12,7 +12,8 @@ import type { RequestVariables } from "../../middleware/request-scope";
  */
 export function managementScope(c: {
   env: Env;
-  req: { url: string };
+  req: { url: string; header(name: string): string | undefined; raw: Request };
+  executionCtx: { waitUntil(promise: Promise<unknown>): void };
   get(key: "deployment"): RequestVariables["deployment"];
   get(key: "billingRequestCache"): RequestVariables["billingRequestCache"];
   get(key: "identityAuthCache"): RequestVariables["identityAuthCache"];

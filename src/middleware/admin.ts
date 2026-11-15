@@ -1,6 +1,7 @@
 import type { AuthState } from "@maxceem/cf-auth";
 import type { MiddlewareHandler } from "hono";
 import { bearerChallenge, bearerToken } from "../auth/bearer";
+import { credentialRefusalReason, type CredentialRefusalReason } from "../auth/credential-refusal";
 import {
   asGatewayAuthError,
   cfAuth,
@@ -99,6 +100,7 @@ export const adminAuth: MiddlewareHandler<{
     throw challenged(error, deployment, {
       presented: token !== undefined,
       oauth: c.get("actor")?.credentialType === "oauth",
+      refusalReason: () => credentialRefusalReason((name) => c.req.header(name)),
     });
   }
 };
@@ -107,12 +109,18 @@ export const adminAuth: MiddlewareHandler<{
  * A refusal with the challenge it owes: every `401` a `Bearer` one, with
  * `invalid_token` when a bearer token was presented;
  * an OAuth connection refused for its grant gets `insufficient_scope`.
- * Anything else is passed through untouched.
+ * A `401` that names no reason of its own is given the one what the request
+ * sent explains, for the log line and management analytics; the client's
+ * answer does not change. Anything else is passed through untouched.
  */
 function challenged(
   error: unknown,
   deployment: Deployment,
-  { presented, oauth }: { presented: boolean; oauth: boolean },
+  { presented, oauth, refusalReason }: {
+    presented: boolean;
+    oauth: boolean;
+    refusalReason: () => CredentialRefusalReason;
+  },
 ): unknown {
   const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : error;
   if (!(refusal instanceof GatewayError)) return error;
@@ -126,9 +134,11 @@ function challenged(
   const headers = new Headers(refusal.headers);
   headers.set("WWW-Authenticate", challenge);
   return new GatewayError(refusal.status, refusal.code, refusal.message, headers, {
-    reason: refusal.reason,
+    reason: refusal.reason ?? (refusal.code === "auth_required" ? refusalReason() : undefined),
     userId: refusal.userId,
     data: refusal.data,
+    field: refusal.field,
+    cause: refusal.cause,
   });
 }
 

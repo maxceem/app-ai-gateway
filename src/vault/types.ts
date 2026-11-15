@@ -24,10 +24,41 @@ export interface SecretVault {
   decryptSecret(blob: string, context: SecretVaultContext): Promise<string>;
 }
 
+/**
+ * What a configuration problem is about, as constants a log line can name
+ * without copying the message. A local KEK is named by its `kekVersion`
+ * beside the `SECRET_VAULT_LOCAL_KEK_V<n>` family.
+ */
+export type SecretVaultSetting =
+  | "env"
+  | "SECRET_VAULT_MODE"
+  | "SECRET_VAULT_KMS_URL"
+  | "SECRET_VAULT_KMS_TOKEN"
+  | "SECRET_VAULT_KMS_*"
+  | "SECRET_VAULT_LOCAL_*"
+  | "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION"
+  | "SECRET_VAULT_LOCAL_KEK_V<n>"
+  | "context";
+
+export type SecretVaultProblem = "missing" | "not_allowed" | "invalid";
+
+export interface SecretVaultConfigurationDetail {
+  setting: SecretVaultSetting;
+  problem: SecretVaultProblem;
+  kekVersion?: number;
+}
+
 export class SecretVaultConfigurationError extends Error {
-  constructor(message: string) {
+  readonly setting: SecretVaultSetting;
+  readonly problem: SecretVaultProblem;
+  readonly kekVersion?: number;
+
+  constructor(message: string, detail: SecretVaultConfigurationDetail) {
     super(`secret vault: ${message}`);
     this.name = "SecretVaultConfigurationError";
+    this.setting = detail.setting;
+    this.problem = detail.problem;
+    if (detail.kekVersion !== undefined) this.kekVersion = detail.kekVersion;
   }
 }
 

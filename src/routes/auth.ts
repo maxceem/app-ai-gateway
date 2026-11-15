@@ -1,10 +1,12 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
 import { assertAppActive, loadApp } from "../core/app-records";
+import { CLIENT_SDK_HEADER } from "../core/client-sdk";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
-import { GatewayError } from "../core/errors";
+import { GatewayError, type ErrorCode, type GatewayErrorReason } from "../core/errors";
 import { log } from "../core/log";
+import { asGatewayError } from "../core/platform-errors";
 import { clientAuth, type ExchangeType, type TokenExchange } from "../client-auth/client-auth";
 import {
   EXCHANGES,
@@ -17,6 +19,9 @@ import { database } from "../db";
 import { parseRequest } from "../management/validation";
 import { jsonBody } from "./admin/body";
 import { appAuthChallenge, type AuthEventName } from "../db/schema";
+import type { RequestVariables } from "../middleware/request-scope";
+import { errorFacts } from "../core/error-facts";
+import { contained } from "../core/background";
 
 /** A JSON body that is an object, which every documented body on this surface is. */
 async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
@@ -52,13 +57,14 @@ async function exchangeToken<K extends ExchangeType>(input: {
   exchange: TokenExchange<K>;
   rawBody: Record<string, unknown>;
   attempt: AuthAttempt;
+  waitUntil: (promise: Promise<unknown>) => void;
 }): Promise<IssuedToken> {
   const { exchange, attempt } = input;
   const handler = EXCHANGES[exchange.type];
   handler.refuseBody?.(input.rawBody);
   attempt.authMethod = handler.authMethod;
   const body = parseRequest(handler.tokenBody(exchange), input.rawBody);
-  return handler.token({ env: input.env, appId: input.appId, exchange, body, attempt });
+  return handler.token({ env: input.env, appId: input.appId, exchange, body, attempt, waitUntil: input.waitUntil });
 }
 
 /** The application's key registration, run on a `/auth/register` body, or the refusal where its exchange has none. */
@@ -68,6 +74,7 @@ async function registerKey<K extends ExchangeType>(input: {
   exchange: TokenExchange<K>;
   rawBody: Record<string, unknown>;
   attempt: AuthAttempt;
+  waitUntil: (promise: Promise<unknown>) => void;
 }): Promise<{ user_id: string }> {
   const { exchange, attempt } = input;
   const handler = EXCHANGES[exchange.type];
@@ -75,31 +82,40 @@ async function registerKey<K extends ExchangeType>(input: {
   if (!registration) throw attestNotSupported();
   attempt.authMethod = handler.authMethod;
   const body = parseRequest(registration.body(exchange), input.rawBody);
-  return registration.run({ env: input.env, appId: input.appId, exchange, body, attempt });
+  return registration.run({ env: input.env, appId: input.appId, exchange, body, attempt, waitUntil: input.waitUntil });
 }
 
 /**
  * Wraps one authentication handler so every attempt, successful or refused,
  * leaves exactly one `app_auth_event` row behind.
  *
- * Failures are recorded and rethrown unchanged: the client contract is
- * untouched, and `app.onError` still logs and serializes the error. Recording
- * happens in `waitUntil` so neither path waits on a diagnostic write.
+ * Failures are recorded and rethrown, a platform failure as the
+ * `service_unavailable` it is answered with, so `app.onError` still logs and
+ * serializes the error. Recording happens in `waitUntil` so neither path waits
+ * on a diagnostic write.
+ *
+ * An attempt that runs past the request's deadline is recorded when the
+ * deadline passes, since the client has its answer then, and not again should
+ * the abandoned call finish afterwards.
  */
 async function recorded(
-  c: Context<{ Bindings: Env }>,
+  c: Context<{ Bindings: Env; Variables: RequestVariables }>,
   event: AuthEventName,
   handler: (attempt: AuthAttempt) => Promise<Response>,
 ): Promise<Response> {
   const startedAt = Date.now();
   const appId = c.req.param("app") ?? "";
   const appVersion = c.req.header("x-app-version") ?? null;
+  const clientSdk = c.req.header(CLIENT_SDK_HEADER) ?? null;
   const attempt: AuthAttempt = { authMethod: null, userId: null, claimDelayMs: null };
-  const record = (outcome: string, reason?: string): void => {
+  let settled = false;
+  const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
+    if (settled) return;
+    settled = true;
     // An app that does not exist has nothing to attribute a row to, and
     // recording one would let anyone grow this table with invented app ids.
     if (outcome === "app_not_found") return;
-    c.executionCtx.waitUntil(recordAuthEvent({
+    c.executionCtx.waitUntil(contained("auth_event", recordAuthEvent({
       env: c.env,
       appId,
       event,
@@ -108,29 +124,47 @@ async function recorded(
       outcome,
       reason,
       appVersion,
+      clientSdk,
       latencyMs: Date.now() - startedAt,
       claimDelayMs: attempt.claimDelayMs,
-    }));
+    })));
   };
+
+  const deadline = c.get("deadline");
+  const recordDeadline = (): void => {
+    const refusal = asGatewayError(deadline?.reason);
+    record(refusal?.code ?? "internal_error", refusal?.reason);
+  };
+  if (deadline?.aborted) {
+    // Reached only after the client was answered — the steps in front of this
+    // one took the whole deadline. The attempt is recorded as what the client
+    // got and not started: nobody is waiting for its result, and starting it
+    // would spend a challenge and write rows for an answer never read.
+    recordDeadline();
+    return new Response(null, { status: 503 });
+  }
+  deadline?.addEventListener("abort", recordDeadline, { once: true });
 
   try {
     const response = await handler(attempt);
     record("ok");
     return response;
   } catch (error) {
-    const gateway = error instanceof GatewayError ? error : null;
+    const gateway = asGatewayError(error);
     // The verified user id travels on the error for exactly this: a
     // claims-missing rejection is the one failure that knows who it refused.
     attempt.userId = attempt.userId ?? gateway?.userId ?? null;
-    if (gateway?.code === "issuer_claims_missing" && attempt.userId) {
-      c.executionCtx.waitUntil(markClaimPending(c.env, appId, attempt.userId));
+    // Not for an attempt the deadline already settled: a retry may have
+    // succeeded and closed the window since, which this would reopen.
+    if (!settled && gateway?.code === "issuer_claims_missing" && attempt.userId) {
+      c.executionCtx.waitUntil(contained("claim_pending", markClaimPending(c.env, appId, attempt.userId)));
     }
     record(gateway?.code ?? "internal_error", gateway?.reason);
-    throw error;
+    throw gateway ?? error;
   }
 }
 
-export const authRoutes = new Hono<{ Bindings: Env }>();
+export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
 
 /**
  * Bounds flooding of one application's unauthenticated authentication routes
@@ -144,19 +178,26 @@ export const authRoutes = new Hono<{ Bindings: Env }>();
  * attempt, and it is the one request that must not write an `app_auth_event`
  * row. Recording it would give a flood a database write per request, which is
  * exactly the cost this limit exists to refuse, and would bury the app's real
- * failures under rows nobody acted on. For the same reason it runs before the
- * app is loaded, so a flood aimed at an invented app id costs no read either.
+ * failures under rows nobody acted on. For the same reason it is mounted ahead
+ * of the billing gate, which loads the app and its account, so a flood at an
+ * invented app id on these three routes costs no read either.
+ *
+ * Mounted on each route's own pattern rather than by reading the path here, so
+ * it matches exactly what the router hands to the route: a percent-encoded
+ * spelling of the endpoint reaches the same handler, and is counted the same.
  */
-async function enforceAppAuthLimit(
-  c: Context<{ Bindings: Env }>,
+export function appAuthRateLimit(
   policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
-): Promise<void> {
-  const appId = c.req.param("app") ?? "";
-  await enforceEndpointRateLimit(c.env, policy, `${appId}:${clientAddress(c.req.raw)}`);
+): MiddlewareHandler<{ Bindings: Env; Variables: RequestVariables }> {
+  return async (c, next) => {
+    if (c.req.method === "POST") {
+      await enforceEndpointRateLimit(c.env, policy, `${c.req.param("app") ?? ""}:${clientAddress(c.req.raw)}`);
+    }
+    await next();
+  };
 }
 
 authRoutes.post("/challenge", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_challenge");
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
@@ -177,16 +218,15 @@ authRoutes.post("/challenge", async (c) => {
     c.executionCtx.waitUntil(
       pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorFacts(error),
         });
       }),
     );
   }
-  return c.json({ challenge, expires_in: 300 });
+  return c.json({ challenge, expires_in: 300, accepts_app_transaction: true });
 });
 
 authRoutes.post("/register", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_register");
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
@@ -195,12 +235,12 @@ authRoutes.post("/register", async (c) => {
     assertAppActive(app);
     const { exchange } = clientAuth(app);
     if (exchange === null) throw attestNotSupported();
-    return c.json(await registerKey({ env: c.env, appId, exchange, rawBody, attempt }));
+    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+    return c.json(await registerKey({ env: c.env, appId, exchange, rawBody, attempt, waitUntil }));
   });
 });
 
 authRoutes.post("/token", async (c) => {
-  await enforceAppAuthLimit(c, "app_auth_token");
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
@@ -215,7 +255,8 @@ authRoutes.post("/token", async (c) => {
         "API key token exchange requires an issuer end-user source",
       );
     }
-    const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt });
+    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+    const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt, waitUntil });
     return c.json({
       access_token: issued.token,
       expires_in: issued.expiresIn,

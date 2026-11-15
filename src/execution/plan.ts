@@ -2,6 +2,7 @@ import type { ApiStyle } from "../shared/capabilities";
 import type { ResolvedProvider } from "../providers/provider-store";
 import type { PreparedProxyRequest } from "./proxy-rules";
 import type { AttemptAttribution } from "../usage/usage-record";
+import type { ServiceMode, ServiceModeValue } from "../shared/service-modes";
 
 export interface ExecutionRequest {
   body: BodyInit | null;
@@ -21,6 +22,25 @@ export interface ExecutionAttempt {
    * response is never sniffed for a shape the request already named.
    */
   readonly apiStyle: ApiStyle;
+  /**
+   * A passthrough path (`isPassthroughPath`), forwarded without being
+   * understood: never stored, and recorded with no model and only the cost the
+   * provider itself reports. Never true for a custom endpoint, which always
+   * speaks an API the gateway reads.
+   */
+  readonly passthrough: boolean;
+  /**
+   * The service mode this attempt's body asks its provider for, region from
+   * the row's base URL included: what the attempt is billed in unless the
+   * response says another mode served it.
+   */
+  readonly serviceMode: ServiceMode;
+  /**
+   * A value of that mode the gateway does not know, which left its axis at the
+   * default: the event is then billed at an estimate, recorded as `estimated`,
+   * and the value logged so the provider's table can learn it.
+   */
+  readonly serviceModeUnknown?: ServiceModeValue;
   readonly buildRequest: () => ExecutionRequest;
 }
 
@@ -46,6 +66,9 @@ export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttributio
     pricing: resolved.pricing,
     model: attempt.model,
     apiStyle: attempt.apiStyle,
+    passthrough: attempt.passthrough,
+    serviceMode: attempt.serviceMode,
+    ...(attempt.serviceModeUnknown && { serviceModeUnknown: attempt.serviceModeUnknown }),
     route: `${resolved.slug}/${attempt.providerPath}`,
   };
 }
@@ -70,6 +93,9 @@ export function preparedExecutionAttempt(
     providerPath: prepared.providerPath,
     model: prepared.model,
     apiStyle: prepared.apiStyle,
+    passthrough: prepared.passthrough,
+    serviceMode: prepared.serviceMode,
+    ...(prepared.serviceModeUnknown && { serviceModeUnknown: prepared.serviceModeUnknown }),
     buildRequest: () => ({
       body: prepared.body,
       headers: prepared.headers,

@@ -4,7 +4,9 @@ import type { UsageRepriceRequest } from "../contracts/schemas";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
-import { computeCost, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
+import { computeCost, hasModePrice, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
+import { providerDescriptor } from "../shared/providers";
+import { parseServiceModeName, STANDARD_MODE } from "../shared/service-modes";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -55,8 +57,10 @@ export async function repriceAppUsage(
       cacheWriteTokens: appUsageEvent.cacheWriteTokens,
       outputTokens: appUsageEvent.outputTokens,
       modalityTokens: appUsageEvent.modalityTokens,
-      costUsd: appUsageEvent.costUsd,
+      tokenVariants: appUsageEvent.tokenVariants,
+      serviceMode: appUsageEvent.serviceMode,
       costSource: appUsageEvent.costSource,
+      costUsd: appUsageEvent.costUsd,
       realtimeSessionId: appUsageEvent.realtimeSessionId,
       pricing: providerTable.pricing,
     })
@@ -90,20 +94,46 @@ export async function repriceAppUsage(
     id: number;
     previousCostUsd: number;
     costUsd: number;
+    source: "computed" | "estimated";
     metered: boolean;
   }[] = [];
   const skipped: { id: number; previousCostUsd: number }[] = [];
   // Every row was selected by the requested provider type, so that is the type
   // each one is priced as.
+  //
+  // A type that declares the input modalities it counts has every prompt it
+  // answers broken down, all-text ones included, since the gateway read them.
+  // A row of it with a prompt and no breakdown was recorded before then.
+  const breaksDownInput = (providerDescriptor(provider).countedInputModalities?.length ?? 0) > 0;
   for (const row of rows) {
     // A row recorded before modality records were kept says nothing about what
     // its tokens were. Where the price depends on that, any figure would be a
     // guess, and the highest-rate one could multiply a text request's cost.
     const unresolvedRealtime = row.realtimeSessionId !== null && row.costSource === "unresolved";
-    const unrecorded = row.modalityTokens === null && pricesModalities(provider, model, row.pricing);
+    const unrecorded = pricesModalities(provider, model, row.pricing) && (
+      row.modalityTokens === null
+      || (breaksDownInput && row.modalityTokens.input === undefined && row.inputTokens + row.cachedInputTokens > 0)
+    );
+    // A row recorded before token variants were kept is priced unsplit, every
+    // cache write at the default rate. Unlike a missing modality record that is
+    // no new guess: it is the assumption the row was recorded under, so its
+    // repriced cost moves only with the rates themselves.
+    // Repriced in the mode that served it. A row recorded before modes were
+    // kept was billed as standard, which is the only assumption it can carry.
+    // A name this deployment does not read, which only a newer one could have
+    // written, reprices as the standard mode it would otherwise not price.
+    const mode = (row.serviceMode ? parseServiceModeName(row.serviceMode) : null) ?? STANDARD_MODE;
     const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded && !unresolvedRealtime
-      ? computeCost(provider, model, { ...row, modalityTokens: row.modalityTokens ?? undefined }, row.pricing)
+      ? computeCost(provider, model, {
+        ...row,
+        modalityTokens: row.modalityTokens ?? undefined,
+        tokenVariants: row.tokenVariants ?? undefined,
+      }, row.pricing, mode)
       : null;
+    // An estimate stays one: the row does not keep why it was estimated (a mode
+    // with no price, or a value the gateway did not know), so nothing here can
+    // say the doubt is gone. A row whose mode has no price is one too.
+    const estimated = row.costSource === "estimated" || !hasModePrice(provider, model, row.pricing, mode);
     if (costUsd === null) {
       if (apply) {
         throw new GatewayError(
@@ -121,6 +151,7 @@ export async function repriceAppUsage(
       id: row.id,
       previousCostUsd: row.costUsd,
       costUsd,
+      source: estimated ? "estimated" : "computed",
       metered: hasReadableCounts(row),
     });
   }
@@ -151,6 +182,7 @@ export async function repriceAppUsage(
       const changes = JSON.stringify(chunk.map((row) => ({
         id: row.id,
         cost: row.costUsd,
+        source: row.source,
         metered: row.metered ? 1 : 0,
       })));
       // Each chunk is one D1 subrequest. The row triggers still apply every
@@ -160,6 +192,7 @@ export async function repriceAppUsage(
            SELECT
              CAST(json_extract(value, '$.id') AS INTEGER) AS id,
              CAST(json_extract(value, '$.cost') AS REAL) AS cost,
+             json_extract(value, '$.source') AS source,
              CAST(json_extract(value, '$.metered') AS INTEGER) AS metered
            FROM json_each(?)
          )
@@ -167,7 +200,7 @@ export async function repriceAppUsage(
            cost_usd = (SELECT cost FROM changes WHERE changes.id = app_usage_event.id),
            cost_source = CASE
              WHEN (SELECT metered FROM changes WHERE changes.id = app_usage_event.id) = 1
-             THEN 'computed' ELSE cost_source END
+             THEN (SELECT source FROM changes WHERE changes.id = app_usage_event.id) ELSE cost_source END
          WHERE app_id = ? AND id IN (SELECT id FROM changes)`,
       ).bind(changes, appId));
     }

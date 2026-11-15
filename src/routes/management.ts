@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { ROUTE_NOT_FOUND } from "../core/errors";
 import { adminAuth, type AdminVariables } from "../middleware/admin";
+import { managementAnalytics } from "../middleware/management-analytics";
 import { requestScope } from "../middleware/request-scope";
 import { adminRoutes } from "./admin";
 import { cliRoutes } from "./cli";
@@ -33,6 +34,8 @@ export const managementRoutes = new Hono<{
 // entry module opens on the outer context is not visible here and has to be
 // opened again: one deployment snapshot and one `Map` per management request.
 managementRoutes.use("*", requestScope);
+// Ahead of every credential check, so a call refused by one is still counted.
+managementRoutes.use("*", managementAnalytics);
 
 managementRoutes.use("/v1/admin/*", adminAuth);
 managementRoutes.route("/v1/admin", adminRoutes);

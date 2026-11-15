@@ -1,18 +1,26 @@
 import type { CallToolResult, McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import type { z } from "zod";
+import {
+  clientOf,
+  endingOf,
+  knownClient,
+  recordManagementCall,
+  refusalOf,
+  versionOf,
+  type CallEnding,
+} from "../analytics/management";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { GatewayError } from "../core/errors";
+import { asGatewayError } from "../core/platform-errors";
+import { errorFacts } from "../core/error-facts";
 import { log } from "../core/log";
+import { requestIdOf } from "../core/request-id";
 import { SERVER_VERSION } from "../core/version";
-import {
-  runOperation,
-  type OperationCaller,
-  type OperationRequest,
-} from "../management/executor";
-import { OPERATION_HANDLERS } from "../management/handlers";
+import type { OperationCaller } from "../management/executor";
 import { MCP_GUIDE, MCP_GUIDE_URI, MCP_INSTRUCTIONS } from "./guide";
 import { redactSecrets } from "./secret-fields";
-import { MCP_TOOLS, nextAction, type McpTool, type ToolOperation } from "./tools";
+import { runTool } from "./run";
+import { MCP_TOOLS, nextAction, type McpTool } from "./tools";
 
 type Sdk = typeof import("@modelcontextprotocol/server");
 
@@ -62,7 +70,13 @@ export async function serveMcp(request: Request, caller: OperationCaller): Promi
       token: "",
       clientId: caller.auth?.actor.credentialId ?? "",
       scopes: caller.auth ? [caller.auth.actor.grant] : [],
-      extra: { caller },
+      extra: {
+        caller,
+        request: {
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          requestId: requestIdOf(request.headers.get("cf-ray")),
+        } satisfies McpRequest,
+      },
     },
   });
 }
@@ -80,12 +94,12 @@ type McpHttpHandler = ReturnType<Sdk["createMcpHandler"]>;
  */
 const mcpHandler = (): Promise<McpHttpHandler> =>
   (handler ??= mcpSdk().then((sdk) =>
-    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra)), {
+    sdk.createMcpHandler((context) => mcpServer(sdk, callerOf(context.authInfo?.extra), requestOf(context.authInfo?.extra)), {
       legacy: "stateless",
       responseMode: "json",
       maxSubscriptions: 0,
       // Reporting only: what the SDK refused, it has already answered.
-      onerror: (error) => log("warn", "mcp_request_rejected", failureKind(error)),
+      onerror: (error) => log("warn", "mcp_request_rejected", { error: errorFacts(error) }),
     })).catch((error: unknown) => {
       handler = undefined;
       throw error;
@@ -93,19 +107,6 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
 
 let handler: Promise<McpHttpHandler> | undefined;
 
-/**
- * What may be logged about a failure: its class and name, and a gateway
- * error's code — never its message, its stack or its cause, any of which can
- * quote what the caller sent.
- */
-function failureKind(error: unknown): { error: string; errorClass?: string; code?: string } {
-  if (!(error instanceof Error)) return { error: typeof error };
-  return {
-    error: /^[A-Za-z_]\w{0,63}$/u.test(error.name) ? error.name : "Error",
-    errorClass: error.constructor.name,
-    ...(error instanceof GatewayError ? { code: error.code } : {}),
-  };
-}
 
 function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   const caller = extra?.caller as OperationCaller | undefined;
@@ -114,7 +115,19 @@ function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   return caller;
 }
 
-function mcpServer(sdk: Sdk, caller: OperationCaller): McpServer {
+/** What a tool call's analytics and log lines need of the HTTP request that carried it. */
+interface McpRequest {
+  userAgent: string | undefined;
+  /** Cloudflare's id for the request, which the call's log lines and data point both carry. */
+  requestId: string | null;
+}
+
+function requestOf(extra: Record<string, unknown> | undefined): McpRequest {
+  // `serveMcp` is the only way in, and it always passes one.
+  return (extra?.request as McpRequest | undefined) ?? { userAgent: undefined, requestId: null };
+}
+
+function mcpServer(sdk: Sdk, caller: OperationCaller, request: McpRequest): McpServer {
   const server = new sdk.McpServer(
     { name: "app-ai-gateway", version: SERVER_VERSION },
     {
@@ -130,6 +143,7 @@ function mcpServer(sdk: Sdk, caller: OperationCaller): McpServer {
     },
   );
   for (const tool of MCP_TOOLS) {
+    if (tool.available && !tool.available(caller.scope)) continue;
     server.registerTool(
       tool.name,
       {
@@ -138,7 +152,7 @@ function mcpServer(sdk: Sdk, caller: OperationCaller): McpServer {
         inputSchema: advertised(tool.input),
         annotations: tool.annotations,
       },
-      (input) => callTool(tool, input, caller),
+      (input, ctx) => callTool(tool, input, caller, toolClient(ctx.mcpReq.envelope, request.userAgent), request.requestId),
     );
   }
   server.registerResource(
@@ -205,20 +219,24 @@ async function callTool(
   tool: McpTool,
   input: Record<string, unknown>,
   caller: OperationCaller,
+  client: ToolClient,
+  requestId: string | null,
 ): Promise<CallToolResult> {
+  const started = Date.now();
   try {
-    const body = tool.perform ? await tool.perform(input, caller) : await call(tool, input, caller);
-    // Redacted before the summary is written from it: what a tool answers may
-    // have been stored by any transport, and an app document stored through
-    // the API may hold provider-native parameters of any name.
-    const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt);
-    return {
-      content: [{ type: "text", text: tool.summary(result, redactSecrets(input)) }],
+    const { result, summary } = await runTool(tool, input, caller);
+    const answer: CallToolResult = {
+      content: [{ type: "text", text: summary }],
       structuredContent: result as Record<string, unknown>,
     };
+    recordToolCall(tool, caller, client, requestId, started, endingOf(200));
+    return answer;
   } catch (error) {
-    const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : error;
-    if (refusal instanceof GatewayError) return refused(tool, caller, refusal);
+    // A platform failure is refused like any gateway error, so the caller is
+    // told to retry rather than that the gateway broke.
+    const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : asGatewayError(error) ?? error;
+    recordToolCall(tool, caller, client, requestId, started, refusalOf(refusal));
+    if (refusal instanceof GatewayError) return refused(tool, caller, refusal, requestId);
     // Answered with nothing of it, and logged with nothing of it either: a
     // failure's message can carry what the call sent — a database error
     // quotes its bound parameters — so only what kind of failure it was is
@@ -228,7 +246,8 @@ async function callTool(
       method: "POST",
       tool: tool.name,
       source: actionSource(caller),
-      ...failureKind(error),
+      ray: requestId ?? undefined,
+      error: errorFacts(error),
     });
     return {
       isError: true,
@@ -243,20 +262,56 @@ async function callTool(
   }
 }
 
-function call(tool: McpTool, input: Record<string, unknown>, caller: OperationCaller): Promise<unknown> {
-  if (!tool.call) throw new Error(`MCP tool ${tool.name} has neither an operation nor a perform`);
-  const { operation, request, before } = tool.call(input);
-  return run(operation, request as never, caller, before);
+/** Who is calling a tool, as the client names itself. */
+interface ToolClient {
+  name: string | null;
+  version: string | null;
 }
 
-/** One operation, run with its own registered handler and the tool's own check. */
-function run<K extends ToolOperation>(
-  operation: K,
-  request: OperationRequest<K>,
+/**
+ * The client's own name and version: what a 2026-07-28 client declares in each
+ * request's envelope, else the name its `user-agent` gives, since a 2025-era
+ * client declared one only in an `initialize` this stateless server never
+ * keeps. Either is labelled by `knownClient`, never copied.
+ */
+function toolClient(envelope: object | undefined, userAgent: string | undefined): ToolClient {
+  const info = (envelope as Record<string, unknown> | undefined)?.["io.modelcontextprotocol/clientInfo"];
+  const declared = info !== null && typeof info === "object" ? (info as Record<string, unknown>) : {};
+  const name = typeof declared.name === "string" ? knownClient(declared.name) : null;
+  return {
+    name: name ?? clientOf(userAgent),
+    // A version means something only beside a client this gateway knows.
+    version: name !== null && name !== "other" && typeof declared.version === "string"
+      ? versionOf(declared.version)
+      : null,
+  };
+}
+
+/** One tool call's data point, where the deployment records management calls. */
+function recordToolCall(
+  tool: McpTool,
   caller: OperationCaller,
-  before: (() => void) | undefined,
-): Promise<unknown> {
-  return runOperation(operation, caller, request, OPERATION_HANDLERS[operation], before ? { before } : {});
+  client: ToolClient,
+  requestId: string | null,
+  started: number,
+  ending: CallEnding,
+): void {
+  const actor = caller.auth?.actor;
+  recordManagementCall(caller.scope.env, {
+    accountId: actor?.organizationId ?? null,
+    channel: "mcp",
+    credential: actor?.credentialType ?? "none",
+    identity: actor?.identityKind ?? null,
+    // A dual tool chooses between two by its arguments; its name says which.
+    operation: typeof tool.operation === "string" ? tool.operation : null,
+    tool: tool.name,
+    kind: tool.kind ?? null,
+    ...ending,
+    client: client.name,
+    clientVersion: client.version,
+    requestId,
+    durationMs: Date.now() - started,
+  });
 }
 
 /**
@@ -278,6 +333,7 @@ function refused(
   tool: McpTool,
   caller: OperationCaller,
   error: GatewayError,
+  requestId: string | null,
 ): CallToolResult {
   log(error.status >= 500 ? "error" : "warn", "gateway_error", {
     code: error.code,
@@ -290,6 +346,7 @@ function refused(
     // refused, wherever the caller put it, so a refusal is logged by its code
     // and the tool alone.
     source: actionSource(caller),
+    ray: requestId ?? undefined,
   });
   const next = tool.next?.[error.code] ?? nextAction(error.code);
   const message = error.message.replace(/[.\s]+$/u, "");

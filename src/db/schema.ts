@@ -18,6 +18,7 @@ import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
 import type { AppConfig } from "../shared/app-config";
 import type { AppStatus } from "../shared/app-status";
 import type { ProviderType } from "../shared/providers";
+import type { TokenPrice, TokenVariants } from "../shared/token-rates";
 
 export type UserStatus = "active" | "blocked";
 export type AttestEnvironment = "production" | "development";
@@ -58,8 +59,13 @@ export interface GatewayRouteConfig {
   /** Serving providers the gateway may pick from, where it supports pinning. */
   providerOnly?: string[];
 }
-/** Per-1M-token overrides for models the shipped catalog does not cover. */
-export type ProviderPricing = Record<string, { input: number; output: number; audio_input?: number; audio_output?: number; cached_input?: number; cached_audio_input?: number }>;
+/**
+ * Per-1M-token overrides for models the shipped catalog does not cover, or
+ * covers at a price this provider does not charge. An entry replaces the
+ * catalog's rates for its model outright; see `modelPrice` in
+ * `src/usage/pricing.ts`.
+ */
+export type ProviderPricing = Record<string, TokenPrice>;
 /**
  * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
  * own figure for that request, which outranks a local estimate because it is
@@ -68,7 +74,7 @@ export type ProviderPricing = Record<string, { input: number; output: number; au
  * neither source could establish, so its zero cost is an unknown rather than a
  * measurement.
  */
-export type CostSource = "computed" | "reported" | "unresolved";
+export type CostSource = "computed" | "estimated" | "reported" | "unresolved";
 
 // Table naming rule: `mgmt_` is who administers the gateway, their credentials
 // and their unfinished administrative acts; a bare noun (`app`, `provider`,
@@ -98,6 +104,11 @@ export const {
    * gateway reads them yet.
    */
   oauthToken: mgmtOauthToken,
+  /**
+   * cf-auth's invitations by email address. The gateway issues none yet, but
+   * cf-auth reads the table when it provisions a new person, so it has to exist.
+   */
+  organizationInvitation: mgmtOrganizationInvitation,
 } = mgmtAuthTables;
 
 /**
@@ -398,6 +409,22 @@ export const appUsageEvent = sqliteTable(
      * column existed.
      */
     modalityTokens: text("modality_tokens", { mode: "json" }).$type<ModalityTokens>(),
+    /**
+     * The parts of a token bucket the response split out to bill at a rate of
+     * their own, as JSON such as `{ cache_write?: { "12h"?: n } }` — see `TOKEN_VARIANTS`
+     * in `src/shared/token-rates.ts`. Every such split shares this one column,
+     * so a new one never adds another. `{}` where the response split nothing;
+     * null only on rows recorded before the column existed.
+     */
+    tokenVariants: text("token_variants", { mode: "json" }).$type<TokenVariants>(),
+    /**
+     * The service mode that served the request and that `cost_usd` was priced
+     * in, by its name: `fast`, `us`, `fast+us` — see `serviceModeName` in
+     * `src/shared/service-modes.ts`. Null for the standard mode, and on every
+     * row recorded before the column existed, which were all billed as
+     * standard.
+     */
+    serviceMode: text("service_mode"),
     costUsd: real("cost_usd").notNull().default(0),
     /**
      * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a
@@ -445,11 +472,32 @@ export const appUsageEvent = sqliteTable(
      * which have no install.
      */
     installId: text("install_id"),
+    /**
+     * The hashed Apple Account the install belongs to, where the install's
+     * token exchange carried an App Store transaction that verified; null
+     * otherwise, and on every server application's request.
+     */
+    appleAccountId: text("apple_account_id"),
+    /**
+     * The client's own `X-Client-Trace-Id`, which groups the requests of one
+     * unit of its work — a chat message that takes several model rounds — and
+     * joins them with the app's own records and its stored conversations.
+     * Null where the client sent none.
+     */
+    clientTraceId: text("client_trace_id"),
   },
   (table) => [
     index("idx_usage_event_account_created").on(table.organizationId, table.createdAt),
+    // Partial, so traffic that sends no trace id pays no extra index write.
+    index("idx_usage_trace")
+      .on(table.appId, table.clientTraceId)
+      .where(sql`${table.clientTraceId} IS NOT NULL`),
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
     index("idx_usage_install_month").on(table.appId, table.installId, table.createdAt),
+    // Partial, so the requests that name no Apple Account pay no index write.
+    index("idx_usage_apple_account_month")
+      .on(table.appId, table.appleAccountId, table.createdAt)
+      .where(sql`${table.appleAccountId} IS NOT NULL`),
     index("idx_usage_app_month").on(table.appId, table.createdAt),
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
@@ -459,7 +507,7 @@ export const appUsageEvent = sqliteTable(
   ],
 );
 
-export type AppUsageSpendScope = "app" | "user" | "install";
+export type AppUsageSpendScope = "app" | "user" | "install" | "apple_account";
 
 /**
  * Canonical monthly spend derived atomically from `app_usage_event` by the D1
@@ -470,9 +518,11 @@ export type AppUsageSpendScope = "app" | "user" | "install";
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities
- * distinct in the unique key. An `install` row's key is the App Attest key id;
- * every event of an App Attest application writes both its `user` and its
- * `install` row, so either can become the budget's scope with its history.
+ * distinct in the unique key. An `install` row's key is the App Attest key id,
+ * and an `apple_account` row's the hashed Apple Account. Every event of an
+ * App Attest application writes its `user` and its `install` row, and its
+ * `apple_account` row whenever it names one, so any of them can become the
+ * budget's scope with its history.
  */
 export const appUsageSpend = sqliteTable(
   "app_usage_spend",
@@ -494,7 +544,7 @@ export const appUsageSpend = sqliteTable(
       table.month,
     ),
     index("idx_app_usage_spend_organization").on(table.organizationId),
-    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user', 'install')`),
+    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user', 'install', 'apple_account')`),
     check(
       "app_usage_spend_month_check",
       sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
@@ -570,6 +620,67 @@ export const appUsageRollup = sqliteTable(
   ],
 );
 
+/**
+ * One application's totals for one completed UTC day, kept beside the raw
+ * events of that day rather than instead of them, so the month totals the apps
+ * list and the usage summary report read about thirty rows instead of one row
+ * per request.
+ *
+ * A row exists only for a day inside {@link appUsageDayWindow}, and inside that
+ * window it always equals the sum of the day's raw events: the nightly run
+ * writes a day's rows in the same transaction that admits the day, and triggers
+ * on `app_usage_event` move them whenever an event of a sealed day is inserted
+ * late, repriced, or deleted. Nothing is written on a proxied request's own
+ * path, which records today, and today is never sealed.
+ *
+ * Not a third copy of history: rows below the window are deleted as the window
+ * moves past the retention cutoff, before compaction moves those days' events
+ * into `app_usage_rollup`. A day is therefore read from exactly one of the raw
+ * events, this table, or — once compacted — the rollup.
+ */
+export const appUsageDay = sqliteTable(
+  "app_usage_day",
+  {
+    appId: text("app_id").notNull(),
+    /** `YYYY-MM-DD`, the UTC day prefix of the events' `created_at`. */
+    day: text("day").notNull(),
+    /** Durable ownership, carried over from the events, for account cleanup. */
+    organizationId: text("organization_id").notNull(),
+    requests: integer("requests").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    cachedInputTokens: integer("cached_input_tokens").notNull(),
+    cacheWriteTokens: integer("cache_write_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    costUsd: real("cost_usd").notNull(),
+    errors: integer("errors").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.appId, table.day] }),
+    index("idx_app_usage_day_organization").on(table.organizationId),
+  ],
+);
+
+/**
+ * The half-open range of UTC days, `[sealed_from, sealed_until)`, whose totals
+ * {@link appUsageDay} holds. One row, created by the migration.
+ *
+ * Equal bounds are an empty window. `sealed_from` follows the retention cutoff
+ * up and `sealed_until` follows the nightly run to today, so the window never
+ * reaches a day still receiving its ordinary traffic, nor one being compacted.
+ */
+export const appUsageDayWindow = sqliteTable(
+  "app_usage_day_window",
+  {
+    id: integer("id").primaryKey(),
+    sealedFrom: text("sealed_from").notNull(),
+    sealedUntil: text("sealed_until").notNull(),
+  },
+  (table) => [
+    check("app_usage_day_window_singleton_check", sql`${table.id} = 1`),
+    check("app_usage_day_window_order_check", sql`${table.sealedFrom} <= ${table.sealedUntil}`),
+  ],
+);
+
 /** One sampled refusal before any provider attempt; diagnostics expire without rollups. */
 export const appRejectionEvent = sqliteTable(
   "app_rejection_event",
@@ -598,7 +709,7 @@ export const appRejectionEvent = sqliteTable(
     index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
     index("idx_rejection_events_created").on(table.createdAt),
     check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user', 'blocked_replay')`),
-    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'app', 'account')`),
+    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'apple_account', 'app', 'account')`),
   ],
 );
 
@@ -646,6 +757,13 @@ export const appAuthEvent = sqliteTable(
     /** The granular cause behind the outcome — see `IssuerRejectionReason`. */
     reason: text("reason"),
     appVersion: text("app_version"),
+    /**
+     * The gateway client package and version the attempt named in
+     * `X-Client-SDK`, such as `app-ai-gateway-swift/1.7.0`; null when it named
+     * none or anything else (see `storedClientSdk`). Recorded here, once per
+     * exchange or registration, rather than on every usage event.
+     */
+    clientSdk: text("client_sdk"),
     latencyMs: integer("latency_ms"),
     /**
      * Set only on the exchange that ends a claim-propagation window: how long

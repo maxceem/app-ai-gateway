@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,10 @@ import { assertVersionsAgree } from "./manifest.mjs";
  * puts it there, and stops short of npm on purpose: publishing the CLI before
  * its asset is live would ship a version whose first `deployment setup` cannot
  * find its gateway.
+ *
+ * With `--prebuilt` it uploads an archive `cli/scripts/release.mjs` already
+ * built, as the release workflow does: the build runs in a job without
+ * secrets, and this one only checks the archive against its integrity file.
  */
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -26,31 +31,40 @@ function capture(command, args) {
   return spawnSync(command, args, { cwd: root, encoding: "utf8" });
 }
 
+const prebuilt = process.argv.slice(2).includes("--prebuilt");
 const version = await assertVersionsAgree();
 const tag = `v${version}`;
 
-// Before anything is built: the archive is packed from the working tree, so a
-// tree with uncommitted changes would publish a gateway that no commit
-// describes, under a tag that claims one does.
-const status = capture("git", ["status", "--porcelain"]);
-if (status.status !== 0) throw new Error("Cannot read the git status of this checkout");
-if (status.stdout.trim())
-  throw new Error(
-    `The working tree has uncommitted changes:\n${status.stdout}` +
-      `Commit or stash them before publishing ${tag}.`,
-  );
+if (!prebuilt) {
+  // Before anything is built: the archive is packed from the working tree, so a
+  // tree with uncommitted changes would publish a gateway that no commit
+  // describes, under a tag that claims one does.
+  const status = capture("git", ["status", "--porcelain"]);
+  if (status.status !== 0) throw new Error("Cannot read the git status of this checkout");
+  if (status.stdout.trim())
+    throw new Error(
+      `The working tree has uncommitted changes:\n${status.stdout}` +
+        `Commit or stash them before publishing ${tag}.`,
+    );
+}
 
 if (capture("gh", ["--version"]).status !== 0)
   throw new Error("The GitHub CLI (gh) is required to publish a release asset");
 
-if (run(process.execPath, [resolve(root, "cli/scripts/release.mjs")]).status !== 0)
+if (!prebuilt && run(process.execPath, [resolve(root, "cli/scripts/release.mjs")]).status !== 0)
   throw new Error("The CLI release build failed");
 
 const asset = resolve(root, `cli/dist/gateway-${version}.tar.gz`);
 const { size } = await stat(asset);
-const { sha256, url } = JSON.parse(
+const integrity = JSON.parse(
   await readFile(resolve(root, "cli/dist/release-integrity.json"), "utf8"),
 );
+const { sha256, url } = integrity;
+if (integrity.version !== version)
+  throw new Error(`cli/dist/release-integrity.json describes ${integrity.version}, not ${version}`);
+// The CLI bundle carries this digest; an asset that differs could never be installed.
+if (createHash("sha256").update(await readFile(asset)).digest("hex") !== sha256)
+  throw new Error(`${asset} does not match the digest in cli/dist/release-integrity.json`);
 
 const notes =
   `Gateway ${version}, as \`@maxceem/agw@${version}\` downloads it.\n\n` +
