@@ -6,7 +6,7 @@ import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
 import { computeCost, hasModePrice, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
 import { providerDescriptor } from "../shared/providers";
-import { isStandardMode, serviceModeFromStored } from "../shared/service-modes";
+import { serviceModeFromStored } from "../shared/service-modes";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -126,11 +126,10 @@ export async function repriceAppUsage(
         tokenVariants: row.tokenVariants ?? undefined,
       }, row.pricing, mode)
       : null;
-    // Still an estimate where its mode has no price yet, or where the request
-    // named a value the gateway did not know, which the row keeps only as the
-    // `estimated` it was recorded with.
-    const estimated = !hasModePrice(provider, model, row.pricing, mode)
-      || (row.costSource === "estimated" && isStandardMode(mode));
+    // An estimate stays one: the row does not keep why it was estimated (a mode
+    // with no price, or a value the gateway did not know), so nothing here can
+    // say the doubt is gone. A row whose mode has no price is one too.
+    const estimated = row.costSource === "estimated" || !hasModePrice(provider, model, row.pricing, mode);
     if (costUsd === null) {
       if (apply) {
         throw new GatewayError(
