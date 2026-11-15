@@ -5,6 +5,7 @@ import { hasTokenModelPrice, resolveModelAuthor } from "../src/usage/pricing";
 import { MODEL_KINDS, type ModelKind } from "../src/shared/model-kinds";
 import { LONG_RATE_FIELDS, TOKEN_RATE_FIELDS, type TokenRateField } from "../src/shared/token-rates";
 import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
+import { parseServiceModeName } from "../src/shared/service-modes";
 
 // The one test file that reads the shipped price list: `test/frozen-prices.ts`
 // gives every other one a frozen copy. A provider adds, retires and reprices
@@ -28,6 +29,32 @@ describe("the shipped price catalog", () => {
     "long_context_threshold",
   ]);
 
+  /**
+   * An entry's `modes`: each named for a mode the gateway knows, a factor a
+   * provider could plausibly charge (a tenth to ten times standard), and rates
+   * in the entry's own unit, held to its band.
+   */
+  function checkModes(where: string, modes: unknown, entry: Record<string, unknown>): void {
+    expect([where, "modes", typeof modes === "object" && modes !== null && !Array.isArray(modes)])
+      .toEqual([where, "modes", true]);
+    const unit = entry.per_minute !== undefined ? "per_minute" : entry.per_hour !== undefined ? "per_hour" : entry.per_image !== undefined ? "per_image" : "token";
+    for (const [name, mode] of Object.entries(modes as Record<string, unknown>)) {
+      expect([where, name, name !== "standard" && parseServiceModeName(name) !== null]).toEqual([where, name, true]);
+      expect([where, name, typeof mode === "object" && mode !== null && !Array.isArray(mode)]).toEqual([where, name, true]);
+      for (const [rate, amount] of Object.entries(mode as Record<string, unknown>)) {
+        expect([where, name, rate, typeof amount]).toEqual([where, name, rate, "number"]);
+        const value = amount as number;
+        if (rate === "factor") {
+          expect([where, name, rate, value >= 0.1 && value <= 10]).toEqual([where, name, rate, true]);
+          continue;
+        }
+        expect([where, name, rate, unit === "token" ? TOKEN_RATE_FIELDS.includes(rate as TokenRateField) : rate === unit])
+          .toEqual([where, name, rate, true]);
+        expect([where, name, rate, value === 0 || (value > 0.001 && value < 1000)]).toEqual([where, name, rate, true]);
+      }
+    }
+  }
+
   it("prices every catalogued model in dollars per million tokens", () => {
     for (const [provider, models] of Object.entries(catalog)) {
       expect([provider, PROVIDER_TYPES]).toContainEqual(provider);
@@ -49,6 +76,10 @@ describe("the shipped price catalog", () => {
               .toEqual([where, true, true]);
             continue;
           }
+          if (field === "modes") {
+            checkModes(where, value, entry);
+            continue;
+          }
           if (field === "price_changes") {
             // Days in order, each changing at least one rate the entry's
             // billing unit uses, held to the same band as the entry's own.
@@ -59,8 +90,9 @@ describe("the shipped price catalog", () => {
               expect([where, day, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day), day > previous])
                 .toEqual([where, day, true, true, true]);
               previous = day;
-              const rates = Object.entries(change).filter(([key]) => key !== "from");
-              expect([where, day, rates.length > 0]).toEqual([where, day, true]);
+              if (change.modes !== undefined) checkModes(`${where} ${day}`, change.modes, entry);
+              const rates = Object.entries(change).filter(([key]) => key !== "from" && key !== "modes");
+              expect([where, day, rates.length > 0 || change.modes !== undefined]).toEqual([where, day, true]);
               for (const [rate, amount] of rates) {
                 expect([where, day, rate, PRICED_FIELDS.has(rate), typeof amount]).toEqual([where, day, rate, true, "number"]);
                 if (rate === "long_context_threshold") continue;

@@ -17,9 +17,11 @@
  * spelling appears. Pricing, restrictions, usage records and reports then speak
  * these names, so nothing downstream branches on a provider.
  *
- * Import-free and erasable syntax only, like `token-rates.ts`, so the console
- * and the model sync can load it.
+ * Erasable syntax only, and it imports nothing but `./token-rates.ts` (by its
+ * full name), so the console and the price list's updates can load it as it is.
  */
+
+import { TOKEN_RATE_FIELDS, type ModePrice } from "./token-rates.ts";
 
 /** Each tier, cheapest first. `rank` orders them by what they cost against standard. */
 export const SERVICE_TIERS = {
@@ -30,11 +32,23 @@ export const SERVICE_TIERS = {
   ultrafast: { label: "Ultrafast", rank: 3 },
 } as const;
 
-/** Each region a request can be pinned to. `global` is the provider's default placement. */
+/**
+ * Each region a request can be pinned to. `global` is the provider's default
+ * placement. The others are the regions a provider prices apart: Anthropic's
+ * `inference_geo`, and the regional hosts of OpenAI, xAI, Mistral and Together.
+ */
 export const SERVICE_REGIONS = {
   global: { label: "Global" },
   us: { label: "US" },
   eu: { label: "EU" },
+  gb: { label: "UK" },
+  ca: { label: "Canada" },
+  au: { label: "Australia" },
+  jp: { label: "Japan" },
+  kr: { label: "South Korea" },
+  in: { label: "India" },
+  sg: { label: "Singapore" },
+  ae: { label: "UAE" },
 } as const;
 
 export type ServiceTier = keyof typeof SERVICE_TIERS;
@@ -48,6 +62,38 @@ export interface ServiceMode {
 /** What a request that names no mode is served in, and what every price without a mode means. */
 export const STANDARD_MODE: ServiceMode = { tier: "standard", region: "global" };
 
+/** A mode as a usage row stores it: only the axes that differ from the default. */
+export interface StoredServiceMode {
+  readonly tier?: ServiceTier;
+  readonly region?: ServiceRegion;
+}
+
+/** The stored form of a mode, or `null` for the standard one. */
+export function storedServiceMode(mode: ServiceMode): StoredServiceMode | null {
+  if (mode.tier === "standard" && mode.region === "global") return null;
+  return {
+    ...(mode.tier !== "standard" && { tier: mode.tier }),
+    ...(mode.region !== "global" && { region: mode.region }),
+  };
+}
+
+/**
+ * A stored mode read back, whatever a row holds: an axis it names that this
+ * deployment does not know reads as the default, so an old row never fails
+ * to reprice.
+ */
+export function serviceModeFromStored(stored: unknown): ServiceMode {
+  if (typeof stored !== "object" || stored === null) return STANDARD_MODE;
+  const { tier, region } = stored as Record<string, unknown>;
+  const knownTier = typeof tier === "string" && Object.hasOwn(SERVICE_TIERS, tier) ? tier as ServiceTier : "standard";
+  const knownRegion = typeof region === "string" && Object.hasOwn(SERVICE_REGIONS, region)
+    ? region as ServiceRegion
+    : "global";
+  return knownTier === "standard" && knownRegion === "global"
+    ? STANDARD_MODE
+    : { tier: knownTier, region: knownRegion };
+}
+
 /**
  * A mode's name as prices, restrictions and messages spell it: the tier and the
  * region that differ from the default, joined by `+` — `fast`, `us`, `fast+us`,
@@ -59,6 +105,78 @@ export function serviceModeName(mode: ServiceMode): string {
     ...(mode.region === "global" ? [] : [mode.region]),
   ];
   return parts.length === 0 ? "standard" : parts.join("+");
+}
+
+export function isStandardMode(mode: ServiceMode): boolean {
+  return mode.tier === "standard" && mode.region === "global";
+}
+
+/** Every rate a mode's factor multiplies. */
+export const MODE_PRICE_FIELDS = [...TOKEN_RATE_FIELDS, "per_minute", "per_hour", "per_image"] as const;
+
+/** A price shaped like a price-list entry: its rates, and the modes it is sold in. */
+export type ModalPrice = Partial<Record<(typeof MODE_PRICE_FIELDS)[number], number>> & {
+  modes?: Readonly<Record<string, ModePrice>>;
+};
+
+/** `price` with one mode entry applied: every rate × `factor` (1 if left out), then the entry's own rates. */
+export function withModePrice<P extends ModalPrice>(price: P, entry: ModePrice): P {
+  const factor = typeof entry.factor === "number" && Number.isFinite(entry.factor) && entry.factor >= 0
+    ? entry.factor
+    : 1;
+  const next: P = { ...price };
+  for (const field of MODE_PRICE_FIELDS) {
+    const own = entry[field];
+    const rate = price[field];
+    if (typeof own === "number" && Number.isFinite(own) && own >= 0) next[field] = own as P[typeof field];
+    else if (typeof rate === "number") next[field] = rate * factor as P[typeof field];
+  }
+  return next;
+}
+
+/**
+ * A model's price in one service mode, or `undefined` where it has none.
+ *
+ * The standard mode is the entry itself. Any other is the entry's own
+ * `modes[name]`: an exact key wins, so a provider that prices a combination
+ * apart (Mistral's priority with regional inference, ×1.85 rather than
+ * 1.75 × 1.1) states it. Failing one, a tier in a region is the tier's entry
+ * and then the region's on top of it — Anthropic's fast mode in the US is
+ * 2 × 1.1. Everything downstream — the long-context threshold, cache-write
+ * variants, modality rates and every fallback in `bucketRates` — then reads
+ * the derived price exactly as it reads a standard one.
+ */
+export function priceInMode<P extends ModalPrice>(price: P, mode: ServiceMode): P | undefined {
+  if (isStandardMode(mode)) return price;
+  const modes = price.modes;
+  if (!modes) return undefined;
+  const entry = (name: string) => Object.hasOwn(modes, name) ? modes[name] : undefined;
+  const exact = entry(serviceModeName(mode));
+  if (exact) return withModePrice(price, exact);
+  if (mode.tier === "standard" || mode.region === "global") return undefined;
+  const tier = entry(mode.tier);
+  const region = entry(mode.region);
+  return tier && region ? withModePrice(withModePrice(price, tier), region) : undefined;
+}
+
+/**
+ * A mode spelled the way {@link serviceModeName} spells it — `fast`, `us`,
+ * `fast+us`, `standard` — or `null` for anything else. A price's `modes` keys
+ * are read with it, so a key that names no mode is refused where prices are
+ * written.
+ */
+export function parseServiceModeName(name: string): ServiceMode | null {
+  if (name === "standard") return STANDARD_MODE;
+  const [first, second, ...rest] = name.split("+");
+  if (first === undefined || rest.length > 0) return null;
+  const isTier = (part: string): part is ServiceTier => Object.hasOwn(SERVICE_TIERS, part) && part !== "standard";
+  const isRegion = (part: string): part is ServiceRegion => Object.hasOwn(SERVICE_REGIONS, part) && part !== "global";
+  if (second === undefined) {
+    if (isTier(first)) return { tier: first, region: "global" };
+    if (isRegion(first)) return { tier: "standard", region: first };
+    return null;
+  }
+  return isTier(first) && isRegion(second) ? { tier: first, region: second } : null;
 }
 
 /**
@@ -94,6 +212,11 @@ export interface ServiceModeReading {
   /** What the known values ask for; an unknown value leaves its axis at the default. */
   readonly mode: ServiceMode;
   /**
+   * Each axis a known value named, even where it named the default: a response
+   * that says `standard` has said something, and is believed over the request.
+   */
+  readonly named: { readonly tier?: ServiceTier; readonly region?: ServiceRegion };
+  /**
    * The fields, as the client spelled them, that set the mode's tier and
    * region where they are not the default: what a message about the mode
    * quotes back, so the client sees the field it sent rather than only the
@@ -124,6 +247,7 @@ export function readServiceMode(
   let tier: ServiceTier | undefined;
   let tierAskedBy: UnknownServiceMode | undefined;
   let region: ServiceRegion = "global";
+  let regionNamed = false;
   let regionAskedBy: UnknownServiceMode | undefined;
   let unknown: UnknownServiceMode | undefined;
   for (const field of fields) {
@@ -142,9 +266,12 @@ export function readServiceMode(
           tier = asked;
           tierAskedBy = { field: name, value: describeValue(value) };
         }
-      } else if (region === "global") {
-        region = meaning as ServiceRegion;
-        regionAskedBy = { field: name, value: describeValue(value) };
+      } else {
+        regionNamed = true;
+        if (region === "global") {
+          region = meaning as ServiceRegion;
+          regionAskedBy = { field: name, value: describeValue(value) };
+        }
       }
     }
   }
@@ -155,7 +282,11 @@ export function readServiceMode(
     ...(mode.tier !== "standard" && tierAskedBy ? [tierAskedBy] : []),
     ...(mode.region !== "global" && regionAskedBy ? [regionAskedBy] : []),
   ];
-  return unknown ? { mode, askedBy, unknown } : { mode, askedBy };
+  const named = {
+    ...(tier !== undefined && { tier }),
+    ...(regionNamed && { region }),
+  };
+  return unknown ? { mode, named, askedBy, unknown } : { mode, named, askedBy };
 }
 
 /** A field's value, following a dotted name into nested objects. */

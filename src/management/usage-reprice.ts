@@ -6,6 +6,7 @@ import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
 import { computeCost, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
 import { providerDescriptor } from "../shared/providers";
+import { serviceModeFromStored } from "../shared/service-modes";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -57,6 +58,7 @@ export async function repriceAppUsage(
       outputTokens: appUsageEvent.outputTokens,
       modalityTokens: appUsageEvent.modalityTokens,
       tokenVariants: appUsageEvent.tokenVariants,
+      serviceMode: appUsageEvent.serviceMode,
       costUsd: appUsageEvent.costUsd,
       pricing: providerTable.pricing,
     })
@@ -112,12 +114,14 @@ export async function repriceAppUsage(
     // cache write at the default rate. Unlike a missing modality record that is
     // no new guess: it is the assumption the row was recorded under, so its
     // repriced cost moves only with the rates themselves.
+    // Repriced in the mode that served it. A row recorded before modes were
+    // kept was billed as standard, which is the only assumption it can carry.
     const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded
       ? computeCost(provider, model, {
         ...row,
         modalityTokens: row.modalityTokens ?? undefined,
         tokenVariants: row.tokenVariants ?? undefined,
-      }, row.pricing)
+      }, row.pricing, serviceModeFromStored(row.serviceMode))
       : null;
     if (costUsd === null) {
       if (apply) {

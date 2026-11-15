@@ -2,6 +2,7 @@ import type { ApiStyle } from "../shared/capabilities";
 import type { ResolvedProvider } from "../providers/provider-store";
 import type { PreparedProxyRequest } from "./proxy-rules";
 import type { AttemptAttribution } from "../usage/usage-record";
+import type { ServiceMode } from "../shared/service-modes";
 
 export interface ExecutionRequest {
   body: BodyInit | null;
@@ -28,6 +29,12 @@ export interface ExecutionAttempt {
    * speaks an API the gateway reads.
    */
   readonly passthrough: boolean;
+  /**
+   * The service mode this attempt's body asks its provider for, region from
+   * the row's base URL included: what the attempt is billed in unless the
+   * response says another mode served it.
+   */
+  readonly serviceMode: ServiceMode;
   readonly buildRequest: () => ExecutionRequest;
 }
 
@@ -54,6 +61,7 @@ export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttributio
     model: attempt.model,
     apiStyle: attempt.apiStyle,
     passthrough: attempt.passthrough,
+    serviceMode: attempt.serviceMode,
     route: `${resolved.slug}/${attempt.providerPath}`,
   };
 }
@@ -79,6 +87,7 @@ export function preparedExecutionAttempt(
     model: prepared.model,
     apiStyle: prepared.apiStyle,
     passthrough: prepared.passthrough,
+    serviceMode: prepared.serviceMode,
     buildRequest: () => ({
       body: prepared.body,
       headers: prepared.headers,

@@ -12,13 +12,24 @@ import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider
 import { lookup } from "../shared/records";
 import type { ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
-import { type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
+import { baseUrlRegion, type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
 import { GATEWAY_DESCRIPTORS } from "../shared/gateways";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
-import { readServiceMode, serviceModeName, type ServiceMode, type ServiceModeField } from "../shared/service-modes";
+import {
+  isStandardMode,
+  parseServiceModeName,
+  priceInMode,
+  readServiceMode,
+  serviceModeName,
+  STANDARD_MODE,
+  type ServiceMode,
+  type ServiceModeField,
+  type ServiceRegion,
+  type ServiceTier,
+} from "../shared/service-modes";
 import {
   TOKEN_RATE_FIELDS,
   VARIANTS,
@@ -27,6 +38,7 @@ import {
   type ModalityRate,
   modalityRate,
   type SplitBucket,
+  type ModePrice,
   type TokenPrice,
   type TokenRateField,
   type TokenVariants,
@@ -81,7 +93,23 @@ interface Price extends Partial<Record<TokenRateField, number>> {
    * this yet: a price-list update folds a change into those rates on its day.
    */
   price_changes?: PriceChange[];
+  /**
+   * What the model costs in each service mode it is sold in other than the
+   * standard one, keyed by the mode's name (`flex`, `fast`, `us`, `fast+us`;
+   * see `serviceModeName`). A mode it does not list has no price. See
+   * {@link priceInMode} for how an entry and a combination are read.
+   */
+  modes?: Record<string, ModePrice>;
 }
+
+/**
+ * A model's price in one service mode: every rate the model has, multiplied by
+ * `factor` (1 where it is left out), and then any rate the entry names in
+ * place of its multiplied figure, for a provider page that prices one rate
+ * apart from the rest (OpenAI's flex cached input, Gemini's flex cache reads
+ * at the standard rate).
+ */
+export type { ModePrice };
 
 /** One announced change to a catalog entry's rates; see `Price.price_changes`. */
 export interface PriceChange extends Partial<Record<TokenRateField, number>> {
@@ -90,7 +118,16 @@ export interface PriceChange extends Partial<Record<TokenRateField, number>> {
   per_hour?: number;
   per_image?: number;
   long_context_threshold?: number;
+  /** Mode entries replaced from that day, whole; a mode it leaves out keeps its entry. */
+  modes?: Record<string, ModePrice>;
 }
+
+/**
+ * A model's price in one service mode, or `undefined` where it has none: the
+ * shared reading in `src/shared/service-modes.ts`, which the price list's
+ * updates compare prices by too.
+ */
+export { priceInMode };
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
@@ -99,6 +136,12 @@ export interface UsageObservation extends UsageCounts {
   modalityTokens?: ModalityTokens;
   /** The parts of a bucket the response split out to bill apart; see `TOKEN_VARIANTS`. */
   tokenVariants?: TokenVariants;
+  /**
+   * The values the response names its served mode with, as the readers found
+   * them (`REPORTED_MODE_FIELDS` in `./usage-readers.ts`). The provider's own
+   * table says what they mean.
+   */
+  reportedModes?: Partial<Record<string, string>>;
   /**
    * Set when the response reported a duration and no token counts, so its
    * zeroed counters are absent rather than a measured zero. Only a transcription
@@ -159,6 +202,9 @@ function modelPrice(
     if (typeof override.long_context_threshold === "number") {
       price.long_context_threshold = override.long_context_threshold;
     }
+    // An override's modes replace the catalog's with it: a reseller's own
+    // input price says nothing about what it charges for priority.
+    if (override.modes) price.modes = override.modes;
     return price;
   }
   return catalogPrice(provider, model);
@@ -210,17 +256,23 @@ export function hasTokenModelPrice(
 }
 
 /**
- * Whether a service mode can be billed, for a model priced in the standard one.
- *
- * Prices carry no modes yet, so only the standard mode has one. Every other
- * mode, flex included, is unpriced, and one rule covers them all: a known mode
+ * Whether a model has a price in a service mode: always in the standard one,
+ * and in any other only where its entry lists the mode — see
+ * {@link priceInMode}. One rule covers every mode, flex included: a known mode
  * the model has no price in is never billed at another mode's price. A dearer
  * one billed at standard would let an app's end user stretch their budget
  * several times over; a cheaper one would spend the budget faster than the
  * owner set it to last.
  */
-function hasModePrice(mode: ServiceMode): boolean {
-  return mode.tier === "standard" && mode.region === "global";
+export function hasModePrice(
+  provider: ProviderType,
+  model: string,
+  overrides: ProviderPricing | null | undefined,
+  mode: ServiceMode,
+): boolean {
+  if (isStandardMode(mode)) return true;
+  const price = modelPrice(provider, model, overrides);
+  return price !== undefined && priceInMode(price, mode) !== undefined;
 }
 
 /**
@@ -230,7 +282,7 @@ function hasModePrice(mode: ServiceMode): boolean {
  * means the spend would be invisible, and an invisible spend is a limit bypass.
  * `style` is the request's API, or `null` on a configuration write that has
  * none yet — see `routeCostReport`. The service mode is judged apart, by
- * {@link serviceModeRefusal}.
+ * {@link judgeServiceMode}.
  */
 export function isBillable(
   provider: ProviderType,
@@ -251,33 +303,39 @@ function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly S
 
 /**
  * What happens to a request for a known service mode the model has no price in:
- * `log` forwards it, billed at standard, and logs `service_mode_unpriced`;
- * `refuse` answers `pricing_not_configured`, saying how to add the price. It
- * starts at `log`, so apps that already send a mode show up in the logs before
- * any request of theirs is refused; turning refusal on is this one line, once
- * mode prices exist.
+ * `log` forwards it, billed as {@link computeCost} bills a served mode with no
+ * price, and logs `service_mode_unpriced`; `refuse` answers
+ * `pricing_not_configured`, saying how to add the price. It starts at `log`, so
+ * apps that already send a mode show up in the logs before any request of
+ * theirs is refused; turning refusal on is this one line, once mode prices
+ * exist.
  */
 export const UNPRICED_SERVICE_MODES: "log" | "refuse" = "log";
 
 /**
- * Why a request's service mode cannot be billed on one target, or `null` when
- * it can.
+ * The service mode a request asks one target for, and why it cannot be billed
+ * there, if it cannot.
  *
  * `read` returns one field of the body as it will be sent — the client's JSON
  * merged with anything the configuration adds, or a form field — and the
- * target's own table says what its value means. A mode the table knows, and
- * the model has no price in, is handled as {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
- * through and billed at standard, so a tier a provider adds never breaks a
+ * target's own table says what its value means. The region is the one a field
+ * names, else the one the row's own base URL serves (`regionalOrigins`). A mode
+ * the table knows, and the model has no price in, is handled as
+ * {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
+ * through and billed as the default, so a tier a provider adds never breaks a
  * client before the gateway learns it; it is logged as `service_mode_unknown`
  * so it can be added. A route whose provider reports what each request cost
- * needs no price, so nothing is read there.
+ * needs no price, so nothing there is refused or logged.
  *
  * Judged after the model itself was found billable, so a refusal here is
  * always about the mode.
  */
-export function serviceModeRefusal(input: {
+export function judgeServiceMode(input: {
   type: ProviderType;
   route: ProviderRoute | null;
+  /** The row's own base URL, whose host may pin a region. */
+  baseUrl?: string | null;
+  pricing?: ProviderPricing | null;
   style: ApiStyle;
   model: string;
   read: (name: string) => unknown;
@@ -285,39 +343,47 @@ export function serviceModeRefusal(input: {
   appId?: string;
   /** Overrides {@link UNPRICED_SERVICE_MODES}, for tests of the other policy. */
   policy?: "log" | "refuse";
-}): GatewayError | null {
+}): { mode: ServiceMode; refusal: GatewayError | null } {
   const { type, route } = input;
-  if (route === null || reportsCost(type, route, input.style)) return null;
+  if (route === null) return { mode: STANDARD_MODE, refusal: null };
   const reading = readServiceMode(serviceModeFields(type, route), input.read);
+  const baseRegion = baseUrlRegion(type, input.baseUrl);
+  const mode: ServiceMode = reading.mode.region === "global" && baseRegion !== "global"
+    ? { tier: reading.mode.tier, region: baseRegion }
+    : reading.mode;
+  if (reportsCost(type, route, input.style)) return { mode, refusal: null };
+  const appField = input.appId === undefined ? {} : { appId: input.appId };
   if (reading.unknown) {
     log("warn", "service_mode_unknown", {
-      ...(input.appId === undefined ? {} : { appId: input.appId }),
+      ...appField,
       provider: type,
       field: reading.unknown.field,
       value: reading.unknown.value,
     });
   }
-  if (hasModePrice(reading.mode)) return null;
-  const name = serviceModeName(reading.mode);
+  if (hasModePrice(type, input.model, input.pricing, mode)) return { mode, refusal: null };
+  const name = serviceModeName(mode);
   if ((input.policy ?? UNPRICED_SERVICE_MODES) === "log") {
-    log("warn", "service_mode_unpriced", {
-      ...(input.appId === undefined ? {} : { appId: input.appId }),
-      provider: type,
-      model: input.model,
-      serviceMode: name,
-    });
-    return null;
+    log("warn", "service_mode_unpriced", { ...appField, provider: type, model: input.model, serviceMode: name });
+    return { mode, refusal: null };
   }
-  const sent = reading.askedBy.map((asked) => `${asked.field}: "${asked.value}"`).join(", ");
-  const fields = reading.askedBy.map((asked) => asked.field).join(" and ");
-  return new GatewayError(
-    400,
-    "pricing_not_configured",
-    `Model ${input.model} has no price on ${type} in service mode ${name}, which the request asks for with ${sent}. `
-      + `Add a price for that mode under custom model pricing in the provider settings, or leave ${fields} out.`,
-    undefined,
-    { data: { service_mode: name, ...(reading.askedBy[0] ? { field: reading.askedBy[0].field } : {}) } },
-  );
+  const asked = [
+    ...reading.askedBy.map((field) => `${field.field}: "${field.value}"`),
+    ...(mode.region !== reading.mode.region ? [`the provider's ${mode.region} base URL`] : []),
+  ].join(", ");
+  const fields = reading.askedBy.map((field) => field.field).join(" and ");
+  return {
+    mode,
+    refusal: new GatewayError(
+      400,
+      "pricing_not_configured",
+      `Model ${input.model} has no price on ${type} in service mode ${name}, which the request asks for with ${asked}. `
+        + `Add a price for that mode under custom model pricing in the provider settings`
+        + (fields ? `, or leave ${fields} out.` : "."),
+      undefined,
+      { data: { service_mode: name, ...(reading.askedBy[0] ? { field: reading.askedBy[0].field } : {}) } },
+    ),
+  };
 }
 
 /**
@@ -422,14 +488,49 @@ export function pricesModalities(
       || modalityRates(price, OUTPUT_RATES, longContext).length > 0);
 }
 
+/**
+ * What one usage figure costs, in the service mode that served it.
+ *
+ * A served mode the model has no price in is billed at the dearest price the
+ * model has — standard, or any mode it lists — never at the standard rate
+ * alone. It is reached only where a provider served a mode the request did not
+ * show, such as an account's default tier, or where unpriced modes are logged
+ * rather than refused; either way the budget is charged no less than the
+ * provider could have charged.
+ */
 export function computeCost(
   provider: ProviderType,
   model: string,
   usage: UsageObservation,
   overrides?: ProviderPricing | null,
+  mode: ServiceMode = STANDARD_MODE,
 ): number | null {
   const price = modelPrice(provider, model, overrides);
   if (!price) return null;
+  const served = priceInMode(price, mode);
+  if (served) return costAt(served, usage);
+  // Every mode the model has a price in, a tier in a region included: the
+  // dearest can be a pair that only composes, such as `fast` in `us`.
+  const tiers = new Set<ServiceTier>(["standard"]);
+  const regions = new Set<ServiceRegion>(["global"]);
+  for (const name of Object.keys(price.modes ?? {})) {
+    const listed = parseServiceModeName(name);
+    if (!listed) continue;
+    tiers.add(listed.tier);
+    regions.add(listed.region);
+  }
+  let dearest: number | null = null;
+  for (const tier of tiers) {
+    for (const region of regions) {
+      const priced = priceInMode(price, { tier, region });
+      const cost = priced ? costAt(priced, usage) : null;
+      if (cost !== null && (dearest === null || cost > dearest)) dearest = cost;
+    }
+  }
+  return dearest;
+}
+
+function costAt(price: Price, usage: UsageObservation): number | null {
   if (price.per_minute !== undefined) {
     return ((usage.audioSeconds ?? 0) / 60) * price.per_minute;
   }

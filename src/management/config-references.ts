@@ -4,7 +4,7 @@ import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "../shared/providers";
 import { classifyPath } from "../shared/protocols";
 import { type ApiStyle, DEFAULT_PROXY_API_STYLES } from "../shared/capabilities";
-import { catalogKind, hasModelPrice, isBillable, serviceModeRefusal } from "../usage/pricing";
+import { catalogKind, hasModelPrice, isBillable, judgeServiceMode } from "../usage/pricing";
 import { servesKind } from "../shared/model-kinds";
 import {
   ConfigError,
@@ -134,9 +134,10 @@ function validateTarget(
   // Parameters that set a service mode are sent to every target, so each one
   // must be able to bill it: judged here as each request will judge it.
   const params = endpoint.params ?? {};
-  const refusal = serviceModeRefusal({
+  const { refusal } = judgeServiceMode({
     type: instance.type,
     route: instance.route,
+    pricing: instance.pricing,
     style: endpoint.api_style,
     model: target.model,
     read: (name) => params[name],

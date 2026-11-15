@@ -15,7 +15,8 @@ import {
 } from "../providers/request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
-import { isBillable, serviceModeRefusal } from "../usage/pricing";
+import { isBillable, judgeServiceMode } from "../usage/pricing";
+import { STANDARD_MODE, type ServiceMode } from "../shared/service-modes";
 import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
 import {
   defaultInferencePaths,
@@ -49,6 +50,8 @@ export interface PreparedProxyRequest {
    * is never sniffed for a shape the request already named.
    */
   apiStyle: ApiStyle;
+  /** The service mode the body asks for; see `ExecutionAttempt.serviceMode`. */
+  serviceMode: ServiceMode;
   body: BodyInit | null;
   headers: Headers;
   query: string;
@@ -363,11 +366,11 @@ function resolveModel(input: {
   resolved: ResolvedProvider;
   /** The API the request speaks, which decides whether a cost report covers it. */
   style: ApiStyle;
-  /** One body field, for the service mode; see {@link serviceModeRefusal}. */
+  /** One body field, for the service mode; see {@link judgeServiceMode}. */
   read: (name: string) => unknown;
   /** The app, which a service-mode log line names. */
   appId: string;
-}): { requestedModel: string; actualModel: string; wireModel: string } {
+}): { requestedModel: string; actualModel: string; wireModel: string; serviceMode: ServiceMode } {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
     ?? input.bodyModel
@@ -382,9 +385,11 @@ function resolveModel(input: {
   if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
-  const refusal = serviceModeRefusal({
+  const { mode, refusal } = judgeServiceMode({
     type: provider,
     route: input.resolved.route.kind,
+    baseUrl: input.resolved.baseUrl,
+    pricing: input.resolved.pricing,
     style: input.style,
     model: actualModel,
     read: input.read,
@@ -397,6 +402,7 @@ function resolveModel(input: {
     requestedModel,
     actualModel,
     wireModel: routeWireModel(input.resolved.route, provider, actualModel),
+    serviceMode: mode,
   };
 }
 
@@ -469,12 +475,18 @@ export async function prepareProxyRequest(input: {
   const bytes = await input.body();
   const contentType = input.request.headers.get("content-type") ?? "";
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
-  const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({
+  const prepared = (
+    body: BodyInit,
+    providerPath: string,
+    model: string,
+    serviceMode: ServiceMode,
+  ): PreparedProxyRequest => ({
     provider,
     providerPath,
     model,
     passthrough: false,
     apiStyle,
+    serviceMode,
     body,
     headers,
     query: sanitizedQuery(input.request),
@@ -501,6 +513,7 @@ export async function prepareProxyRequest(input: {
       model: "",
       passthrough: true,
       apiStyle,
+      serviceMode: STANDARD_MODE,
       body: input.request.method === "GET" ? null : bytes,
       headers,
       query: sanitizedQuery(input.request),
@@ -543,10 +556,10 @@ export async function prepareProxyRequest(input: {
       if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
       if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
-      return prepared(parsed, input.providerPath, model.actualModel);
+      return prepared(parsed, input.providerPath, model.actualModel, model.serviceMode);
     }
     const path = placement && "path" in placement ? placement.path : input.providerPath;
-    return prepared(bytes, path, model.actualModel);
+    return prepared(bytes, path, model.actualModel, model.serviceMode);
   }
 
   if (apiStyle === "audio_transcription" && judgesTranscriptionFormat(provider)) {
@@ -588,6 +601,7 @@ export async function prepareProxyRequest(input: {
     bodyChanged ? JSON.stringify(parsed) : text,
     placement && "path" in placement ? placement.path : input.providerPath,
     model.actualModel,
+    model.serviceMode,
   );
 }
 

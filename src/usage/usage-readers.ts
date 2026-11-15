@@ -82,6 +82,45 @@ function openAiModalities(
   return counts;
 }
 
+/**
+ * Where a response names the service mode that served it, by the name a
+ * provider's `servedModes` table reads it under. Every reader copies the
+ * strings it finds off the object it already parsed, whatever the provider, as
+ * cache hits are read: each field is one only some providers send.
+ *
+ * - `service_tier`: OpenAI, xAI, Groq, Perplexity and OpenRouter, at the top of
+ *   a chat answer or under `response` in a Responses event; Mistral and
+ *   Anthropic inside `usage`.
+ * - `speed` and `inference_geo`: Anthropic, inside `usage`.
+ * - `serviceTier`: Gemini, inside `usageMetadata`.
+ * - `response_service_tier`: BytePlus.
+ */
+export const REPORTED_MODE_FIELDS = [
+  "service_tier",
+  "speed",
+  "inference_geo",
+  "serviceTier",
+  "response_service_tier",
+] as const;
+
+/** The strings `records` hold under `names`, the first record that has one winning, or undefined if none does. */
+function reportedModes(
+  records: readonly (Record<string, unknown> | null)[],
+  names: readonly (typeof REPORTED_MODE_FIELDS)[number][],
+): Partial<Record<string, string>> | undefined {
+  let found: Partial<Record<string, string>> | undefined;
+  for (const name of names) {
+    for (const record of records) {
+      const value = record?.[name];
+      if (typeof value === "string" && value.length > 0) {
+        (found ??= {})[name] = value;
+        break;
+      }
+    }
+  }
+  return found;
+}
+
 function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
@@ -117,6 +156,7 @@ function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING
     outputTotal,
   );
   const tokenVariants = readTokenVariants(usage);
+  const modes = reportedModes([response, root, usage], ["service_tier", "response_service_tier"]);
   return {
     inputTokens: Math.max(0, inputTotal - cached - cacheWrite),
     cachedInputTokens: cached,
@@ -130,6 +170,7 @@ function openAiUsage(value: unknown, countedInput: readonly Modality[] = NOTHING
       modalityTokens: { ...(input && { input }), ...(output && { output }) },
     }),
     ...(tokenVariants && { tokenVariants }),
+    ...(modes && { reportedModes: modes }),
   };
 }
 
@@ -208,12 +249,14 @@ function anthropicUsage(value: unknown): UsageObservation | null {
     return null;
   }
   const tokenVariants = readTokenVariants(usage);
+  const modes = reportedModes([usage], ["speed", "inference_geo", "service_tier"]);
   return {
     inputTokens: numberAt(usage, "input_tokens"),
     cachedInputTokens: numberAt(usage, "cache_read_input_tokens"),
     cacheWriteTokens: numberAt(usage, "cache_creation_input_tokens"),
     outputTokens: numberAt(usage, "output_tokens"),
     ...(tokenVariants && { tokenVariants }),
+    ...(modes && { reportedModes: modes }),
   };
 }
 
@@ -276,7 +319,9 @@ function geminiUsage(value: unknown): UsageObservation | null {
   // never billed at an image rate for want of a breakdown.
   const output = geminiModalities(usage.candidatesTokensDetails, candidates)
     ?? (thoughts > 0 ? { unknown: candidates } : undefined);
+  const modes = reportedModes([usage], ["serviceTier"]);
   return {
+    ...(modes && { reportedModes: modes }),
     inputTokens: Math.max(0, promptTotal - cached),
     cachedInputTokens: cached,
     cacheWriteTokens: 0,
@@ -387,12 +432,17 @@ function sseEvents(text: string): {
  */
 function mergeAnthropicUsage(left: UsageObservation, right: UsageObservation): UsageObservation {
   const tokenVariants = mergeTokenVariants(left.tokenVariants, right.tokenVariants);
+  // The later event's word wins where both name the mode.
+  const modes = left.reportedModes || right.reportedModes
+    ? { ...right.reportedModes, ...left.reportedModes }
+    : undefined;
   return {
     inputTokens: Math.max(left.inputTokens, right.inputTokens),
     cachedInputTokens: Math.max(left.cachedInputTokens, right.cachedInputTokens),
     cacheWriteTokens: Math.max(left.cacheWriteTokens, right.cacheWriteTokens),
     outputTokens: Math.max(left.outputTokens, right.outputTokens),
     ...(tokenVariants && { tokenVariants }),
+    ...(modes && { reportedModes: modes }),
   };
 }
 
@@ -484,6 +534,15 @@ const TAIL_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/gu;
  * quotes are escaped, so a transcript that says "duration" never matches.
  */
 const HEAD_DURATION = /"duration"\s*:\s*(-?\d+(?:\.\d+)?)/u;
+
+/**
+ * The served tier of a truncated document, a string at its top level: OpenAI
+ * states it after `usage` in a chat answer and near the start of a Responses
+ * one, so the tail's last occurrence is read, else the head's first. Escaped
+ * quotes inside content never match, as for `duration`.
+ */
+const TAIL_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/gu;
+const HEAD_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/u;
 
 /**
  * A synthetic document carrying whatever usage the tail of a truncated JSON
@@ -588,6 +647,11 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     if (document.duration === undefined) {
       const duration = HEAD_DURATION.exec(body.head)?.[1];
       if (duration !== undefined) document.duration = Number(duration);
+    }
+    // Only beside usage it found: the tier says what that usage was billed in.
+    if (document.usage !== undefined) {
+      const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
+      if (tier !== undefined) document.service_tier = tier;
     }
     return documentValues(Object.keys(document).length > 0 ? [document] : []);
   }

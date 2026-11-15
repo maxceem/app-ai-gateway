@@ -190,12 +190,21 @@ export function rateDescription(field: TokenRateField): string | undefined {
 }
 
 /**
+ * A model's price in one service mode: every rate multiplied by `factor` (1
+ * where it is left out), then any rate named here in place of its multiplied
+ * figure. See `priceInMode` in `src/usage/pricing.ts`.
+ */
+export type ModePrice = Partial<Record<TokenRateField | "per_minute" | "per_hour" | "per_image", number>>
+  & { factor?: number };
+
+/**
  * A provider's own price for one model. Only input and output are required:
- * every other rate falls back exactly as a catalog entry's does.
+ * every other rate falls back exactly as a catalog entry's does. `modes` holds
+ * its price in each service mode other than standard, keyed by the mode's name.
  */
 export type TokenPrice = { input: number; output: number }
   & Partial<Record<Exclude<TokenRateField, "input" | "output">, number>>
-  & { long_context_threshold?: number };
+  & { long_context_threshold?: number; modes?: Record<string, ModePrice> };
 
 /**
  * What a token in each canonical bucket bills at, in or out of long context.
