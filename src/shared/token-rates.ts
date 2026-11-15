@@ -9,13 +9,10 @@
  * - the response readers in `src/usage/usage-readers.ts` read each variant's
  *   count from where {@link TOKEN_VARIANTS} says a response reports it;
  * - the override schema in `src/contracts/schemas.ts` and the catalog schema
- *   in `src/contracts/responses.ts` are built from {@link TOKEN_RATE_FIELDS};
- * - the daily model sync in `scripts/models/` compares prices with the same
- *   two functions and labels each rate with {@link RATE_LABELS}.
+ *   in `src/contracts/responses.ts` are built from {@link TOKEN_RATE_FIELDS}.
  *
- * So a rate added here is at once priceable, readable, overridable, documented
- * and synced. The sync loads this file under Node's type stripping, so it
- * imports nothing and uses only syntax that can be erased.
+ * So a rate added here is at once priceable, readable, overridable and
+ * documented.
  */
 
 /** The buckets a variant may split. Input and output split by modality instead. */
@@ -30,8 +27,6 @@ export type SplitBucket = "cached_input" | "cache_write";
  * provider uses, as with cache hits in `usage-readers.ts`.
  */
 interface VariantSpec {
-  /** How the model sync's report names the rate. */
-  readonly label: string;
   /** The rate's description in the API reference. */
   readonly description: string;
   readonly reportedAt: readonly string[];
@@ -48,22 +43,19 @@ interface VariantSpec {
  * Input and output are not listed: their split is by modality, which has its
  * own record because a modality count also covers the cached part of a prompt.
  *
- * Adding a variant is one entry here, the rates in the catalog, and the
- * provider's page parser reading them.
+ * Adding a variant is one entry here and the rates in the catalog.
  */
 export const TOKEN_VARIANTS = {
   cache_write: {
     // Anthropic: a write kept for an hour bills at 2x input, against 1.25x for
     // the default five minutes. `usage.cache_creation` splits the write by TTL.
     "1h": {
-      label: "1h cache write",
       description: "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write.",
       reportedAt: ["cache_creation", "ephemeral_1h_input_tokens"],
     },
     // OpenAI (Responses API): a write kept for 12 hours bills at 2.5x input,
     // against 1.25x for the default 30 minutes.
     "12h": {
-      label: "12h cache write",
       description: "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write.",
       reportedAt: ["input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens"],
     },
@@ -115,27 +107,11 @@ type LongRateField = `long_${Bucket | VariantRateField}`;
 /** Rates in USD per 1M tokens. Time- and image-priced rates are not here. */
 export type TokenRateField = ShortRateField | LongRateField;
 
-const BASE_RATES: Record<Bucket | ModalityRate, { label: string; description?: string }> = {
-  input: { label: "input" },
-  cached_input: { label: "cached" },
-  cache_write: { label: "cache write" },
-  output: { label: "output" },
-  image_input: {
-    label: "image input",
-    description: "USD per 1M image input tokens, where they are priced apart from text input.",
-  },
-  audio_input: {
-    label: "audio input",
-    description: "USD per 1M audio input tokens, where they are priced apart from text input.",
-  },
-  video_input: {
-    label: "video input",
-    description: "USD per 1M video input tokens, where they are priced apart from text input.",
-  },
-  image_output: {
-    label: "image output",
-    description: "USD per 1M generated image tokens, where they cost more than text output.",
-  },
+const MODALITY_DESCRIPTIONS: Record<ModalityRate, string> = {
+  image_input: "USD per 1M image input tokens, where they are priced apart from text input.",
+  audio_input: "USD per 1M audio input tokens, where they are priced apart from text input.",
+  video_input: "USD per 1M video input tokens, where they are priced apart from text input.",
+  image_output: "USD per 1M generated image tokens, where they cost more than text output.",
 };
 
 /** Each bucket followed by its variants: input, cached_input, cache_write, cache_write_1h, … */
@@ -147,26 +123,17 @@ const BUCKET_FIELDS = BUCKETS.flatMap((bucket) => [
 /** The `long_*` rates, which only apply above `long_context_threshold`. */
 export const LONG_RATE_FIELDS = BUCKET_FIELDS.map((field) => `long_${field}`) as readonly LongRateField[];
 
-/** Every token rate, in the order the model sync reports them. */
+/** Every token rate: each bucket and its variants, the modality rates, then the long-context rates. */
 export const TOKEN_RATE_FIELDS: readonly TokenRateField[] = [...BUCKET_FIELDS, ...MODALITY_RATES, ...LONG_RATE_FIELDS];
 
-const SHORT_INFO = new Map<string, { label: string; description?: string }>([
-  ...Object.entries(BASE_RATES),
-  ...VARIANTS.map((variant) => [variant.field, variant] as const),
+const DESCRIPTIONS = new Map<string, string>([
+  ...Object.entries(MODALITY_DESCRIPTIONS),
+  ...VARIANTS.map((variant) => [variant.field, variant.description] as const),
 ]);
-
-/** What the model sync's report calls each rate: "cached", "long 1h cache write", … */
-export const RATE_LABELS = Object.fromEntries(
-  TOKEN_RATE_FIELDS.map((field) => {
-    const short = field.startsWith("long_") ? field.slice("long_".length) : field;
-    const label = SHORT_INFO.get(short)?.label ?? short;
-    return [field, short === field ? label : `long ${label}`];
-  }),
-) as Record<TokenRateField, string>;
 
 /** The API reference's description of a rate, where it says more than its name. */
 export function rateDescription(field: TokenRateField): string | undefined {
-  return SHORT_INFO.get(field)?.description;
+  return DESCRIPTIONS.get(field);
 }
 
 /**
@@ -183,8 +150,7 @@ export type TokenPrice = { input: number; output: number }
  * The one statement of the fallbacks: an unpriced cache read or write bills at
  * input, and an unpriced long-context rate at its short-context one — except
  * that a cache read or write falls back to the long input rate, since the whole
- * prompt is billed as long. `computeCost` bills with it and the model sync
- * compares prices with it, so the two can never disagree on what a price means.
+ * prompt is billed as long. `computeCost` bills with it.
  */
 export function bucketRates(price: TokenPrice, longContext: boolean): Record<Bucket, number> {
   if (!longContext) {

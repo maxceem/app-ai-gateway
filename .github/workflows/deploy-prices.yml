@@ -1,7 +1,7 @@
 # Deploys a merged model price list without a release: the gateway release that
-# is live, with only `src/usage/models.json` from main swapped in. The daily price
-# pull request (.github/workflows/update-models.yml) then goes live, and so does
-# the public `/models.json`, minutes after it merges. Nothing is published: no
+# is live, with only `src/usage/models.json` from main swapped in. A price
+# update, which arrives as a pull request that changes only that file, then goes
+# live, and so does the public `/models.json`, minutes after it merges. Nothing is published: no
 # tag, GitHub release, npm package or documentation deploy.
 #
 # Three jobs, so that only released code ever holds the deploy secrets and no
