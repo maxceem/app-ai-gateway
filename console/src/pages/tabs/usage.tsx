@@ -569,11 +569,17 @@ export function UsageTab({
                       {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
                         <Unreported what="cost" />
                       ) : event.cost_source === "unresolved" ? (
-                        <Hint content={<span className="block max-w-64">The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget.</span>}>
+                        <Hint
+                          description="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
+                          content={<span className="block max-w-64">The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget.</span>}
+                        >
                           <span className="text-amber-600 dark:text-amber-400">unresolved</span>
                         </Hint>
                       ) : event.cost_source === "estimated" ? (
-                        <Hint content={<span className="block max-w-64">Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know. Add a price for the mode under the provider's custom model pricing to bill it exactly.</span>}>
+                        <Hint
+                          description="Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know."
+                          content={<span className="block max-w-64">Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know. Add a price for the mode under the provider's custom model pricing to bill it exactly.</span>}
+                        >
                           <span className="text-amber-600 dark:text-amber-400">≈{formatCost(event.cost_usd)}</span>
                         </Hint>
                       ) : (
@@ -599,7 +605,6 @@ export function UsageTab({
                           <ServiceModeLabel
                             mode={event.service_mode}
                             factor={factor}
-                            cost={event.cost_usd}
                             estimated={event.cost_source === "estimated" || factor === undefined}
                           />
                         </span>

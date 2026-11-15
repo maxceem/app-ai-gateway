@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils";
 import { parseServiceModeName, SERVICE_TIERS } from "@shared/service-modes";
 import { Circle, Leaf, MapPin, Zap } from "lucide-react";
 import { Hint } from "@/components/hint";
-import { formatCost } from "@/lib/format";
 
 /**
  * Says an app is off, and says nothing at all when it is on.
@@ -140,12 +139,10 @@ export function EventStatusLabel({ status, upstreamStatus, errorCode }: {
  * less, grey where the same or not known. Plain text rather than a badge, so
  * it reads as a note on the price beside it; the hover says it in words.
  */
-export function ServiceModeLabel({ mode, factor, cost, estimated = false }: {
+export function ServiceModeLabel({ mode, factor, estimated = false }: {
   mode: string;
-  /** How many times the standard price it cost, where known. */
+  /** The factor the price list sets the mode at against the standard price, where known. */
   factor?: number;
-  /** What the request cost, to say what it would have at the standard price. */
-  cost?: number;
   /** The request was billed at an estimate, for want of a price in this mode. */
   estimated?: boolean;
 }) {
@@ -162,7 +159,6 @@ export function ServiceModeLabel({ mode, factor, cost, estimated = false }: {
   // Solid marks: a bolt for a faster tier, a leaf for a cheaper one, a pin
   // for a region alone, and a dot for a mode this console cannot read.
   const Mark = !parsed ? Circle : parsed.tier === "flex" ? Leaf : parsed.tier !== "standard" ? Zap : MapPin;
-  const standard = cost !== undefined && factor ? cost / factor : undefined;
   return (
     <Hint
       description={`${describeMode(mode)}${factor !== undefined ? `, ${formatFactor(factor)} times the standard price` : ""}`}
@@ -175,12 +171,10 @@ export function ServiceModeLabel({ mode, factor, cost, estimated = false }: {
               : factor === undefined
                 ? "Its price depends on the model; each request shows its own."
               : factor === 1
-                ? "Billed at the standard price."
-                : `Billed at ${formatFactor(factor)} times the standard price.`}
+                ? "The price list sets it at the standard price."
+                : `The price list sets it at ${formatFactor(factor)} times the standard price.`}
           </span>
-          {standard !== undefined && factor !== 1 ? (
-            <span className="block opacity-80">At the standard price: {formatCost(standard)}</span>
-          ) : null}
+          
         </span>
       }
     >

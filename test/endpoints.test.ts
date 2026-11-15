@@ -266,6 +266,37 @@ describe("custom endpoints", () => {
     expect(captured.map((request) => JSON.parse(request.body).service_tier)).toEqual(["flex", "flex"]);
   });
 
+  it("records why a target it fell back from failed", async () => {
+    const appId = "endpoint-fallback-error-code";
+    await seedApp(appId, {
+      endpoints: { chat: { ...CHAT_ENDPOINTS.chat, fallback: [{ provider: "xai", model: "grok-4.5" }] } },
+    });
+    const token = await gatewayToken(appId);
+    captureUpstream((attempt) =>
+      attempt === 0
+        ? Response.json({ error: { message: "Slow down", type: "requests", code: "rate_limit_exceeded" } }, { status: 429 })
+        : usageResponse());
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    await response.text();
+    expect(response.status).toBe(200);
+
+    await settleUsage();
+    const { results } = await env.DB.prepare(
+      "SELECT status, upstream_status, error_code FROM app_usage_event WHERE app_id = ? ORDER BY id",
+    ).bind(appId).all();
+    expect(results).toEqual([
+      { status: "provider_error", upstream_status: 429, error_code: "rate_limit_exceeded" },
+      { status: "ok", upstream_status: null, error_code: null },
+    ]);
+  });
+
   it("overwrites the model, deep-merges configured params, and clamps output tokens", async () => {
     const appId = "endpoint-responses";
     await seedApp(appId, {
@@ -913,10 +944,12 @@ describe("custom endpoints", () => {
     await response.text();
     expect(attempts).toBe(2);
     const rows = await latestUsage(appId, 2);
-    expect(rows.map((row) => [row.provider_slug, row.status])).toEqual([
+    // The failed body is read in the background for its error code, up to a
+    // time limit this one never ends within, so its row can land second.
+    expect(rows.map((row) => [row.provider_slug, row.status])).toEqual(expect.arrayContaining([
       ["openai", "provider_error"],
       ["xai", "ok"],
-    ]);
+    ]));
     expect(warnings).toContainEqual(expect.objectContaining({
       message: "provider_response_discard_failed",
       providerSlug: "openai",
