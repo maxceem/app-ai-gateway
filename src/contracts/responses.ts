@@ -199,6 +199,12 @@ export const UsageEventSchema = z.object({
   reported_cost_usd: z.number().nullable().meta({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
+  service_mode: z.object({
+    tier: z.string().optional(),
+    region: z.string().optional(),
+  }).nullable().optional().meta({
+    description: "The service mode that served the request and that cost_usd was priced in: its tier (flex, priority, fast, ultrafast) and region (us, eu, …) where they differ from standard and global. Null or absent for the standard mode, and on events recorded before modes were recorded.",
+  }),
   cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
     description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",
   }),
@@ -1021,6 +1027,22 @@ const CATALOG_TOKEN_RATES = Object.fromEntries(
   }),
 ) as Record<TokenRateField, z.ZodOptional<z.ZodNumber>>;
 
+/** A catalog entry's price in one service mode; see `ModePrice` in `src/usage/pricing.ts`. */
+const CatalogModePriceSchema = z.object({
+  factor: z.number().optional().meta({
+    description: "Multiplies every rate of the model's standard price in this mode. 1 where left out.",
+  }),
+  ...CATALOG_TOKEN_RATES,
+  per_minute: z.number().optional(),
+  per_hour: z.number().optional(),
+  per_image: z.number().optional(),
+});
+
+const CatalogModePricesSchema = z.record(z.string(), CatalogModePriceSchema).meta({
+  description:
+    "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's.",
+});
+
 export const ModelPriceSchema = z.object({
   kind: z.enum(MODEL_KINDS).meta({
     description:
@@ -1048,10 +1070,12 @@ export const ModelPriceSchema = z.object({
     per_hour: z.number().optional(),
     per_image: z.number().optional(),
     long_context_threshold: z.number().optional(),
+    modes: CatalogModePricesSchema.optional(),
   })).optional().meta({
     description:
       "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today.",
   }),
+  modes: CatalogModePricesSchema.optional(),
 });
 
 export const PricesResponseSchema = z.object({

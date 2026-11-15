@@ -1,6 +1,7 @@
 // A barrel: see vitest.suites.config.ts. Nothing here but imports.
 import "../proxy.test";
 import "../service-modes.test";
+import "../service-mode-billing.test";
 import "../passthrough.test";
 import "../endpoints.test";
 import "../request-proof.test";

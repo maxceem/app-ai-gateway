@@ -16,6 +16,7 @@ import {
 import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { LONG_RATE_FIELDS, TOKEN_RATE_FIELDS, type TokenRateField } from "../shared/token-rates.ts";
+import { parseServiceModeName } from "../shared/service-modes.ts";
 
 /**
  * The vocabulary an application configuration is written in.
@@ -843,6 +844,33 @@ const OPTIONAL_TOKEN_RATES = Object.fromEntries(
 ) as Record<Exclude<TokenRateField, "input" | "output">, z.ZodOptional<typeof TokenRateSchema>>;
 
 /**
+ * A model's price in one service mode: a factor on every rate the model has,
+ * and any rate the mode prices apart from that factor.
+ */
+const ModePriceSchema = z.object({
+  factor: TokenRateSchema.optional().meta({
+    description: "Multiplies every rate of the model's standard price in this mode. 1 where left out.",
+  }),
+  input: TokenRateSchema.optional(),
+  output: TokenRateSchema.optional(),
+  ...OPTIONAL_TOKEN_RATES,
+}).strict();
+
+/**
+ * Prices per service mode, keyed by the mode's name: a tier (`flex`,
+ * `priority`, `fast`, `ultrafast`), a region (`us`, `eu`, …), or a tier in a
+ * region (`priority+eu`) where the provider prices that combination apart. A
+ * mode left out has no price.
+ */
+export const ModePricesSchema = z.record(
+  z.string().refine(
+    (name) => name !== "standard" && parseServiceModeName(name) !== null,
+    { message: "Name a service mode: flex, priority, fast or ultrafast, a region such as us or eu, or a tier+region pair" },
+  ),
+  ModePriceSchema,
+).meta({ id: "ModePrices" });
+
+/**
  * Per-1M-token overrides for models the shipped catalog does not cover, or
  * covers with a stale price. `$0` is enterable for genuinely free models.
  * Input and output are required; every other rate is optional and, left out,
@@ -856,6 +884,10 @@ export const ProviderPricingSchema = z.record(
     output: TokenRateSchema,
     ...OPTIONAL_TOKEN_RATES,
     long_context_threshold: z.number().int().positive().optional(),
+    modes: ModePricesSchema.optional().meta({
+      description:
+        "Prices in service modes other than standard. A mode left out has no price, so a request for it is not billed at another mode's price.",
+    }),
   }).strict().refine(
     (price) => price.long_context_threshold !== undefined
       || LONG_RATE_FIELDS.every((field) => price[field] === undefined),

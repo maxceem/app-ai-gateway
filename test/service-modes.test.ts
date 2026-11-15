@@ -1,26 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { GatewayError } from "../src/core/errors";
-import { readServiceMode, serviceModeName } from "../src/shared/service-modes";
+import { parseServiceModeName, readServiceMode, serviceModeName, STANDARD_MODE } from "../src/shared/service-modes";
+import { ProviderPricingSchema } from "../src/contracts/schemas";
 import { providerDescriptor } from "../src/shared/providers";
-import { serviceModeRefusal } from "../src/usage/pricing";
+import { judgeServiceMode, priceInMode } from "../src/usage/pricing";
 
 const read = (body: Record<string, unknown>) => (name: string) => body[name];
 
 /** The refusal requests will get once unpriced modes are refused rather than logged. */
 function refusal(input: {
-  type: Parameters<typeof serviceModeRefusal>[0]["type"];
-  route?: Parameters<typeof serviceModeRefusal>[0]["route"];
-  style?: Parameters<typeof serviceModeRefusal>[0]["style"];
+  type: Parameters<typeof judgeServiceMode>[0]["type"];
+  route?: Parameters<typeof judgeServiceMode>[0]["route"];
+  style?: Parameters<typeof judgeServiceMode>[0]["style"];
   body: Record<string, unknown>;
 }) {
-  return serviceModeRefusal({
+  return judgeServiceMode({
     type: input.type,
     route: input.route ?? "direct",
     style: input.style ?? "responses",
     model: "a-model",
     read: read(input.body),
     policy: "refuse",
-  });
+  }).refusal;
 }
 
 describe("readServiceMode", () => {
@@ -58,7 +59,7 @@ describe("readServiceMode", () => {
   });
 });
 
-describe("serviceModeRefusal, when unpriced modes are refused", () => {
+describe("judgeServiceMode, when unpriced modes are refused", () => {
   it.each([
     ["OpenAI fast", "openai", { service_tier: "priority" }, "fast"],
     ["Anthropic fast mode in the US", "anthropic", { speed: "fast", inference_geo: "us" }, "fast+us"],
@@ -104,5 +105,81 @@ describe("serviceModeRefusal, when unpriced modes are refused", () => {
     const body = { providerOptions: { gateway: { serviceTier: "priority" } } };
     expect(refusal({ type: "openai", body })).toBeNull();
     expect(refusal({ type: "openai", route: "vercel", body })).toMatchObject({ data: { service_mode: "priority" } });
+  });
+});
+
+describe("priceInMode", () => {
+  const price = {
+    kind: "text" as const,
+    input: 2,
+    cached_input: 0.5,
+    output: 8,
+    long_input: 4,
+    long_context_threshold: 200_000,
+    modes: {
+      flex: { factor: 0.5, cached_input: 0.25 },
+      priority: { factor: 1.75 },
+      eu: { factor: 1.1 },
+      "priority+eu": { factor: 1.85 },
+      us: { factor: 1.2 },
+      "flex+gb": {},
+    },
+  };
+
+  it("is the entry itself in the standard mode", () => {
+    expect(priceInMode(price, STANDARD_MODE)).toBe(price);
+  });
+
+  it("multiplies every rate, long-context ones included, and keeps a rate the mode states", () => {
+    expect(priceInMode(price, { tier: "flex", region: "global" }))
+      .toMatchObject({ input: 1, cached_input: 0.25, output: 4, long_input: 2, long_context_threshold: 200_000 });
+  });
+
+  it("prefers a pair the provider prices apart over the product of its parts", () => {
+    expect(priceInMode(price, { tier: "priority", region: "eu" })?.input).toBeCloseTo(3.7, 10);
+    expect(priceInMode(price, { tier: "priority", region: "us" })?.input).toBeCloseTo(2 * 1.75 * 1.2, 10);
+  });
+
+  it("reads an entry with no factor as factor 1", () => {
+    expect(priceInMode(price, { tier: "flex", region: "gb" })?.input).toBe(2);
+  });
+
+  it("has no price for a mode the entry does not list", () => {
+    expect(priceInMode(price, { tier: "ultrafast", region: "global" })).toBeUndefined();
+    expect(priceInMode(price, { tier: "fast", region: "eu" })).toBeUndefined();
+    expect(priceInMode({ ...price, modes: undefined }, { tier: "flex", region: "global" })).toBeUndefined();
+  });
+});
+
+describe("parseServiceModeName", () => {
+  it.each([
+    ["standard", { tier: "standard", region: "global" }],
+    ["flex", { tier: "flex", region: "global" }],
+    ["us", { tier: "standard", region: "us" }],
+    ["priority+eu", { tier: "priority", region: "eu" }],
+  ])("reads %s", (name, mode) => {
+    expect(parseServiceModeName(name)).toEqual(mode);
+  });
+
+  it.each(["global", "eu+priority", "fast+us+eu", "turbo", "constructor", ""])("refuses %s", (name) => {
+    expect(parseServiceModeName(name)).toBeNull();
+  });
+});
+
+describe("mode prices in an override", () => {
+  const override = (modes: unknown) => ProviderPricingSchema.safeParse({ "a-model": { input: 1, output: 2, modes } });
+
+  it("accepts a factor, rates, regions and pairs", () => {
+    expect(override({ flex: { factor: 0.5, cached_input: 0.1 }, us: { factor: 1.1 }, "fast+us": { factor: 2.2 } }).success)
+      .toBe(true);
+  });
+
+  it.each([
+    ["the standard mode", { standard: { factor: 1 } }],
+    ["a name that is no mode", { turbo: { factor: 2 } }],
+    ["a negative factor", { flex: { factor: -1 } }],
+    ["a field that is no rate", { flex: { factor: 0.5, discount: 1 } }],
+  ])("refuses %s", (_label, modes) => {
+    expect(override(modes).success).toBe(false);
   });
 });

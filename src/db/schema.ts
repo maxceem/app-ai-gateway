@@ -19,6 +19,7 @@ import type { AppConfig } from "../shared/app-config";
 import type { AppStatus } from "../shared/app-status";
 import type { ProviderType } from "../shared/providers";
 import type { TokenPrice, TokenVariants } from "../shared/token-rates";
+import type { StoredServiceMode } from "../shared/service-modes";
 
 export type UserStatus = "active" | "blocked";
 export type AttestEnvironment = "production" | "development";
@@ -412,6 +413,14 @@ export const appUsageEvent = sqliteTable(
      * null only on rows recorded before the column existed.
      */
     tokenVariants: text("token_variants", { mode: "json" }).$type<TokenVariants>(),
+    /**
+     * The service mode that served the request and that `cost_usd` was priced
+     * in, as JSON such as `{ "tier": "fast", "region": "us" }` holding only the
+     * axes that differ from the default — see `src/shared/service-modes.ts`.
+     * Null for the standard mode, and on every row recorded before the column
+     * existed, which were all billed as standard.
+     */
+    serviceMode: text("service_mode", { mode: "json" }).$type<StoredServiceMode>(),
     costUsd: real("cost_usd").notNull().default(0),
     /**
      * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a

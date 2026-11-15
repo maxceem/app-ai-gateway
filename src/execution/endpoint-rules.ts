@@ -1,6 +1,7 @@
 import { publishesStylePaths, supportsEndpointStyle } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { catalogKind, isBillable, serviceModeRefusal } from "../usage/pricing";
+import { catalogKind, isBillable, judgeServiceMode } from "../usage/pricing";
+import type { ServiceMode } from "../shared/service-modes";
 import {
   requireProvider,
   resolveProvider,
@@ -200,7 +201,7 @@ export async function resolveEndpointAttempts(
   prepared: PreparedEndpointRequest,
 ): Promise<[ExecutionAttempt, ...ExecutionAttempt[]]> {
   const resolvedProviders = new Map<string, ResolvedProvider>();
-  const usableTargets: typeof prepared.targets = [];
+  const usableTargets: (EndpointTarget & { serviceMode: ServiceMode })[] = [];
   let disabledPrimary: GatewayError | undefined;
   for (const [index, target] of prepared.targets.entries()) {
     const primary = index === 0;
@@ -268,19 +269,21 @@ export async function resolveEndpointAttempts(
     // Read per target, because each provider spells the mode its own way: the
     // body a fallback is sent may ask a different provider for something else.
     const json = prepared.json;
-    const modeRefusal = serviceModeRefusal({
+    const judged = judgeServiceMode({
       type: entry.type,
       route: entry.route.kind,
+      baseUrl: entry.baseUrl,
+      pricing: entry.pricing,
       style: endpoint.api_style,
       model: target.model,
       read: json ? (name) => json[name] : (name) => prepared.form?.get(name),
       appId: app.id,
     });
-    if (modeRefusal) {
-      if (primary) throw modeRefusal;
+    if (judged.refusal) {
+      if (primary) throw judged.refusal;
       continue;
     }
-    usableTargets.push(target);
+    usableTargets.push({ ...target, serviceMode: judged.mode });
   }
   // A skipped disabled primary is the only way the chain can end up empty: on
   // every other primary failure the loop threw above. With nothing left to try,
@@ -300,6 +303,7 @@ export async function resolveEndpointAttempts(
       // reader for the contract this gateway composed rather than a guess.
       apiStyle: endpoint.api_style,
       passthrough: false,
+      serviceMode: target.serviceMode,
       buildRequest,
     } satisfies ExecutionAttempt;
   });

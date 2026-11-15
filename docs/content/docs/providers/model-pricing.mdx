@@ -172,6 +172,51 @@ when exact charges matter, and use custom prices where appropriate.
 provider's **Pricing** dialog shows your custom overrides. Model names alone do not tell you their relative price, and a
 entry in the price list does not guarantee that your provider account can still use it.
 
+### Service tiers and regions
+
+Some providers sell the same model in more than one **service mode**: a tier
+such as flex (cheaper, may be refused when busy), priority or fast (dearer,
+served first or faster), or a region the request is pinned to. Each model's
+entry lists the modes it is sold in under `modes`, keyed by the mode's name:
+
+```json
+"gpt-6.1-terra": {
+  "input": 1, "cached_input": 0.05, "output": 5,
+  "modes": {
+    "flex": { "factor": 0.5 },
+    "fast": { "factor": 2 },
+    "eu": { "factor": 1.1 }
+  }
+}
+```
+
+- **Names:** a tier (`flex`, `priority`, `fast`, `ultrafast`), a region (`us`,
+  `eu`, `gb`, `ca`, `au`, `jp`, `kr`, `in`, `sg`, `ae`), or a tier in a region
+  (`priority+eu`).
+- **What an entry means:** every rate of the model, cache and long-context
+  rates included, multiplied by `factor` (1 if left out). A rate the entry
+  names replaces its multiplied figure, for a provider that prices one rate
+  apart, such as a flex cache read.
+- **A tier in a region:** the pair's own entry if there is one, otherwise the
+  tier's entry and then the region's on top. Anthropic fast mode in the US is
+  2 × 1.1.
+- **A mode a model does not list has no price.** It is never billed at
+  another mode's price.
+
+A request is billed in the mode that served it. That is the mode the response
+names where the provider reports one (OpenAI, Anthropic, Gemini, xAI, Mistral,
+Groq, Perplexity and BytePlus do), so a priority request a provider served as
+standard bills at standard. Otherwise it is the mode the request asked for.
+The region also comes from the provider's base URL: a provider set to
+`https://us.api.openai.com/` or `https://us.api.x.ai/` bills its requests in
+the `us` region. Each usage event records its mode as `service_mode`.
+
+If a provider reports serving a mode the model has no price for, such as an
+account's default tier the request did not show, the request is billed at the
+dearest price the model has, never at less. To see which modes the gateway
+reads in each provider's requests, see
+[Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
+
 ## Custom prices
 
 A model the price list does not know, or knows at a stale price, is unblocked by
@@ -226,6 +271,14 @@ uses, under the same names as in `GET /v1/admin/prices`: `cached_input`,
 `long_*` rates. The `long_*` rates also need `long_context_threshold`, the
 prompt size in tokens above which they apply. The dialog shows the cache
 rates and keeps the others as they are when you save.
+
+A custom price can also price service modes, with the same `modes` object as
+the price list. It replaces the price list's modes for that model along with
+its rates, so a custom price without `modes` prices the standard mode only:
+
+```json
+{ "gpt-brand-new": { "input": 1.25, "output": 10, "modes": { "flex": { "factor": 0.5 } } } }
+```
 
 The same field is accepted on `POST /v1/admin/providers` when you create the
 provider.

@@ -15,12 +15,21 @@ import { type ObservedBody } from "./body-observer";
 import {
   computeCost,
   EMPTY_USAGE,
+  hasModePrice,
   reportsPricedMeasure,
   resolveModelAuthor,
   type UsageObservation,
 } from "./pricing";
 import { observeResponse } from "./usage-readers";
-import { type ProviderType, routeCostReport } from "../shared/providers";
+import { providerDescriptor, type ProviderType, routeCostReport } from "../shared/providers";
+import { relaysProviderResponses } from "../shared/gateways";
+import {
+  readServiceMode,
+  serviceModeName,
+  STANDARD_MODE,
+  storedServiceMode,
+  type ServiceMode,
+} from "../shared/service-modes";
 import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
 import { database } from "../db/index";
@@ -61,6 +70,11 @@ export interface AttemptAttribution {
    * reports, and the absence of one is expected rather than a failure.
    */
   passthrough: boolean;
+  /**
+   * The service mode the request asked for, region from the row's base URL
+   * included. Absent is the standard mode.
+   */
+  serviceMode?: ServiceMode;
   /** `slug/path`, the `route` column. */
   route: string;
 }
@@ -340,6 +354,33 @@ export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<vo
   log("info", "usage_recorded", usageFacts(event));
 }
 
+/**
+ * The service mode that served an attempt: each axis the response names, else
+ * the one the request asked for. A provider may serve a cheaper tier than it
+ * was asked for — OpenAI sheds fast traffic to standard, Gemini serves
+ * priority over its limit as standard — and bills what it served, and it may
+ * serve a dearer one the request never showed, from an account default. Read
+ * only where the route hands back the provider's own response, and only with
+ * that provider's own table; a value the table does not know leaves its axis
+ * as the request asked.
+ */
+function servedServiceMode(
+  attribution: AttemptAttribution,
+  reported: UsageObservation["reportedModes"],
+  headers: Headers | undefined,
+): ServiceMode {
+  const requested = attribution.serviceMode ?? STANDARD_MODE;
+  if (!relaysProviderResponses(attribution.providerRoute.kind)) return requested;
+  const descriptor = providerDescriptor(attribution.provider);
+  const { named } = readServiceMode(
+    descriptor.servedModes ?? descriptor.serviceModes,
+    (name) => name.startsWith("header:") ? headers?.get(name.slice("header:".length)) ?? undefined : reported?.[name],
+  );
+  const tier = named.tier ?? requested.tier;
+  const region = named.region ?? requested.region;
+  return tier === requested.tier && region === requested.region ? requested : { tier, region };
+}
+
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const { attribution, identity } = input;
   // Minted before any work, so the observer read, the retries below and any
@@ -397,12 +438,33 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const reporting = integration !== null;
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
+  const servedMode = attribution.passthrough
+    ? STANDARD_MODE
+    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders);
   const price = computeCost(
     attribution.provider,
     attribution.model,
     usage,
     attribution.pricing,
+    servedMode,
   );
+  // The request's own mode was judged before it left. A mode it did not show,
+  // which the response says served it, is the one that can still lack a price:
+  // `computeCost` then billed the dearest price the model has, and this says so.
+  if (
+    !attribution.passthrough
+    && !reporting
+    && servedMode !== (attribution.serviceMode ?? STANDARD_MODE)
+    && !hasModePrice(attribution.provider, attribution.model, attribution.pricing, servedMode)
+  ) {
+    log("warn", "served_mode_unpriced", {
+      eventId,
+      appId: identity.appId,
+      provider: attribution.provider,
+      model: attribution.model,
+      serviceMode: serviceModeName(servedMode),
+    });
+  }
   // A provider that answered successfully and reported nothing readable would
   // otherwise bill a legitimate-looking $0 and consume no budget — a silent
   // spend-limit bypass. The event is still recorded and the response has already
@@ -551,6 +613,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // The same rule: `{}` is "split nothing", null is "recorded before the
       // split was kept".
       tokenVariants: usage.tokenVariants ?? {},
+      serviceMode: storedServiceMode(servedMode),
       costUsd: cost,
       costSource,
       reportedCostUsd: reportedCost,

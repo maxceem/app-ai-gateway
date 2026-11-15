@@ -115,6 +115,7 @@ export const usageHandlers = {
         output_tokens: row.outputTokens,
         cost_usd: row.costUsd,
         reported_cost_usd: row.reportedCostUsd,
+        ...(row.serviceMode && { service_mode: row.serviceMode }),
         cost_source: row.costSource,
         app_version: row.appVersion,
         auth_method: row.authMethod,

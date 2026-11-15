@@ -1839,6 +1839,109 @@
             "long_context_threshold": {
               "type": "integer",
               "exclusiveMinimum": 0
+            },
+            "modes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "factor": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                  },
+                  "input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cached_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cached_input_audio": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write_1h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cache_write_12h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "image_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "audio_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "video_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "image_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cached_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cached_input_audio": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write_1h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_cache_write_12h": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_output": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_image_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_audio_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_video_input": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "long_image_output": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "description": "Prices in service modes other than standard. A mode left out has no price, so a request for it is not billed at another mode's price."
             }
           },
           "required": [
@@ -2481,6 +2584,21 @@
               "null"
             ],
             "description": "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way."
+          },
+          "service_mode": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "tier": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              }
+            },
+            "description": "The service mode that served the request and that cost_usd was priced in: its tier (flex, priority, fast, ultrafast) and region (us, eu, …) where they differ from standard and global. Null or absent for the standard mode, and on events recorded before modes were recorded."
           },
           "cost_source": {
             "type": [
@@ -12334,6 +12452,101 @@
                                   },
                                   "long_context_threshold": {
                                     "type": "number"
+                                  },
+                                  "modes": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "properties": {
+                                        "factor": {
+                                          "type": "number",
+                                          "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                                        },
+                                        "input": {
+                                          "type": "number"
+                                        },
+                                        "cached_input": {
+                                          "type": "number"
+                                        },
+                                        "cached_input_audio": {
+                                          "type": "number",
+                                          "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                                        },
+                                        "cache_write": {
+                                          "type": "number"
+                                        },
+                                        "cache_write_1h": {
+                                          "type": "number",
+                                          "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                        },
+                                        "cache_write_12h": {
+                                          "type": "number",
+                                          "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                        },
+                                        "output": {
+                                          "type": "number"
+                                        },
+                                        "image_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                        },
+                                        "audio_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                        },
+                                        "video_input": {
+                                          "type": "number",
+                                          "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                        },
+                                        "image_output": {
+                                          "type": "number",
+                                          "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                        },
+                                        "long_input": {
+                                          "type": "number"
+                                        },
+                                        "long_cached_input": {
+                                          "type": "number"
+                                        },
+                                        "long_cached_input_audio": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write_1h": {
+                                          "type": "number"
+                                        },
+                                        "long_cache_write_12h": {
+                                          "type": "number"
+                                        },
+                                        "long_output": {
+                                          "type": "number"
+                                        },
+                                        "long_image_input": {
+                                          "type": "number"
+                                        },
+                                        "long_audio_input": {
+                                          "type": "number"
+                                        },
+                                        "long_video_input": {
+                                          "type": "number"
+                                        },
+                                        "long_image_output": {
+                                          "type": "number"
+                                        },
+                                        "per_minute": {
+                                          "type": "number"
+                                        },
+                                        "per_hour": {
+                                          "type": "number"
+                                        },
+                                        "per_image": {
+                                          "type": "number"
+                                        }
+                                      }
+                                    },
+                                    "description": "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's."
                                   }
                                 },
                                 "required": [
@@ -12341,6 +12554,101 @@
                                 ]
                               },
                               "description": "Price changes the provider has announced, earliest first. Each gives only the rates that change on its day; the others keep their value. The model's own rates are the ones billed today."
+                            },
+                            "modes": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                  "factor": {
+                                    "type": "number",
+                                    "description": "Multiplies every rate of the model's standard price in this mode. 1 where left out."
+                                  },
+                                  "input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input": {
+                                    "type": "number"
+                                  },
+                                  "cached_input_audio": {
+                                    "type": "number",
+                                    "description": "USD per 1M cached audio input tokens, where they are priced apart from cached text input."
+                                  },
+                                  "cache_write": {
+                                    "type": "number"
+                                  },
+                                  "cache_write_1h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "cache_write_12h": {
+                                    "type": "number",
+                                    "description": "USD per 1M tokens written to a 12-hour cache, where it costs more than the default cache write."
+                                  },
+                                  "output": {
+                                    "type": "number"
+                                  },
+                                  "image_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M image input tokens, where they are priced apart from text input."
+                                  },
+                                  "audio_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M audio input tokens, where they are priced apart from text input."
+                                  },
+                                  "video_input": {
+                                    "type": "number",
+                                    "description": "USD per 1M video input tokens, where they are priced apart from text input."
+                                  },
+                                  "image_output": {
+                                    "type": "number",
+                                    "description": "USD per 1M generated image tokens, where they cost more than text output."
+                                  },
+                                  "long_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input": {
+                                    "type": "number"
+                                  },
+                                  "long_cached_input_audio": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_1h": {
+                                    "type": "number"
+                                  },
+                                  "long_cache_write_12h": {
+                                    "type": "number"
+                                  },
+                                  "long_output": {
+                                    "type": "number"
+                                  },
+                                  "long_image_input": {
+                                    "type": "number"
+                                  },
+                                  "long_audio_input": {
+                                    "type": "number"
+                                  },
+                                  "long_video_input": {
+                                    "type": "number"
+                                  },
+                                  "long_image_output": {
+                                    "type": "number"
+                                  },
+                                  "per_minute": {
+                                    "type": "number"
+                                  },
+                                  "per_hour": {
+                                    "type": "number"
+                                  },
+                                  "per_image": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              "description": "The model's price in each service mode it is sold in besides standard, keyed by the mode's name: a tier (flex, priority, fast, ultrafast), a region (us, eu, …) or a tier+region pair. Each entry multiplies every rate by its factor, then replaces the rates it names. A mode left out has no price; a tier in a region with no pair entry is the tier's entry and then the region's."
                             }
                           },
                           "required": [

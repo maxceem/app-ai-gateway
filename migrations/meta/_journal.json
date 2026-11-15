@@ -99,6 +99,13 @@
       "when": 1794460932481,
       "tag": "0013_auth_event_client_sdk",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1794707230873,
+      "tag": "0014_service_mode",
+      "breakpoints": true
     }
   ]
 }
