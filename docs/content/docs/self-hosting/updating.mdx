@@ -125,8 +125,8 @@ Seamless releases need three more things from your installation:
   cleanup removes old ones.
 - Deploy with the button, `pnpm run deploy` or the CLI. A plain
   `wrangler deploy` updates the gateway but no release Worker: new sessions
-  keep going to the previous release Worker, and on a gateway that never had
-  one, discovery answers `503` until one of those has run.
+  keep going to the previous release Worker, and a gateway that never had
+  one serves sessions itself until one of those has run.
 
 To turn them off, remove the variable or set it to `simple`
 (`agw deployment update --realtime-releases simple`) and deploy. Conversations

@@ -221,7 +221,9 @@ export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) 
       }),
     });
     return {
-      upstream: { url: upstream.url, headers: Object.fromEntries(upstream.headers) },
+      // Only for the check that opens the session, which opens the provider
+      // socket: later checks never send the credential again.
+      ...(previous === null && { upstream: { url: upstream.url, headers: Object.fromEntries(upstream.headers) } }),
       protocol: policy.protocol,
       model: policy.model,
       outputCap: policy.outputCap,

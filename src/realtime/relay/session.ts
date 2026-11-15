@@ -5,7 +5,7 @@ import { SessionJournal } from "./journal";
 import { Mailbox, close, frameBytes, send } from "./transport";
 import { protocolAdapter } from "./protocols";
 import { id, object, invalid } from "./protocols/validation";
-import type { Bootstrap, CompletionStatus, SessionGrant, Settlement } from "./contract";
+import type { Bootstrap, CompletionStatus, SessionGrant, SessionLease, Settlement } from "./contract";
 import type { AdapterEffect, Generation, JsonObject, ProtocolAdapter } from "./types";
 import type { SessionBackend } from "./backend";
 
@@ -22,6 +22,8 @@ import type { SessionBackend } from "./backend";
 export class SessionCoordinator {
   /** Held in memory only: it carries the provider credential. */
   private grant: SessionGrant | null = null;
+  private grantsAsked = 0;
+  private grantKept = 0;
   /** A refusal the gateway gave for a response already sent; it ends the session at its next idle moment. */
   private refusal: RelayError | null = null;
   private adapter: ProtocolAdapter | null = null;
@@ -106,22 +108,14 @@ export class SessionCoordinator {
       // Schedule crash recovery before external effects. Leases expire independently in their owners.
       await this.ctx.storage.setAlarm(this.openedAt + L.setupMs);
       this.requireStarting();
-      const user = await this.backend.capacity(
-        this.bootstrap,
-        "user",
-        "acquire",
-        grant.maxSessionsPerIdentity,
-      );
+      // Both at once, to open sooner; a refusal releases both below.
+      const [user, application] = await Promise.all([
+        this.backend.capacity(this.bootstrap, "user", "acquire", grant.maxSessionsPerIdentity),
+        this.backend.capacity(this.bootstrap, "app", "acquire", grant.maxSessions),
+      ]);
       if (!user.allowed) {
         throw new RelayError(429, "realtime_session_limit", "Realtime identity capacity exceeded");
       }
-      this.requireStarting();
-      const application = await this.backend.capacity(
-        this.bootstrap,
-        "app",
-        "acquire",
-        grant.maxSessions,
-      );
       if (!application.allowed) {
         throw new RelayError(429, "realtime_session_limit", "Realtime app capacity exceeded");
       }
@@ -131,6 +125,7 @@ export class SessionCoordinator {
       if (testUpstream) {
         this.upstream = testUpstream;
       } else {
+        if (!grant.upstream) throw new RelayError(503, "provider_unavailable", "Realtime backend unavailable");
         const request = new Request(grant.upstream.url, { headers: grant.upstream.headers, redirect: "manual" });
         // The deadline bounds the upgrade only: the socket stays bound to the
         // signal it was opened with, so a timeout signal would close it later.
@@ -476,13 +471,13 @@ export class SessionCoordinator {
     // Earlier turns' usage first, briefly, so the budgets checked include it.
     await this.flushWithin(L.settleWaitMs);
     try {
-      this.grant = await this.backend.admit(
+      await this.refreshGrant(() => this.backend.admit(
         this.bootstrap,
         this.authHeaders,
         this.grant!,
         generation.id,
         generation.at,
-      );
+      ));
     } catch (error) {
       if (error instanceof RelayError && error.status < 500) {
         this.refuseNextTurn(error);
@@ -493,6 +488,20 @@ export class SessionCoordinator {
         generationId: generation.id,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  /**
+   * Keeps the grant a check answers with, unless a check that started later
+   * already answered: several can be in flight, and an older answer must not
+   * replace a newer price or policy.
+   */
+  private async refreshGrant(ask: () => Promise<SessionGrant>): Promise<void> {
+    const order = ++this.grantsAsked;
+    const grant = await ask();
+    if (order > this.grantKept) {
+      this.grantKept = order;
+      this.grant = grant;
     }
   }
 
@@ -562,6 +571,9 @@ export class SessionCoordinator {
     this.shuttingDown = (async () => {
       try {
         await this.starting;
+        // A lease renewal still in flight would take back a lease released
+        // before it lands; let it land first. It never rejects.
+        await this.maintenance;
         // A pending upgrade may have supplied a socket after the first close.
         close(this.upstream, 1011);
         // Capacity cleanup does not wait for an in-flight accounting call.
@@ -588,11 +600,14 @@ export class SessionCoordinator {
       const task = this.journal.task(name);
       if (task.complete) return;
       if (task.expiresAt === undefined) {
-        task.expiresAt = Date.now() + L.outboxRetentionMs;
+        // A lease lapses by itself after its term, so releasing it early is
+        // worth retrying only that long.
+        task.expiresAt = Date.now() + L.leaseMs;
         this.journal.saveTask(name, task);
       }
       if (Date.now() >= task.expiresAt) {
-        log("error", "realtime_lease_cleanup_expired", { sessionId: this.bootstrap.sessionId, scope });
+        // Not an error: the lease has lapsed by itself by now.
+        log("info", "realtime_lease_cleanup_expired", { sessionId: this.bootstrap.sessionId, scope });
         task.complete = true;
         this.journal.saveTask(name, task);
         return;
@@ -648,7 +663,11 @@ export class SessionCoordinator {
 
   private async deliver(): Promise<boolean> {
     let complete = true;
+    // One run sends what it can in a bounded time and leaves the rest to the
+    // next, so a slow gateway never holds an alarm past its limit.
+    const until = Date.now() + L.deliveryBudgetMs;
     for (const item of this.journal.outbox()) {
+      if (Date.now() >= until) return false;
       if (Date.now() - item.createdAt >= L.outboxRetentionMs) {
         log("error", "realtime_usage_permanent_failure", {
           sessionId: this.bootstrap.sessionId,
@@ -690,7 +709,8 @@ export class SessionCoordinator {
     if (!this.live()) return;
     let outage: unknown = null;
     try {
-      this.grant = await this.backend.maintain(this.bootstrap, this.authHeaders, this.grant!, this.active !== null);
+      await this.refreshGrant(() =>
+        this.backend.maintain(this.bootstrap, this.authHeaders, this.grant!, this.active !== null));
     } catch (error) {
       // Admission can complete while maintenance awaits remote availability.
       // Its own checks already authorized the active generation to finish.
@@ -703,10 +723,21 @@ export class SessionCoordinator {
       if (!refusal) outage = error;
     }
     if (!this.live()) return;
-    const [user, app] = await Promise.all([
-      this.backend.capacity(this.bootstrap, "user", "renew"),
-      this.backend.capacity(this.bootstrap, "app", "renew"),
-    ]);
+    let leases: [SessionLease, SessionLease];
+    try {
+      leases = await Promise.all([
+        this.backend.capacity(this.bootstrap, "user", "renew"),
+        this.backend.capacity(this.bootstrap, "app", "renew"),
+      ]);
+    } catch (error) {
+      if (error instanceof RelayError && error.status < 500) throw error;
+      // The limiter could not answer: an outage, not a refusal. The leases
+      // are held here for another term, the limiter takes them back once it
+      // answers, and the check is retried shortly.
+      this.leaseExpiry = Date.now() + L.leaseMs;
+      throw outage ?? error;
+    }
+    const [user, app] = leases;
     if (!this.live() || !user.allowed || !app.allowed) {
       throw new RelayError(429, "realtime_session_limit", "Realtime capacity lease expired");
     }

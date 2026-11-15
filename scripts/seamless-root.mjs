@@ -28,6 +28,19 @@ export function gatewayOrigin(config, name, subdomain) {
   return undefined;
 }
 
+/** What the running gateway says it is, or null when it does not answer. */
+async function runningCapabilities(origin) {
+  try {
+    const response = await fetch(new URL("/v1/cli/capabilities", origin), {
+      signal: AbortSignal.timeout(10_000),
+      redirect: "error",
+    });
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Checkout and one-click adapter. Primary keeps Cloudflare's CI identity; companion does not.
  *
@@ -160,23 +173,20 @@ export async function deployCheckout({
     const packaged = JSON.parse(await readFile(join(projectRoot, "cli/package.json"), "utf8"));
     const existing = await settings(name);
     if (action === "deploy" && existing) {
-      const hasDeploymentId = existing.bindings?.some(
+      const deployedId = existing.bindings?.find(
         (binding) => binding.name === "DEPLOYMENT_ID" && binding.type === "plain_text" && binding.text,
-      );
-      if (!hasDeploymentId) {
+      )?.text;
+      if (!deployedId) {
         throw new Error(
           "Cannot verify the version of an existing gateway without DEPLOYMENT_ID. " +
             "Establish a stable plain-text DEPLOYMENT_ID on that reviewed supported deployment " +
             "using its existing deployment method, then retry. Never change an established identity.",
         );
       }
-      if (origin) {
-        const response = await fetch(new URL("/v1/cli/capabilities", origin), {
-          signal: AbortSignal.timeout(10_000),
-          redirect: "error",
-        });
-        if (!response.ok) throw new Error("Cannot verify existing gateway release before mutation");
-        const capabilities = await response.json();
+      // The Worker's own setting names the installation, whether or not it answers.
+      if (deployedId !== deploymentId) throw new Error("Existing gateway identity differs; no deployment started");
+      const capabilities = origin ? await runningCapabilities(origin) : null;
+      if (capabilities) {
         if (capabilities.deployment?.id !== deploymentId) {
           throw new Error("Existing gateway identity differs; no deployment started");
         }
@@ -186,9 +196,12 @@ export async function deployCheckout({
           );
         }
       } else {
+        // A release that broke the gateway must still be replaceable.
         console.warn(
-          "No URL reaches this gateway (no PUBLIC_API_URL, custom domain or workers.dev), " +
-            "so its current version is not checked before the update.",
+          origin
+            ? "The running gateway did not answer, so its version is not checked before the update."
+            : "No URL reaches this gateway (no PUBLIC_API_URL, custom domain or workers.dev), " +
+                "so its current version is not checked before the update.",
         );
       }
     }

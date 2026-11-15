@@ -26,4 +26,6 @@ export const REALTIME_LIMITS = {
   /** How long counting a response waits for earlier turns' usage to reach the gateway. */
   settleWaitMs: 2000,
   outboxRetentionMs: 7 * 86_400_000,
+  /** How long one usage delivery run may take before it leaves the rest for the next. */
+  deliveryBudgetMs: 60_000,
 } as const;

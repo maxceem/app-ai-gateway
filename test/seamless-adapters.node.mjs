@@ -140,6 +140,7 @@ globalThis.fetch = async url => {
   const primary = state.workers["selected-primary"];
   const text = name => primary?.bindings.find(b => b.name === name)?.text;
   if (u.pathname.endsWith("/capabilities")) {
+    if (state.capabilitiesDown) return new Response("broken release", { status: 500 });
     return Response.json({
       deployment: { id: text("DEPLOYMENT_ID") },
       serverVersion: JSON.parse(readFileSync("package.json")).version,
@@ -258,4 +259,12 @@ test("a prebuilt deploy releases the built gateway and realtime Worker without b
     .filter(call => call.args[0] === "deploy" && call.config.name.startsWith("agw-rt-")).length;
   assert.equal(after, before);
   assert.match(again.stdout, /Reusing immutable realtime release/u);
+
+  // A release that broke the gateway can still be replaced: the Worker's own
+  // DEPLOYMENT_ID names the installation, and only the version check is skipped.
+  const broken = JSON.parse(readFileSync(statePath));
+  writeFileSync(statePath, JSON.stringify({ ...broken, capabilitiesDown: true }));
+  const rescue = run("--prebuilt", "built");
+  assert.equal(rescue.status, 0, rescue.stderr);
+  assert.match(rescue.stderr, /did not answer/u);
 });

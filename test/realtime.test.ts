@@ -1,6 +1,7 @@
 import { prepareRealtime } from "../src/realtime/serve";
 import { sessionBackend, safeBackendCall } from "../src/realtime/relay/backend";
-import { requireRealtimeAdmission } from "../src/realtime/releases";
+import { activeRealtimeRelease, requireRealtimeAdmission } from "../src/realtime/releases";
+import { resetStallHold } from "../src/core/stale-read";
 import { testAttribution } from "./helpers";
 import { gatewayBackend } from "../src/realtime/gateway-backend";
 import type { OrgQuota } from "../src/do/OrgQuota";
@@ -89,18 +90,21 @@ async function saveAppConfig(appId: string, config: Awaited<ReturnType<typeof lo
 }
 
 /** Records a release Worker, as a deploy does before it promotes one. */
-function recordRelease(id: string) {
-  return env.DB
+async function recordRelease(id: string) {
+  await env.DB
     .prepare("INSERT INTO realtime_release(id,worker_name,url,backend_contract,created_at) VALUES(?,?,?,1,?)")
     .bind(id, id, "wss://release.test", Date.now())
     .run();
+  // Release rows are cached per isolate for a few seconds.
+  clearIsolateCaches();
 }
 
-function promoteRelease(id: string) {
-  return env.DB
+async function promoteRelease(id: string) {
+  await env.DB
     .prepare("UPDATE gateway_release_state SET active_realtime_id=?,promotion_at=? WHERE singleton=1")
     .bind(id, Date.now())
     .run();
+  clearIsolateCaches();
 }
 
 /** The path of a session's realtime route, without the model query. */
@@ -443,6 +447,10 @@ describe("realtime protocol and accounting", () => {
     expect(await limiter.acquireSession("s1", 1)).toMatchObject({ allowed: true });
     expect(await limiter.acquireSession("s2", 1)).toMatchObject({ allowed: false });
     expect(await limiter.renewSession("s1")).toMatchObject({ allowed: true });
+    // A lease that lapsed while the limiter was out of reach is taken back.
+    await limiter.releaseSession("s1");
+    expect(await limiter.renewSession("s1")).toMatchObject({ allowed: true });
+    expect(await limiter.acquireSession("s2", 1)).toMatchObject({ allowed: false });
     await limiter.releaseSession("s1");
     await limiter.releaseSession("s1");
     expect(await limiter.acquireSession("s2", 1)).toMatchObject({ allowed: true });
@@ -576,6 +584,7 @@ describe("realtime protocol and accounting", () => {
         .prepare("UPDATE gateway_release_state SET active_realtime_id=? WHERE singleton=1")
         .bind(state?.active_realtime_id ?? null)
         .run();
+      clearIsolateCaches();
     }
     // A gateway that serves sessions itself authenticates the handshake first.
     // A gateway that serves sessions itself refuses them as discovery does.
@@ -696,6 +705,53 @@ describe("realtime protocol and accounting", () => {
 });
 
 describe("immutable realtime release boundaries", () => {
+  it("serves the last known release when D1 fails, so a blip does not refuse new sessions", async () => {
+    const id = crypto.randomUUID();
+    const state = await env.DB
+      .prepare("SELECT active_realtime_id FROM gateway_release_state WHERE singleton=1")
+      .first<{ active_realtime_id: string | null }>();
+    await recordRelease(id);
+    await promoteRelease(id);
+    try {
+      expect(await activeRealtimeRelease(env.DB)).toMatchObject({ id });
+      await requireRealtimeAdmission(env.DB, id);
+      const down = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "prepare") return () => { throw new Error("D1_ERROR: Network connection lost."); };
+          return Reflect.get(target, property);
+        },
+      });
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      // Past the few seconds a read is reused for, D1 fails: the last answer stands.
+      vi.useFakeTimers({ now: Date.now() + 6_000, toFake: ["Date"] });
+      expect(await activeRealtimeRelease(down)).toMatchObject({ id });
+      await requireRealtimeAdmission(down, id);
+      // A read that hangs: the caller that starts it, and one that joins it,
+      // both get the last answer within the read budget.
+      clearIsolateCaches();
+      expect(await activeRealtimeRelease(env.DB)).toMatchObject({ id });
+      vi.setSystemTime(Date.now() + 6_000);
+      const stalled = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "prepare") return () => ({ first: () => new Promise(() => {}) });
+          return Reflect.get(target, property);
+        },
+      }) as D1Database;
+      const started = performance.now();
+      const answers = await Promise.all([activeRealtimeRelease(stalled), activeRealtimeRelease(stalled)]);
+      expect(answers).toMatchObject([{ id }, { id }]);
+      expect(performance.now() - started).toBeLessThan(3_000);
+    } finally {
+      resetStallHold();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      await env.DB
+        .prepare("UPDATE gateway_release_state SET active_realtime_id=? WHERE singleton=1")
+        .bind(state?.active_realtime_id ?? null)
+        .run();
+      clearIsolateCaches();
+    }
+  });
   it("discovery plus ten opens charges separate bounded counters", async () => {
     const { bootstrap, headers } = await seeded();
     const url = `https://gateway.test${realtimePath(bootstrap)}?model=gpt-realtime`;
@@ -717,6 +773,9 @@ describe("immutable realtime release boundaries", () => {
     expect(grant.ticket).toMatchObject({ v: 1, event: { row: { model: "gpt-realtime" } } });
     const next = await backend.admit(bootstrap, headers, grant, crypto.randomUUID(), Date.now());
     expect(next.model).toBe("gpt-realtime");
+    // The provider credential comes only with the check that opens the session.
+    expect(grant.upstream).toBeDefined();
+    expect(next.upstream).toBeUndefined();
   });
   it("gives up a gateway call still pending at its deadline, so a stalled gateway never holds the session", async () => {
     const started = Date.now();
@@ -852,6 +911,7 @@ describe("immutable realtime release boundaries", () => {
       .prepare("UPDATE realtime_release SET retired_at=? WHERE id=?")
       .bind(Date.now() - 60_001, id)
       .run();
+    clearIsolateCaches();
     await expect(requireRealtimeAdmission(env.DB, id)).rejects.toMatchObject({ status: 409 });
     const backend = sessionBackend(env.TEST_REALTIME_BACKEND as unknown as RealtimeBackendCalls);
     const grant = await backend.grant(bootstrap, headers, null);

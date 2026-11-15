@@ -368,11 +368,20 @@ export class UserLimiter extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Extends an open session's lease. A lease that lapsed while this object
+   * could not be reached is taken back rather than refused: the session was
+   * admitted, and an outage of ours must not end it. That can briefly hold
+   * one more session than the cap.
+   */
   renewSession(sessionId: string): { allowed: boolean; expiresAt: number } {
-    const now = Date.now();
-    const expiresAt = now + REALTIME_LIMITS.leaseMs;
-    const rows = this.ctx.storage.sql.exec("UPDATE session_leases SET expires_at = ? WHERE session_id = ? AND expires_at > ? RETURNING session_id", expiresAt, sessionId, now).toArray();
-    return { allowed: rows.length === 1, expiresAt: rows.length ? expiresAt : 0 };
+    const expiresAt = Date.now() + REALTIME_LIMITS.leaseMs;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO session_leases VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET expires_at = excluded.expires_at",
+      sessionId,
+      expiresAt,
+    );
+    return { allowed: true, expiresAt };
   }
 
   releaseSession(sessionId: string): void {

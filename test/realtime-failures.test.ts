@@ -385,8 +385,9 @@ describe("realtime failure boundaries", () => {
           release();
           expect(await start).toMatchObject({ code: "provider_error" });
           await alarm;
+          // Both leases are asked for at once, and both are released.
           expect(userAcquires).toBe(1);
-          expect(appAcquires).toBe(scope === "app" ? 1 : 0);
+          expect(appAcquires).toBe(1);
           expect(dispatches).toBe(0);
           expect(releases).toBe(2);
           expect(await state.storage.getAlarm()).toBeNull();
@@ -950,6 +951,25 @@ describe("realtime failure boundaries", () => {
       await coordinator.alarm();
       expect(await next("gateway.error")).toMatchObject({ error: { code: "app_budget_exhausted" } });
     });
+  });
+  it("a limiter that cannot answer keeps the session open, holding its leases locally", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await withSockets(async ({ coordinator, socket }) => {
+      const backend = Reflect.get(coordinator, "backend") as SessionBackend;
+      const capacity = backend.capacity;
+      backend.capacity = async (b, scope, operation, cap) => {
+        if (operation === "renew") throw new RelayError(503, "provider_unavailable", "Realtime backend unavailable");
+        return capacity(b, scope, operation, cap);
+      };
+      // The leases are about to lapse when the limiter stops answering.
+      Reflect.set(coordinator, "leaseExpiry", Date.now() + 20_000);
+      Reflect.set(coordinator, "nextMaintenance", Date.now() - 1);
+      await coordinator.alarm();
+      await Reflect.get(coordinator, "maintenance");
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      expect(Reflect.get(coordinator, "leaseExpiry")).toBeGreaterThan(Date.now() + 60_000);
+    });
+    vi.restoreAllMocks();
   });
   it("an idle session closes as a protocol timeout, and an expired one as a finished session", async () => {
     await withSockets(async ({ coordinator, socket, next }) => {

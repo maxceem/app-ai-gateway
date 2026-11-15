@@ -61,8 +61,11 @@ export interface Bootstrap {
  * carries the provider credential.
  */
 export interface SessionGrant {
-  /** Where to open the provider socket, with the headers that authenticate it. */
-  upstream: { url: string; headers: Record<string, string> };
+  /**
+   * Where to open the provider socket, with the headers that authenticate it.
+   * Only in the check that opens the session; later checks leave it out.
+   */
+  upstream?: { url: string; headers: Record<string, string> };
   protocol: RealtimeProtocol;
   /** The model the provider is asked for. */
   model: string;
