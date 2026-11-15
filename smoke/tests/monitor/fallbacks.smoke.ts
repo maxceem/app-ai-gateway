@@ -30,6 +30,14 @@ const FALLBACKS = [
   "billing_access_slow",
   // A usage event could not be written, and its spend was lost.
   "usage_record_failed",
+  // A model that reached a provider had no price: the price list and the
+  // gate that admitted the request disagree.
+  "usage_unpriced_model",
+  // A provider served a service mode the request did not ask for, such as an
+  // account default, and the model has no price in it: billed at an estimate.
+  // A request that asks for an unpriced mode itself is expected and is shown
+  // in the console as estimated instead (`service_mode_unpriced`).
+  "served_mode_unpriced",
 ] as const;
 
 test.skipIf(env.cloudflare === undefined)(

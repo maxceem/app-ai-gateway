@@ -195,7 +195,15 @@ export function rateDescription(field: TokenRateField): string | undefined {
  * figure. See `priceInMode` in `src/usage/pricing.ts`.
  */
 export type ModePrice = Partial<Record<TokenRateField | "per_minute" | "per_hour" | "per_image", number>>
-  & { factor?: number };
+  & {
+    factor?: number;
+    /**
+     * In the price list only: the day (`YYYY-MM-DD`) the provider's page
+     * stopped listing the mode for this model. The mode keeps its last price,
+     * as a model the page stops listing does, so nothing that used it breaks.
+     */
+    unlisted_since?: string;
+  };
 
 /**
  * A provider's own price for one model. Only input and output are required:

@@ -25,7 +25,7 @@ A table over the same range, grouped by one dimension:
 | **By user** | Who spent what. On an iOS app, offered when its budget is measured per user |
 | **By install** | Which install spent what: one copy of an iOS app on one device. Offered on iOS apps unless their budget is measured per user |
 | **By status** | Served requests and provider errors |
-| **By cost source** | Whether cost was computed locally, reported by the provider, or unresolved |
+| **By cost source** | Whether cost was computed locally, estimated, reported by the provider, or unresolved |
 | **By route** | Provider slug and path |
 | **By endpoint** | Each custom endpoint |
 | **By app version** | The `X-App-Version` header, so you can see whether a problem is one release |
@@ -65,6 +65,12 @@ Each event records how its cost was arrived at.
 
 - **computed**: priced locally from the price list or the provider's custom
   pricing. This is the normal case.
+- **estimated**: priced locally, but for a service mode the price list has no
+  price for on that model, such as flex or priority, or for a mode value the
+  gateway does not know. The request was served and billed at an estimate
+  (see [Service tiers and regions](/providers/model-pricing#service-tiers-and-regions)),
+  shown with **≈** in the event list. Add a price for the mode under the
+  provider's custom model pricing to bill it exactly.
 - **reported**: the provider said what the request cost, and that figure is
   used. xAI and OpenRouter do this.
 - **unresolved**: the provider answered successfully but reported no usage

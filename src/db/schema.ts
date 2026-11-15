@@ -75,7 +75,7 @@ export type ProviderPricing = Record<string, TokenPrice>;
  * neither source could establish, so its zero cost is an unknown rather than a
  * measurement.
  */
-export type CostSource = "computed" | "reported" | "unresolved";
+export type CostSource = "computed" | "estimated" | "reported" | "unresolved";
 
 // Table naming rule: `mgmt_` is who administers the gateway, their credentials
 // and their unfinished administrative acts; a bare noun (`app`, `provider`,

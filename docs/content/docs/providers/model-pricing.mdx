@@ -198,10 +198,15 @@ entry lists the modes it is sold in under `modes`, keyed by the mode's name:
   names replaces its multiplied figure, for a provider that prices one rate
   apart, such as a flex cache read.
 - **A tier in a region:** the pair's own entry if there is one, otherwise the
-  tier's entry and then the region's on top. Anthropic fast mode in the US is
-  2 × 1.1.
-- **A mode a model does not list has no price.** It is never billed at
-  another mode's price.
+  tier's price times the region's factor. Anthropic fast mode in the US is
+  2 × 1.1. A region's own rates are its standard prices there, so they apply
+  to a standard request in that region only.
+- **A mode a model does not list has no price.** A request for it is still
+  served, and billed at an estimate (below).
+- **A mode is never removed.** When a provider's page stops listing a mode for
+  a model, it keeps its last price and gains `"unlisted_since": "YYYY-MM-DD"`,
+  as a model the page stops listing does, so a request that used it keeps
+  being billed exactly.
 
 A request is billed in the mode that served it. That is the mode the response
 names where the provider reports one (OpenAI, Anthropic, Gemini, xAI, Mistral,
@@ -211,12 +216,21 @@ The region also comes from the provider's base URL: a provider set to
 `https://us.api.x.ai/` bills its requests in the `us` region. OpenAI's data
 residency hosts are billed as the global host. Each usage event records its mode as `service_mode`.
 
-If a provider reports serving a mode the model has no price for, such as an
-account's default tier the request did not show, it is billed at the dearest
-price the model has for what is missing: an unpriced tier at its dearest
-priced tier, an unpriced region at its dearest priced region. To see which modes the gateway
-reads in each provider's requests, see
-[Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
+A request is never refused because its mode has no price: an app may already
+rely on the mode, so it is served, and billed at an estimate on what is
+missing, while the part that is priced keeps its price:
+
+- a tier cheaper than standard (flex) at the standard price;
+- a dearer tier at the dearest tier the model is priced in;
+- a region at the dearest region the model is priced in.
+
+A mode value the gateway does not know is billed at the standard price. Such
+events have `cost_source` `estimated`, and the console marks their cost with
+**≈**. To bill one exactly, add a price for the mode to the provider's custom
+pricing. A mode you choose in a custom endpoint's parameters is checked when
+you save it instead: a mode with no price is refused there, as a model with no
+price is. To see which modes the gateway reads in each provider's requests,
+see [Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
 
 ## Custom prices
 
@@ -274,8 +288,9 @@ prompt size in tokens above which they apply. The dialog shows the cache
 rates and keeps the others as they are when you save.
 
 A custom price can also price service modes, with the same `modes` object as
-the price list. It replaces the price list's modes for that model along with
-its rates, so a custom price without `modes` prices the standard mode only:
+the price list. Without `modes`, it keeps the price list's modes for that
+model, their factors applied to your rates. With `modes`, yours are used as
+written, and `"modes": {}` prices no mode at all:
 
 ```json
 { "gpt-brand-new": { "input": 1.25, "output": 10, "modes": { "flex": { "factor": 0.5 } } } }
@@ -344,6 +359,7 @@ Every usage event records how its cost was arrived at, in `cost_source`:
 | --- | --- |
 | `reported` | The provider said what the request cost, and that figure is the recorded one. xAI and OpenRouter report one. |
 | `computed` | Priced locally, from the provider's custom pricing or the shipped price list. |
+| `estimated` | Priced locally, at an estimate: the service mode has no price for the model, or the request named a mode the gateway does not know. |
 | `unresolved` | Neither source could answer on a successful response. |
 
 Reported cost wins because it is what you were charged. Local pricing is the

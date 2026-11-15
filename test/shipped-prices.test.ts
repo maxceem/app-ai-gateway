@@ -42,6 +42,12 @@ describe("the shipped price catalog", () => {
       expect([where, name, name !== "standard" && parseServiceModeName(name) !== null]).toEqual([where, name, true]);
       expect([where, name, typeof mode === "object" && mode !== null && !Array.isArray(mode)]).toEqual([where, name, true]);
       for (const [rate, amount] of Object.entries(mode as Record<string, unknown>)) {
+        if (rate === "unlisted_since") {
+          const day = String(amount);
+          expect([where, name, /^\d{4}-\d{2}-\d{2}$/.test(day) && new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])
+            .toEqual([where, name, true]);
+          continue;
+        }
         expect([where, name, rate, typeof amount]).toEqual([where, name, rate, "number"]);
         const value = amount as number;
         if (rate === "factor") {

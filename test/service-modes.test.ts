@@ -1,29 +1,33 @@
-import { describe, expect, it, vi } from "vitest";
-import { GatewayError } from "../src/core/errors";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseServiceModeName, readServiceMode, serviceModeName, STANDARD_MODE } from "../src/shared/service-modes";
 import { ProviderPricingSchema } from "../src/contracts/schemas";
 import { providerDescriptor } from "../src/shared/providers";
-import { computeCost, judgeServiceMode, priceInMode } from "../src/usage/pricing";
+import { computeCost, configuredModeProblem, judgeServiceMode, priceInMode } from "../src/usage/pricing";
 import { observeResponse } from "../src/usage/usage-readers";
 
 const read = (body: Record<string, unknown>) => (name: string) => body[name];
 
-/** The refusal requests will get once unpriced modes are refused rather than logged. */
-function refusal(input: {
+/** The mode a request asks `type` for, judged against a model priced by `pricing`, if any. */
+function judged(input: {
   type: Parameters<typeof judgeServiceMode>[0]["type"];
   route?: Parameters<typeof judgeServiceMode>[0]["route"];
   style?: Parameters<typeof judgeServiceMode>[0]["style"];
+  baseUrl?: string;
+  pricing?: Parameters<typeof judgeServiceMode>[0]["pricing"];
   body: Record<string, unknown>;
 }) {
   return judgeServiceMode({
     type: input.type,
     route: input.route ?? "direct",
     style: input.style ?? "responses",
+    baseUrl: input.baseUrl,
+    pricing: input.pricing,
     model: "a-model",
     read: read(input.body),
-    policy: "refuse",
-  }).refusal;
+  });
 }
+
+const PRICED = { "a-model": { input: 1, output: 4, modes: { fast: { factor: 2 } } } };
 
 describe("readServiceMode", () => {
   it("reads nothing as the standard mode", () => {
@@ -60,52 +64,71 @@ describe("readServiceMode", () => {
   });
 });
 
-describe("judgeServiceMode, when unpriced modes are refused", () => {
-  it.each([
-    ["OpenAI fast", "openai", { service_tier: "priority" }, "fast"],
-    ["Anthropic fast mode in the US", "anthropic", { speed: "fast", inference_geo: "us" }, "fast+us"],
-    ["Mistral's priority-when-eligible", "mistral", { service_tier: "auto" }, "priority"],
-    ["flex, which no price lists yet", "openai", { service_tier: "flex" }, "flex"],
-  ] as const)("refuses %s with the mode it names", (_label, type, body, mode) => {
-    const error = refusal({ type, body });
-    expect(error).toBeInstanceOf(GatewayError);
-    expect(error).toMatchObject({ status: 400, code: "pricing_not_configured", data: { service_mode: mode } });
+describe("judgeServiceMode", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it.each([
-    ["standard", "openai", { service_tier: "default" }],
-    ["a tier paid for by contract", "groq", { service_tier: "performance" }],
-  ] as const)("lets %s through", (_label, type, body) => {
-    expect(refusal({ type, body })).toBeNull();
+  it("never refuses a mode with no price: it is served and estimated", () => {
+    expect(judged({ type: "openai", body: { service_tier: "flex" } }))
+      .toEqual({ mode: { tier: "flex", region: "global" }, estimated: true });
+    expect(judged({ type: "mistral", style: "chat_completions", body: { service_tier: "auto" } }).estimated).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("service_mode_unpriced"));
   });
 
-  it("quotes the fields the client sent, and says how to add the price", () => {
-    expect(refusal({ type: "anthropic", style: "anthropic_messages", body: { speed: "fast", inference_geo: "us" } }))
-      .toMatchObject({
-        message: 'Model a-model has no price on anthropic in service mode fast+us, which the request asks for with '
-          + 'speed: "fast", inference_geo: "us". Add a price for that mode under custom model pricing in the provider '
-          + "settings, or leave speed and inference_geo out.",
-        data: { service_mode: "fast+us", field: "speed" },
-      });
+  it("bills a priced mode exactly", () => {
+    expect(judged({ type: "openai", pricing: PRICED, body: { service_tier: "priority" } }))
+      .toEqual({ mode: { tier: "fast", region: "global" }, estimated: false });
+    expect(judged({ type: "openai", body: { service_tier: "default" } }).estimated).toBe(false);
   });
 
-  it("lets an unknown value through, and logs it", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(refusal({ type: "deepseek", style: "chat_completions", body: { service_tier: "turbo" } })).toBeNull();
+  it("estimates a value the gateway does not know, and logs it", () => {
+    expect(judged({ type: "deepseek", style: "chat_completions", body: { service_tier: "turbo" } }))
+      .toEqual({ mode: STANDARD_MODE, estimated: true });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("service_mode_unknown"));
-    warn.mockRestore();
   });
 
-  it("lets any mode through where the provider reports what it cost", () => {
-    expect(refusal({ type: "xai", body: { service_tier: "priority" } })).toBeNull();
-    expect(refusal({ type: "xai", style: "anthropic_messages", body: { service_tier: "priority" } }))
-      .toMatchObject({ data: { service_mode: "priority" } });
+  it("estimates nothing where the provider reports what each request cost", () => {
+    expect(judged({ type: "xai", body: { service_tier: "priority" } }).estimated).toBe(false);
+    expect(judged({ type: "xai", style: "anthropic_messages", body: { service_tier: "priority" } }).estimated).toBe(true);
   });
 
-  it("reads a gateway's own fields on its route", () => {
+  it("reads a gateway's own fields on its route, and the region of a regional base URL", () => {
     const body = { providerOptions: { gateway: { serviceTier: "priority" } } };
-    expect(refusal({ type: "openai", body })).toBeNull();
-    expect(refusal({ type: "openai", route: "vercel", body })).toMatchObject({ data: { service_mode: "priority" } });
+    expect(judged({ type: "openai", body }).mode).toEqual(STANDARD_MODE);
+    // Vercel passes its tier on as the provider's own: OpenAI's priority is fast.
+    expect(judged({ type: "openai", route: "vercel", body }).mode).toEqual({ tier: "fast", region: "global" });
+    expect(judged({ type: "gemini", route: "vercel", style: "gemini_native", body }).mode).toEqual({ tier: "priority", region: "global" });
+    expect(judged({ type: "together", style: "chat_completions", baseUrl: "https://us-api.together.ai/", body: {} }).mode)
+      .toEqual({ tier: "standard", region: "us" });
+  });
+});
+
+describe("configuredModeProblem", () => {
+  const problem = (body: Record<string, unknown>, pricing?: typeof PRICED, type: "openai" | "xai" = "openai") =>
+    configuredModeProblem({ type, route: "direct", pricing, style: "responses", model: "a-model", read: read(body) });
+
+  it("refuses a mode the parameters name with no price, quoting them and saying how to add it", () => {
+    expect(problem({ service_tier: "flex" })).toBe(
+      'Model a-model has no price on openai in service mode flex, which the parameters set with service_tier: "flex". '
+        + "Add a price for that mode under custom model pricing in the provider settings, or leave service_tier out of the parameters.",
+    );
+  });
+
+  it("refuses a value the gateway does not know, which could never be priced", () => {
+    expect(problem({ service_tier: "turbo" })).toBe(
+      'service_tier: "turbo" is not a service mode the gateway knows for openai, so it cannot be priced. '
+        + "Leave service_tier out of the parameters.",
+    );
+  });
+
+  it("accepts a priced mode, and any mode on a route that reports its cost", () => {
+    expect(problem({ service_tier: "priority" }, PRICED)).toBeNull();
+    expect(problem({ service_tier: "priority" }, undefined, "xai")).toBeNull();
   });
 });
 
@@ -139,6 +162,14 @@ describe("priceInMode", () => {
   it("prefers a pair the provider prices apart over the product of its parts", () => {
     expect(priceInMode(price, { tier: "priority", region: "eu" })?.input).toBeCloseTo(3.7, 10);
     expect(priceInMode(price, { tier: "priority", region: "us" })?.input).toBeCloseTo(2 * 1.75 * 1.2, 10);
+  });
+
+  it("puts a tier in a region at the tier's price times the region's factor, never the region's own rates", () => {
+    // A region kept at its last price states its rates; fast in it is still fast × 1.1.
+    const kept = { ...price, modes: { fast: { factor: 2 }, us: { factor: 1.1, input: 2.2, output: 8.8, unlisted_since: "2026-11-30" } } };
+    expect(priceInMode(kept, { tier: "standard", region: "us" })).toMatchObject({ input: 2.2, output: 8.8 });
+    expect(priceInMode(kept, { tier: "fast", region: "us" })?.input).toBeCloseTo(4.4, 10);
+    expect(priceInMode(kept, { tier: "fast", region: "us" })?.output).toBeCloseTo(17.6, 10);
   });
 
   it("reads an entry with no factor as factor 1", () => {

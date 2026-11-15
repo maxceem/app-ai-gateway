@@ -11,6 +11,50 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
 - The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
+## Serving requests
+
+An app's users must never get a failed request because of a problem in the
+gateway's own counting, pricing or billing. It is better to count a request
+wrong than to fail it.
+
+- **Check who is calling, always.** Serve a request only after the caller is
+  verified: application key, App Attest, user auth, paid entitlement. If a
+  check can't finish, refuse the request. The rules below never change this.
+- **Refuse only for a deliberate reason.** These are the only good reasons:
+  - the caller is not verified;
+  - the app doesn't allow this provider, model or mode;
+  - the customer's own limit for their app's users is reached;
+  - the plan allowance is known to be used up.
+
+  If the provider returns an error, pass it to the app as it is.
+- **If counting or pricing breaks, serve the request anyway.** This covers
+  usage recording, pricing, the allowance counter, billing lookups and
+  analytics: if one fails, is slow or has no answer, serve the request and
+  count it less precisely. This applies to the hosted version's billing too.
+  Always log it as a `warn` or `error` so the monitor can alert on it. When
+  the customer should know, also mark it on the usage event. Never miscount
+  silently.
+- **Don't make a request wait for counting.** Give counting a time limit, or
+  do it after the response is sent.
+- **Be strict when saving settings, and forgiving when serving requests.** When
+  the customer saves an app or provider, check everything they name
+  explicitly. Refuse to save a model or mode that has no price. If the plan
+  can't be read, answer `503` instead of guessing. A mistake caught on save
+  costs nothing. The same mistake caught on a live request fails real users.
+- **Never start refusing something that used to work.** Refuse a request only
+  if it could never have worked before. For example, a model without a price
+  was never served, so refusing it breaks nothing. Anything that was served
+  must keep being served:
+  - never remove a price from the price list; mark it `unlisted_since`
+    instead;
+  - apply a new or stricter check when settings are saved, not to requests
+    that already work.
+- **When the exact price is unknown, estimate it. Never bill it as free.**
+  Sometimes a request asks for something without an exact price, such as a
+  service mode. Serve it, and bill it at the closest known price, never less
+  than the model's standard price. Mark the event `cost_source: "estimated"`
+  so the customer can see it.
+
 ## Code
 
 - Every API operation is declared once in `src/contracts/catalog.ts`; the

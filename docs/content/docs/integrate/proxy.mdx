@@ -159,13 +159,9 @@ right price. Through Vercel AI Gateway, Vercel's own
 
 A request is billed at its model's price in the mode that served it: see
 [Service tiers and regions](/providers/model-pricing#service-tiers-and-regions)
-for how modes are priced. For now, a request for a mode its model has no
-price for is forwarded and billed at the dearest price the model has for
-that tier or region. In a
-later release it will be refused with `400 pricing_not_configured`, flex
-included. The error names the mode and the field that asked for it, and you
-can add the price yourself under custom model pricing in the provider
-settings. The providers' standard values, and tiers paid for by contract
+for how modes are priced. A request is never refused because its mode has no
+price: it is forwarded, billed at an estimate, and its usage event is marked
+`estimated`. The providers' standard values, and tiers paid for by contract
 (OpenAI `scale`, Groq `performance`), are always billed at the standard rate.
 
 ## Limits on a request

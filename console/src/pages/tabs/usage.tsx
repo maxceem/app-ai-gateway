@@ -498,6 +498,12 @@ export function UsageTab({
                       {event.served_provider ? (
                         <span className="block">Served by {event.served_provider}</span>
                       ) : null}
+                      {/* The mode that served it, where not the standard one. */}
+                      {event.service_mode ? (
+                        <span className="block">
+                          {[event.service_mode.tier, event.service_mode.region].filter(Boolean).join(" · ")}
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {isPassthroughEvent(event) && totalTokens(event) === 0
@@ -516,6 +522,13 @@ export function UsageTab({
                           title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
                         >
                           unresolved
+                        </span>
+                      ) : event.cost_source === "estimated" ? (
+                        <span
+                          className="text-amber-600 dark:text-amber-400"
+                          title="Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know. Add a price for the mode under the provider's custom model pricing to bill it exactly."
+                        >
+                          ≈{formatCost(event.cost_usd)}
                         </span>
                       ) : (
                         <span

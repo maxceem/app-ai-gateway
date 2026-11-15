@@ -2607,11 +2607,12 @@
             ],
             "enum": [
               "computed",
+              "estimated",
               "reported",
               "unresolved",
               null
             ],
-            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed."
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `estimated` is the catalog too, but for a service mode it has no exact price for (a mode the model is not priced in, or a value the gateway does not know), billed at the estimate the model pricing guide describes; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed."
           },
           "app_version": {
             "type": [
@@ -12543,6 +12544,10 @@
                                         },
                                         "per_image": {
                                           "type": "number"
+                                        },
+                                        "unlisted_since": {
+                                          "type": "string",
+                                          "description": "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly."
                                         }
                                       }
                                     },
@@ -12645,6 +12650,10 @@
                                   },
                                   "per_image": {
                                     "type": "number"
+                                  },
+                                  "unlisted_since": {
+                                    "type": "string",
+                                    "description": "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly."
                                   }
                                 }
                               },
