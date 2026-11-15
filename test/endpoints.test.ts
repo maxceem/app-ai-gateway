@@ -182,13 +182,14 @@ describe("custom endpoints", () => {
   it.each([
     ["the client asks for", { input: "hello", service_tier: "fast" }, {}],
     ["the endpoint's parameters ask for", { input: "hello" }, { service_tier: "priority" }],
-  ])("refuses a service mode %s that has no price", async (_label, body, params) => {
+  ])("forwards a service mode %s that has no price yet, and logs it", async (_label, body, params) => {
     const appId = `endpoint-mode-${crypto.randomUUID()}`;
     await seedApp(appId, {
       endpoints: { chat: { ...CHAT_ENDPOINTS.chat, params: { ...CHAT_ENDPOINTS.chat.params, ...params } } },
     });
     const token = await gatewayToken(appId);
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const captured = captureUpstream(() => usageResponse());
+    const warnings = captureWarnings();
 
     const response = await endpointRequest({
       appId,
@@ -197,15 +198,15 @@ describe("custom endpoints", () => {
       contentType: "application/json",
       body: JSON.stringify(body),
     });
+    await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "pricing_not_configured", data: { service_mode: "fast" } },
-    });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(warnings.filter((line) => line.message === "service_mode_unpriced"))
+      .toEqual([expect.objectContaining({ appId, provider: "openai", serviceMode: "fast" })]);
   });
 
-  it("drops a fallback that cannot bill the mode the body asks for", async () => {
+  it("keeps a fallback that cannot bill the mode yet, and logs it", async () => {
     const appId = "endpoint-mode-fallback";
     // xAI reports each Responses request's cost, so it bills priority; OpenAI
     // reads the same field as fast, which has no price yet.
@@ -222,6 +223,7 @@ describe("custom endpoints", () => {
     const token = await gatewayToken(appId);
     const captured = captureUpstream(() =>
       Response.json({ error: { message: "upstream exploded" } }, { status: 500 }));
+    const warnings = captureWarnings();
 
     const response = await endpointRequest({
       appId,
@@ -233,9 +235,11 @@ describe("custom endpoints", () => {
     await response.text();
 
     expect(response.status).toBe(500);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.url).toBe("https://api.x.ai/v1/responses");
-    expect(JSON.parse(captured[0]!.body)).toMatchObject({ service_tier: "priority" });
+    expect(captured.map((request) => request.url))
+      .toEqual(["https://api.x.ai/v1/responses", "https://api.openai.com/v1/responses"]);
+    expect(JSON.parse(captured[1]!.body)).toMatchObject({ service_tier: "priority" });
+    expect(warnings.filter((line) => line.message === "service_mode_unpriced"))
+      .toEqual([expect.objectContaining({ provider: "openai", serviceMode: "fast" })]);
   });
 
   it("sends flex to every target unchanged", async () => {

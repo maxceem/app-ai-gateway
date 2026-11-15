@@ -2937,11 +2937,12 @@ describe("a custom end-user header", () => {
 
 /**
  * A request field that asks the provider for a dearer service mode — priority,
- * fast, ultrafast, a pinned region — would be billed at the standard rate, so
- * it is refused until prices carry modes. Flex is billed at standard, which
- * never under-bills, and passes. A value the gateway does not know passes too,
- * logged, so a tier a provider adds never breaks a client. The client's field
- * always reaches the provider untouched.
+ * fast, ultrafast, a pinned region — has no price yet. For now it is forwarded,
+ * billed at standard, and logged as `service_mode_unpriced`, so apps that send
+ * one are found before any request is refused; `test/service-modes.test.ts`
+ * covers the refusal itself. A value the gateway does not know is forwarded and
+ * logged as `service_mode_unknown`. The client's field always reaches the
+ * provider untouched.
  */
 describe("service modes", () => {
   const ALL_PROVIDERS = { proxy: { provider_mode: "all", model_rewrites: {} } } as const;
@@ -2956,34 +2957,56 @@ describe("service modes", () => {
     return bodies;
   }
 
-  async function send(path: string, body: Record<string, unknown>): Promise<Response> {
-    const appId = `proxy-mode-${crypto.randomUUID()}`;
+  /** The structured warnings the Worker writes from now on. */
+  function warnings(): Record<string, unknown>[] {
+    const lines: Record<string, unknown>[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      if (typeof line !== "string") return;
+      try {
+        lines.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Not one of ours.
+      }
+    });
+    return lines;
+  }
+
+  const logged = (lines: Record<string, unknown>[], message: string) =>
+    lines.filter((line) => line.message === message);
+
+  async function send(path: string, body: Record<string, unknown>, appId = `proxy-mode-${crypto.randomUUID()}`) {
     await seedApp(appId, ALL_PROVIDERS);
     return proxyRequest({ appId, token: await gatewayToken(appId), path, body });
   }
 
   it.each([
-    ["OpenAI fast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "fast" }, "fast"],
-    ["OpenAI fast by its old name", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "priority" }, "fast"],
-    ["OpenAI ultrafast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ultrafast" }, "ultrafast"],
-    ["Anthropic fast mode", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast" }, "fast"],
-    ["Anthropic US inference", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], inference_geo: "us" }, "us"],
-    ["Anthropic fast mode in the US", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast", inference_geo: "us" }, "fast+us"],
-    ["Gemini priority, camel-cased", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], serviceTier: "priority" }, "priority"],
-    ["Mistral's priority-when-eligible", "mistral/v1/chat/completions", { model: "mistral-large-latest", messages: [], service_tier: "auto" }, "priority"],
-    ["xAI priority on its Anthropic-format API", "xai/v1/messages", { model: "grok-4.7", max_tokens: 16, messages: [], service_tier: "priority" }, "priority"],
-    ["Gemini priority behind a flex alias", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex", serviceTier: "priority" }, "priority"],
-    ["a tier in capitals", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ULTRAFAST" }, "ultrafast"],
-  ])("refuses %s, which has no price yet", async (_label, path, body, mode) => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    ["OpenAI fast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "fast" }, "openai", "fast"],
+    ["OpenAI fast by its old name", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "priority" }, "openai", "fast"],
+    ["OpenAI ultrafast", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ultrafast" }, "openai", "ultrafast"],
+    ["Anthropic fast mode", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast" }, "anthropic", "fast"],
+    ["Anthropic US inference", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], inference_geo: "us" }, "anthropic", "us"],
+    ["Anthropic fast mode in the US", "anthropic/v1/messages", { model: "claude-opus-5-5", max_tokens: 16, messages: [], speed: "fast", inference_geo: "us" }, "anthropic", "fast+us"],
+    ["Gemini priority, camel-cased", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], serviceTier: "priority" }, "gemini", "priority"],
+    ["Mistral's priority-when-eligible", "mistral/v1/chat/completions", { model: "mistral-large-latest", messages: [], service_tier: "auto" }, "mistral", "priority"],
+    ["xAI priority on its Anthropic-format API", "xai/v1/messages", { model: "grok-4.7", max_tokens: 16, messages: [], service_tier: "priority" }, "xai", "priority"],
+    ["Gemini priority behind a flex alias", "gemini/v1beta/models/gemini-3.5-flash:generateContent", { contents: [], service_tier: "flex", serviceTier: "priority" }, "gemini", "priority"],
+    ["a tier in capitals", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "ULTRAFAST" }, "openai", "ultrafast"],
+  ])("forwards %s, which has no price yet, and logs it", async (_label, path, body, provider, mode) => {
+    const bodies = upstream();
+    const lines = warnings();
+    const appId = `proxy-mode-${crypto.randomUUID()}`;
 
-    const response = await send(path, body);
+    const response = await send(path, body, appId);
+    await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "pricing_not_configured", data: { service_mode: mode } },
-    });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(bodies[0]!) as Record<string, unknown>;
+    for (const field of ["service_tier", "serviceTier", "speed", "inference_geo"]) {
+      if (field in body) expect(sent[field]).toEqual((body as Record<string, unknown>)[field]);
+    }
+    expect(logged(lines, "service_mode_unpriced")).toEqual([
+      expect.objectContaining({ appId, provider, serviceMode: mode }),
+    ]);
   });
 
   it.each([
@@ -2992,23 +3015,22 @@ describe("service modes", () => {
     ["a tier that is not a string", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: { tier: "fast" } }, "openai", "(other)"],
   ])("forwards %s, which the gateway does not know, and logs it", async (_label, path, body, provider, value) => {
     const bodies = upstream();
-    const warnings: string[] = [];
-    vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
-      if (typeof line === "string") warnings.push(line);
-    });
+    const lines = warnings();
 
     const response = await send(path, body);
     await response.text();
 
     expect(response.status).toBe(200);
     expect(JSON.parse(bodies[0]!).service_tier).toEqual(body.service_tier);
-    const logged = warnings.map((line) => JSON.parse(line) as Record<string, unknown>)
-      .find((line) => line.message === "service_mode_unknown");
-    expect(logged).toMatchObject({ provider, field: "service_tier", value });
+    expect(logged(lines, "service_mode_unknown")).toEqual([
+      expect.objectContaining({ provider, field: "service_tier", value }),
+    ]);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([]);
   });
 
-  it("still refuses a known dearer mode beside an unknown value", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+  it("still notes a known dearer mode beside an unknown value", async () => {
+    upstream();
+    const lines = warnings();
 
     const response = await send("anthropic/v1/messages", {
       model: "claude-opus-5-5",
@@ -3017,12 +3039,11 @@ describe("service modes", () => {
       service_tier: "something-new",
       speed: "fast",
     });
+    await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "pricing_not_configured", data: { service_mode: "fast" } },
-    });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unknown")).toHaveLength(1);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: "fast" })]);
   });
 
   it.each([
@@ -3037,8 +3058,9 @@ describe("service modes", () => {
     ["Groq's reserved capacity, paid for by contract", "groq/openai/v1/chat/completions", { model: "openai/gpt-oss-120b", messages: [], service_tier: "performance" }],
     ["OpenAI Scale Tier units, paid for by contract", "openai/v1/responses", { model: "gpt-5.6-sol", input: "hi", service_tier: "scale" }],
     ["xAI priority, whose cost xAI reports", "xai/v1/chat/completions", { model: "grok-4.7", messages: [], service_tier: "priority" }],
-  ])("forwards %s with the client's field untouched", async (_label, path, body) => {
+  ])("forwards %s with the client's field untouched, and logs nothing", async (_label, path, body) => {
     const bodies = upstream();
+    const lines = warnings();
 
     const response = await send(path, body);
     await response.text();
@@ -3049,13 +3071,14 @@ describe("service modes", () => {
     for (const field of ["service_tier", "serviceTier", "speed", "inference_geo"]) {
       if (field in body) expect(sent[field]).toEqual((body as Record<string, unknown>)[field]);
     }
+    expect(lines.filter((line) => String(line.message).startsWith("service_mode_"))).toEqual([]);
   });
 
   it.each([
     ["Vercel's own tier option", { gateway: { serviceTier: "priority" } }, "priority"],
     ["Vercel's speed option", { gateway: { speed: "fast" } }, "fast"],
     ["OpenAI's tier passed on by Vercel", { openai: { serviceTier: "ultrafast" } }, "ultrafast"],
-  ])("refuses %s on a route through Vercel", async (_label, providerOptions, mode) => {
+  ])("notes %s on a route through Vercel", async (_label, providerOptions, mode) => {
     const appId = `proxy-mode-vercel-${crypto.randomUUID()}`;
     const slug = `openai-vercel-${mode}`;
     await seedApp(appId, ALL_PROVIDERS);
@@ -3066,7 +3089,8 @@ describe("service modes", () => {
       gateway: "vercel",
       providerGatewayId: `${appId}-gateway`,
     });
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    upstream();
+    const lines = warnings();
 
     const response = await proxyRequest({
       appId,
@@ -3074,19 +3098,19 @@ describe("service modes", () => {
       path: `${slug}/v1/responses`,
       body: { model: "gpt-5.6-sol", input: "hi", providerOptions },
     });
+    await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "pricing_not_configured", data: { service_mode: mode } },
-    });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: mode })]);
   });
 
-  it("refuses a transcription upload that asks for a tier", async () => {
+  it("notes a transcription upload that asks for a tier", async () => {
     const appId = "proxy-mode-multipart";
     await seedApp(appId, ALL_PROVIDERS);
     const token = await gatewayToken(appId);
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ text: "hello", usage: { input_tokens: 2, output_tokens: 1 } }));
+    const lines = warnings();
     const form = new FormData();
     form.set("model", "gpt-4o-transcribe");
     form.set("service_tier", "fast");
@@ -3097,12 +3121,10 @@ describe("service modes", () => {
       headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3" },
       body: form,
     });
+    await response.text();
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "pricing_not_configured", data: { service_mode: "fast" } },
-    });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(logged(lines, "service_mode_unpriced")).toEqual([expect.objectContaining({ serviceMode: "fast" })]);
   });
 
   it("judges the model before the mode", async () => {

@@ -365,6 +365,8 @@ function resolveModel(input: {
   style: ApiStyle;
   /** One body field, for the service mode; see {@link serviceModeRefusal}. */
   read: (name: string) => unknown;
+  /** The app, which a service-mode log line names. */
+  appId: string;
 }): { requestedModel: string; actualModel: string; wireModel: string } {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
@@ -386,6 +388,7 @@ function resolveModel(input: {
     style: input.style,
     model: actualModel,
     read: input.read,
+    appId: input.appId,
   });
   if (refusal) throw refusal;
   // Everything above judged the canonical model; only the outbound request
@@ -526,6 +529,7 @@ export async function prepareProxyRequest(input: {
       // An upload left unparsed is a provider-native one whose path names the
       // model; none of those takes a service tier.
       read: (name) => parsed?.get(name),
+      appId: input.app.id,
     });
     const placement = modelPlacement(match, model);
     // A transcription is only forwarded in a format whose answer can be priced.
@@ -564,6 +568,7 @@ export async function prepareProxyRequest(input: {
     resolved,
     style: apiStyle,
     read: (name) => parsed[name],
+    appId: input.app.id,
   });
   const placement = modelPlacement(match, model);
   let bodyChanged = false;

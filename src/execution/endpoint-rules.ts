@@ -274,6 +274,7 @@ export async function resolveEndpointAttempts(
       style: endpoint.api_style,
       model: target.model,
       read: json ? (name) => json[name] : (name) => prepared.form?.get(name),
+      appId: app.id,
     });
     if (modeRefusal) {
       if (primary) throw modeRefusal;

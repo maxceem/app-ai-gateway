@@ -238,18 +238,27 @@ function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly S
 }
 
 /**
+ * What happens to a request for a mode that costs more than standard and has no
+ * price: `log` forwards it, billed at standard, and logs `service_mode_unpriced`;
+ * `refuse` answers `pricing_not_configured`. It starts at `log`, so apps that
+ * already send a paid tier show up in the logs before any request of theirs is
+ * refused; turning refusal on is this one line.
+ */
+export const UNPRICED_SERVICE_MODES: "log" | "refuse" = "log";
+
+/**
  * Why a request's service mode cannot be billed on one target, or `null` when
  * it can.
  *
  * `read` returns one field of the body as it will be sent — the client's JSON
  * merged with anything the configuration adds, or a form field — and the
  * target's own table says what its value means. A mode the table knows costs
- * more than standard, and the model has no price in, is refused: never billed
- * as standard. A value the table does not know is let through and billed at
- * standard, so a tier a provider adds never breaks a client before the gateway
- * learns it; it is logged as `service_mode_unknown` so it can be added. A route
- * whose provider reports what each request cost needs no price, so nothing is
- * read there.
+ * more than standard, and the model has no price in, is handled as
+ * {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
+ * through and billed at standard, so a tier a provider adds never breaks a
+ * client before the gateway learns it; it is logged as `service_mode_unknown`
+ * so it can be added. A route whose provider reports what each request cost
+ * needs no price, so nothing is read there.
  *
  * Judged after the model itself was found billable, so a refusal here is
  * always about the mode.
@@ -260,12 +269,17 @@ export function serviceModeRefusal(input: {
   style: ApiStyle;
   model: string;
   read: (name: string) => unknown;
+  /** The app the request is for, so a log line names it. Absent on a configuration write. */
+  appId?: string;
+  /** Overrides {@link UNPRICED_SERVICE_MODES}, for tests of the other policy. */
+  policy?: "log" | "refuse";
 }): GatewayError | null {
   const { type, route } = input;
   if (route === null || reportsCost(type, route, input.style)) return null;
   const reading = readServiceMode(serviceModeFields(type, route), input.read);
   if (reading.unknown) {
     log("warn", "service_mode_unknown", {
+      ...(input.appId === undefined ? {} : { appId: input.appId }),
       provider: type,
       field: reading.unknown.field,
       value: reading.unknown.value,
@@ -273,6 +287,15 @@ export function serviceModeRefusal(input: {
   }
   if (hasModePrice(reading.mode)) return null;
   const name = serviceModeName(reading.mode);
+  if ((input.policy ?? UNPRICED_SERVICE_MODES) === "log") {
+    log("warn", "service_mode_unpriced", {
+      ...(input.appId === undefined ? {} : { appId: input.appId }),
+      provider: type,
+      model: input.model,
+      serviceMode: name,
+    });
+    return null;
+  }
   return new GatewayError(
     400,
     "pricing_not_configured",

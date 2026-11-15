@@ -30,15 +30,3 @@ test("a server app gets a streamed Anthropic Messages answer", async () => {
   expect(text).toContain("message_stop");
   await expectForwardedCleanly(id, "v1/messages");
 });
-
-// Fast mode and US inference cost more than standard and have no price yet.
-test.each([
-  ["fast mode", { speed: "fast" }, "fast"],
-  ["US inference", { inference_geo: "us" }, "us"],
-])("a request for Anthropic %s is refused as unpriced", async (label, fields, mode) => {
-  const response = await call(env, path, { key, body: { ...body(smokeId(), false), ...fields } });
-  await expectStatus(response, 400, `Anthropic ${label}`);
-  const reply = await json<{ error: { code: string; data?: { service_mode?: string } } }>(response, `Anthropic ${label}`);
-  expect(reply.error.code).toBe("pricing_not_configured");
-  expect(reply.error.data?.service_mode).toBe(mode);
-});
