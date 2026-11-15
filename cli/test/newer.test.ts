@@ -121,12 +121,12 @@ test("usage event cost sources newer than this release are kept as sent", () => 
     credential_source: null, model_author: null, served_provider: null, served_model: null,
     model: "gpt-x", route: "v1/responses", endpoint_slug: null, input_tokens: 1,
     cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 1, cost_usd: 0,
-    reported_cost_usd: null, cost_source: "estimated", app_version: null, auth_method: null,
+    reported_cost_usd: null, cost_source: "invoiced", app_version: null, auth_method: null,
     status: "ok", client_aborted: null, latency_ms: 10, client_trace_id: null, created_at: "now",
   };
   const read = tolerant(UsageEventSchema, event);
   assert.deepEqual(read?.data, event);
-  assert.deepEqual(read?.unknown, [{ path: ["cost_source"], value: "estimated" }]);
+  assert.deepEqual(read?.unknown, [{ path: ["cost_source"], value: "invoiced" }]);
 });
 
 /** What `/v1/cli/capabilities` answers for a gateway of this release and mode. */

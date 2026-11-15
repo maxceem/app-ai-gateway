@@ -267,7 +267,8 @@
       "input": 2.0,
       "cached_input": 0.5,
       "output": 8.0,
-      "retirement_date": "2026-12-11"
+      "retirement_date": "2026-12-11",
+      "modes": { "flex": { "factor": 0.5 } }
     },
     "o3-pro": { "kind": "text", "input": 20.0, "output": 80.0, "retirement_date": "2026-12-11" },
     "gpt-4.1": { "kind": "text", "input": 2.0, "cached_input": 0.5, "output": 8.0 },

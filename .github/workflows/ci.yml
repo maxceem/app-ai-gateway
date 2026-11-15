@@ -123,3 +123,22 @@ jobs:
             echo "::error::A price update may change src/usage/models.json and nothing else."
             exit 1
           fi
+
+      # The base branch's own code and price list, never the pull request's
+      # code: only its price list is read, as data.
+      - name: Check out the base branch
+        if: github.event.pull_request.user.login == 'app-ai-gateway-prices-bot[bot]'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Check the price update removes no price
+        if: github.event.pull_request.user.login == 'app-ai-gateway-prices-bot[bot]'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin "pull/${PR_NUMBER}/head"
+          git show FETCH_HEAD:src/usage/models.json > "$RUNNER_TEMP/models.json"
+          node scripts/check-price-removals.mjs src/usage/models.json "$RUNNER_TEMP/models.json"

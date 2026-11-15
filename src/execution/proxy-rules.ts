@@ -52,6 +52,8 @@ export interface PreparedProxyRequest {
   apiStyle: ApiStyle;
   /** The service mode the body asks for; see `ExecutionAttempt.serviceMode`. */
   serviceMode: ServiceMode;
+  /** Whether that mode can only be billed at an estimate; see `ExecutionAttempt.serviceModeEstimated`. */
+  serviceModeEstimated: boolean;
   body: BodyInit | null;
   headers: Headers;
   query: string;
@@ -370,7 +372,13 @@ function resolveModel(input: {
   read: (name: string) => unknown;
   /** The app, which a service-mode log line names. */
   appId: string;
-}): { requestedModel: string; actualModel: string; wireModel: string; serviceMode: ServiceMode } {
+}): {
+  requestedModel: string;
+  actualModel: string;
+  wireModel: string;
+  serviceMode: ServiceMode;
+  serviceModeEstimated: boolean;
+} {
   const provider = input.resolved.type;
   const requestedModel = input.match.modelFromPath
     ?? input.bodyModel
@@ -385,7 +393,7 @@ function resolveModel(input: {
   if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
-  const { mode, refusal } = judgeServiceMode({
+  const { mode, estimated } = judgeServiceMode({
     type: provider,
     route: input.resolved.route.kind,
     baseUrl: input.resolved.baseUrl,
@@ -395,7 +403,6 @@ function resolveModel(input: {
     read: input.read,
     appId: input.appId,
   });
-  if (refusal) throw refusal;
   // Everything above judged the canonical model; only the outbound request
   // speaks the route's own namespace, and only where the adapter declares one.
   return {
@@ -403,6 +410,7 @@ function resolveModel(input: {
     actualModel,
     wireModel: routeWireModel(input.resolved.route, provider, actualModel),
     serviceMode: mode,
+    serviceModeEstimated: estimated,
   };
 }
 
@@ -480,6 +488,7 @@ export async function prepareProxyRequest(input: {
     providerPath: string,
     model: string,
     serviceMode: ServiceMode,
+    serviceModeEstimated: boolean,
   ): PreparedProxyRequest => ({
     provider,
     providerPath,
@@ -487,6 +496,7 @@ export async function prepareProxyRequest(input: {
     passthrough: false,
     apiStyle,
     serviceMode,
+    serviceModeEstimated,
     body,
     headers,
     query: sanitizedQuery(input.request),
@@ -514,6 +524,7 @@ export async function prepareProxyRequest(input: {
       passthrough: true,
       apiStyle,
       serviceMode: STANDARD_MODE,
+      serviceModeEstimated: false,
       body: input.request.method === "GET" ? null : bytes,
       headers,
       query: sanitizedQuery(input.request),
@@ -556,10 +567,10 @@ export async function prepareProxyRequest(input: {
       if (placement && "bodyModel" in placement) parsed.set("model", placement.bodyModel);
       if (format) parsed.set("response_format", format.send);
       headers.delete("content-type");
-      return prepared(parsed, input.providerPath, model.actualModel, model.serviceMode);
+      return prepared(parsed, input.providerPath, model.actualModel, model.serviceMode, model.serviceModeEstimated);
     }
     const path = placement && "path" in placement ? placement.path : input.providerPath;
-    return prepared(bytes, path, model.actualModel, model.serviceMode);
+    return prepared(bytes, path, model.actualModel, model.serviceMode, model.serviceModeEstimated);
   }
 
   if (apiStyle === "audio_transcription" && judgesTranscriptionFormat(provider)) {
@@ -602,6 +613,7 @@ export async function prepareProxyRequest(input: {
     placement && "path" in placement ? placement.path : input.providerPath,
     model.actualModel,
     model.serviceMode,
+    model.serviceModeEstimated,
   );
 }
 

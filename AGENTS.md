@@ -11,6 +11,43 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
 - The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
+## Serving requests
+
+An app's end users must never see a failed request because of the gateway's
+own bookkeeping. Requests are cheap; an app failing its users is not.
+
+- **Authorization fails closed.** Serve a request only once its caller is
+  verified: application key, App Attest, user auth, paid entitlement. If a
+  check can't be completed, refuse. Nothing below relaxes this.
+- **Refuse only by a rule someone chose:** authorization, the app's allowed
+  providers, models and modes, application limits the customer set, and a
+  plan allowance known to be used up. A provider's own error passes through
+  as the provider sent it.
+- **Accounting fails open, and says so.** When usage recording, pricing, the
+  allowance counter, billing lookups or analytics fail, are slow or lack an
+  answer, serve the request and undercount rather than fail it. This holds
+  for the hosted version's billing too. Always leave a trace: a `warn` or
+  `error` log the monitor can alert on, and a mark on the usage event when
+  the customer should see it. A silent undercount is a bug.
+- **Never make a request wait on accounting.** Give it a deadline, or do it
+  after the response.
+- **Strict when saving configuration, lenient when serving requests.** The
+  management API validates what the customer names explicitly and fails
+  closed: it refuses to save an unpriced model or mode, and answers `503`
+  rather than guess at an unknown plan. A mistake caught at save time costs
+  nothing; the same mistake caught while serving fails the customer's users.
+- **Never start refusing what used to work.** A request may be refused only
+  if it could never have passed. A model without a price was never served,
+  so refusing it breaks nothing. Anything that has been served keeps being
+  served:
+  - prices are never removed from the price list, only marked `unlisted_since`;
+  - a new or tighter check applies when configuration is saved, not to
+    requests already flowing.
+- **Bill an unknown price by estimate, never as free.** When a request chooses
+  something without an exact price, such as a service mode, serve it. Bill it
+  at the closest known price, never below the model's standard price, and
+  mark the event `cost_source: "estimated"` so the customer sees it.
+
 ## Code
 
 - Every API operation is declared once in `src/contracts/catalog.ts`; the

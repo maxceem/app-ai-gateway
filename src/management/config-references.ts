@@ -4,7 +4,7 @@ import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "../shared/providers";
 import { classifyPath } from "../shared/protocols";
 import { type ApiStyle, DEFAULT_PROXY_API_STYLES } from "../shared/capabilities";
-import { catalogKind, hasModelPrice, isBillable, judgeServiceMode } from "../usage/pricing";
+import { catalogKind, configuredModeProblem, hasModelPrice, isBillable } from "../usage/pricing";
 import { servesKind } from "../shared/model-kinds";
 import {
   ConfigError,
@@ -131,10 +131,10 @@ function validateTarget(
       `${label}.model ${target.model} has no configured price for ${target.provider}`,
     );
   }
-  // Parameters that set a service mode are sent to every target, so each one
-  // must be able to bill it: judged here as each request will judge it.
+  // Parameters that set a service mode are sent to every target, and naming a
+  // mode is choosing it, so each target must be able to bill it.
   const params = endpoint.params ?? {};
-  const { refusal } = judgeServiceMode({
+  const problem = configuredModeProblem({
     type: instance.type,
     route: instance.route,
     pricing: instance.pricing,
@@ -142,7 +142,7 @@ function validateTarget(
     model: target.model,
     read: (name) => params[name],
   });
-  if (refusal) throw new ConfigError(`${label}: ${refusal.message}`);
+  if (problem) throw new ConfigError(`${label}: ${problem}`);
 }
 
 /** Applies organization-specific reference, route capability, and price checks on management writes. */

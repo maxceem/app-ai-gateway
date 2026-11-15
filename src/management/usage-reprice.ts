@@ -4,9 +4,9 @@ import type { UsageRepriceRequest } from "../contracts/schemas";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
-import { computeCost, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
+import { computeCost, hasModePrice, hasTokenModelPrice, pricesModalities } from "../usage/pricing";
 import { providerDescriptor } from "../shared/providers";
-import { serviceModeFromStored } from "../shared/service-modes";
+import { isStandardMode, serviceModeFromStored } from "../shared/service-modes";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { monthBounds } from "./usage-queries";
@@ -59,6 +59,7 @@ export async function repriceAppUsage(
       modalityTokens: appUsageEvent.modalityTokens,
       tokenVariants: appUsageEvent.tokenVariants,
       serviceMode: appUsageEvent.serviceMode,
+      costSource: appUsageEvent.costSource,
       costUsd: appUsageEvent.costUsd,
       pricing: providerTable.pricing,
     })
@@ -92,6 +93,7 @@ export async function repriceAppUsage(
     id: number;
     previousCostUsd: number;
     costUsd: number;
+    source: "computed" | "estimated";
     metered: boolean;
   }[] = [];
   const skipped: { id: number; previousCostUsd: number }[] = [];
@@ -116,13 +118,19 @@ export async function repriceAppUsage(
     // repriced cost moves only with the rates themselves.
     // Repriced in the mode that served it. A row recorded before modes were
     // kept was billed as standard, which is the only assumption it can carry.
+    const mode = serviceModeFromStored(row.serviceMode);
     const costUsd = hasTokenModelPrice(provider, model, row.pricing) && !unrecorded
       ? computeCost(provider, model, {
         ...row,
         modalityTokens: row.modalityTokens ?? undefined,
         tokenVariants: row.tokenVariants ?? undefined,
-      }, row.pricing, serviceModeFromStored(row.serviceMode))
+      }, row.pricing, mode)
       : null;
+    // Still an estimate where its mode has no price yet, or where the request
+    // named a value the gateway did not know, which the row keeps only as the
+    // `estimated` it was recorded with.
+    const estimated = !hasModePrice(provider, model, row.pricing, mode)
+      || (row.costSource === "estimated" && isStandardMode(mode));
     if (costUsd === null) {
       if (apply) {
         throw new GatewayError(
@@ -140,6 +148,7 @@ export async function repriceAppUsage(
       id: row.id,
       previousCostUsd: row.costUsd,
       costUsd,
+      source: estimated ? "estimated" : "computed",
       metered: hasReadableCounts(row),
     });
   }
@@ -170,6 +179,7 @@ export async function repriceAppUsage(
       const changes = JSON.stringify(chunk.map((row) => ({
         id: row.id,
         cost: row.costUsd,
+        source: row.source,
         metered: row.metered ? 1 : 0,
       })));
       // Each chunk is one D1 subrequest. The row triggers still apply every
@@ -179,6 +189,7 @@ export async function repriceAppUsage(
            SELECT
              CAST(json_extract(value, '$.id') AS INTEGER) AS id,
              CAST(json_extract(value, '$.cost') AS REAL) AS cost,
+             json_extract(value, '$.source') AS source,
              CAST(json_extract(value, '$.metered') AS INTEGER) AS metered
            FROM json_each(?)
          )
@@ -186,7 +197,7 @@ export async function repriceAppUsage(
            cost_usd = (SELECT cost FROM changes WHERE changes.id = app_usage_event.id),
            cost_source = CASE
              WHEN (SELECT metered FROM changes WHERE changes.id = app_usage_event.id) = 1
-             THEN 'computed' ELSE cost_source END
+             THEN (SELECT source FROM changes WHERE changes.id = app_usage_event.id) ELSE cost_source END
          WHERE app_id = ? AND id IN (SELECT id FROM changes)`,
       ).bind(changes, appId));
     }

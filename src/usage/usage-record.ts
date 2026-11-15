@@ -24,6 +24,7 @@ import { observeResponse } from "./usage-readers";
 import { providerDescriptor, type ProviderType, routeCostReport } from "../shared/providers";
 import { relaysProviderResponses } from "../shared/gateways";
 import {
+  SERVICE_TIERS,
   readServiceMode,
   serviceModeName,
   STANDARD_MODE,
@@ -75,6 +76,8 @@ export interface AttemptAttribution {
    * included. Absent is the standard mode.
    */
   serviceMode?: ServiceMode;
+  /** Whether the request's mode could only be billed at an estimate. Absent is false. */
+  serviceModeEstimated?: boolean;
   /** `slug/path`, the `route` column. */
   route: string;
 }
@@ -368,17 +371,25 @@ function servedServiceMode(
   attribution: AttemptAttribution,
   reported: UsageObservation["reportedModes"],
   headers: Headers | undefined,
-): ServiceMode {
+  truncated: boolean,
+): { mode: ServiceMode; unknown: boolean } {
   const requested = attribution.serviceMode ?? STANDARD_MODE;
-  if (!relaysProviderResponses(attribution.providerRoute.kind)) return requested;
+  if (!relaysProviderResponses(attribution.providerRoute.kind)) return { mode: requested, unknown: false };
   const descriptor = providerDescriptor(attribution.provider);
-  const { named } = readServiceMode(
+  const { named, unknown } = readServiceMode(
     descriptor.servedModes ?? descriptor.serviceModes,
     (name) => name.startsWith("header:") ? headers?.get(name.slice("header:".length)) ?? undefined : reported?.[name],
   );
-  const tier = named.tier ?? requested.tier;
+  let tier = named.tier ?? requested.tier;
+  // A truncated body's tier was found by scanning text the client can have a
+  // hand in (its own `metadata`, echoed back), so it may say a dearer tier
+  // served the request, never a cheaper one than it asked for.
+  if (truncated && SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank) tier = requested.tier;
   const region = named.region ?? requested.region;
-  return tier === requested.tier && region === requested.region ? requested : { tier, region };
+  return {
+    mode: tier === requested.tier && region === requested.region ? requested : { tier, region },
+    unknown: unknown !== undefined,
+  };
 }
 
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
@@ -393,9 +404,12 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // the request was served as far as the caller wanted it — but it is why a
   // stream can end without the usage the provider only sends at the end.
   let aborted = false;
+  // Whether the body was too big to keep whole, so its usage was read from its ends.
+  let truncated = false;
   if (input.observed) {
     const body = await input.observed;
     aborted = body.aborted;
+    truncated = body.truncated;
     if (body.truncated) {
       // The response was too big to keep whole, so usage was read from its two
       // ends. Nothing is wrong with that, but how often it happens is the only
@@ -438,9 +452,10 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const reporting = integration !== null;
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
-  const servedMode = attribution.passthrough
-    ? STANDARD_MODE
-    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders);
+  const served = attribution.passthrough
+    ? { mode: STANDARD_MODE, unknown: false }
+    : servedServiceMode(attribution, usage.reportedModes, input.responseHeaders, truncated);
+  const servedMode = served.mode;
   const price = computeCost(
     attribution.provider,
     attribution.model,
@@ -560,13 +575,22 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // A passthrough call the provider reports no cost for has no source at all:
   // null, never `computed` at a $0 nobody computed.
   const cost = reportedCost ?? (judged ? price : null) ?? 0;
+  // Estimated where the gateway could not price the mode exactly: a value it
+  // does not know, or a mode the model has no price in, in the request or in
+  // what the response says served it.
+  const estimated = judged
+    && (attribution.serviceModeEstimated === true
+      || served.unknown
+      || !hasModePrice(attribution.provider, attribution.model, attribution.pricing, servedMode));
   const costSource: CostSource | null = reportedCost !== null
     ? "reported"
     : !judged
       ? null
       : unresolved
         ? "unresolved"
-        : "computed";
+        : estimated
+          ? "estimated"
+          : "computed";
   const gateway = attribution.providerRoute.gateway;
   // Observed values come solely from the parsed report: nothing else is entitled
   // to claim who served a request, so there is no caller-supplied alternative.

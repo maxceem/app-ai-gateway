@@ -2,7 +2,9 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { gatewayToken, seedApp, seedProvider, signRequest } from "./helpers";
+import { gatewayToken, seedApp, seedProvider, signRequest, testAttribution, testIdentity } from "./helpers";
+import { recordUsageEvent } from "../src/usage/usage-record";
+import type { ObservedBody } from "../src/usage/body-observer";
 import type { ProviderPricing } from "../src/db/schema";
 
 /**
@@ -39,10 +41,14 @@ async function send(appId: string, path: string, body: Record<string, unknown>):
 async function recorded(appId: string) {
   await Promise.all(pending.map((context) => waitOnExecutionContext(context)));
   pending = [];
-  const row = await env.DB.prepare("SELECT cost_usd, service_mode FROM app_usage_event WHERE app_id = ?")
+  const row = await env.DB.prepare("SELECT cost_usd, cost_source, service_mode FROM app_usage_event WHERE app_id = ?")
     .bind(appId)
-    .first<{ cost_usd: number; service_mode: string | null }>();
-  return { cost: row?.cost_usd, mode: row?.service_mode ? JSON.parse(row.service_mode) as unknown : null };
+    .first<{ cost_usd: number; cost_source: string | null; service_mode: string | null }>();
+  return {
+    cost: row?.cost_usd,
+    source: row?.cost_source,
+    mode: row?.service_mode ? JSON.parse(row.service_mode) as unknown : null,
+  };
 }
 
 function warnings(): Record<string, unknown>[] {
@@ -102,6 +108,7 @@ describe("billing in the service mode that served the request", () => {
     const row = await recorded(appId);
     expect(row.cost).toBeCloseTo(cost, 10);
     expect(row.mode).toEqual(mode);
+    expect(row.source).toBe("computed");
     expect(lines.filter((line) => String(line.message).startsWith("service_mode_"))).toEqual([]);
   });
 
@@ -149,6 +156,7 @@ describe("billing in the service mode that served the request", () => {
     // served in: 2 × $0.005, not fast in us.
     expect(row.cost).toBeCloseTo(0.01, 10);
     expect(row.mode).toEqual({ tier: "ultrafast" });
+    expect(row.source).toBe("estimated");
     expect(lines.filter((line) => line.message === "served_mode_unpriced"))
       .toEqual([expect.objectContaining({ appId, serviceMode: "ultrafast" })]);
   });
@@ -209,5 +217,81 @@ describe("billing in the service mode that served the request", () => {
     const row = await recorded(appId);
     // 1,000 uncached at $0.5, 1,000 cached at $0.4 (not 0.25), 1,000 out at $2.
     expect(row.cost).toBeCloseTo((500 + 400 + 2000) / 1_000_000, 10);
+  });
+
+  it("serves a mode with no price and records it as estimated, flex at the standard price", async () => {
+    // Priced for fast but not flex: flex never falls back to a dearer tier.
+    const { appId, slug } = await seeded("openai", { "gpt-5.6-sol": { input: 1, output: 4, modes: { fast: { factor: 2 } } } });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer("flex")));
+    const lines = warnings();
+
+    const response = await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi", service_tier: "flex" });
+
+    expect(response.status).toBe(200);
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.005, 10);
+    expect(row.source).toBe("estimated");
+    expect(row.mode).toEqual({ tier: "flex" });
+    expect(lines.filter((line) => line.message === "service_mode_unpriced"))
+      .toEqual([expect.objectContaining({ appId, serviceMode: "flex" })]);
+  });
+
+  it("records a value the gateway does not know as estimated, at the standard price", async () => {
+    const { appId, slug } = await seeded("openai", OPENAI_PRICING);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer()));
+    warnings();
+
+    await send(appId, `${slug}/v1/responses`, { model: "gpt-5.6-sol", input: "hi", service_tier: "turbo" });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.005, 10);
+    expect(row.source).toBe("estimated");
+  });
+
+  it.each([
+    ["keeps the price list's modes, applied to its own rates", undefined, 0.01, "computed"],
+    ["with an empty modes prices none", {}, 0.02, "estimated"],
+  ])("a custom price without modes of its own %s", async (_label, modes, cost, source) => {
+    // The price list prices o3 flex at half; the custom price is $4 / $16.
+    const { appId, slug } = await seeded("openai", { o3: { input: 4, output: 16, ...(modes && { modes }) } });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(openAiAnswer("flex")));
+    warnings();
+
+    await send(appId, `${slug}/v1/responses`, { model: "o3", input: "hi", service_tier: "flex" });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(cost, 10);
+    expect(row.source).toBe(source);
+  });
+
+  it("never bills a truncated answer below the tier it asked for, whatever its tail says", async () => {
+    const appId = `mode-billing-${crypto.randomUUID()}`;
+    const pricing: ProviderPricing = {
+      "gpt-5.6-sol": { input: 1, output: 4, modes: { flex: { factor: 0.5 }, ultrafast: { factor: 6 } } },
+    };
+    // Usage in the tail, and after it a client's own metadata that says flex.
+    const observed: ObservedBody = {
+      head: '{"id":"resp_1","object":"response","service_tier":"ultrafast","output":[{"content":"',
+      tail: '"}],"usage":{"input_tokens":1000,"output_tokens":1000},"metadata":{"service_tier":"flex"}}',
+      truncated: true,
+      totalBytes: 2_000_000,
+      aborted: false,
+    };
+
+    await recordUsageEvent({
+      organizationId: "operator-test-organization",
+      env,
+      observed: Promise.resolve(observed),
+      contentType: "application/json",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({ pricing, serviceMode: { tier: "ultrafast", region: "global" } }),
+      appVersion: null,
+      status: "ok",
+      latencyMs: 9,
+    });
+
+    const row = await recorded(appId);
+    expect(row.cost).toBeCloseTo(0.03, 10);
+    expect(row.mode).toEqual({ tier: "ultrafast" });
   });
 });

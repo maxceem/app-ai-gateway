@@ -35,6 +35,12 @@ export interface ExecutionAttempt {
    * response says another mode served it.
    */
   readonly serviceMode: ServiceMode;
+  /**
+   * Whether that mode can only be billed at an estimate: a value the gateway
+   * does not know, or a mode the model has no price in. The event is then
+   * recorded as `estimated`.
+   */
+  readonly serviceModeEstimated: boolean;
   readonly buildRequest: () => ExecutionRequest;
 }
 
@@ -62,6 +68,7 @@ export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttributio
     apiStyle: attempt.apiStyle,
     passthrough: attempt.passthrough,
     serviceMode: attempt.serviceMode,
+    serviceModeEstimated: attempt.serviceModeEstimated,
     route: `${resolved.slug}/${attempt.providerPath}`,
   };
 }
@@ -88,6 +95,7 @@ export function preparedExecutionAttempt(
     apiStyle: prepared.apiStyle,
     passthrough: prepared.passthrough,
     serviceMode: prepared.serviceMode,
+    serviceModeEstimated: prepared.serviceModeEstimated,
     buildRequest: () => ({
       body: prepared.body,
       headers: prepared.headers,

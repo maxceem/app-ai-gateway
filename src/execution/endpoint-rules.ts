@@ -201,7 +201,7 @@ export async function resolveEndpointAttempts(
   prepared: PreparedEndpointRequest,
 ): Promise<[ExecutionAttempt, ...ExecutionAttempt[]]> {
   const resolvedProviders = new Map<string, ResolvedProvider>();
-  const usableTargets: (EndpointTarget & { serviceMode: ServiceMode })[] = [];
+  const usableTargets: (EndpointTarget & { serviceMode: ServiceMode; serviceModeEstimated: boolean })[] = [];
   let disabledPrimary: GatewayError | undefined;
   for (const [index, target] of prepared.targets.entries()) {
     const primary = index === 0;
@@ -279,11 +279,7 @@ export async function resolveEndpointAttempts(
       read: json ? (name) => json[name] : (name) => prepared.form?.get(name),
       appId: app.id,
     });
-    if (judged.refusal) {
-      if (primary) throw judged.refusal;
-      continue;
-    }
-    usableTargets.push({ ...target, serviceMode: judged.mode });
+    usableTargets.push({ ...target, serviceMode: judged.mode, serviceModeEstimated: judged.estimated });
   }
   // A skipped disabled primary is the only way the chain can end up empty: on
   // every other primary failure the loop threw above. With nothing left to try,
@@ -304,6 +300,7 @@ export async function resolveEndpointAttempts(
       apiStyle: endpoint.api_style,
       passthrough: false,
       serviceMode: target.serviceMode,
+      serviceModeEstimated: target.serviceModeEstimated,
       buildRequest,
     } satisfies ExecutionAttempt;
   });

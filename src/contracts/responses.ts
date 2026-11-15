@@ -205,8 +205,8 @@ export const UsageEventSchema = z.object({
   }).nullable().optional().meta({
     description: "The service mode that served the request and that cost_usd was priced in: its tier (flex, priority, fast, ultrafast) and region (us, eu, …) where they differ from standard and global. Null or absent for the standard mode, and on events recorded before modes were recorded.",
   }),
-  cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",
+  cost_source: z.enum(["computed", "estimated", "reported", "unresolved"]).nullable().meta({
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `estimated` is the catalog too, but for a service mode it has no exact price for (a mode the model is not priced in, or a value the gateway does not know), billed at the estimate the model pricing guide describes; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on a passthrough path the provider reported no cost for (the gateway reads no model there, so it has nothing to price), and on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
@@ -1036,6 +1036,10 @@ const CatalogModePriceSchema = z.object({
   per_minute: z.number().optional(),
   per_hour: z.number().optional(),
   per_image: z.number().optional(),
+  unlisted_since: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider's page stopped listing this mode for the model. The mode keeps its last price, so requests that use it are still billed exactly.",
+  }),
 });
 
 const CatalogModePricesSchema = z.record(z.string(), CatalogModePriceSchema).meta({
