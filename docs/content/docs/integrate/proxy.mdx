@@ -147,6 +147,25 @@ The gateway adds a `Server-Timing` header with the time spent on
 authentication, preparing the request, limits and the provider's time to first
 byte. A step the request never reached is left out.
 
+## Service tiers and regions
+
+Some providers serve a request faster, cheaper or in a pinned region for a
+different price, chosen by a field in the request body, such as OpenAI's
+`service_tier`, Anthropic's `speed` and `inference_geo`, or Gemini's
+`service_tier`. Send that field in the provider's own format: the gateway
+forwards it unchanged and only reads it, so the request can be billed at the
+right price. Through Vercel AI Gateway, Vercel's own
+`providerOptions.gateway.serviceTier` and `speed` are read too.
+
+The price list does not carry these prices yet, so every request is billed at
+the model's standard rate for now. In a later release, each mode a request
+asks for, flex included, will need a price for its model, and a request for
+one without a price will be refused with `400 pricing_not_configured`. The
+error names the mode and the field that asked for it, and you will be able
+to add the price yourself under custom model pricing in the provider settings.
+The providers' standard values, and tiers paid for by contract (OpenAI
+`scale`, Groq `performance`), keep working.
+
 ## Limits on a request
 
 - Request bodies are limited to 20 MB. Larger ones answer

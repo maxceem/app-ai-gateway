@@ -36,7 +36,9 @@ type can serve one, in the request formats listed below.
   model it serves.
 - **Parameters** (JSON formats): JSON deep-merged over the client body, with
   the server winning on conflicts. Leave `{}` for none. Use it for what every
-  client should send, such as an image size or a voice.
+  client should send, such as an image size or a voice. For a parameter
+  that picks a service tier, such as `service_tier`, see
+  [Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
 - **Max output tokens** (text only): same rule as in provider access.
   A client value above it is refused, a missing value is injected.
 - **Fallback chain**: provider and model pairs tried in order when the

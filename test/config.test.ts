@@ -641,6 +641,15 @@ describe("the application configuration grammar", () => {
         .toEqual({ chat: { ...chat, kind: "text" }, transcribe: { ...transcribe, kind: "transcription" } });
     });
 
+    it("saves parameters that set an unpriced service mode while such modes are only logged", () => {
+      const responses = { api_style: "responses", provider: "openai", model: "gpt-5.6-sol" };
+      for (const tier of ["flex", "priority", "scale"]) {
+        expect(() => validateConfig(serverConfig({
+          endpoints: { chat: { ...responses, params: { service_tier: tier } } },
+        }))).not.toThrow();
+      }
+    });
+
     it("takes the kind a multi-kind style is told to serve, and refuses one it cannot", () => {
       const voice = { api_style: "gemini_native", provider: "gemini", model: "gemini-3.8-flash-tts" };
       expect(validateConfig(serverConfig({ endpoints: { voice: { ...voice, kind: "speech" } } })).endpoints.voice?.kind)

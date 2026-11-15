@@ -12,9 +12,13 @@ import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider
 import { lookup } from "../shared/records";
 import type { Modality, ModalityCounts, ModalityTokens, UsageCounts } from "../core/types";
 import type { ProviderPricing } from "../db/schema";
-import { type ProviderType, reportsCost } from "../shared/providers";
+import { type ProviderType, providerDescriptor, reportsCost } from "../shared/providers";
+import { GATEWAY_DESCRIPTORS } from "../shared/gateways";
+import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
 import { type KindCatalog, type ModelKind, modelKind } from "../shared/model-kinds";
+import { readServiceMode, serviceModeName, type ServiceMode, type ServiceModeField } from "../shared/service-modes";
 import {
   TOKEN_RATE_FIELDS,
   VARIANTS,
@@ -194,12 +198,27 @@ export function hasTokenModelPrice(
 }
 
 /**
+ * Whether a service mode can be billed, for a model priced in the standard one.
+ *
+ * Prices carry no modes yet, so only the standard mode has one. Every other
+ * mode, flex included, is unpriced, and one rule covers them all: a known mode
+ * the model has no price in is never billed at another mode's price. A dearer
+ * one billed at standard would let an app's end user stretch their budget
+ * several times over; a cheaper one would spend the budget faster than the
+ * owner set it to last.
+ */
+function hasModePrice(mode: ServiceMode): boolean {
+  return mode.tier === "standard" && mode.region === "global";
+}
+
+/**
  * Whether a request can be billed at all, which is the only reason it is
  * allowed to proxy. Two ways to know what it costs: a local price for the
  * canonical model, or a route that reports its own cost per request. Neither
  * means the spend would be invisible, and an invisible spend is a limit bypass.
  * `style` is the request's API, or `null` on a configuration write that has
- * none yet — see `routeCostReport`.
+ * none yet — see `routeCostReport`. The service mode is judged apart, by
+ * {@link serviceModeRefusal}.
  */
 export function isBillable(
   provider: ProviderType,
@@ -209,6 +228,84 @@ export function isBillable(
   overrides?: ProviderPricing | null,
 ): boolean {
   return reportsCost(provider, route, style) || hasModelPrice(provider, model, overrides);
+}
+
+/** The fields a request on this route names its service mode in: the provider's, and its gateway's own. */
+function serviceModeFields(type: ProviderType, route: ProviderRoute): readonly ServiceModeField[] {
+  const own = providerDescriptor(type).serviceModes;
+  const gateway = route === "direct" ? [] : GATEWAY_DESCRIPTORS[route].serviceModes;
+  return gateway.length === 0 ? own : [...own, ...gateway];
+}
+
+/**
+ * What happens to a request for a known service mode the model has no price in:
+ * `log` forwards it, billed at standard, and logs `service_mode_unpriced`;
+ * `refuse` answers `pricing_not_configured`, saying how to add the price. It
+ * starts at `log`, so apps that already send a mode show up in the logs before
+ * any request of theirs is refused; turning refusal on is this one line, once
+ * mode prices exist.
+ */
+export const UNPRICED_SERVICE_MODES: "log" | "refuse" = "log";
+
+/**
+ * Why a request's service mode cannot be billed on one target, or `null` when
+ * it can.
+ *
+ * `read` returns one field of the body as it will be sent — the client's JSON
+ * merged with anything the configuration adds, or a form field — and the
+ * target's own table says what its value means. A mode the table knows, and
+ * the model has no price in, is handled as {@link UNPRICED_SERVICE_MODES} says. A value the table does not know is let
+ * through and billed at standard, so a tier a provider adds never breaks a
+ * client before the gateway learns it; it is logged as `service_mode_unknown`
+ * so it can be added. A route whose provider reports what each request cost
+ * needs no price, so nothing is read there.
+ *
+ * Judged after the model itself was found billable, so a refusal here is
+ * always about the mode.
+ */
+export function serviceModeRefusal(input: {
+  type: ProviderType;
+  route: ProviderRoute | null;
+  style: ApiStyle;
+  model: string;
+  read: (name: string) => unknown;
+  /** The app the request is for, so a log line names it. Absent on a configuration write. */
+  appId?: string;
+  /** Overrides {@link UNPRICED_SERVICE_MODES}, for tests of the other policy. */
+  policy?: "log" | "refuse";
+}): GatewayError | null {
+  const { type, route } = input;
+  if (route === null || reportsCost(type, route, input.style)) return null;
+  const reading = readServiceMode(serviceModeFields(type, route), input.read);
+  if (reading.unknown) {
+    log("warn", "service_mode_unknown", {
+      ...(input.appId === undefined ? {} : { appId: input.appId }),
+      provider: type,
+      field: reading.unknown.field,
+      value: reading.unknown.value,
+    });
+  }
+  if (hasModePrice(reading.mode)) return null;
+  const name = serviceModeName(reading.mode);
+  if ((input.policy ?? UNPRICED_SERVICE_MODES) === "log") {
+    log("warn", "service_mode_unpriced", {
+      ...(input.appId === undefined ? {} : { appId: input.appId }),
+      provider: type,
+      model: input.model,
+      serviceMode: name,
+    });
+    return null;
+  }
+  const sent = reading.askedBy.map((asked) => `${asked.field}: "${asked.value}"`).join(", ");
+  const fields = reading.askedBy.map((asked) => asked.field).join(" and ");
+  return new GatewayError(
+    400,
+    "pricing_not_configured",
+    `Model ${input.model} has no price on ${type} in service mode ${name}, which the request asks for with ${sent}. `
+      + `Add a price for that mode under custom model pricing in the provider settings, or leave ${fields} out.`,
+    undefined,
+    { data: { service_mode: name, ...(reading.askedBy[0] ? { field: reading.askedBy[0].field } : {}) } },
+  );
 }
 
 /**
