@@ -12344,6 +12344,10 @@
                             "long_context_threshold": {
                               "type": "number"
                             },
+                            "release_date": {
+                              "type": "string",
+                              "description": "The day (YYYY-MM-DD) the provider released this model. Where no source gives that day, the day the model was added to the price list. Metadata only: nothing is billed from it."
+                            },
                             "retirement_date": {
                               "type": "string",
                               "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."

@@ -1056,6 +1056,10 @@ export const ModelPriceSchema = z.object({
     description: "USD per generated image, for a model billed per image rather than per token.",
   }),
   long_context_threshold: z.number().optional(),
+  release_date: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider released this model. Where no source gives that day, the day the model was added to the price list. Metadata only: nothing is billed from it.",
+  }),
   retirement_date: z.string().optional().meta({
     description:
       "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",
