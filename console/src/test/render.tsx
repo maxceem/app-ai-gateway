@@ -1,3 +1,4 @@
+import { waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -203,4 +204,26 @@ export function renderAuthenticated(
       </QueryClientProvider>,
     ),
   };
+}
+
+/** The elements whose hint, the console's own tooltip, matches `pattern`. */
+function allByHint(pattern: RegExp): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>("[aria-description]")]
+    .filter((element) => pattern.test(element.getAttribute("aria-description") ?? ""));
+}
+
+/** The one element whose hint matches `pattern`; fails when there is not exactly one. */
+export function getByHint(pattern: RegExp): HTMLElement {
+  const found = allByHint(pattern);
+  if (found.length !== 1) throw new Error(`Expected one element with a hint matching ${pattern}, found ${found.length}`);
+  return found[0]!;
+}
+
+export function queryByHint(pattern: RegExp): HTMLElement | null {
+  return allByHint(pattern)[0] ?? null;
+}
+
+/** {@link getByHint}, once the page has rendered it. */
+export function findByHint(pattern: RegExp): Promise<HTMLElement> {
+  return waitFor(() => getByHint(pattern));
 }

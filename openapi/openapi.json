@@ -2592,6 +2592,20 @@
             ],
             "description": "The service mode that served the request and that cost_usd was priced in, by the name prices use: a tier (flex, priority, fast, ultrafast), a region (us, eu, …), or a tier in a region (fast+us). Null or absent for the standard mode, and on events recorded before modes were recorded."
           },
+          "upstream_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "For a provider_error, the HTTP status the provider answered with. Absent where it never answered, on a served request, and on events recorded before this field existed."
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a provider_error, a short code saying why: the provider's own, such as rate_limit_exceeded, overloaded_error or RESOURCE_EXHAUSTED, or timeout and connection_failed where the provider never answered. Never the provider's message. Absent where none is known."
+          },
           "cost_source": {
             "type": [
               "string",
@@ -12057,6 +12071,7 @@
                 "install",
                 "status",
                 "cost_source",
+                "service_mode",
                 "route",
                 "endpoint",
                 "app_version"
@@ -12105,6 +12120,7 @@
                         "install",
                         "status",
                         "cost_source",
+                        "service_mode",
                         "route",
                         "endpoint",
                         "app_version"

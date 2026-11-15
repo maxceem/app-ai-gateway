@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { cn } from "@/lib/utils";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -29,7 +30,7 @@ import {
 import { GatewayIcon, ProviderIcon, ProviderName } from "@/components/brand-icon";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { RangePicker } from "@/components/pickers";
-import { EventStatusBadge } from "@/components/status-badge";
+import { EventStatusLabel, ServiceModeLabel } from "@/components/status-badge";
 import { isGatewayType } from "@/lib/config-types";
 import { isProviderType } from "@shared/providers";
 import { isPassthroughPath } from "@shared/app-config";
@@ -40,14 +41,17 @@ import {
   formatCost,
   formatCostToCent,
   formatDateTime,
+  formatEventTime,
   formatNumber,
   formatPercent,
   inputTokens,
   today,
   totalTokens,
 } from "@/lib/format";
-import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
-import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
+import { useBreakdown, useEvents, usePrices, useProviders, useTimeseries } from "@/lib/queries";
+import { FullIds, shortId } from "@/components/short-id";
+import { parseServiceModeName, serviceModeFactor } from "@shared/service-modes";
+import type { UsageBreakdownDimension, UsageEvent, UsageStatus } from "@contracts/responses";
 import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
 import { Hint } from "@/components/hint";
 
@@ -62,6 +66,19 @@ import { Hint } from "@/components/hint";
  * the configuration, never read from the request, and is not shown as if the
  * request had used it.
  */
+/**
+ * The path an event went to, without its provider's slug where the slug is
+ * just the provider's type, as it is for most providers: `/v1/responses`. A
+ * slug of your own, such as `openai-direct`, is kept, since it names which of
+ * your providers it was.
+ */
+function routePath(event: { route: string; provider: string; provider_slug: string | null }): string {
+  const prefix = `${event.provider_slug}/`;
+  return event.provider_slug === event.provider && event.route.startsWith(prefix)
+    ? `/${event.route.slice(prefix.length)}`
+    : event.route;
+}
+
 export function isPassthroughEvent(event: {
   provider: string;
   route: string;
@@ -126,6 +143,7 @@ const BREAKDOWNS = [
   { value: "install", label: "By install" },
   { value: "status", label: "By status" },
   { value: "cost_source", label: "By cost source" },
+  { value: "service_mode", label: "By service mode" },
   { value: "route", label: "By route" },
   { value: "endpoint", label: "By endpoint" },
   { value: "app_version", label: "By app version" },
@@ -175,6 +193,22 @@ export function UsageTab({
     status: eventStatus === "all" ? undefined : eventStatus,
     before_id: cursors.at(-1),
   });
+  const prices = usePrices();
+  const providers = useProviders();
+
+  /**
+   * How many times the standard price an event's mode costs, from the
+   * provider's custom price where it has one and the price list otherwise, as
+   * billing reads them. Undefined where neither prices the mode: the event's
+   * cost is then an estimate, and says so.
+   */
+  const modeFactor = (event: UsageEvent): number | undefined => {
+    const mode = event.service_mode ? parseServiceModeName(event.service_mode) : null;
+    if (!mode || event.cost_source === "estimated") return undefined;
+    const custom = providers.data?.providers.find((row) => row.slug === event.provider_slug)?.pricing?.[event.model];
+    const listed = prices.data?.prices[event.provider]?.[event.model];
+    return serviceModeFactor(custom?.modes ?? listed?.modes, mode);
+  };
 
   const chart = useMemo(
     () => pivot(series.data?.buckets ?? [], from, to, metric),
@@ -345,6 +379,9 @@ export function UsageTab({
                       {/* Empty is a passthrough request's model: the gateway read none. */}
                       {passthrough ? (
                         <Unreported what="model" label="none" />
+                      ) : dimension === "service_mode" ? (
+                        // No mode is the standard one; every other is a badge.
+                        row.key ? <ServiceModeLabel mode={row.key} /> : <span className="text-muted-foreground">standard</span>
                       ) : !row.key ? (
                         <span className="text-muted-foreground">none</span>
                       ) : (
@@ -425,90 +462,105 @@ export function UsageTab({
                 <TableHead>Model</TableHead>
                 <TableHead>Route</TableHead>
                 <TableHead className="text-right">Tokens</TableHead>
-                <TableHead className="text-right">Cost</TableHead>
                 <TableHead className="text-right">Latency</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.isPending ? (
                 <TableRow>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={7}>
                     <Skeleton className="h-8 w-full" />
                   </TableCell>
                 </TableRow>
               ) : events.data?.events.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
                     No events.
                   </TableCell>
                 </TableRow>
               ) : (
-                events.data?.events.map((event) => (
-                  <TableRow key={event.id}>
+                events.data?.events.map((event) => {
+                  const factor = modeFactor(event);
+                  return (
+                  // A failed request is tinted whole, so it stands out from the
+                  // served rows around it at a glance.
+                  <TableRow
+                    key={event.id}
+                    className={cn(event.status !== "ok" && "bg-destructive/5 hover:bg-destructive/10 dark:bg-destructive/10 dark:hover:bg-destructive/15")}
+                  >
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
-                      {formatDateTime(event.created_at)}
+                      <Hint content={formatDateTime(event.created_at)}>
+                        <span>{formatEventTime(event.created_at)}</span>
+                      </Hint>
                     </TableCell>
                     <TableCell className="font-mono text-xs">
-                      {/* An application that identifies no end users has none to
+                      {/* Long identifiers are shortened to their two ends; the
+                          hover shows them whole, to select or copy. An
+                          application that identifies no end users has none to
                           name here, and an empty cell would read as a lost
-                          value rather than an absent one. */}
-                      {event.user_id ?? (
-                        <span className="font-sans text-muted-foreground">No end user</span>
-                      )}
-                      {/* Key attribution is absent for attested traffic, so only render it when set. */}
-                      {event.api_key_id ? (
-                        <span className="block text-muted-foreground">{event.api_key_id}</span>
-                      ) : null}
-                      {/* Under app_install the install is the user, already named above. */}
-                      {showInstalls && event.install_id && event.install_id !== event.user_id ? (
-                        <span className="block text-muted-foreground" title="Install (App Attest key id)">
-                          {event.install_id}
+                          value rather than an absent one. Key attribution is
+                          absent for attested traffic; under app_install the
+                          install is the user, already named. */}
+                      <FullIds
+                        ids={[
+                          ...(event.user_id ? [{ label: "User", value: event.user_id }] : []),
+                          ...(event.api_key_id ? [{ label: "Key", value: event.api_key_id }] : []),
+                          ...(showInstalls && event.install_id && event.install_id !== event.user_id
+                            ? [{ label: "Install", value: event.install_id }]
+                            : []),
+                        ]}
+                      >
+                        <span className="block w-fit">
+                          {event.user_id ? <span className="block">{shortId(event.user_id)}</span> : (
+                            <span className="block font-sans text-muted-foreground">No end user</span>
+                          )}
+                          {event.api_key_id ? (
+                            <span className="block text-muted-foreground">{shortId(event.api_key_id)}</span>
+                          ) : null}
+                          {showInstalls && event.install_id && event.install_id !== event.user_id ? (
+                            <span className="block text-muted-foreground">{shortId(event.install_id)}</span>
+                          ) : null}
                         </span>
-                      ) : null}
+                      </FullIds>
                     </TableCell>
                     <TableCell className="font-mono text-xs">
-                      {/* A passthrough call names no model: the gateway never read one. */}
-                      {isPassthroughEvent(event) ? (
-                        <Unreported what="model" />
-                      ) : (
-                        event.model
-                      )}
+                      {/* The provider as a mark, its name and the gateway that
+                          carried the request in the hover. */}
+                      <span className="inline-flex items-center gap-1.5">
+                        {isProviderType(event.provider) ? (
+                          <Hint
+                            content={`${event.provider_slug ?? event.provider}${event.provider_gateway_type ? ` via ${event.provider_gateway_type}` : ""}`}
+                          >
+                            <span className="inline-flex"><ProviderIcon type={event.provider} /></span>
+                          </Hint>
+                        ) : null}
+                        {/* A passthrough call names no model: the gateway never read one. */}
+                        {isPassthroughEvent(event) ? <Unreported what="model" /> : event.model}
+                      </span>
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
-                      {/* The configured route, which is known with certainty;
-                          a direct call has no gateway to name. */}
-                      {/* The stored type is the one that carried the request,
-                          which may be one this console has no mark for: the
-                          event records what was true then, not what is
-                          configurable now. Named either way; illustrated only
-                          when it is a gateway this build knows. */}
-                      {event.provider_gateway_type ? (
-                        <span className="flex items-center gap-1">
-                          via{" "}
-                          {isGatewayType(event.provider_gateway_type) ? (
-                            <GatewayIcon type={event.provider_gateway_type} />
-                          ) : null}
-                          {event.provider_gateway_type}
-                        </span>
-                      ) : null}
+                    <TableCell className="max-w-56 font-mono text-xs whitespace-normal text-muted-foreground">
+                      {event.endpoint_slug ? <span className="block">{event.endpoint_slug} →</span> : null}
+                      <span className="block">
+                        {/* A long path, such as Gemini's with the model in it,
+                            wraps after a separator rather than widening the table. */}
+                        {routePath(event).split(/(?<=[/:])/u).map((part, index) => (
+                          <span key={index}>{index > 0 ? <wbr /> : null}{part}</span>
+                        ))}
+                      </span>
                       {/* Observed, not configured: only shown when the upstream
                           named the host that actually served the request. */}
                       {event.served_provider ? (
                         <span className="block">Served by {event.served_provider}</span>
-                      ) : null}
-                      {/* The mode that served it, where not the standard one. */}
-                      {event.service_mode ? (
-                        <span className="block">
-                          {event.service_mode}
-                        </span>
                       ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {isPassthroughEvent(event) && totalTokens(event) === 0
                         ? <Unreported what="tokens" />
                         : formatCompact(totalTokens(event))}
+                    </TableCell>
+                    <TableCell className="tabular text-right text-xs whitespace-nowrap">
+                      {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {/* An unresolved event was not billed because its usage
@@ -517,25 +569,19 @@ export function UsageTab({
                       {isPassthroughEvent(event) && event.cost_source !== "reported" ? (
                         <Unreported what="cost" />
                       ) : event.cost_source === "unresolved" ? (
-                        <span
-                          className="text-amber-600 dark:text-amber-400"
-                          title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
-                        >
-                          unresolved
-                        </span>
+                        <Hint content={<span className="block max-w-64">The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget.</span>}>
+                          <span className="text-amber-600 dark:text-amber-400">unresolved</span>
+                        </Hint>
                       ) : event.cost_source === "estimated" ? (
-                        <span
-                          className="text-amber-600 dark:text-amber-400"
-                          title="Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know. Add a price for the mode under the provider's custom model pricing to bill it exactly."
-                        >
-                          ≈{formatCost(event.cost_usd)}
-                        </span>
+                        <Hint content={<span className="block max-w-64">Billed at an estimate: the price list has no price for this service mode on this model, or the request named a mode the gateway does not know. Add a price for the mode under the provider's custom model pricing to bill it exactly.</span>}>
+                          <span className="text-amber-600 dark:text-amber-400">≈{formatCost(event.cost_usd)}</span>
+                        </Hint>
                       ) : (
-                        <span
-                          // A reported cost is what the provider charged, not
-                          // what this deployment's catalog estimates — worth
-                          // saying, because the two can differ.
-                          title={
+                        // A reported cost is what the provider charged, not
+                        // what this deployment's catalog estimates — worth
+                        // saying, because the two can differ.
+                        <Hint
+                          content={
                             event.cost_source === "reported"
                               ? isPassthroughEvent(event)
                                 ? "Non-standard path: cost reported by the provider for this request."
@@ -543,18 +589,33 @@ export function UsageTab({
                               : undefined
                           }
                         >
-                          {formatCost(event.cost_usd)}
-                        </span>
+                          <span>{formatCost(event.cost_usd)}</span>
+                        </Hint>
                       )}
-                    </TableCell>
-                    <TableCell className="tabular text-right text-xs">
-                      {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
-                    </TableCell>
-                    <TableCell>
-                      <EventStatusBadge status={event.status} />
+                      {/* The mode that served it, where not the standard one:
+                          beside the cost, because it is what set the price. */}
+                      {event.service_mode ? (
+                        <span className="mt-1 flex justify-end">
+                          <ServiceModeLabel
+                            mode={event.service_mode}
+                            factor={factor}
+                            cost={event.cost_usd}
+                            estimated={event.cost_source === "estimated" || factor === undefined}
+                          />
+                        </span>
+                      ) : null}
+                      {/* Only a failure is marked: a served request is every
+                          ordinary row, and a badge on each would hide the few
+                          that failed. */}
+                      {event.status !== "ok" ? (
+                        <span className="mt-1 flex justify-end">
+                          <EventStatusLabel status={event.status} upstreamStatus={event.upstream_status} errorCode={event.error_code} />
+                        </span>
+                      ) : null}
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>

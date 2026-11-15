@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageTab } from "./usage";
 import { pivot } from "@/lib/usage-pivot";
-import { renderAuthenticated, stubApi } from "@/test/render";
+import { findByHint, renderAuthenticated, stubApi } from "@/test/render";
 import type { TimeseriesBucket, UsageEvent } from "@/lib/types";
 
 const APP_ID = "my-app";
@@ -254,7 +254,8 @@ describe("UsageTab event costs", () => {
 
   it("names the gateway a request was routed through", async () => {
     renderUsage([event({ provider_gateway_type: "cf_aig", credential_source: "byok" })]);
-    expect(await screen.findByText(/via cf_aig/u)).toBeTruthy();
+    // The gateway is a mark beside the model, named in its hover.
+    expect(await findByHint(/via cf_aig/u)).toBeTruthy();
   });
 
   it("names the host that actually served a request, when one was reported", async () => {
@@ -292,10 +293,19 @@ describe("UsageTab event costs", () => {
 });
 
 describe("UsageTab event statuses", () => {
+  it("says what the provider answered a failed request with", async () => {
+    renderUsage([event({ status: "provider_error", upstream_status: 429, error_code: "rate_limit_exceeded" })]);
+    expect(await screen.findByText("429")).toBeTruthy();
+    expect(screen.getByText("rate_limit_exceeded")).toBeTruthy();
+    expect(screen.getByText("429").closest("[aria-description]")?.getAttribute("aria-description"))
+      .toBe("The provider answered 429 Too Many Requests: rate_limit_exceeded");
+  });
+
   it("lists only provider attempts as usage statuses", async () => {
     renderUsage([event({ status: "provider_error" })]);
-    const badge = await screen.findByText("provider_error");
-    expect(badge.getAttribute("title")).toBe("The provider refused or failed the request");
+    const badge = await screen.findByText("error");
+    expect(badge.closest("[aria-description]")?.getAttribute("aria-description"))
+      .toBe("The provider refused or failed the request");
     const trigger = screen.getAllByRole("combobox")
       .find((option) => option.textContent === "All statuses")!;
     await userEvent.click(trigger);

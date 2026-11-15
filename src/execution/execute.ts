@@ -1,4 +1,5 @@
 import { GatewayError } from "../core/errors";
+import type { NoAnswer } from "../usage/provider-error";
 import { log } from "../core/log";
 import { clientResponseHeaders, providerUpstream } from "./proxy-rules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
@@ -61,6 +62,8 @@ function record(
     latencyMs: number;
     /** The upstream's status, where it answered: what a stored conversation records. */
     httpStatus?: number;
+    /** Why there is no status: the upstream never answered. */
+    noAnswer?: NoAnswer;
     /** What was sent upstream, where it answered: the request a stored conversation records. */
     sent?: ExecutionRequest;
   },
@@ -101,6 +104,8 @@ function record(
     appVersion: context.appVersion,
     status: input.status,
     latencyMs: input.latencyMs,
+    ...(input.httpStatus !== undefined && { upstreamStatus: input.httpStatus }),
+    ...(input.noAnswer && { noAnswer: input.noAnswer }),
   }));
 }
 
@@ -199,6 +204,7 @@ export async function execute(
         latencyMs: timedOut
           ? attemptTimeoutMs
           : Math.round(performance.now() - providerStart),
+        noAnswer: timedOut ? "timeout" : "connection_failed",
       });
       if (!last) continue;
       throw timedOut
@@ -216,6 +222,7 @@ export async function execute(
         contentType: "",
         status: "provider_error",
         latencyMs: Math.round(providerTtfb),
+        httpStatus: upstream.status,
       });
       discardFailedBody(upstream.body, context, attempt);
       continue;

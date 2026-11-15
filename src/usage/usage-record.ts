@@ -21,6 +21,7 @@ import {
   type UsageObservation,
 } from "./pricing";
 import { observeResponse } from "./usage-readers";
+import { providerErrorCode, type NoAnswer } from "./provider-error";
 import { providerDescriptor, type ProviderType, routeCostReport } from "../shared/providers";
 import { relaysProviderResponses } from "../shared/gateways";
 import {
@@ -107,6 +108,10 @@ interface UsageEventInput {
   appVersion: string | null;
   status: "ok" | "provider_error";
   latencyMs: number;
+  /** For a failed attempt the provider answered: the HTTP status it answered with. */
+  upstreamStatus?: number;
+  /** For a failed attempt the provider never answered: why. */
+  noAnswer?: NoAnswer;
   /**
    * Minted by the caller when something else must name this same event — the
    * stored conversation does — and generated here otherwise.
@@ -408,9 +413,13 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // the request was served as far as the caller wanted it — but it is why a
   // stream can end without the usage the provider only sends at the end.
   let aborted = false;
+  // Why a failed attempt failed, in a short code: the gateway's own where the
+  // provider never answered, else the one its error response names.
+  let errorCode: string | null = input.status === "provider_error" ? input.noAnswer ?? null : null;
   if (input.observed) {
     const body = await input.observed;
     aborted = body.aborted;
+    if (input.status === "provider_error") errorCode ??= providerErrorCode(body);
     if (body.truncated) {
       // The response was too big to keep whole, so usage was read from its two
       // ends. Nothing is wrong with that, but how often it happens is the only
@@ -651,6 +660,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // split was kept".
       tokenVariants: usage.tokenVariants ?? {},
       serviceMode: isStandardMode(servedMode) ? null : serviceModeName(servedMode),
+      upstreamStatus: input.status === "provider_error" ? input.upstreamStatus ?? null : null,
+      errorCode,
       costUsd: cost,
       costSource,
       reportedCostUsd: reportedCost,
