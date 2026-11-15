@@ -22,6 +22,8 @@ import type { SessionBackend } from "./backend";
 export class SessionCoordinator {
   /** Held in memory only: it carries the provider credential. */
   private grant: SessionGrant | null = null;
+  /** A refusal the gateway gave for a response already sent; it ends the session at its next idle moment. */
+  private refusal: RelayError | null = null;
   private adapter: ProtocolAdapter | null = null;
   private client: WebSocket | null = null;
   private upstream: WebSocket | null = null;
@@ -51,6 +53,7 @@ export class SessionCoordinator {
   private alarmDue: number | null = null;
   private maintenance: Promise<void> | null = null;
   private flushing: Promise<boolean> | null = null;
+  private flushAgain = false;
   private releasing: Promise<void> | null = null;
   private shuttingDown: Promise<void> | null = null;
   private starting: Promise<void> | null = null;
@@ -402,6 +405,10 @@ export class SessionCoordinator {
         await this.schedule();
         send(this.client, effect.frame);
         this.ctx.waitUntil(this.flush());
+        if (this.refusal) {
+          this.fail(this.refusal);
+          return;
+        }
         const pending = this.pendingAuto;
         this.pendingAuto = null;
         if (pending && this.live()) await this.generate(pending.frame);
@@ -410,87 +417,85 @@ export class SessionCoordinator {
     }
   }
 
+  /**
+   * Starts one response. It is sent to the provider at once and counted in
+   * the background, so no turn waits on the gateway: the gateway checked the
+   * session when it opened, and a refusal it gives for this response applies
+   * from the next turn (see {@link countInBackground}).
+   */
   private async generate(frame: JsonObject, inputActivity = false): Promise<void> {
     if (!this.live()) return;
+    if (this.refusal) throw this.refusal;
     if (this.active || this.pendingAuto) invalid("Only one active realtime generation is permitted");
     if (this.ordinal >= L.generations) invalid("Realtime generation limit exceeded");
-    // The previous response's usage normally reaches the gateway well before
-    // the next turn, so the budgets admission checks include it. It is waited
-    // for briefly, never required: an outage of ours undercounts instead.
-    await this.flushWithin(L.settleWaitMs);
-    if (!this.live()) return;
-    const at = Date.now();
-    const generationId = crypto.randomUUID();
     const kind = typeof frame.type === "string"
       ? frame.type
       : inputActivity ? "gemini.activityStart" : "gemini.clientContent";
     const intent = { kind, fingerprint: hex(await sha256(JSON.stringify(frame))) };
     if (!this.live()) return;
+    const at = Date.now();
     const generation: Generation = {
       intent,
-      id: generationId,
+      id: crypto.randomUUID(),
       ordinal: ++this.ordinal,
       at,
-      stage: "prepared",
+      stage: "dispatching",
       responseId: null,
       usage: null,
       outputBytes: 0,
+      ticket: this.grant!.ticket,
     };
+    // Stored before the request leaves, so a response sent always gets a
+    // usage record, even if this object restarts before it answers.
     this.active = generation;
     this.journal.save(generation);
-    generation.stage = "admitting";
-    this.journal.save(generation);
+    // Counted even if the send below fails: the provider may have it.
+    this.ctx.waitUntil(this.countInBackground(generation));
+    send(this.upstream, frame);
+    this.inputBytes = 0;
+    this.inputStarted = inputActivity ? at : null;
+    this.lastActivity = Date.now();
+  }
+
+  /**
+   * Counts a response already sent, against the app's limits and the
+   * account's allowance, without the conversation waiting for it.
+   *
+   * A refusal (a limit reached, the user blocked, the session's rules or
+   * credentials changed) ends the session at its next idle moment: the
+   * response it refused finishes, uncounted, and no new one starts. So a limit
+   * can be exceeded by one response per open session. A gateway fault is not a
+   * refusal: the response stays uncounted, as an HTTP request is during an
+   * outage of ours, and the next turn goes ahead.
+   */
+  private async countInBackground(generation: Generation): Promise<void> {
+    // Earlier turns' usage first, briefly, so the budgets checked include it.
+    await this.flushWithin(L.settleWaitMs);
     try {
       this.grant = await this.backend.admit(
         this.bootstrap,
         this.authHeaders,
         this.grant!,
-        generationId,
-        at,
-        (claim, ticket) => {
-          if (!this.live()) throw new RelayError(409, "conflict", "Session ended during admission");
-          generation.claim = claim;
-          generation.ticket = ticket;
-          this.journal.save(generation);
-        },
-        () => this.live(),
+        generation.id,
+        generation.at,
       );
-      // Persist acceptance even if disconnect occurred during the claim RPC. It was counted.
-      generation.stage = "admitted";
-      this.journal.save(generation);
-      if (!this.live()) return;
-      generation.stage = "dispatching";
-      this.journal.save(generation);
-      send(this.upstream, frame);
-      this.inputBytes = 0;
-      this.inputStarted = inputActivity ? at : null;
-      this.lastActivity = Date.now();
     } catch (error) {
-      // Once admitted, a failed/ambiguous send still belongs to that counted
-      // attempt, including unmetered sessions with no hosted claim receipt.
-      if (generation.stage === "admitting") {
-        if (generation.claim) {
-          // An RPC can fail after committing. Read only; never resend the trigger.
-          let receipt;
-          try {
-            receipt = await this.backend.receipt(this.bootstrap, generation.id);
-          } catch {
-            // The alarm will reconcile.
-          }
-          if (receipt?.allowed) {
-            generation.stage = "admitted";
-          } else if (receipt) {
-            generation.stage = "refused";
-          }
-        } else {
-          // Unmetered admission acknowledges with null only once every limit has
-          // counted it, so a reply lost after that is an admitted attempt.
-          generation.stage = generation.claim === null ? "admitted" : "refused";
-        }
+      if (error instanceof RelayError && error.status < 500) {
+        this.refuseNextTurn(error);
+        return;
       }
-      this.journal.save(generation);
-      this.fail(error);
+      log("warn", "realtime_response_uncounted", {
+        sessionId: this.bootstrap.sessionId,
+        generationId: generation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
+  }
+
+  /** Ends the session now if no response is running, else once it finishes. */
+  private refuseNextTurn(error: RelayError): void {
+    this.refusal ??= error;
+    if (!this.active) this.fail(this.refusal);
   }
 
   private fail(error: unknown): void {
@@ -555,7 +560,7 @@ export class SessionCoordinator {
         await this.starting;
         // A pending upgrade may have supplied a socket after the first close.
         close(this.upstream, 1011);
-        // Capacity cleanup does not wait for an in-flight accounting/admission RPC.
+        // Capacity cleanup does not wait for an in-flight accounting call.
         await Promise.all([
           this.release(),
           this.mailbox.afterDrain(async () => {
@@ -614,9 +619,24 @@ export class SessionCoordinator {
     clearTimeout(timer);
   }
 
+  /**
+   * Sends the journal's pending usage to the gateway. A call while a delivery
+   * runs joins it, and makes it go round once more, since that delivery may
+   * have read the journal before this call's usage was stored.
+   */
   private flush(): Promise<boolean> {
-    if (this.flushing) return this.flushing;
-    this.flushing = this.deliver().finally(() => {
+    if (this.flushing) {
+      this.flushAgain = true;
+      return this.flushing;
+    }
+    this.flushing = (async () => {
+      let complete: boolean;
+      do {
+        this.flushAgain = false;
+        complete = await this.deliver();
+      } while (this.flushAgain);
+      return complete;
+    })().finally(() => {
       this.flushing = null;
     });
     return this.flushing;
@@ -649,75 +669,17 @@ export class SessionCoordinator {
     return complete;
   }
 
-  /** Restarts never restore sockets or issue admission/dispatch calls. */
+  /**
+   * After a restart: every response that was sent and not yet settled is
+   * settled as interrupted, so it gets its usage record. Restarts never
+   * restore sockets or send anything to the provider.
+   */
   async recover(): Promise<void> {
     this.active = null;
-    const task = this.journal.task("admission");
-    let pending = false;
     for (const generation of this.journal.generations()) {
-      if (generation.stage === "settled" || generation.stage === "refused") continue;
-      // No acknowledged claim yet means no admission decision was recorded;
-      // a null one is an unmetered admission and settles below like any other.
-      if (
-        generation.stage === "prepared"
-        || (generation.stage === "admitting" && generation.claim === undefined)
-      ) {
-        this.refuse(generation);
-        continue;
-      }
-      if (generation.stage === "admitting" && generation.claim !== null) {
-        if (task.due > Date.now() && withinRetention(generation)) {
-          pending = true;
-          continue;
-        }
-        try {
-          const receipt = await this.backend.receipt(this.bootstrap, generation.id);
-          if (!receipt) {
-            // No receipt is the counter's own answer that the claim never
-            // landed, once the call that carried it can no longer be running.
-            if (Date.now() - generation.at < L.receiptWaitMs) {
-              pending = true;
-              continue;
-            }
-            this.refuse(generation);
-            continue;
-          }
-          if (!receipt.allowed) {
-            this.refuse(generation);
-            continue;
-          }
-        } catch {
-          if (withinRetention(generation)) {
-            pending = true;
-            continue;
-          }
-          this.logAccountingGap(generation);
-          this.refuse(generation);
-          continue;
-        }
-      }
-      if (!generation.ticket) {
-        // Admitted with no ticket stored cannot happen: the claim and the
-        // ticket are stored together, before the claim is spent.
-        this.logAccountingGap(generation);
-        this.refuse(generation);
-        continue;
-      }
+      if (generation.stage === "settled") continue;
       this.journal.settle(generation, settlement(generation, "interrupted", true));
     }
-    if (pending && task.due <= Date.now()) this.journal.retryTask("admission", task);
-  }
-
-  private refuse(generation: Generation): void {
-    generation.stage = "refused";
-    this.journal.save(generation);
-  }
-
-  private logAccountingGap(generation: Generation): void {
-    log("error", "realtime_admission_accounting_gap", {
-      sessionId: this.bootstrap.sessionId,
-      generationId: generation.id,
-    });
   }
 
   private async maintain(): Promise<void> {
@@ -756,9 +718,7 @@ export class SessionCoordinator {
       this.configuring ? this.configurationAt + L.setupMs : Infinity,
       this.lastActivity + L.idleMs,
       this.inputStarted === null ? Infinity : this.inputStarted + L.inputMs,
-      this.active && ["admitted", "dispatching", "active"].includes(this.active.stage)
-        ? this.active.at + L.responseMs
-        : Infinity,
+      this.active ? this.active.at + L.responseMs : Infinity,
     );
   }
 
@@ -776,11 +736,6 @@ export class SessionCoordinator {
       const pending = this.journal.outbox().map(item =>
         Math.min(item.due, item.createdAt + L.outboxRetentionMs),
       );
-      for (const generation of this.journal.generations()) {
-        if (generation.stage === "admitting" && generation.claim) {
-          pending.push(Math.min(this.journal.task("admission").due, generation.at + L.outboxRetentionMs));
-        }
-      }
       for (const name of ["release:user", "release:app"] as const) {
         const task = this.journal.task(name);
         if (!task.complete) pending.push(Math.min(task.due, task.expiresAt ?? Infinity));
@@ -863,7 +818,6 @@ export class SessionCoordinator {
     this.terminating = true;
     await this.shutdown();
     const pending = this.journal.outbox().length > 0
-      || this.journal.generations().some(generation => generation.stage === "admitting")
       || !this.journal.task("release:user").complete
       || !this.journal.task("release:app").complete;
     if (!pending) {
@@ -880,7 +834,8 @@ export class SessionCoordinator {
 function settlement(generation: Generation, status: CompletionStatus, aborted: boolean): Settlement {
   return {
     generationId: generation.id,
-    ticket: generation.ticket!,
+    at: generation.at,
+    ticket: generation.ticket,
     usage: generation.usage,
     responseId: generation.responseId,
     status,
@@ -901,10 +856,6 @@ function hex(digest: ArrayBuffer): string {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Whether an admission is still young enough to wait for its receipt. */
-function withinRetention(generation: Generation): boolean {
-  return Date.now() - generation.at < L.outboxRetentionMs;
-}
 
 /** The `retry_after_seconds` an error frame carries when the error names a `Retry-After`. */
 function retryAfterSeconds(error: RelayError): { retry_after_seconds: number } | Record<string, never> {

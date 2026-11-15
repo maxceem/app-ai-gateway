@@ -10,7 +10,7 @@ export interface OutboxItem {
   createdAt: number;
 }
 
-export type RecoveryTaskName = "release:user" | "release:app" | "admission";
+export type RecoveryTaskName = "release:user" | "release:app";
 
 export interface RecoveryTask {
   attempts: number;
@@ -62,9 +62,9 @@ export class SessionJournal {
     this.storage.transactionSync(() => {
       generation.stage = "settled";
       this.save(generation);
-      // Dated from the generation, not from settlement: admission recovery
-      // and usage delivery share one seven-day horizon, which is what a retired
-      // release is kept for. A late settlement gets what is left of it.
+      // Dated from the generation, not from settlement: usage delivery has
+      // one seven-day horizon from when the response was sent, which is what a
+      // retired release is kept for. A late settlement gets what is left of it.
       const item: OutboxItem = {
         id: settlement.generationId,
         settlement,

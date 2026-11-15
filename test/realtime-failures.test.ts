@@ -8,12 +8,11 @@ import gateway from "../src/index";
 import { database } from "../src/db";
 import { app as appTable } from "../src/db/schema";
 import { SessionCoordinator } from "../src/realtime/relay/session";
-import { realtimeTicket, settledEvent, type RealtimeTicket } from "../src/realtime/usage";
+import { realtimeTicket, settledEvent } from "../src/realtime/usage";
 import { RelayError } from "../src/realtime/relay/errors";
 import { SessionJournal } from "../src/realtime/relay/journal";
 import { GeminiAdapter } from "../src/realtime/relay/protocols/gemini";
 import { Mailbox } from "../src/realtime/relay/transport";
-import { REALTIME_LIMITS } from "../src/realtime/relay/limits";
 import { loadApp } from "../src/core/app-records";
 import { authenticateRequest } from "../src/client-auth/client-auth";
 import { requireProvider } from "../src/providers/provider-store";
@@ -73,6 +72,14 @@ function passthrough(target: object, property: string | symbol) {
 /** The lease holders a session acquires: its app, then its API key. */
 function leaseNames(bootstrap: Bootstrap) {
   return [bootstrap.appId, `${bootstrap.appId}:realtime:key:${bootstrap.identity.apiKeyId}`];
+}
+
+/** Waits up to two seconds for a session's usage records to reach `count`. */
+async function usageRecorded(sessionId: string, count: number) {
+  for (let waited = 0; waited < 2_000 && Number(await sessionUsageCount(sessionId)) < count; waited += 20) {
+    await sleep(20);
+  }
+  return sessionUsageCount(sessionId);
 }
 
 async function sessionUsageCount(sessionId: string) {
@@ -155,7 +162,7 @@ function hostedEnv(): Env {
     }),
   } as unknown as Env;
 }
-function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "admitted"): Generation {
+function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "dispatching"): Generation {
   const id = crypto.randomUUID();
   const at = Date.now();
   return {
@@ -196,15 +203,12 @@ function generation(bootstrap: Bootstrap, stage: Generation["stage"] = "admitted
     }) }),
   };
 }
-/** The ticket admission wrote for a generation, as the gateway reads it. */
-function ticketOf(g: Generation): RealtimeTicket {
-  return g.ticket as unknown as RealtimeTicket;
-}
 /** What a session reports when `g` settles. */
 function settlementOf(g: Generation, status: CompletionStatus, aborted: boolean): Settlement {
   return {
     generationId: g.id,
-    ticket: g.ticket!,
+    at: g.at,
+    ticket: g.ticket,
     usage: g.usage,
     responseId: g.responseId,
     status,
@@ -639,46 +643,7 @@ describe("realtime failure boundaries", () => {
       await state.storage.deleteAlarm();
     });
   });
-  it("unknown admission receipts use durable backoff instead of repeated maintenance polling", async () => {
-    const { bootstrap, headers } = await setup();
-    const stub = newSessionStub();
-    let receipts = 0;
-    const runtimeEnv = {
-      ...env,
-      ORG_QUOTA: {
-        getByName: () => ({
-          receipt: async () => {
-            receipts++;
-            return null;
-          },
-        }),
-      },
-    } as unknown as Env;
-    await runInDurableObject(stub, async (_instance, state) => {
-      const journal = new SessionJournal(state.storage);
-      journal.open(bootstrap);
-      const g = generation(bootstrap, "admitting");
-      g.claim = { admissionId: g.id, periodId: "unknown", periodEnd: "2026-11-01T00:00:00Z", limit: 1 };
-      journal.save(g);
-      journal.saveTask("admission", { attempts: 11, due: Date.now() - 1, complete: false });
-      await coordinatorFor(runtimeEnv, state, bootstrap, headers).alarm();
-      expect(receipts).toBe(1);
-      const task = journal.task("admission");
-      expect(task.attempts).toBe(12);
-      expect(task.due - Date.now()).toBeGreaterThan(3_590_000);
-      expect(await state.storage.getAlarm()).toBe(task.due);
-      await coordinatorFor(runtimeEnv, state, bootstrap, headers).alarm();
-      expect(receipts).toBe(1);
-      expect(await state.storage.getAlarm()).toBe(task.due);
-      // Retention expiry takes precedence over the backoff deadline.
-      g.at = Date.now() - 7 * 86_400_000 + 1000;
-      journal.save(g);
-      await coordinatorFor(runtimeEnv, state, bootstrap, headers).alarm();
-      expect(await state.storage.getAlarm()).toBe(g.at + 7 * 86_400_000);
-      await state.storage.deleteAlarm();
-    });
-  });
-  it("refuses the second generation before upstream dispatch and records no refusal row", async () => {
+  it("a limit reached ends the session after the response it refused, which runs uncounted", async () => {
     await withSockets(async ({ socket, upstream, next, bootstrap }) => {
       let sent = 0;
       upstream.addEventListener("message", event => {
@@ -687,19 +652,26 @@ describe("realtime failure boundaries", () => {
         upstream.send(JSON.stringify({ type: "response.created", response: { id } }));
         upstream.send(responseDone(id));
       });
+      // The app allows one request a day: the second turn is sent at once,
+      // and its count is refused in the background.
       socket.send('{"type":"response.create"}');
       await next("response.done");
       socket.send('{"type":"response.create"}');
+      await next("response.done");
       expect(await next("gateway.error")).toMatchObject({ error: { code: "app_rate_limited" } });
-      expect(sent).toBe(1);
-      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(1);
+      expect(sent).toBe(2);
+      // Both responses ran, so both have a usage record; only one was counted.
+      await sleep(20);
+      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(2);
+      expect(await env.USER_LIMITER.getByName(bootstrap.appId).getStatus(Date.now()))
+        .toEqual({ requestsToday: 1 });
     });
   });
-  it("disconnect while an app admission RPC awaits never dispatches or invents usage", async () => {
+  it("a response is sent at once, while its count is still waiting on the gateway", async () => {
     let release!: () => void;
     let entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const pending = new Promise<void>(resolve => { entered = resolve; });
+    const counting = new Promise<void>(resolve => { entered = resolve; });
     const runtimeEnv = {
       ...env,
       USER_LIMITER: {
@@ -726,13 +698,16 @@ describe("realtime failure boundaries", () => {
         if (JSON.parse(String(event.data)).type === "response.create") sent++;
       });
       socket.send('{"type":"response.create"}');
-      await pending;
+      await counting;
+      await sleep(10);
+      // Sent while the limiter has not answered.
+      expect(sent).toBe(1);
+      // The app hangs up; the response is still recorded, as interrupted.
       socket.close(1000);
       await sleep(10);
       release();
       await sleep(2100);
-      expect(sent).toBe(0);
-      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(0);
+      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(1);
     }, runtimeEnv);
   });
   it("two hosted sockets and HTTP race for the same final allowance", async () => {
@@ -760,7 +735,9 @@ describe("realtime failure boundaries", () => {
         if (++ready === 2) armed();
         await gate;
         peer.socket.send('{"type":"response.create"}');
-        outcomes.push(await Promise.race([peer.next("response.done"), peer.next("gateway.error")]));
+        // Sent at once; a refused count closes the session after the response.
+        await peer.next("response.done");
+        outcomes.push(await Promise.race([peer.next("gateway.error"), sleep(1_000).then(() => ({ type: "open" }))]));
       }, runtimeEnv));
       await connections;
       const ctx = createExecutionContext();
@@ -777,21 +754,23 @@ describe("realtime failure boundaries", () => {
       await response.text();
       await waitOnExecutionContext(ctx);
       await Promise.all(sockets);
-      const completed = outcomes.filter(frame => frame.type === "response.done").length;
-      expect(completed + Number(response.status === 200)).toBe(1);
+      // One allowance, three takers: exactly one is counted, and the two
+      // refused are the HTTP request (429) or a session closed after its turn.
+      const refused = outcomes.filter(frame => frame.type === "gateway.error");
       expect([200, 429]).toContain(response.status);
-      expect(outcomes
-        .filter(frame => frame.type === "gateway.error")
-        .every(frame => (frame.error as JsonObject).code === "billing_request_quota_exceeded")).toBe(true);
-      expect(triggers + Number(response.status === 200)).toBe(1);
+      expect(refused.length + Number(response.status === 429)).toBe(2);
+      expect(refused.every(frame => (frame.error as JsonObject).code === "billing_request_quota_exceeded")).toBe(true);
+      // Both sockets' responses were sent: a refused count never holds a turn back.
+      expect(triggers).toBe(2);
     } finally {
       release();
       providerFetch.mockRestore();
     }
   });
-  it("disconnect after a hosted claim commits but before its RPC returns preserves one counted attempt", async () => {
+  it("a disconnect while a sent response is being counted still counts it once and records it", async () => {
     let entered!: () => void;
     let release!: () => void;
+    let periodId = "";
     const pending = new Promise<void>(resolve => { entered = resolve; });
     const gate = new Promise<void>(resolve => { release = resolve; });
     const baseEnv = hostedEnv();
@@ -806,6 +785,7 @@ describe("realtime failure boundaries", () => {
                 get(owner, method) {
                   if (method === "admit") {
                     return async (input: Parameters<typeof quota.admit>[0]) => {
+                      periodId = input.periodId;
                       const result = await owner.admit(input);
                       entered();
                       await gate;
@@ -833,9 +813,9 @@ describe("realtime failure boundaries", () => {
       await sleep(10);
       release();
       await sleep(2100);
-      expect(triggers).toBe(0);
+      expect(triggers).toBe(1);
       const quota = runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId);
-      expect(await quota.usage(String(attempt.claim!.periodId))).toBe(1);
+      expect(await quota.usage(periodId)).toBe(1);
       expect((await env.DB
         .prepare("SELECT event_id, completion_status FROM app_usage_event WHERE realtime_session_id = ?")
         .bind(bootstrap.sessionId)
@@ -1043,7 +1023,7 @@ describe("realtime failure boundaries", () => {
       socket.send('{"type":"response.create"}');
       await next("response.done");
       expect(socket.readyState).toBe(WebSocket.OPEN);
-      await sleep(20);
+      expect(await usageRecorded(coordinator.bootstrap.sessionId, 2)).toBe(2);
       expect((await env.DB
         .prepare("SELECT cost_source FROM app_usage_event WHERE realtime_session_id = ? ORDER BY created_at")
         .bind(coordinator.bootstrap.sessionId)
@@ -1160,7 +1140,7 @@ describe("realtime failure boundaries", () => {
       expect(await sessionUsageCount(bootstrap.sessionId)).toBe(1);
     }, { ...env, DB: db });
   });
-  it("D1 outage retains the outbox, stops new dispatch, and replay writes one row", async () => {
+  it("a D1 outage keeps usage in the outbox, the conversation goes on, and replay writes each row once", async () => {
     let failInsert = true;
     const db = new Proxy(env.DB, {
       get(target, property) {
@@ -1177,109 +1157,67 @@ describe("realtime failure boundaries", () => {
       },
     });
     const runtimeEnv = { ...env, DB: db } as Env;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     await withSockets(async ({ socket, upstream, next, coordinator, state, bootstrap }) => {
+      await allowManyResponses(bootstrap.appId);
       let sent = 0;
       upstream.addEventListener("message", event => {
         if (frameType(event) !== "response.create") return;
-        sent++;
-        upstream.send('{"type":"response.created","response":{"id":"r"}}');
-        upstream.send(responseDone("r"));
+        const id = `r-${++sent}`;
+        upstream.send(JSON.stringify({ type: "response.created", response: { id } }));
+        upstream.send(responseDone(id));
       });
       socket.send('{"type":"response.create"}');
       await next("response.done");
       socket.send('{"type":"response.create"}');
-      await next("gateway.error");
-      expect(sent).toBe(1);
-      expect(coordinator.journal.outbox()).toHaveLength(1);
-      const item = coordinator.journal.outbox()[0]!;
+      await next("response.done");
+      expect(sent).toBe(2);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      await sleep(50);
+      expect(coordinator.journal.outbox()).toHaveLength(2);
       failInsert = false;
-      item.due = Date.now();
-      state.storage.sql.exec("UPDATE usage_outbox SET json = ? WHERE id = ?", JSON.stringify(item), item.id);
-      await sleep(20);
-      await coordinator.alarm();
-      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(1);
+      for (const item of coordinator.journal.outbox()) {
+        item.due = Date.now();
+        state.storage.sql.exec("UPDATE usage_outbox SET json = ? WHERE id = ?", JSON.stringify(item), item.id);
+      }
+      await Reflect.apply(Reflect.get(coordinator, "flush"), coordinator, []);
+      await Reflect.apply(Reflect.get(coordinator, "flush"), coordinator, []);
+      expect(coordinator.journal.outbox()).toHaveLength(0);
+      expect(await sessionUsageCount(bootstrap.sessionId)).toBe(2);
     }, runtimeEnv);
+    vi.restoreAllMocks();
   });
-  it("crash reconciliation queries claimed allowance without replaying admission", async () => {
+  it("after a restart every sent response is settled once, as interrupted, on its own horizon", async () => {
     const { bootstrap, headers } = await setup();
     const stub = newSessionStub();
     await runInDurableObject(stub, async (_instance, state) => {
       const journal = new SessionJournal(state.storage);
       journal.open(bootstrap);
-      const g = generation(bootstrap, "admitting");
-      const claim = { periodId: "p", periodEnd: "2026-11-01T00:00:00Z", limit: 1, admissionId: g.id };
-      g.claim = claim;
-      journal.save(g);
-      await env.ORG_QUOTA.getByName(bootstrap.organizationId).admit(claim);
+      const sent = generation(bootstrap, "dispatching");
+      sent.at = Date.now() - 3 * 86_400_000;
+      journal.save(sent);
+      journal.save(generation(bootstrap, "active"));
       const coordinator = coordinatorFor(env, state, bootstrap, headers);
       await coordinator.recover();
-      const recovered = journal.generations()[0]!;
-      expect(recovered.stage).toBe("settled");
+      expect(journal.generations().every(g => g.stage === "settled")).toBe(true);
+      expect(journal.outbox().map(item => item.settlement))
+        .toMatchObject([{ status: "interrupted", aborted: true }, { status: "interrupted", aborted: true }]);
+      // Delivery keeps the response's own horizon rather than starting a new one.
+      expect(journal.outbox().find(item => item.id === sent.id)?.createdAt).toBe(sent.at);
       expect(settledEvent(bootstrap, journal.outbox()[0]!.settlement).row)
         .toMatchObject({ costSource: "unresolved", completionStatus: "interrupted" });
       await coordinator.recover();
-      expect(journal.outbox()).toHaveLength(1);
-      expect(await env.ORG_QUOTA.getByName(bootstrap.organizationId).usage("p")).toBe(1);
-    });
-  });
-  it("prepared or partially checked unmetered intents create no invented usage row", async () => {
-    const { bootstrap, headers } = await setup();
-    const stub = newSessionStub();
-    await runInDurableObject(stub, async (_instance, state) => {
-      const journal = new SessionJournal(state.storage);
-      journal.open(bootstrap);
-      journal.save(generation(bootstrap, "prepared"));
-      journal.save(generation(bootstrap, "admitting"));
-      await coordinatorFor(env, state, bootstrap, headers).recover();
-      expect(journal.outbox()).toHaveLength(0);
-    });
-  });
-  it("an acknowledged unmetered admission whose reply was lost settles one interrupted attempt", async () => {
-    const { bootstrap, headers } = await setup();
-    const stub = newSessionStub();
-    await runInDurableObject(stub, async (_instance, state) => {
-      const journal = new SessionJournal(state.storage);
-      journal.open(bootstrap);
-      const g = generation(bootstrap, "admitting");
-      g.claim = null;
-      g.at = Date.now() - 3 * 86_400_000;
-      journal.save(g);
-      await coordinatorFor(env, state, bootstrap, headers).recover();
-      expect(journal.generations()[0]).toMatchObject({ stage: "settled" });
-      expect(journal.outbox()[0]?.settlement).toMatchObject({ status: "interrupted", aborted: true });
-      // Delivery shares the generation's recovery horizon rather than starting a new one.
-      expect(journal.outbox()).toMatchObject([{ createdAt: g.at }]);
-    });
-  });
-  it("unknown claim receipts remain pending for read-only reconciliation", async () => {
-    const { bootstrap, headers } = await setup();
-    const stub = newSessionStub();
-    await runInDurableObject(stub, async (_instance, state) => {
-      const journal = new SessionJournal(state.storage);
-      journal.open(bootstrap);
-      const g = generation(bootstrap, "admitting");
-      g.claim = { admissionId: g.id, periodId: "unknown", periodEnd: "2026-11-01T00:00:00Z", limit: 1 };
-      journal.save(g);
-      await coordinatorFor(env, state, bootstrap, headers).recover();
-      expect(journal.generations()[0]?.stage).toBe("admitting");
-      expect(journal.outbox()).toHaveLength(0);
-      // Once the call that carried the claim can no longer be running, no
-      // receipt means the claim never landed: nothing is counted or recorded.
-      g.at = Date.now() - REALTIME_LIMITS.receiptWaitMs - 1;
-      journal.save(g);
-      journal.saveTask("admission", { attempts: 0, due: 0, complete: false });
-      await coordinatorFor(env, state, bootstrap, headers).recover();
-      expect(journal.generations()[0]?.stage).toBe("refused");
-      expect(journal.outbox()).toHaveLength(0);
+      expect(journal.outbox()).toHaveLength(2);
     });
   });
   it("cancelled/incomplete attempts retain observed usage and original admission month", async () => {
     const { bootstrap } = await setup();
     const g = generation(bootstrap);
-    ticketOf(g).event.row.createdAt = "2026-09-30T23:59:59Z";
+    // Dated when the response was sent, so it counts in that month.
+    g.at = Date.parse("2026-09-30T23:59:59Z");
     g.usage = usage;
     expect(settledEvent(bootstrap, settlementOf(g, "cancelled", true)).row).toMatchObject({
-      createdAt: "2026-09-30T23:59:59Z",
+      createdAt: "2026-09-30T23:59:59.000Z",
       completionStatus: "cancelled",
       costSource: "computed",
       costUsd: .00002,
@@ -1353,8 +1291,9 @@ describe("realtime failure boundaries", () => {
   });
 });
 
-describe("release admission acknowledgement ordering", () => {
-  it("metered claim waits for durable acknowledgement and a rejected acknowledgement never claims", async () => {
+describe("realtime counting", () => {
+  it("counting the same response twice counts it once", async () => {
+    // The hosted plan allows one request a month.
     const runtimeEnv = hostedEnv();
     const { bootstrap, headers } = await setup();
     const application = await loadApp(runtimeEnv, bootstrap.appId);
@@ -1362,32 +1301,14 @@ describe("release admission acknowledgement ordering", () => {
     await saveAppConfig(bootstrap.appId, application.config);
     const backend = localSessionBackend(runtimeEnv, () => {});
     const grant = await backend.grant(bootstrap, headers, null);
-    const quota = () => runtimeEnv.ORG_QUOTA.getByName(bootstrap.organizationId);
-    let claim!: NonNullable<Generation["claim"]>;
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const gate = new Promise<void>(resolve => { release = resolve; });
     const id = crypto.randomUUID();
-    const pending = backend.admit(bootstrap, headers, grant, id, Date.now(), async value => {
-      claim = value!;
-      entered();
-      await gate;
-    }, () => true);
-    await started;
-    expect(await quota().usage(String(claim.periodId))).toBe(0);
-    expect(await backend.receipt(bootstrap, id)).toBeNull();
-    release();
-    await pending;
-    expect(await quota().usage(String(claim.periodId))).toBe(1);
-    expect(await backend.receipt(bootstrap, id)).toMatchObject({ allowed: true });
-    const refused = crypto.randomUUID();
-    await expect(backend.admit(bootstrap, headers, grant, refused, Date.now(), () => {
-      throw new Error("session closed");
-      // The gateway keeps no detail of a failure on the session's side.
-    }, () => true)).rejects.toThrow("Realtime backend unavailable");
-    expect(await backend.receipt(bootstrap, refused)).toBeNull();
-    expect(await quota().usage(String(claim.periodId))).toBe(1);
+    const at = Date.now();
+    await backend.admit(bootstrap, headers, grant, id, at);
+    // A repeat, as a retry after a lost reply sends: answered, not counted again.
+    await backend.admit(bootstrap, headers, grant, id, at);
+    // Another response finds the one request spent.
+    await expect(backend.admit(bootstrap, headers, grant, crypto.randomUUID(), Date.now()))
+      .rejects.toMatchObject({ code: "billing_request_quota_exceeded" });
   });
   it("an HTTP stream completes and settles once while realtime routing is promoted twice", async () => {
     const runtimeEnv = hostedEnv();

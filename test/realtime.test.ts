@@ -656,6 +656,10 @@ describe("realtime protocol and accounting", () => {
           terminalP95Ms: percentile(terminalLatencies, .95),
         };
       }
+      // Usage is recorded in the background; wait for the last of it.
+      for (let waited = 0; waited < 2_000 && coordinator.journal.outbox().length > 0; waited += 20) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
       const rows = await env.DB
         .prepare("SELECT * FROM app_usage_event WHERE realtime_session_id = ?")
         .bind(bootstrap.sessionId)
@@ -668,7 +672,8 @@ describe("realtime protocol and accounting", () => {
       // Settling again records nothing twice.
       await localSessionBackend(env, () => {}).settle(bootstrap, {
         generationId: first.id,
-        ticket: first.ticket!,
+        at: first.at,
+        ticket: first.ticket,
         usage: first.usage,
         responseId: first.responseId,
         status: "completed",
@@ -704,39 +709,14 @@ describe("immutable realtime release boundaries", () => {
       .rejects.toMatchObject({ status: 429 });
     await prepareRealtime(env, request, appId, providerSlug, origin, "realtime_discover");
   });
-  it("awaits a real service-binding acknowledgement before completing admission", async () => {
+  it("counts a response over the real service binding, with the usage ticket from the session check", async () => {
     const { bootstrap, headers } = await seeded();
     const backend = sessionBackend(env.TEST_REALTIME_BACKEND as unknown as RealtimeBackendCalls);
     const grant = await backend.grant(bootstrap, headers, null);
-    const admit = (acknowledge: Parameters<typeof backend.admit>[5]) => backend.admit(
-      bootstrap,
-      headers,
-      grant,
-      crypto.randomUUID(),
-      Date.now(),
-      acknowledge,
-      () => true,
-    );
-    let acknowledged = false;
-    await admit(async (claim, ticket) => {
-      expect(claim).toBeNull();
-      expect(ticket).toMatchObject({ event: { row: { model: "gpt-realtime" } } });
-      await new Promise(resolve => setTimeout(resolve, 20));
-      acknowledged = true;
-    });
-    expect(acknowledged).toBe(true);
-    let transientCalls = 0;
-    await expect(admit(() => {
-      transientCalls++;
-      throw Object.assign(new Error("private transient detail"), { retryable: true, overloaded: true });
-    })).rejects.toMatchObject({ message: "Realtime backend unavailable", retryable: true, overloaded: true });
-    // Repeated once on a platform fault: the limiters keep a receipt per
-    // generation, so the repeat never counts twice.
-    expect(transientCalls).toBe(2);
-
-    await expect(admit(() => {
-      throw new Error("closed");
-    })).rejects.toThrow();
+    // The session stores this with each response it sends.
+    expect(grant.ticket).toMatchObject({ v: 1, event: { row: { model: "gpt-realtime" } } });
+    const next = await backend.admit(bootstrap, headers, grant, crypto.randomUUID(), Date.now());
+    expect(next.model).toBe("gpt-realtime");
   });
   it("retries explicitly transient safe calls, preserves public errors, never retries policy", async () => {
     let calls = 0;
@@ -873,6 +853,7 @@ describe("immutable realtime release boundaries", () => {
     const generationId = crypto.randomUUID();
     await backend.settle(bootstrap, {
       generationId,
+      at: Date.now(),
       ticket: realtimeTicket({ event: buildEventForReleaseTest(bootstrap, generationId), price: { kind: "text", input: 4, output: 16 } }),
       usage: null,
       responseId: null,

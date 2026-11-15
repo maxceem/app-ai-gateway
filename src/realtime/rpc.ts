@@ -2,7 +2,6 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { gatewayBackend } from "./gateway-backend";
 import type {
   Bootstrap,
-  ClaimAcknowledgement,
   RealtimeBackendCalls,
   PreviousGrant,
   Settlement,
@@ -43,13 +42,8 @@ export class RealtimeBackend extends WorkerEntrypoint<Env> implements RealtimeBa
     previous: PreviousGrant,
     generationId: string,
     at: number,
-    acknowledgement: ClaimAcknowledgement,
   ) {
-    return this.calls().admit(version, b, headers, previous, generationId, at, acknowledgement);
-  }
-
-  receipt(version: number, b: Bootstrap, generationId: string) {
-    return this.calls().receipt(version, b, generationId);
+    return this.calls().admit(version, b, headers, previous, generationId, at);
   }
 
   settle(version: number, b: Bootstrap, settlement: Settlement) {

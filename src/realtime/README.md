@@ -24,13 +24,16 @@ realtime Worker asks for it through the calls in `relay/contract.ts`:
   and the session limits. Each check returns a new grant, so a policy change
   takes effect at the next one. The grant holds a credential, so the realtime
   Worker keeps it in memory only.
-- `admit` checks the session again and admits one response, counting it. It
-  hands the realtime Worker a usage ticket to store with the claim: the usage
-  record's metadata and the price the response was admitted at.
+- `admit` checks the session again and counts one response, which the realtime
+  Worker has already sent: turns never wait for it. A refusal ends the session
+  once that response finishes, so a limit can be exceeded by one response per
+  open session. A repeat for the same response counts nothing twice.
+- Every check returns a usage ticket: the usage record's metadata and price as
+  of that check. The realtime Worker stores it with each response it sends.
 - `settle` takes the ticket back with the provider's own usage object. The
   gateway reads the usage and prices it (`usage.ts`), so a change in how usage
   is read or priced is a gateway release.
-- `maintain`, `capacity` and `receipt` keep an open session in check.
+- `maintain` and `capacity` keep an open session in check.
 
 So a gateway release or a price update leaves the realtime Worker's code as
 it was. Release tooling names each realtime Worker after a fingerprint of its
@@ -52,13 +55,11 @@ knows is missing from the gateway's answer. The gateway answers the versions in
 `SUPPORTED_CONTRACTS`; today that is one, and release tooling refuses a
 retained release that declares another (see below).
 
-Generation admission first writes a metadata-only journal entry. Main computes
-its quota claim, calls an awaited RPC acknowledgement that durably records the
-exact claim in the realtime object, then admits it in the original `OrgQuota`.
-Provider dispatch waits for the returned admission result. Ambiguous replies
-recover through receipts without dispatching again. RPC callback capabilities
-are request-scoped and never persisted. Safe read/idempotent operations retry
-only explicitly transient errors; policy failures and admission do not retry.
+Each response is stored in the session's journal before it is sent to the
+provider, so after a restart every response sent is settled, as interrupted,
+and gets its usage record. Counting runs in the background and can be repeated
+safely: the gateway's limiters keep a receipt per response. Safe calls retry
+only explicitly transient errors; a refusal is never retried.
 
 The release builds the realtime Worker beside the gateway, in a job with no
 secrets (`scripts/build-prebuilt.mjs` writes `realtime/worker.js`), and its
@@ -86,8 +87,9 @@ there is no SQL safety inference or database rollback. Rollback coordinates a
 recorded compatible main version and realtime pointer. Release tooling must not
 modify retained realtime Workers.
 
-Tests exercise real workerd RPC callbacks, metered acknowledgement ordering,
-receipt recovery, release promotion/retirement SQL and both adapters. The HTTP
+Tests exercise the real service binding, counting a response after it is
+sent, recovery after a restart, release promotion/retirement SQL and both
+adapters. The HTTP
 stream harness promotes the D1 realtime pointer twice while a stream settles;
 it does not deploy a main Worker on Cloudflare during that stream. Actual
 platform deployment and network failures remain outside that harness.

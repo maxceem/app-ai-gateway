@@ -14,9 +14,9 @@ import type { Bootstrap, RealtimeProtocol, Settlement, UsageTicket } from "./rel
  */
 
 /**
- * What admission writes for a response, for its usage record later: the
- * record's metadata, and the price it was admitted at. No secret, so the
- * realtime Worker may store it.
+ * What each session check hands the realtime Worker, for its responses' usage
+ * records: the record's metadata, and the price, as of that check. No secret,
+ * so the realtime Worker may store it.
  */
 export interface RealtimeTicket {
   /** The ticket's shape. A ticket can be read up to seven days after it was written, by a later release. */
@@ -51,8 +51,13 @@ export function settledEvent(bootstrap: Pick<Bootstrap, "protocol">, settlement:
   const { status } = settlement;
   return {
     ...event,
+    // The ticket is the session's; the response's own id and time are these.
+    eventId: settlement.generationId,
     row: {
       ...row,
+      eventId: settlement.generationId,
+      realtimeGenerationId: settlement.generationId,
+      createdAt: new Date(settlement.at).toISOString(),
       inputTokens: usage?.inputTokens ?? 0,
       cachedInputTokens: usage?.cachedInputTokens ?? 0,
       cacheWriteTokens: usage?.cacheWriteTokens ?? 0,

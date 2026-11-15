@@ -81,6 +81,8 @@ export interface SessionGrant {
    * check's, to end a session whose credentials or rules changed under it.
    */
   checks: JsonObject;
+  /** What the gateway needs to record a response's usage, as of this check. */
+  ticket: UsageTicket;
 }
 
 /**
@@ -89,19 +91,19 @@ export interface SessionGrant {
  */
 export type PreviousGrant = Pick<SessionGrant, "checks" | "outputCap">;
 
-/** An allowance claim, stored before it is spent so recovery can ask whether it landed. */
-export type AdmissionClaim = JsonObject;
-
 /**
- * What the gateway needs to record a response's usage later, written by the
- * gateway at admission. Opaque to the realtime Worker, and free of secrets, so
- * it can be stored for recovery.
+ * What the gateway needs to record a response's usage: the record's metadata
+ * and the price, as of the session's last check. The realtime Worker stores it
+ * with each response. Opaque to it, and free of secrets, so it can be stored
+ * for recovery.
  */
 export type UsageTicket = JsonObject;
 
 /** What a finished, or abandoned, response reports for its usage record. */
 export interface Settlement {
   generationId: string;
+  /** When the response was sent to the provider, epoch milliseconds. */
+  at: number;
   ticket: UsageTicket;
   /** The provider's own usage object, as it reported it; null when it reported none. */
   usage: JsonObject | null;
@@ -117,11 +119,6 @@ export interface SessionLease {
   expiresAt: number;
 }
 
-/** A receipt for a claim the allowance counter decided. */
-export interface AdmissionReceipt {
-  allowed: boolean;
-}
-
 /** A refusal, carried as data so it keeps its status, code and headers. */
 export interface BackendRefusal {
   status: number;
@@ -132,14 +129,6 @@ export interface BackendRefusal {
 }
 
 export type BackendResult<T> = { ok: true; value: T } | { ok: false; error: BackendRefusal };
-
-/**
- * Called by the gateway during admission, before it spends the claim, so the
- * realtime Worker stores the claim and the ticket first.
- */
-export interface ClaimAcknowledgement {
-  acknowledge(claim: AdmissionClaim | null, ticket: UsageTicket): Promise<void>;
-}
 
 /**
  * The gateway's side of the binding. Each call names the contract version its
@@ -170,7 +159,11 @@ export interface RealtimeBackendCalls {
     operation: "acquire" | "renew" | "release",
     cap?: number,
   ): Promise<BackendResult<SessionLease>>;
-  /** Checks the session again and admits one response, counting it. */
+  /**
+   * Checks the session again and counts one response, which the realtime
+   * Worker has already sent to the provider: a refusal applies from its next
+   * turn. Repeating it for the same `generationId` counts nothing twice.
+   */
   admit(
     version: number,
     bootstrap: Bootstrap,
@@ -178,9 +171,7 @@ export interface RealtimeBackendCalls {
     previous: PreviousGrant,
     generationId: string,
     at: number,
-    acknowledgement: ClaimAcknowledgement,
   ): Promise<BackendResult<SessionGrant>>;
-  receipt(version: number, bootstrap: Bootstrap, generationId: string): Promise<BackendResult<AdmissionReceipt | null>>;
   /** Records a response's usage. Repeating it records nothing twice. */
   settle(version: number, bootstrap: Bootstrap, settlement: Settlement): Promise<BackendResult<void>>;
   /** Checks the session again while it stays open. */

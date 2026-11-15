@@ -1,6 +1,6 @@
 ---
 title: Realtime WebSockets
-description: Provider-native realtime conversations with generation admission, bounded sessions, and durable usage.
+description: Provider-native realtime conversations with no wait between turns, bounded sessions, and durable usage.
 ---
 
 Enable **Realtime sessions** in your app's settings to use a supported OpenAI
@@ -56,19 +56,23 @@ idle prompts, and unknown client event types are refused.
 
 ## One generation is one request
 
-An admitted generation attempt counts once. Twenty admitted responses over one
-socket count as twenty requests. Connection setup, configuration, audio chunks,
-and output deltas add no requests. Failed, cancelled, or disconnected attempts
-remain counted after admission. A refusal before admission does not count.
+Each response counts once. Twenty responses over one socket count as twenty
+requests. Connection setup, configuration, audio chunks, and output deltas add
+no requests. Failed, cancelled, or disconnected responses still count.
 
-The gateway checks the limits you set per user — per install on an iOS app —
-your app's limits, and access before sending a generation trigger. Only one provider response can be active. Each
-response's usage is stored before its last event reaches your app, and normally
-recorded before the next response starts. If the gateway can't record it for a
-moment, the next response doesn't wait more than two seconds, so a spending
-budget can lag by a response. Monthly spending is based on completed usage;
-in-flight responses can exceed a spending budget before their final costs are
-known.
+Turns never wait for the gateway. The gateway checks access and every limit
+when a conversation opens: the limits you set per user — per install on an iOS
+app — your app's limits, and your allowance. After that, each response is sent
+to the provider at once and counted in the background. If counting it finds a
+limit reached, the user blocked, or the app's access changed, that response
+finishes, uncounted, and then the conversation closes with a `gateway.error`.
+So a limit can be exceeded by one response per open conversation. Only one
+provider response can be active.
+
+Each response's usage is stored before its last event reaches your app, and
+recorded in the background, so a spending budget can lag by a response.
+Monthly spending is based on completed usage; in-flight responses can exceed a
+spending budget before their final costs are known.
 
 ## OpenAI event flow
 
@@ -81,16 +85,16 @@ For managed VAD, send `session.update` with `audio.input.turn_detection.type`
 set to `server_vad`. Your requested `create_response` and `interrupt_response`
 behavior is managed by the gateway. Upstream these fields are forced to `false`;
 the acknowledgement shows the actual effective configuration. With
-`create_response` left on, the gateway admits one response for each committed
+`create_response` left on, the gateway starts one response for each committed
 speech item; do not also send manual `response.create` in this mode. Speech
 committed while a response is still running is answered by one response after
 it, however many utterances it holds. With `create_response: false`, voice
 detection only commits your audio, and you send `response.create` yourself.
-Either way, interruption cancels the active response and waits for its terminal
-usage before admitting the next one.
+Either way, interruption cancels the active response and waits for it to end
+before starting the next one.
 
 Function tools run in your application. Send results for outstanding calls with
-`conversation.item.create`, then request another admitted response. Cancellation
+`conversation.item.create`, then request another response. Cancellation
 uses `response.cancel`; it consumes no additional request and does not refund the
 active attempt.
 
@@ -150,16 +154,15 @@ existing caches allowing up to about 90 seconds before a change takes effect.
 
 Reconnect with a fresh authorized request. A reconnect creates a new conversation;
 no session resumption, automatic replay, provider fallback, or refund is provided.
-A crash after admission but before confirmed dispatch still leaves a counted
-interrupted attempt. Missing provider usage is marked unresolved, never asserted
+A crash after a response is sent still records it, as interrupted. Missing provider usage is marked unresolved, never asserted
 to be free, and the conversation goes on. If the gateway can't record usage for
 a moment, the conversation goes on too; the usage is recorded once it can. Disconnect cancels upstream work, with at most two seconds to collect
 final usage. Accounting retries retain metadata for up to seven days; raw audio,
 transcripts, and credentials are never stored in the session journal.
 
 Gemini's future explicit audio profile requires automatic activity detection to
-be disabled, then `activityStart`, audio, and `activityEnd`. Admission happens
-before `activityStart`. Default automatic/proactive Gemini SDK sessions will not
+be disabled, then `activityStart`, audio, and `activityEnd`. The response
+starts at `activityStart`. Default automatic/proactive Gemini SDK sessions will not
 work unchanged. No Gemini profile is available until its usage snapshots and
 output cap pass a real-provider conformance check.
 

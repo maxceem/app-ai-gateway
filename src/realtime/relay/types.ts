@@ -1,9 +1,4 @@
-import type {
-  AdmissionClaim,
-  CompletionStatus,
-  JsonObject,
-  UsageTicket,
-} from "./contract";
+import type { CompletionStatus, JsonObject, UsageTicket } from "./contract";
 
 export type { CompletionStatus, JsonObject } from "./contract";
 
@@ -44,17 +39,20 @@ export interface ProtocolAdapter {
   cancel(): JsonObject | null;
 }
 
-/** One response of a session, as its journal keeps it. Never holds a secret or a payload. */
+/**
+ * One response of a session, as its journal keeps it. Never holds a secret or
+ * a payload. It is stored before the request leaves for the provider, so every
+ * response sent gets a usage record, even after a restart.
+ */
 export interface Generation {
   id: string;
   ordinal: number;
   at: number;
-  stage: "prepared" | "admitting" | "admitted" | "dispatching" | "active" | "settled" | "refused";
+  /** `dispatching` once sent to the provider, `active` once it answered, `settled` once its usage is stored. */
+  stage: "dispatching" | "active" | "settled";
   intent?: { kind: string; fingerprint: string };
-  /** Stored before the gateway spends it; null for an unmetered admission. */
-  claim?: AdmissionClaim | null;
-  /** What the gateway needs to record this response's usage, stored with the claim. */
-  ticket?: UsageTicket;
+  /** What the gateway needs to record this response's usage, from the session's last check. */
+  ticket: UsageTicket;
   responseId: string | null;
   /** The provider's usage object, as last reported. */
   usage: JsonObject | null;

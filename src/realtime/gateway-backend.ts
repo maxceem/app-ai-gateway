@@ -107,6 +107,24 @@ function localRoute(route: ResolvedRoute): ResolvedRoute {
   return route.kind === "direct" ? DIRECT_ROUTE : { ...route, adapter: routeAdapter(route.kind) };
 }
 
+/** What a realtime response is attributed to, for its limits and its usage record. */
+function attributionFor(
+  provider: ResolvedProvider,
+  policy: Pick<ReturnType<typeof realtimePolicy>, "model" | "path">,
+): AttemptAttribution {
+  return {
+    provider: provider.type,
+    providerId: provider.id,
+    providerSlug: provider.slug,
+    providerRoute: localRoute(provider.route),
+    pricing: provider.pricing,
+    model: policy.model,
+    apiStyle: "other",
+    route: `${provider.slug}/${policy.path}`,
+    passthrough: false,
+  };
+}
+
 export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) => void): RealtimeBackendCalls {
   const limiter = (b: Bootstrap, scope: "user" | "app") =>
     env.USER_LIMITER.getByName(scope === "app" ? b.appId : realtimeCaller(b.identity));
@@ -177,6 +195,31 @@ export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) 
       appId: b.appId,
       userId: b.identity.userId,
     });
+    // The usage record's metadata and price as of this check. The session
+    // stores it with each response it sends, and `settle` completes it with
+    // that response's id, time and usage.
+    const ticket = realtimeTicket({
+      price: policy.price,
+      event: buildUsageEvent({
+        organizationId: app.organizationId,
+        identity: b.identity,
+        attribution: attributionFor(provider, policy),
+        appVersion: b.appVersion,
+        status: "ok",
+        latencyMs: 0,
+        contentType: "application/json",
+        observed: null,
+        eventId: b.sessionId,
+        createdAt: new Date().toISOString(),
+        realtime: {
+          sessionId: b.sessionId,
+          generationId: b.sessionId,
+          protocol: b.protocol,
+          providerResponseId: null,
+          completionStatus: "interrupted",
+        },
+      }),
+    });
     return {
       upstream: { url: upstream.url, headers: Object.fromEntries(upstream.headers) },
       protocol: policy.protocol,
@@ -187,6 +230,7 @@ export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) 
       maxSessions: app.config.realtime.max_concurrent_sessions,
       waitForProvider: provider.route.kind !== "direct",
       checks: { ...checks },
+      ticket,
     };
   }
 
@@ -210,45 +254,11 @@ export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) 
       return operation === "renew" ? stub.renewSession(b.sessionId) : stub.acquireSession(b.sessionId, cap!);
     }),
 
-    admit: (version, b, headers, previous, generationId, at, acknowledgement) => result(version, async () => {
+    admit: (version, b, headers, previous, generationId, at) => result(version, async () => {
       const { app, provider } = await access(b, headers);
       const grant = await grantFor(b, app, provider, previous);
-      const policy = realtimePolicy(app, provider, b.requestedModel);
-      const attribution: AttemptAttribution = {
-        provider: provider.type,
-        providerId: provider.id,
-        providerSlug: provider.slug,
-        providerRoute: localRoute(provider.route),
-        pricing: provider.pricing,
-        model: policy.model,
-        apiStyle: "other",
-        route: `${provider.slug}/${policy.path}`,
-        passthrough: false,
-      };
-      // The usage record's metadata, written now and completed when the
-      // response settles: recovery can then record it without the provider.
-      const ticket = realtimeTicket({
-        price: policy.price,
-        event: buildUsageEvent({
-          organizationId: app.organizationId,
-          identity: b.identity,
-          attribution,
-          appVersion: b.appVersion,
-          status: "ok",
-          latencyMs: 0,
-          contentType: "application/json",
-          observed: null,
-          eventId: generationId,
-          createdAt: new Date(at).toISOString(),
-          realtime: {
-            sessionId: b.sessionId,
-            generationId,
-            protocol: b.protocol,
-            providerResponseId: null,
-            completionStatus: "interrupted",
-          },
-        }),
-      });
+      // The response was already sent: this counts it, and a refusal applies
+      // from the session's next turn. The id makes a repeat count nothing.
       await admitGeneration({
         env,
         deployment: resolveDeployment(env, b.origin),
@@ -256,22 +266,16 @@ export function gatewayBackend(env: Env, waitUntil: (promise: Promise<unknown>) 
         app,
         identity: b.identity,
         assertionCounter: null,
-        attribution,
+        attribution: attributionFor(provider, realtimePolicy(app, provider, b.requestedModel)),
         endpointSlug: null,
         appVersion: b.appVersion,
         admissionId: generationId,
         now: at,
         freshSpend: true,
-        // The session stores the claim and the ticket before the claim is spent.
-        beforeClaim: claim => acknowledgement.acknowledge(claim as unknown as Record<string, unknown> | null, ticket),
-        mayContinue: () => true,
         waitUntil,
       });
       return grant;
     }),
-
-    receipt: (version, b, generationId) => result(version, async () =>
-      env.ORG_QUOTA.getByName(b.organizationId).receipt(generationId)),
 
     settle: (version, b, settlement) => result(version, async () => {
       const event = settledEvent(b, settlement);

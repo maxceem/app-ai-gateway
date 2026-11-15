@@ -79,8 +79,6 @@ export interface AdmissionInput {
   admissionId?: string;
   now?: number;
   freshSpend?: boolean;
-  beforeClaim?: (input: import("../do/OrgQuota").QuotaAdmissionInput | null) => void | Promise<void>;
-  mayContinue?: () => boolean;
   appVersion: string | null;
   waitUntil: (promise: Promise<unknown>) => void;
 }
@@ -140,9 +138,6 @@ export async function admitRequest(
 export async function admitGeneration(input: AdmissionInput): Promise<number> {
   const start = performance.now();
   const { env, app, identity } = input;
-  const ensureLive = () => {
-    if (input.mayContinue && !input.mayContinue()) throw new GatewayError(409, "conflict", "Session ended during admission");
-  };
 
   const blockedEvent = (
     reason: RejectionReason,
@@ -244,7 +239,6 @@ export async function admitGeneration(input: AdmissionInput): Promise<number> {
    * one: a request the app-wide window refuses has spent one of the caller's
    * own tokens, which costs only the caller already being refused.
    */
-  ensureLive();
   const now = input.now ?? Date.now();
   const caller = callerLimiter(app, identity, input.assertionCounter);
   if (caller !== null) {
@@ -260,7 +254,6 @@ export async function admitGeneration(input: AdmissionInput): Promise<number> {
       ...(input.assertionCounter === null ? {} : { assertionCounter: input.assertionCounter }),
     };
     const result = await env.USER_LIMITER.getByName(caller.name).checkAndIncrement(check);
-    ensureLive();
     if (!result.allowed) {
       // A request limit refuses for the caller the limiter counts; a budget
       // for whoever's month it is measured over.
@@ -277,7 +270,6 @@ export async function admitGeneration(input: AdmissionInput): Promise<number> {
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
       spend: { appId: identity.appId, scope: "app", key: null },
     });
-    ensureLive();
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }
 
@@ -293,11 +285,7 @@ export async function admitGeneration(input: AdmissionInput): Promise<number> {
   admitAppTraffic(quota.access, app.organizationId);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
-  if (quota.kind === "unmetered") {
-    ensureLive();
-    await input.beforeClaim?.(null);
-    return finish();
-  }
+  if (quota.kind === "unmetered") return finish();
 
   const { period } = quota;
   const claim = {
@@ -306,10 +294,6 @@ export async function admitGeneration(input: AdmissionInput): Promise<number> {
     limit: quota.limit,
     admissionId: input.admissionId,
   };
-  ensureLive();
-  // A journaled claim is always attempted: the session reconciles it through
-  // its receipt, so refusing it here would leave nothing to reconcile.
-  await input.beforeClaim?.(claim);
   /*
    * The counter is billing, and billing errs towards the customer: a counter
    * that cannot answer promptly, for whatever reason, never fails the request.
