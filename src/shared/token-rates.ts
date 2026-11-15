@@ -15,6 +15,9 @@
  * documented.
  */
 
+import type { ApiStyle } from "./capabilities.ts";
+import type { ProviderType } from "./providers.ts";
+
 /** The buckets a variant may split. Input and output split by modality instead. */
 export type SplitBucket = "cached_input" | "cache_write";
 
@@ -30,6 +33,21 @@ interface VariantSpec {
   /** The rate's description in the API reference. */
   readonly description: string;
   readonly reportedAt: readonly string[];
+  /**
+   * Where one provider reports the count in a response header instead, because
+   * its body on that API carries only the bucket's total. Unlike `reportedAt`,
+   * a header is read only from that provider type's responses to that API, and
+   * only where the body did not report the count itself.
+   */
+  readonly reportedInHeader?: HeaderReport;
+}
+
+/** A response header that carries one variant's count, as a whole number. */
+interface HeaderReport {
+  readonly provider: ProviderType;
+  readonly style: ApiStyle;
+  /** Written lowercase; `Headers` matches names case-insensitively. */
+  readonly header: string;
 }
 
 /**
@@ -49,9 +67,17 @@ export const TOKEN_VARIANTS = {
   cache_write: {
     // Anthropic: a write kept for an hour bills at 2x input, against 1.25x for
     // the default five minutes. `usage.cache_creation` splits the write by TTL.
+    // Moonshot's Kimi bills the same split and reports it the same way on its
+    // Messages API.
     "1h": {
       description: "USD per 1M tokens written to a one-hour cache, where it costs more than the default cache write.",
       reportedAt: ["cache_creation", "ephemeral_1h_input_tokens"],
+      // Kimi's Chat Completions body reports only the total write, in
+      // `prompt_tokens_details.cache_write_tokens`; the one-hour share is in
+      // the `Msh-Usage-Cache-Write-Tokens-1h` header of a non-streamed
+      // response. A streamed one reports only the total (see `headerVariants`
+      // in `usage-readers.ts`), so it bills every write at the default rate.
+      reportedInHeader: { provider: "moonshot", style: "chat_completions", header: "msh-usage-cache-write-tokens-1h" },
     },
     // OpenAI (Responses API): a write kept for 12 hours bills at 2.5x input,
     // against 1.25x for the default 30 minutes.

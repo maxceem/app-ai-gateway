@@ -18,6 +18,7 @@ import type { Modality, ModalityCounts } from "../core/types";
 import { type TokenVariants, VARIANTS } from "../shared/token-rates";
 import { type ProviderType, routeCostReport } from "../shared/providers";
 import type { ApiStyle, ProviderRoute } from "../shared/capabilities";
+import { relaysProviderResponses } from "../shared/gateways";
 
 
 function finiteNumber(value: unknown): number | null {
@@ -530,9 +531,13 @@ function documentValues(values: unknown[]): ResponseValues {
   };
 }
 
+function isEventStream(contentType: string): boolean {
+  return contentType.toLowerCase().includes("text/event-stream");
+}
+
 /** One response body as its values: the document, or every SSE event. */
 export function responseValues(body: ObservedText, contentType: string): ResponseValues {
-  if (contentType.toLowerCase().includes("text/event-stream")) {
+  if (isEventStream(contentType)) {
     // Both windows are read: an Anthropic stream reports its input tokens in
     // the `message_start` event at the head and its output tokens at the tail.
     const head = sseEvents(body.head);
@@ -693,11 +698,55 @@ export function extractUsageText(
   return readUsage(responseValues(wholeBody(text), contentType), style);
 }
 
+/** A header's value as a count: a whole number and nothing else, or null. */
+function headerCount(value: string | null): number | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return /^\d{1,15}$/.test(trimmed) ? Number(trimmed) : null;
+}
+
 /**
- * Everything one response body says about itself, parsed once. The report half
+ * Adds the bucket shares a provider reports in its response headers rather
+ * than its body, each where `TOKEN_VARIANTS` declares it: only that provider
+ * type's headers, on that API, on a route that relays its responses, and only
+ * where the body did not report the same share, which it then wins.
+ *
+ * A streamed response is never read this way. Its headers are sent before
+ * the body, and Kimi's documentation does not say they carry the split: it
+ * says a stream's cache breakdown is "only returned in the `usage` field of
+ * the final chunk", and that chunk carries only the total. A stream's writes
+ * therefore bill at the default write rate, as they did before any header
+ * was read.
+ */
+function headerVariants(
+  usage: UsageObservation,
+  headers: Headers,
+  contentType: string,
+  provider: ProviderType,
+  route: ProviderRoute,
+  style: ApiStyle,
+): UsageObservation {
+  if (isEventStream(contentType) || !relaysProviderResponses(route)) return usage;
+  let found = usage.tokenVariants as VariantCounts | undefined;
+  for (const variant of VARIANTS) {
+    const report = variant.reportedInHeader;
+    if (!report || report.provider !== provider || report.style !== style) continue;
+    if (found?.[variant.bucket]?.[variant.name] !== undefined) continue;
+    const count = headerCount(headers.get(report.header));
+    if (!count) continue;
+    found = { ...found, [variant.bucket]: { ...found?.[variant.bucket], [variant.name]: count } };
+  }
+  return found === usage.tokenVariants ? usage : { ...usage, tokenVariants: found as TokenVariants };
+}
+
+/**
+ * Everything one response says about itself, parsed once. The report half
  * is read only by the integration the provider type declared, and only where
  * it covers this route and API: usage is read by the style's own reader, and no
  * type ever has another provider's fields read out of its responses.
+ *
+ * `headers` are the provider's response headers, where the caller has them:
+ * some providers report part of their usage only there.
  */
 export function observeResponse(
   body: ObservedText,
@@ -705,11 +754,13 @@ export function observeResponse(
   provider: ProviderType,
   route: ProviderRoute,
   style: ApiStyle,
+  headers?: Headers,
 ): { usage: UsageObservation | null; report: ProviderReport | null } {
   const values = responseValues(body, contentType);
   const reporting = routeCostReport(provider, route, style);
+  const usage = readUsage(values, style);
   return {
-    usage: readUsage(values, style),
+    usage: usage && headers ? headerVariants(usage, headers, contentType, provider, route, style) : usage,
     // Handed the same backwards walk: the report of a stream is in its final
     // chunk too, and that reader stops as soon as it has one.
     report: reporting ? readProviderReport(values.backwards(), reporting) : null,

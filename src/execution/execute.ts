@@ -55,6 +55,8 @@ function record(
     attempt: ExecutionAttempt;
     observed: Promise<ObservedBody> | null;
     contentType: string;
+    /** The upstream's response headers, where it answered. */
+    headers?: Headers;
     status: "ok" | "provider_error";
     latencyMs: number;
     /** The upstream's status, where it answered: what a stored conversation records. */
@@ -92,6 +94,7 @@ function record(
     env: context.env,
     observed: input.observed,
     contentType: input.contentType,
+    responseHeaders: input.headers,
     identity: context.identity,
     attribution: attemptAttribution(input.attempt),
     endpointSlug: plan.endpointSlug,
@@ -232,6 +235,7 @@ export async function execute(
       attempt,
       observed,
       contentType: upstream.headers.get("content-type") ?? "",
+      headers: upstream.headers,
       status: upstream.ok ? "ok" : "provider_error",
       latencyMs: Math.round(providerTtfb),
       httpStatus: upstream.status,
