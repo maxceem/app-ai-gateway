@@ -38,7 +38,9 @@ export default defineConfig({
     // here without oversubscribing a smaller machine. Re-checked once the barrels
     // reduced the suite to nine files: nine workers measured the same as six.
     maxWorkers: Math.max(2, Math.min(6, Math.floor(availableParallelism() / 2))),
-    setupFiles: ["./test/apply-migrations.ts"],
+    // The frozen price list first, so it is in place before the next setup
+    // file's imports load the catalog; see test/frozen-prices.ts.
+    setupFiles: ["./test/frozen-prices.ts", "./test/apply-migrations.ts"],
     // Records each run's results when a ledger directory is chosen, and does
     // nothing otherwise; see scripts/test-ledger/README.md.
     reporters: ["default", ["./scripts/test-ledger/reporter.mjs", { suite: "worker" }]],

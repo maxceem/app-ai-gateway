@@ -8,6 +8,6 @@ import models from "../usage/models.json";
  */
 export function modelPrices(): PricesResponse {
   // JSON imports widen `kind` to a string; the shipped catalog's kinds are held
-  // to `MODEL_KINDS` by test/usage.test.ts.
+  // to `MODEL_KINDS` by test/shipped-prices.test.ts.
   return { prices: models as PricesResponse["prices"] };
 }
