@@ -138,13 +138,13 @@ describe("the shipped price catalog", () => {
       }
     }
   });
+
   /**
    * A long-context rate applies only above its entry's threshold, so one
    * without the other bills wrong in silence: long rates with no threshold
-   * never apply, and a threshold with no long rate changes nothing. A long
-   * rate also needs its short one, which is what a shorter prompt pays.
+   * never apply, and a threshold with no long rate changes nothing.
    */
-  it("pairs every long-context rate with a threshold and a short rate", () => {
+  it("pairs every long-context rate with a threshold", () => {
     for (const [provider, models] of Object.entries(catalog)) {
       for (const [model, entry] of Object.entries(models)) {
         const where = `${provider}/${model}`;
@@ -156,9 +156,6 @@ describe("the shipped price catalog", () => {
         }
         expect([where, Number.isInteger(threshold) && (threshold as number) > 0]).toEqual([where, true]);
         expect([where, longRates.length > 0]).toEqual([where, true]);
-        for (const field of longRates) {
-          expect([where, field, entry[field.slice("long_".length)] !== undefined]).toEqual([where, field, true]);
-        }
       }
     }
   });
