@@ -27,7 +27,7 @@ realtime Worker asks for it through the calls in `relay/contract.ts`:
 - `admit` checks the session again and counts one response, which the realtime
   Worker has already sent: turns never wait for it. A refusal ends the session
   once that response finishes, so a limit can be exceeded by one response per
-  open session. A repeat for the same response counts nothing twice.
+  open session, or a few more while the gateway is slow to answer. A repeat for the same response counts nothing twice.
 - Every check returns a usage ticket: the usage record's metadata and price as
   of that check. The realtime Worker stores it with each response it sends.
 - `settle` takes the ticket back with the provider's own usage object. The

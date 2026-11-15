@@ -667,6 +667,69 @@ describe("realtime failure boundaries", () => {
         .toEqual({ requestsToday: 1 });
     });
   });
+  it("a refusal arriving as a response ends still lets its last event reach the app", async () => {
+    await withSockets(async ({ socket, upstream, next, coordinator }) => {
+      const backend = Reflect.get(coordinator, "backend") as SessionBackend;
+      const counted = backend.admit;
+      // Counting answers normally; the refusal is applied below, at the worst moment.
+      backend.admit = async (...args) => counted(...args);
+      const schedule = Reflect.get(coordinator, "schedule") as () => Promise<void>;
+      let done = false;
+      let refused = false;
+      Reflect.set(coordinator, "schedule", async () => {
+        // The moment the response is no longer active, before the next turn.
+        if (done && !refused && Reflect.get(coordinator, "active") === null) {
+          refused = true;
+          Reflect.apply(Reflect.get(coordinator, "refuseNextTurn"), coordinator, [
+            new RelayError(429, "app_rate_limited", "Request limit exceeded"),
+          ]);
+        }
+        return Reflect.apply(schedule, coordinator, []);
+      });
+      upstream.addEventListener("message", event => {
+        if (frameType(event) !== "response.create") return;
+        upstream.send('{"type":"response.created","response":{"id":"r"}}');
+        done = true;
+        upstream.send(responseDone("r"));
+      });
+      const order: unknown[] = [];
+      socket.addEventListener("message", event => order.push(frameType(event)));
+      socket.send('{"type":"response.create"}');
+      expect(await next("gateway.error")).toMatchObject({ error: { code: "app_rate_limited" } });
+      // The response's last event comes first, then the refusal.
+      expect(order.filter(type => type === "response.done" || type === "gateway.error"))
+        .toEqual(["response.done", "gateway.error"]);
+    });
+  });
+  it("turns go on while counting is slow, and a late refusal closes the session after them", async () => {
+    await withSockets(async ({ socket, upstream, next, coordinator, bootstrap }) => {
+      await allowManyResponses(bootstrap.appId);
+      const backend = Reflect.get(coordinator, "backend") as SessionBackend;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      backend.admit = async () => {
+        await gate;
+        throw new RelayError(429, "app_rate_limited", "Request limit exceeded");
+      };
+      let sent = 0;
+      upstream.addEventListener("message", event => {
+        if (frameType(event) !== "response.create") return;
+        const id = `r-${++sent}`;
+        upstream.send(JSON.stringify({ type: "response.created", response: { id } }));
+        upstream.send(responseDone(id));
+      });
+      for (let turn = 0; turn < 3; turn++) {
+        socket.send('{"type":"response.create"}');
+        await next("response.done");
+      }
+      // Three turns, none waiting on a count that has not answered.
+      expect(sent).toBe(3);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      release();
+      expect(await next("gateway.error")).toMatchObject({ error: { code: "app_rate_limited" } });
+      expect(sent).toBe(3);
+    });
+  });
   it("a response is sent at once, while its count is still waiting on the gateway", async () => {
     let release!: () => void;
     let entered!: () => void;

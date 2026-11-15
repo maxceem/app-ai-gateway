@@ -401,9 +401,11 @@ export class SessionCoordinator {
         // and the gateway reports usage it cannot price.
         this.journal.settle(generation, settlement(generation, effect.status, this.terminating));
         this.terminalResponses.add(effect.responseId);
+        // Forwarded while the response is still the active one, so a refusal
+        // that arrives meanwhile closes the session only after it.
+        send(this.client, effect.frame);
         this.active = null;
         await this.schedule();
-        send(this.client, effect.frame);
         this.ctx.waitUntil(this.flush());
         if (this.refusal) {
           this.fail(this.refusal);
@@ -464,9 +466,11 @@ export class SessionCoordinator {
    * A refusal (a limit reached, the user blocked, the session's rules or
    * credentials changed) ends the session at its next idle moment: the
    * response it refused finishes, uncounted, and no new one starts. So a limit
-   * can be exceeded by one response per open session. A gateway fault is not a
-   * refusal: the response stays uncounted, as an HTTP request is during an
-   * outage of ours, and the next turn goes ahead.
+   * can be exceeded by one response per open session, or by the few more that
+   * start while the gateway is slow to answer: counts are never waited for,
+   * and several can be in flight. A gateway fault is not a refusal: the
+   * response stays uncounted, as an HTTP request is during an outage of ours,
+   * and the next turn goes ahead.
    */
   private async countInBackground(generation: Generation): Promise<void> {
     // Earlier turns' usage first, briefly, so the budgets checked include it.

@@ -66,8 +66,9 @@ app — your app's limits, and your allowance. After that, each response is sent
 to the provider at once and counted in the background. If counting it finds a
 limit reached, the user blocked, or the app's access changed, that response
 finishes, uncounted, and then the conversation closes with a `gateway.error`.
-So a limit can be exceeded by one response per open conversation. Only one
-provider response can be active.
+So a limit can be exceeded by one response per open conversation, or by a few
+more while the gateway is slow to answer. Only one provider response can be
+active.
 
 Each response's usage is stored before its last event reaches your app, and
 recorded in the background, so a spending budget can lag by a response.
