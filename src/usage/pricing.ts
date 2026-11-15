@@ -65,6 +65,14 @@ interface Price extends Partial<Record<TokenRateField, number>> {
    */
   retirement_date?: string;
   /**
+   * The day (`YYYY-MM-DD`) the provider's official price page stopped listing
+   * or pricing the model, kept current by price-list updates. Informational:
+   * the entry keeps the last rates that page gave, so an app that still names
+   * the model keeps working and billing, and the provider decides whether it
+   * still serves it. Absent once the page prices the model again.
+   */
+  unlisted_since?: string;
+  /**
    * Price changes a provider has announced, earliest first, kept current by
    * price-list updates. Each names the day it takes effect (`from`,
    * `YYYY-MM-DD`, from 00:00 UTC) and only the rates that change then, under

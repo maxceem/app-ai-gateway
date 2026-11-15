@@ -1037,6 +1037,10 @@ export const ModelPriceSchema = z.object({
     description:
       "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",
   }),
+  unlisted_since: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider's official price page stopped listing or pricing this model. Its rates are the last ones that page gave; the model stays priced.",
+  }),
   price_changes: z.array(z.object({
     from: z.string().meta({ description: "The day (YYYY-MM-DD) the change takes effect, from 00:00 UTC." }),
     ...CATALOG_TOKEN_RATES,

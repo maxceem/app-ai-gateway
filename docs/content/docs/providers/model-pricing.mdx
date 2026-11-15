@@ -46,6 +46,11 @@ exactly. An announced change is not billed early: the entry's own rates are
 the ones billed, and the daily check moves a change into them on its day, so
 it reaches your gateway with the update after that.
 
+A model the provider's own price page stops listing, or stops pricing, also
+stays priced: its entry keeps the last rates that page gave and gains
+`unlisted_since`, the day the page dropped it. An app that still names it
+keeps working, and the provider decides whether it still serves the model.
+
 Two provider types ship with no price list at all, because no static list could
 be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might
@@ -85,6 +90,7 @@ per million tokens unless the field says otherwise:
 | `per_minute`, `per_hour`, `per_image` | Price per minute or hour of audio, or per generated image, for models billed that way. |
 | `author` | Who made the model, where that is not the provider: a Llama model served by Groq is Meta's. |
 | `retirement_date` | The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model. |
+| `unlisted_since` | The day (`YYYY-MM-DD`) the provider's price page stopped listing or pricing the model. Its rates are the last ones that page gave. |
 | `price_changes` | Announced price changes, earliest first. Each has `from`, the day it takes effect (from 00:00 UTC), and only the rates that change then; the others keep their value. |
 
 For example, a model whose price doubles on 1 January:
