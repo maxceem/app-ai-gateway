@@ -47,7 +47,21 @@ function prior(grant: SessionGrant | null): PreviousGrant | null {
   return grant && { checks: grant.checks, outputCap: grant.outputCap };
 }
 
-/** Retries transport failures only. A refusal is never retried. */
+/** Resolves to `promise`, or rejects at `deadline` if it is still pending then. */
+function within<T>(promise: Promise<T>, deadline: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Realtime backend call timed out")), Math.max(0, deadline - Date.now()));
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Retries transport failures only. A refusal is never retried. A call still
+ * pending at `deadline` is given up as unavailable, so a stalled gateway
+ * never holds the session; every call is safe to repeat, so the journal's
+ * retry, or the next check, simply asks again.
+ */
 export async function safeBackendCall<T>(
   call: () => Promise<BackendResult<T>>,
   deadline = Date.now() + REALTIME_LIMITS.setupMs,
@@ -55,7 +69,7 @@ export async function safeBackendCall<T>(
   for (let attempt = 0; ; attempt++) {
     let response: BackendResult<T>;
     try {
-      response = await call();
+      response = await within(call(), deadline);
     } catch (error) {
       const backoffMs = 100 * (attempt + 1);
       if (!transient(error) || attempt >= 2 || Date.now() + backoffMs >= deadline) {

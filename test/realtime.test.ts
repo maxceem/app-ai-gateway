@@ -718,6 +718,12 @@ describe("immutable realtime release boundaries", () => {
     const next = await backend.admit(bootstrap, headers, grant, crypto.randomUUID(), Date.now());
     expect(next.model).toBe("gpt-realtime");
   });
+  it("gives up a gateway call still pending at its deadline, so a stalled gateway never holds the session", async () => {
+    const started = Date.now();
+    await expect(safeBackendCall(() => new Promise(() => {}), Date.now() + 50))
+      .rejects.toMatchObject({ status: 503, code: "provider_unavailable" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
   it("retries explicitly transient safe calls, preserves public errors, never retries policy", async () => {
     let calls = 0;
     expect(await safeBackendCall(async () => {
