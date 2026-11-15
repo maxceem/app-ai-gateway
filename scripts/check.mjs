@@ -35,6 +35,7 @@ const steps = [
   { name: "test:swift-publish", tier: "test" },
   { name: "test:release-script", tier: "test" },
   { name: "test:prices-deploy", tier: "test" },
+  { name: "test:price-update", tier: "test" },
   { name: "test:indexnow", tier: "test" },
   { name: "test:test-ledger", tier: "test" },
   { name: "smoke:check", tier: "check" },
