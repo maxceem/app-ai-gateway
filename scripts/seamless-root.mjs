@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { Cloudflare, resultOf } from "../cli/src/cloudflare.ts";
@@ -28,7 +28,13 @@ export function gatewayOrigin(config, name, subdomain) {
   return undefined;
 }
 
-/** Checkout and one-click adapter. Primary keeps Cloudflare's CI identity; companion does not. */
+/**
+ * Checkout and one-click adapter. Primary keeps Cloudflare's CI identity; companion does not.
+ *
+ * `prebuilt` is a directory `scripts/build-prebuilt.mjs` wrote, in a job with
+ * no secrets: its gateway and realtime Worker are deployed as built, and
+ * nothing is bundled here. `config.main` already points at its gateway.
+ */
 export async function deployCheckout({
   config,
   configPath,
@@ -37,6 +43,7 @@ export async function deployCheckout({
   bootstrap,
   action = "deploy",
   rollbackId,
+  prebuilt,
 }) {
   // Asynchronous, so the release's lease heartbeat keeps renewing while a
   // deploy runs: a blocked event loop would let the lease lapse under it.
@@ -87,18 +94,30 @@ export async function deployCheckout({
         : {}),
       d1_databases: withAbsoluteMigrations(config.d1_databases),
     };
-    const sourcePath = join(directory, "source.json");
-    await writeFile(sourcePath, JSON.stringify(preflight));
-    await run(["deploy", "--dry-run", "--config", sourcePath, "--outdir", join(directory, "main")], {
-      capture: true,
-    });
     const seamless = config.vars?.REALTIME_RELEASES === "seamless";
-    if (seamless) {
-      const realtimeConfigPath = resolve(projectRoot, "wrangler.realtime.jsonc");
-      await run(
-        ["deploy", "--dry-run", "--config", realtimeConfigPath, "--outdir", join(directory, "realtime")],
-        { capture: true, companion: true },
-      );
+    let mainBundle = join(directory, "main", "index.js");
+    let realtimeBundle = join(directory, "realtime", "worker.js");
+    if (prebuilt) {
+      mainBundle = preflight.main;
+      realtimeBundle = resolve(projectRoot, prebuilt, "realtime", "worker.js");
+      if (seamless) {
+        await access(realtimeBundle).catch(() => {
+          throw new Error(`${prebuilt} has no realtime Worker; build it with \`node scripts/build-prebuilt.mjs\``);
+        });
+      }
+    } else {
+      const sourcePath = join(directory, "source.json");
+      await writeFile(sourcePath, JSON.stringify(preflight));
+      await run(["deploy", "--dry-run", "--config", sourcePath, "--outdir", join(directory, "main")], {
+        capture: true,
+      });
+      if (seamless) {
+        const realtimeConfigPath = resolve(projectRoot, "wrangler.realtime.jsonc");
+        await run(
+          ["deploy", "--dry-run", "--config", realtimeConfigPath, "--outdir", join(directory, "realtime")],
+          { capture: true, companion: true },
+        );
+      }
     }
     const cf = new Cloudflare(async (args) => (await run(args, { capture: true })).stdout ?? "");
     await cf.authenticate({ "no-input": true });
@@ -121,7 +140,7 @@ export async function deployCheckout({
       vars: { ...config.vars, REALTIME_RELEASES: seamless ? "seamless" : "simple", DEPLOYMENT_ID: deploymentId },
     };
     // Absolute local paths because the deployment config lives in the ignored artifact directory.
-    primary.main = join(directory, "main", "index.js");
+    primary.main = mainBundle;
     primary.no_bundle = true;
     if (primary.assets) {
       primary.assets = { ...primary.assets, directory: resolve(projectRoot, primary.assets.directory) };
@@ -181,8 +200,8 @@ export async function deployCheckout({
         config: primary,
         configPath: path,
         realtimeConfig: readJsonc(join(projectRoot, "wrangler.realtime.jsonc")),
-        realtimeBundle: join(directory, "realtime", "worker.js"),
-        mainBundle: join(directory, "main", "index.js"),
+        realtimeBundle,
+        mainBundle,
         version: JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8")).version,
         gatewayOrigin: origin,
         subdomain,

@@ -150,8 +150,11 @@ jobs:
             exit 1
           fi
           test ! -e dist || { echo "dist already exists in the checkout" >&2; exit 1; }
-          mkdir -p dist/prebuilt/worker
+          mkdir -p dist/prebuilt/worker dist/prebuilt/realtime
           cp "$FROM/worker/index.js" dist/prebuilt/worker/
+          # Unchanged by a price update, so the deploy reuses the running
+          # realtime Worker and the sessions open on it stay open.
+          cp "$FROM/realtime/worker.js" dist/prebuilt/realtime/
           cp -R "$FROM/console" dist/prebuilt/console
 
       # Only Wrangler and jsonc-parser, from deploy/'s lockfile, with no install

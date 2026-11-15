@@ -553,55 +553,8 @@ test("a prebuilt deployment refuses a profile that changes how the Worker is bui
   assert.throws(() => prebuiltWranglerConfig(base, base, "missing", dir), /not a prebuilt gateway/u);
 });
 
-test("deploying a prebuilt gateway passes its generated config to every Wrangler call", (t) => {
-  const projectRoot = new URL("..", import.meta.url);
-  const profile = `zz-prebuilt-${process.pid}`;
-  const overlayPath = new URL(`wrangler.${profile}.overlay.jsonc`, projectRoot);
-  const generatedPath = new URL(`wrangler.${profile}.prebuilt.generated.jsonc`, projectRoot);
-  const fixture = prebuiltFixture(t);
-  const fakeWrangler = join(fixture, "wrangler.mjs");
-  const callLog = join(fixture, "calls.ndjson");
-  writeFileSync(
-    fakeWrangler,
-    `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify({ args }) + "\\n");
-if (args[0] === "deployments") console.log("[]");
-if (args[0] === "secret" && args[1] === "list") {
-  console.log(JSON.stringify([{ name: "SECRET_VAULT_LOCAL_KEK_V1" }, { name: "JWT_SECRET" }, { name: "BETTER_AUTH_SECRET" }]));
-}
-`,
-    { mode: 0o700 },
-  );
-  writeFileSync(overlayPath, `{ "workers_dev": false }\n`);
-  t.after(() => {
-    rmSync(overlayPath, { force: true });
-    rmSync(generatedPath, { force: true });
-  });
-
-  const prebuilt = join(fixture, "built");
-  const result = spawnSync(process.execPath, ["scripts/deploy.mjs", "--profile", profile, "--prebuilt", prebuilt], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler, FAKE_WRANGLER_LOG: callLog, DEPLOYMENT_ID: "deployment-fixture-identity" },
-  });
-  assert.equal(result.status, 0, result.stderr);
-
-  const configArgs = ["--config", fileURLToPath(generatedPath)];
-  const calls = readFileSync(callLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).args);
-  assert.deepEqual(calls, [
-    ["deployments", "list", "--json", ...configArgs],
-    ["secret", "list", "--format", "json", ...configArgs],
-    ["d1", "migrations", "apply", "DB", "--remote", ...configArgs],
-    ["deploy", ...configArgs, "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
-  ]);
-  const generated = JSON.parse(readFileSync(generatedPath, "utf8").replace(/^\/\/.*$/gmu, ""));
-  assert.equal(generated.no_bundle, true);
-  assert.equal(generated.workers_dev, false);
-  assert.match(generated.main, /built[/\\]worker[/\\]index\.js$/u);
-  assert.equal(generated.d1_databases[0].migrations_dir, "migrations");
-});
+// A prebuilt deploy runs through the release flow like any other; it is
+// tested with the release flow's fake Cloudflare, in seamless-adapters.node.mjs.
 
 test("the deploy job's tools are the versions the repository builds and tests with", () => {
   const root = new URL("..", import.meta.url);

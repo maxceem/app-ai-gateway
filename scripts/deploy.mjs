@@ -48,12 +48,12 @@ let configPath;
 let action;
 let rollbackId;
 let configArgs = [];
+let prebuilt;
 let deploymentId;
 let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
 async function prepare(argv) {
-  let prebuilt;
   ({ profile, action, rollbackId, prebuilt } = parseArguments(argv));
   ({ config, configArgs, configPath } = resolveWranglerConfig(profile, undefined, { prebuilt }));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
@@ -213,7 +213,7 @@ async function applyMigrations() {
 
 async function deploy() {
   if (profile) console.log(`Deploying with the "${profile}" profile.`);
-  await deployCheckout({ config, configPath, deploymentId, action, rollbackId,
+  await deployCheckout({ config, configPath, deploymentId, action, rollbackId, prebuilt,
     prepare: async (path, options) => { if (path) configArgs = ['--config', path]; if (action === 'deploy') { if (options?.initial) await wrangler(['deploy', '--config', path]); await ensureDeploymentSecrets(); return applyMigrations(); } },
     bootstrap: async path => {
       configArgs = ['--config', path];

@@ -4,7 +4,8 @@
 //   node scripts/build-prebuilt.mjs [dir]    # default dist/prebuilt
 //
 // writes `<dir>/worker/index.js`, the Worker bundled from the tracked
-// wrangler.jsonc, and `<dir>/console`, the console's static assets. Then
+// wrangler.jsonc, `<dir>/realtime/worker.js`, the realtime Worker bundled from
+// wrangler.realtime.jsonc, and `<dir>/console`, the console's static assets. Then
 // `node scripts/deploy.mjs --profile <name> --prebuilt <dir>` deploys exactly
 // those files with Wrangler alone. The release runs this in a job without
 // deploy secrets, so no package code runs where the secrets are.
@@ -12,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { cp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pricesDefines, pricesRevision } from "./prices-revision.mjs";
-import { projectRoot } from "./wrangler-config.mjs";
+import { projectRoot, wranglerBin } from "./wrangler-config.mjs";
 
 const out = resolve(projectRoot, process.argv[2] ?? "dist/prebuilt");
 
@@ -37,6 +38,12 @@ try {
   // Neither is deployed: the map is not uploaded and the README is Wrangler's note.
   await rm(join(out, "worker/index.js.map"), { force: true });
   await rm(join(out, "worker/README.md"), { force: true });
+  // The realtime Worker carries no price list or other gateway code, so it
+  // is built as is. A release whose realtime code is unchanged builds the
+  // same bytes, and the deploy reuses the realtime Worker already running.
+  run(wranglerBin, ["deploy", "--dry-run", "--config", "wrangler.realtime.jsonc", "--outdir", join(out, "realtime")]);
+  await rm(join(out, "realtime/worker.js.map"), { force: true });
+  await rm(join(out, "realtime/README.md"), { force: true });
   await cp(join(projectRoot, "console/dist"), join(out, "console"), { recursive: true });
   console.log(`Built the gateway into ${out}.`);
 } catch (error) {

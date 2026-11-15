@@ -8,7 +8,11 @@ import { fileURLToPath } from "node:url";
 
 // Runs the actual checkout/default-Node entry and adapter; only Cloudflare's
 // process/API boundary is fake. SQLite executes the real control migrations.
-test("checkout adapter preserves selected primary/D1 and retries after first secret creation", t => {
+/**
+ * A checkout whose Cloudflare is fake: the real deploy entry and adapter run,
+ * and SQLite executes the real control migrations. `run(...args)` deploys.
+ */
+function checkoutFixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "seamless-adapter-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const root = fileURLToPath(new URL("..", import.meta.url));
@@ -41,9 +45,9 @@ const args = process.argv.slice(2);
 const statePath = process.env.FAKE_STATE;
 const state = JSON.parse(readFileSync(statePath));
 const path = args[args.indexOf("--config") + 1];
-const configuration = args.includes("--config")
-  ? JSON.parse(readFileSync(path))
-  : JSON.parse(readFileSync("wrangler.jsonc"));
+// A generated config opens with comment lines, as Wrangler's own reader allows.
+const readConfig = file => JSON.parse(readFileSync(file, "utf8").replace(/^\\s*\\/\\/.*$/gmu, ""));
+const configuration = readConfig(args.includes("--config") ? path : "wrangler.jsonc");
 state.calls.push({ args, config: configuration, ciName: process.env.WRANGLER_CI_OVERRIDE_NAME });
 function save() {
   writeFileSync(statePath, JSON.stringify(state));
@@ -91,7 +95,12 @@ if (args[0] === "secret") {
 }
 if (args[0] === "d1") {
   const db = new DatabaseSync(process.env.FAKE_DB);
-  if (args[1] === "migrations") db.exec(readFileSync("migrations/0017_realtime_releases.sql", "utf8"));
+  if (args[1] === "migrations") {
+    // Applied once, as Wrangler tracks applied migrations.
+    if (!state.migrated) db.exec(readFileSync("migrations/0017_realtime_releases.sql", "utf8"));
+    state.migrated = true;
+    save();
+  }
   else {
     const sql = args[args.indexOf("--command") + 1];
     let results = [];
@@ -147,7 +156,7 @@ globalThis.fetch = async url => {
 };
 await import("./scripts/deploy.mjs");
 `);
-  const run = () => spawnSync(process.execPath, ["run.mjs"], {
+  const run = (...args) => spawnSync(process.execPath, ["run.mjs", ...args], {
     cwd: directory,
     encoding: "utf8",
     env: {
@@ -159,6 +168,11 @@ await import("./scripts/deploy.mjs");
       DEPLOYMENT_ID: "",
     },
   });
+  return { directory, statePath, run };
+}
+
+test("checkout adapter preserves selected primary/D1 and retries after first secret creation", t => {
+  const { statePath, run } = checkoutFixture(t);
 
   const first = run();
   assert.notEqual(first.status, 0);
@@ -208,4 +222,40 @@ test("a deploy checks the gateway where it answers, custom domain included", asy
   // Nothing reaches it: the version check is skipped, not run against workers.dev.
   assert.equal(gatewayOrigin({ workers_dev: false }, "gw", "acct"), undefined);
   assert.equal(gatewayOrigin({}, "gw", undefined), undefined);
+});
+
+test("a prebuilt deploy releases the built gateway and realtime Worker without bundling anything", t => {
+  const { directory, statePath, run } = checkoutFixture(t);
+  // As scripts/build-prebuilt.mjs lays it out, in a job with no secrets.
+  for (const folder of ["worker", "realtime", "console"]) mkdirSync(join(directory, "built", folder), { recursive: true });
+  writeFileSync(join(directory, "built/worker/index.js"), "export default { gateway: true };\n");
+  writeFileSync(join(directory, "built/realtime/worker.js"), "export default { realtime: true };\n");
+  writeFileSync(join(directory, "built/console/index.html"), "<!doctype html>\n");
+
+  run("--prebuilt", "built"); // stops after creating the secrets, as on any first install
+  const result = run("--prebuilt", "built");
+  assert.equal(result.status, 0, result.stderr);
+
+  const { calls } = JSON.parse(readFileSync(statePath));
+  // The deploy job has only Wrangler: nothing is bundled there.
+  assert.equal(calls.filter(call => call.args.includes("--dry-run")).length, 0);
+  const deploys = calls.filter(call => call.args[0] === "deploy");
+  const primary = deploys.filter(call => call.config.name === "selected-primary").at(-1);
+  assert.match(primary.config.main, /built[/\\]worker[/\\]index\.js$/u);
+  assert.equal(primary.config.no_bundle, true);
+  assert.match(primary.config.assets.directory, /built[/\\]console$/u);
+  const realtime = deploys.find(call => call.config.name.startsWith("agw-rt-"));
+  assert.match(realtime.config.main, /built[/\\]realtime[/\\]worker\.js$/u);
+  assert.equal(realtime.config.no_bundle, true);
+
+  // A later deploy of the same realtime Worker reuses it: no new one, so
+  // the sessions open on it stay open.
+  const before = deploys.filter(call => call.config.name.startsWith("agw-rt-")).length;
+  writeFileSync(join(directory, "built/worker/index.js"), "export default { gateway: 2 };\n");
+  const again = run("--prebuilt", "built");
+  assert.equal(again.status, 0, again.stderr);
+  const after = JSON.parse(readFileSync(statePath)).calls
+    .filter(call => call.args[0] === "deploy" && call.config.name.startsWith("agw-rt-")).length;
+  assert.equal(after, before);
+  assert.match(again.stdout, /Reusing immutable realtime release/u);
 });

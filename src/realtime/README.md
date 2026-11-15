@@ -60,6 +60,12 @@ recover through receipts without dispatching again. RPC callback capabilities
 are request-scoped and never persisted. Safe read/idempotent operations retry
 only explicitly transient errors; policy failures and admission do not retry.
 
+The release builds the realtime Worker beside the gateway, in a job with no
+secrets (`scripts/build-prebuilt.mjs` writes `realtime/worker.js`), and its
+deploy job releases both as built (`scripts/deploy.mjs --prebuilt`), with
+Wrangler alone. A checkout deploy bundles the same bytes itself. A price
+update builds an identical realtime Worker, so it reuses the running one.
+
 `scripts/seamless.ts` is shared by checkout/button and CLI adapters, in both
 modes. It takes a bounded D1 deployment lease, applies compatible migrations,
 deploys main at 100%, verifies its unique build ID and readiness, and records

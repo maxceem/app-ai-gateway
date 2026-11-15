@@ -214,10 +214,11 @@ jobs:
           for path in cli/dist dist docs/out; do
             test ! -e "$path" || { echo "$path already exists in the checkout" >&2; exit 1; }
           done
-          mkdir -p cli/dist dist/npm dist/prebuilt/worker
+          mkdir -p cli/dist dist/npm dist/prebuilt/worker dist/prebuilt/realtime
           cp "$FROM/cli/dist/gateway-${version}.tar.gz" "$FROM/cli/dist/release-integrity.json" cli/dist/
           cp "$FROM/dist/npm/maxceem-agw-${version}.tgz" dist/npm/
           cp "$FROM/dist/prebuilt/worker/index.js" dist/prebuilt/worker/
+          cp "$FROM/dist/prebuilt/realtime/worker.js" dist/prebuilt/realtime/
           cp -R "$FROM/dist/prebuilt/console" dist/prebuilt/console
           cp -R "$FROM/docs/out" docs/out
 
