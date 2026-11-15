@@ -35,6 +35,16 @@ test("a changed kind, billing unit or dropped rate fails", () => {
   assert.deepEqual(priceUpdateProblems(list({ a: model }), list({ a: uncached })), ["openai/a: cached_input is gone"]);
 });
 
+test("a release date is added once and never moved or removed", () => {
+  const dated = { ...model, release_date: "2026-05-01" };
+  assert.deepEqual(priceUpdateProblems(list({ a: model }), list({ a: dated })), []);
+  assert.deepEqual(priceUpdateProblems(list({ a: dated }), list({ a: dated })), []);
+  assert.deepEqual(priceUpdateProblems(list({ a: dated }), list({ a: { ...dated, release_date: "2026-05-02" } })), [
+    "openai/a: release_date 2026-05-01 → 2026-05-02",
+  ]);
+  assert.deepEqual(priceUpdateProblems(list({ a: dated }), list({ a: model })), ["openai/a: release_date 2026-05-01 → gone"]);
+});
+
 test("a rate that moves more than 3x, or to or from free, fails, in any mode", () => {
   // A mode priced by a factor moves with the standard rate, and says so too.
   assert.deepEqual(priceUpdateProblems(list({ a: model }), list({ a: { ...model, output: 30 } })), [

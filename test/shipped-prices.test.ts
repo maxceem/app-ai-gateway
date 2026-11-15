@@ -75,7 +75,7 @@ describe("the shipped price catalog", () => {
             expect([where, MODEL_KINDS.includes(value as ModelKind)]).toEqual([where, true]);
             continue;
           }
-          if (field === "retirement_date" || field === "unlisted_since") {
+          if (field === "release_date" || field === "retirement_date" || field === "unlisted_since") {
             // A real calendar day.
             const day = String(value);
             expect([where, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])
@@ -173,6 +173,27 @@ describe("the shipped price catalog", () => {
       for (const model of Object.keys(catalog[type] ?? {})) {
         expect([`${type}/${model}`, resolveModelAuthor(type, model)])
           .not.toEqual([`${type}/${model}`, null]);
+      }
+    }
+  });
+
+  /**
+   * The public price list page orders models newest first by this day, so a
+   * model added without one would sort wrong in silence. It is a day the model
+   * could have been released on: not before the first priced model, not in the
+   * future (a day's slack for a run near midnight UTC), and not after it retires.
+   */
+  it("dates the release of every catalogued model", () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    for (const [provider, models] of Object.entries(catalog)) {
+      for (const [model, entry] of Object.entries(models)) {
+        const where = `${provider}/${model}`;
+        const day = entry.release_date;
+        expect([where, typeof day]).toEqual([where, "string"]);
+        expect([where, (day as string) >= "2020-01-01" && (day as string) <= tomorrow]).toEqual([where, true]);
+        if (typeof entry.retirement_date === "string") {
+          expect([where, (day as string) <= entry.retirement_date]).toEqual([where, true]);
+        }
       }
     }
   });

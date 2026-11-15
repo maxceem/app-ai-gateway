@@ -1,4 +1,5 @@
 import { GatewayError } from "../core/errors";
+import type { NoAnswer } from "../usage/provider-error";
 import { log } from "../core/log";
 import { clientResponseHeaders, providerUpstream } from "./proxy-rules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
@@ -61,6 +62,8 @@ function record(
     latencyMs: number;
     /** The upstream's status, where it answered: what a stored conversation records. */
     httpStatus?: number;
+    /** Why there is no status: the upstream never answered. */
+    noAnswer?: NoAnswer;
     /** What was sent upstream, where it answered: the request a stored conversation records. */
     sent?: ExecutionRequest;
   },
@@ -101,22 +104,76 @@ function record(
     appVersion: context.appVersion,
     status: input.status,
     latencyMs: input.latencyMs,
+    ...(input.httpStatus !== undefined && { upstreamStatus: input.httpStatus }),
+    ...(input.noAnswer && { noAnswer: input.noAnswer }),
   }));
 }
 
-function discardFailedBody(
-  body: ReadableStream<Uint8Array> | null,
+/** How much of a failed attempt's body is read for its error code, and for how long at most. */
+const FAILED_BODY_MAX_BYTES = 8 * 1024;
+const FAILED_BODY_MAX_MS = 2_000;
+
+/**
+ * The start of a failed attempt's body, for the code its provider names in it,
+ * and the rest cancelled. Read in the background, bounded in bytes and time,
+ * and never awaited here: the next attempt goes out at once, and only the
+ * usage event that records this one waits for it.
+ */
+function readFailedBody(
+  body: ReadableStream<Uint8Array>,
   context: ExecutionContext,
   attempt: ExecutionAttempt,
-): void {
-  if (!body) return;
-  context.waitUntil(body.cancel().catch(() => {
-    log("warn", "provider_response_discard_failed", {
-      appId: context.app.id,
-      providerSlug: attempt.resolved.slug,
-      route: route(attempt),
+): Promise<ObservedBody> {
+  return (async () => {
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), FAILED_BODY_MAX_MS);
     });
-  }));
+    try {
+      while (bytes < FAILED_BODY_MAX_BYTES) {
+        const next = await Promise.race([reader.read(), timedOut]);
+        if (next === null) break;
+        if (next.done) {
+          finished = true;
+          break;
+        }
+        chunks.push(next.value);
+        bytes += next.value.byteLength;
+      }
+    } catch {
+      // A body that breaks off has nothing more to say; what was read stands.
+    } finally {
+      clearTimeout(timer);
+      if (!finished) {
+        await reader.cancel().catch(() => {
+          log("warn", "provider_response_discard_failed", {
+            appId: context.app.id,
+            providerSlug: attempt.resolved.slug,
+            route: route(attempt),
+          });
+        });
+      }
+    }
+    const kept = new Uint8Array(Math.min(bytes, FAILED_BODY_MAX_BYTES));
+    let at = 0;
+    for (const chunk of chunks) {
+      if (at >= kept.length) break;
+      const part = chunk.subarray(0, kept.length - at);
+      kept.set(part, at);
+      at += part.byteLength;
+    }
+    return {
+      head: new TextDecoder().decode(kept),
+      tail: "",
+      truncated: !finished || bytes > FAILED_BODY_MAX_BYTES,
+      totalBytes: bytes,
+      aborted: false,
+    };
+  })();
 }
 
 function throwBudgetExhausted(
@@ -199,6 +256,7 @@ export async function execute(
         latencyMs: timedOut
           ? attemptTimeoutMs
           : Math.round(performance.now() - providerStart),
+        noAnswer: timedOut ? "timeout" : "connection_failed",
       });
       if (!last) continue;
       throw timedOut
@@ -212,12 +270,13 @@ export async function execute(
       // cannot erase the attempt or prevent the next target from being tried.
       record(plan, context, {
         attempt,
-        observed: null,
-        contentType: "",
+        // Read for the code the provider names, in the background.
+        observed: upstream.body ? readFailedBody(upstream.body, context, attempt) : null,
+        contentType: upstream.headers.get("content-type") ?? "",
         status: "provider_error",
         latencyMs: Math.round(providerTtfb),
+        httpStatus: upstream.status,
       });
-      discardFailedBody(upstream.body, context, attempt);
       continue;
     }
 

@@ -1,3 +1,4 @@
+import { Hint } from "@/components/hint";
 import { cn } from "@/lib/utils";
 import { formatCost } from "@/lib/format";
 
@@ -111,7 +112,9 @@ export function BudgetCell({
           {budget === null ? (
             // No budget is set, so there is nothing to spend against — the sign
             // says so without a number.
-            <span title="No monthly budget">&#8734;</span>
+            <Hint content="No monthly budget">
+              <span>&#8734;</span>
+            </Hint>
           ) : (
             formatCost(budget)
           )}

@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
+import { Hint } from "@/components/hint";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,26 +48,26 @@ export function StringList({
           {values.map((value) => {
             const flagged = warn?.(value) ?? false;
             return (
-              <span
-                key={value}
-                title={flagged ? warnTitle : undefined}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md border py-1 pr-1 pl-2 font-mono text-xs",
-                  flagged
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                    : "bg-muted/50",
-                )}
-              >
-                {value}
-                <button
-                  type="button"
-                  aria-label={`Remove ${value}`}
-                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  onClick={() => onChange(values.filter((item) => item !== value))}
+              <Hint key={value} content={flagged ? warnTitle : undefined}>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md border py-1 pr-1 pl-2 font-mono text-xs",
+                    flagged
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      : "bg-muted/50",
+                  )}
                 >
-                  <X className="size-3" />
-                </button>
-              </span>
+                  {value}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${value}`}
+                    className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    onClick={() => onChange(values.filter((item) => item !== value))}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              </Hint>
             );
           })}
         </div>

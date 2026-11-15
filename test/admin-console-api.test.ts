@@ -678,6 +678,18 @@ describe("admin console API", () => {
       expect.objectContaining({ key: "openai-dev", requests: 1, errors: 1 }),
     ]));
 
+    // A request served in a mode other than standard groups under its mode's
+    // name; every other has none.
+    await env.DB.prepare(
+      "UPDATE app_usage_event SET service_mode = 'flex' WHERE app_id = 'usage-shapes' AND provider_type = 'anthropic'",
+    ).run();
+    const byMode = await get(`/v1/admin/apps/usage-shapes/usage/breakdown?by=service_mode&from=${today}&to=${today}`);
+    expect(byMode.status).toBe(200);
+    expect(byMode.body.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "flex", requests: 1 }),
+      expect.objectContaining({ key: null, requests: 2 }),
+    ]));
+
     const rejected = await get("/v1/admin/apps/usage-shapes/usage/breakdown?by=nonsense");
     expect(rejected.status).toBe(400);
     // Every query string goes through its operation's schema before the

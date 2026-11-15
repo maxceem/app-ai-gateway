@@ -2,6 +2,7 @@
 import "../proxy.test";
 import "../service-modes.test";
 import "../service-mode-billing.test";
+import "../provider-error.test";
 import "../passthrough.test";
 import "../endpoints.test";
 import "../request-proof.test";

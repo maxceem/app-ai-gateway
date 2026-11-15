@@ -102,7 +102,7 @@ export const usageTotals = {
   cache_write_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cacheWriteTokens}), 0)`,
   output_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.outputTokens}), 0)`,
   cost_usd: sql<number>`COALESCE(SUM(${appUsageEvent.costUsd}), 0)`,
-  errors: sql<number>`COALESCE(SUM(CASE WHEN ${appUsageEvent.status} = 'provider_error' THEN 1 ELSE 0 END), 0)`,
+  errors: sql<number>`COALESCE(SUM(CASE WHEN ${appUsageEvent.error} IS NOT NULL THEN 1 ELSE 0 END), 0)`,
 };
 
 /*
@@ -125,6 +125,15 @@ export const usageTotals = {
  * silently count the wrong thing.
  */
 
+/**
+ * A usage event's status, read from its `error`: an event failed exactly when
+ * it records why. The `status` column is still written beside it, and is due
+ * to go, so nothing reads it any more.
+ */
+export function eventStatus(t: string): string {
+  return `CASE WHEN ${t}.error IS NULL THEN 'ok' ELSE 'provider_error' END`;
+}
+
 /** The counters, over per-event rows, where one row is one request. */
 export function rawTotals(t: string): string {
   return `
@@ -134,7 +143,7 @@ export function rawTotals(t: string): string {
       COALESCE(SUM(${t}.cache_write_tokens), 0) AS cache_write_tokens,
       COALESCE(SUM(${t}.output_tokens), 0) AS output_tokens,
       COALESCE(SUM(${t}.cost_usd), 0) AS cost_usd,
-      COALESCE(SUM(CASE WHEN ${t}.status = 'provider_error' THEN 1 ELSE 0 END), 0) AS errors`;
+      COALESCE(SUM(CASE WHEN ${t}.error IS NOT NULL THEN 1 ELSE 0 END), 0) AS errors`;
 }
 
 /**
@@ -292,7 +301,7 @@ export function usageBreakdown(
     .prepare(`
 SELECT key,${UNION_TOTALS}
 FROM (
-  SELECT events.${column} AS key,${rawTotals("events")}
+  SELECT ${by === "status" ? eventStatus("events") : `events.${column}`} AS key,${rawTotals("events")}
   FROM app_usage_event AS events
   WHERE events.app_id = ?1
     AND events.created_at >= ?2

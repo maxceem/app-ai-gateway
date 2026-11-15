@@ -3,7 +3,7 @@ import { Link, Route, Routes } from "react-router-dom";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppDetailPage } from "./app-detail";
-import { renderAuthenticated, stubApi } from "@/test/render";
+import { findByHint, getByHint, queryByHint, renderAuthenticated, stubApi } from "@/test/render";
 
 const APP_ID = "my-app";
 
@@ -236,7 +236,7 @@ describe("the users table", () => {
   it("reports a user as unlimited when the app sets no budget at all", async () => {
     renderSection("users", { users: [USER] });
 
-    expect(await screen.findByTitle(/no monthly budget/i)).toBeTruthy();
+    expect(await findByHint(/no monthly budget/i)).toBeTruthy();
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
   });
 
@@ -282,7 +282,7 @@ describe("App Attest apps' users and installs", () => {
     });
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Users");
     expect(await screen.findByRole("columnheader", { name: "Installs" })).toBeTruthy();
-    expect((await screen.findByTitle(/one per install/u)).textContent).toBe("3");
+    expect((await findByHint(/one per install/u)).textContent).toBe("3");
   });
 });
 
@@ -300,8 +300,8 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
     // Phone and tablet spent $7 each against a $10 budget per install: each has
     // $3 left, so $14 / $10 and an exhausted bar would be false.
     renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "install" }), users: [spendy] });
-    expect(await screen.findByTitle(/applies to each install/u)).toBeTruthy();
-    expect(screen.getByTitle(/applies to each install/u).textContent).toBe("$14.00");
+    expect(await findByHint(/applies to each install/u)).toBeTruthy();
+    expect(getByHint(/applies to each install/u).textContent).toBe("$14.00");
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
     expect(screen.queryByText(/\$10\.00/u)).toBeNull();
   });
@@ -321,7 +321,7 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
       users: [spendy, install],
     });
     // The history row: cost alone.
-    expect((await screen.findByTitle(/applies to each install/u)).textContent).toBe("$14.00");
+    expect((await findByHint(/applies to each install/u)).textContent).toBe("$14.00");
     // The install row: drawn against its own budget.
     expect(screen.getAllByRole("progressbar", { name: /monthly budget used/i })).toHaveLength(1);
   });
@@ -340,9 +340,9 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
       },
       users: [spendy, install],
     });
-    expect((await screen.findByTitle(/^Spent by this install; .* applies to each Apple Account/u)).textContent)
+    expect((await findByHint(/^Spent by this install; .* applies to each Apple Account/u)).textContent)
       .toBe("$4.00");
-    expect(screen.getByTitle(/^Spent across this user's installs; .* applies to each Apple Account/u).textContent)
+    expect(getByHint(/^Spent across this user's installs; .* applies to each Apple Account/u).textContent)
       .toBe("$14.00");
     expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
   });
@@ -350,7 +350,7 @@ describe("a signed-in user's spend against an App Attest app's budget", () => {
   it("draws it against the budget once the budget is the user's", async () => {
     renderSection("users", { config: withBudget({ monthly_usd: 10, scope: "user" }), users: [spendy] });
     expect(await screen.findByRole("progressbar", { name: /monthly budget used/i })).toBeTruthy();
-    expect(screen.queryByTitle(/applies to each install/u)).toBeNull();
+    expect(queryByHint(/applies to each install/u)).toBeNull();
   });
 });
 

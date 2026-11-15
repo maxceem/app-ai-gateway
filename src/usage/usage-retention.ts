@@ -107,7 +107,8 @@ SELECT
   app_id,
   model,
   provider_type,
-  status,
+  -- A failed event is one that records why; the rollup keeps a status of its own.
+  CASE WHEN error IS NULL THEN 'ok' ELSE 'provider_error' END,
   COUNT(*),
   COALESCE(SUM(input_tokens), 0),
   COALESCE(SUM(cached_input_tokens), 0),
@@ -116,7 +117,7 @@ SELECT
   COALESCE(SUM(cost_usd), 0)
 FROM app_usage_event
 WHERE id >= ? AND id < ? AND created_at < ?
-GROUP BY organization_id, substr(created_at, 1, 10), app_id, model, provider_type, status
+GROUP BY organization_id, substr(created_at, 1, 10), app_id, model, provider_type, error IS NULL
 ON CONFLICT ${CONFLICT_KEY} DO UPDATE SET
     ${ACCUMULATE}`;
 
@@ -216,7 +217,7 @@ SELECT
   COALESCE(SUM(cache_write_tokens), 0),
   COALESCE(SUM(output_tokens), 0),
   COALESCE(SUM(cost_usd), 0),
-  COALESCE(SUM(status = 'provider_error'), 0)
+  COALESCE(SUM(error IS NOT NULL), 0)
 FROM app_usage_event
 WHERE organization_id IN (SELECT id FROM mgmt_organization)
   AND created_at >= ? AND created_at < ?

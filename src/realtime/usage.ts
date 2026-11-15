@@ -64,6 +64,9 @@ export function settledEvent(bootstrap: Pick<Bootstrap, "protocol">, settlement:
       providerResponseId: settlement.responseId,
       completionStatus: status,
       status: status === "failed" ? "provider_error" : "ok",
+      // A failed response says why, as every failure does; the provider's own
+      // reason stays with the app, which received its error event.
+      error: status === "failed" ? "provider_error" : null,
       clientAborted: settlement.aborted ? 1 : null,
       latencyMs: Math.max(0, settlement.latencyMs),
     },

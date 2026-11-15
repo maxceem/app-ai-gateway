@@ -111,6 +111,9 @@ describe("initial database migration", () => {
       "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'app_usage_event_%' ORDER BY name",
     ).all<{ name: string }>();
     expect(spendTriggers.results.map((row) => row.name)).toEqual([
+      // Temporary: fills `error` for a failure older code writes with `status`
+      // alone, until the `status` column goes.
+      "app_usage_event_error_from_status",
       "app_usage_event_owner_guard_before_insert",
       "app_usage_event_spend_after_cost_update",
       "app_usage_event_spend_after_insert",

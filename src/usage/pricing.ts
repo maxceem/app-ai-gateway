@@ -71,6 +71,13 @@ export interface Price extends Partial<Record<TokenRateField, number>> {
    */
   author?: string;
   /**
+   * The day (`YYYY-MM-DD`) the provider released the model, or, where no
+   * source gives that day, the day the model was added to the price list.
+   * Set once when the model is added and never moved by price-list updates;
+   * a person may correct it. Metadata only: nothing bills from it.
+   */
+  release_date?: string;
+  /**
    * The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model,
    * kept current by price-list updates. Informational: a retired model
    * stays priced, so an app that still names it keeps billing exactly.

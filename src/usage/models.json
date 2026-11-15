@@ -8,7 +8,8 @@
       "output": 2.4,
       "audio_input": 10.0,
       "audio_output": 20.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2025-10-06"
     },
     "gpt-realtime": {
       "kind": "realtime",
@@ -18,13 +19,15 @@
       "output": 16.0,
       "audio_input": 32.0,
       "audio_output": 64.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2025-08-28"
     },
     "gpt-4o-mini-tts": {
       "kind": "speech",
       "input": 0.6,
       "output": 12.0,
       "author": "OpenAI",
+      "release_date": "2025-03-20",
       "retirement_date": "2027-01-06"
     },
     "gpt-4o-transcribe-diarize": {
@@ -32,42 +35,53 @@
       "input": 2.5,
       "output": 10.0,
       "author": "OpenAI",
+      "release_date": "2025-10-17",
       "retirement_date": "2027-02-26"
     },
-    "gpt-realtime-whisper": { "kind": "realtime", "per_minute": 0.017, "author": "OpenAI" },
+    "gpt-realtime-whisper": {
+      "kind": "realtime",
+      "per_minute": 0.017,
+      "author": "OpenAI",
+      "release_date": "2026-05-07"
+    },
     "text-embedding-ada-002": {
       "kind": "embedding",
       "input": 0.1,
       "output": 0.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2022-12-15"
     },
     "gpt-5-search-api": {
       "kind": "text",
       "input": 1.25,
       "cached_input": 0.125,
       "output": 10.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2025-10-14"
     },
     "chat-latest": {
       "kind": "text",
       "input": 5.0,
       "cached_input": 0.5,
       "output": 30.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-05-05"
     },
     "gpt-rosalind-research": {
       "kind": "text",
       "input": 5.0,
       "cached_input": 0.5,
       "output": 25.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-04-16"
     },
     "gpt-6-astra-law": {
       "kind": "text",
       "input": 10.0,
       "cached_input": 1.0,
       "output": 50.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-11-10"
     },
     "gpt-6-cyber": {
       "kind": "text",
@@ -80,7 +94,8 @@
       "long_cached_input": 4.0,
       "long_output": 150.0,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-11-05"
     },
     "gpt-image-2.6-flare": {
       "kind": "image",
@@ -88,7 +103,8 @@
       "cached_input": 1.25,
       "output": 30.0,
       "image_input": 8.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-11-04"
     },
     "gpt-image-2.6-sunburst": {
       "kind": "image",
@@ -96,14 +112,16 @@
       "cached_input": 1.25,
       "output": 30.0,
       "image_input": 8.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-11-04"
     },
     "gpt-rosalind-discovery": {
       "kind": "text",
       "input": 5.0,
       "cached_input": 0.5,
       "output": 25.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-10-31"
     },
     "gpt-6-rosalind": {
       "kind": "text",
@@ -118,7 +136,8 @@
       "long_cache_write_12h": 75.0,
       "long_output": 112.5,
       "long_context_threshold": 272000,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-10-30"
     },
     "gpt-6.1-terra": {
       "kind": "text",
@@ -137,7 +156,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-10-26"
     },
     "gpt-5.5-cyber": {
       "kind": "text",
@@ -145,6 +165,7 @@
       "cached_input": 1.25,
       "output": 75.0,
       "author": "OpenAI",
+      "release_date": "2026-10-21",
       "retirement_date": "2027-02-01"
     },
     "gpt-5.6-cyber": {
@@ -154,19 +175,22 @@
       "cache_write": 15.625,
       "cache_write_12h": 31.25,
       "output": 75.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-08-07"
     },
     "text-embedding-3-large": {
       "kind": "embedding",
       "input": 0.13,
       "output": 0.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2024-01-25"
     },
     "text-embedding-3-small": {
       "kind": "embedding",
       "input": 0.02,
       "output": 0.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2024-01-25"
     },
     "gpt-4o": {
       "kind": "text",
@@ -176,7 +200,8 @@
       "author": "OpenAI",
       "modes": {
         "fast": { "factor": 1.7 }
-      }
+      },
+      "release_date": "2024-05-13"
     },
     "gpt-6-sol": {
       "kind": "text",
@@ -195,11 +220,27 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-09-22"
     },
-    "gpt-transcribe": { "kind": "transcription", "per_minute": 0.0045, "author": "OpenAI" },
-    "gpt-live-transcribe": { "kind": "realtime", "per_minute": 0.017, "author": "OpenAI" },
-    "gpt-realtime-translate": { "kind": "realtime", "per_minute": 0.034, "author": "OpenAI" },
+    "gpt-transcribe": {
+      "kind": "transcription",
+      "per_minute": 0.0045,
+      "author": "OpenAI",
+      "release_date": "2026-07-28"
+    },
+    "gpt-live-transcribe": {
+      "kind": "realtime",
+      "per_minute": 0.017,
+      "author": "OpenAI",
+      "release_date": "2026-07-28"
+    },
+    "gpt-realtime-translate": {
+      "kind": "realtime",
+      "per_minute": 0.034,
+      "author": "OpenAI",
+      "release_date": "2026-05-07"
+    },
     "gpt-5.5-pro": {
       "kind": "text",
       "input": 30.0,
@@ -210,7 +251,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-04-23"
     },
     "gpt-6-luna": {
       "kind": "text",
@@ -229,7 +271,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-09-22"
     },
     "gpt-6.1-sol": {
       "kind": "text",
@@ -249,7 +292,8 @@
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 },
         "ultrafast": { "factor": 6.0 }
-      }
+      },
+      "release_date": "2026-09-29"
     },
     "gpt-6-astra": {
       "kind": "text",
@@ -269,7 +313,8 @@
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 },
         "ultrafast": { "factor": 6.0 }
-      }
+      },
+      "release_date": "2026-09-04"
     },
     "gpt-5.6-sol": {
       "kind": "text",
@@ -288,7 +333,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "gpt-5.6-terra": {
       "kind": "text",
@@ -307,7 +353,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "gpt-5.6-luna": {
       "kind": "text",
@@ -326,7 +373,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "gpt-5.5": {
       "kind": "text",
@@ -341,7 +389,8 @@
       "modes": {
         "fast": { "factor": 2.5 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-04-23"
     },
     "gpt-5.4": {
       "kind": "text",
@@ -356,7 +405,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5, "cached_input": 0.13 }
-      }
+      },
+      "release_date": "2026-03-05"
     },
     "gpt-5.4-pro": {
       "kind": "text",
@@ -368,7 +418,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-03-05"
     },
     "gpt-5.4-mini": {
       "kind": "text",
@@ -379,7 +430,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2026-03-17"
     },
     "gpt-5.4-nano": {
       "kind": "text",
@@ -390,6 +442,7 @@
       "modes": {
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2026-03-17",
       "retirement_date": "2027-04-01"
     },
     "gpt-5.3-codex": {
@@ -401,6 +454,7 @@
       "modes": {
         "fast": { "factor": 2.0 }
       },
+      "release_date": "2026-02-05",
       "retirement_date": "2027-04-01"
     },
     "gpt-5.2": {
@@ -412,9 +466,16 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
-      }
+      },
+      "release_date": "2025-12-11"
     },
-    "gpt-5.2-pro": { "kind": "text", "input": 21.0, "output": 168.0, "author": "OpenAI" },
+    "gpt-5.2-pro": {
+      "kind": "text",
+      "input": 21.0,
+      "output": 168.0,
+      "author": "OpenAI",
+      "release_date": "2025-12-11"
+    },
     "gpt-5.1": {
       "kind": "text",
       "input": 1.25,
@@ -425,6 +486,7 @@
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2025-11-13",
       "retirement_date": "2027-04-01"
     },
     "gpt-5": {
@@ -437,6 +499,7 @@
         "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2025-08-07",
       "retirement_date": "2026-12-11"
     },
     "gpt-5-pro": {
@@ -444,6 +507,7 @@
       "input": 15.0,
       "output": 120.0,
       "author": "OpenAI",
+      "release_date": "2025-10-06",
       "retirement_date": "2026-12-11"
     },
     "gpt-5-mini": {
@@ -456,6 +520,7 @@
         "fast": { "factor": 1.8 },
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2025-08-07",
       "retirement_date": "2026-12-11"
     },
     "gpt-5-nano": {
@@ -467,6 +532,7 @@
       "modes": {
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2025-08-07",
       "retirement_date": "2026-12-11"
     },
     "o3": {
@@ -479,6 +545,7 @@
         "fast": { "factor": 1.75 },
         "flex": { "factor": 0.5 }
       },
+      "release_date": "2025-04-16",
       "retirement_date": "2026-12-11"
     },
     "o3-pro": {
@@ -486,6 +553,7 @@
       "input": 20.0,
       "output": 80.0,
       "author": "OpenAI",
+      "release_date": "2025-06-10",
       "retirement_date": "2026-12-11"
     },
     "gpt-4.1": {
@@ -496,7 +564,8 @@
       "author": "OpenAI",
       "modes": {
         "fast": { "factor": 1.75 }
-      }
+      },
+      "release_date": "2025-04-14"
     },
     "gpt-4.1-mini": {
       "kind": "text",
@@ -506,7 +575,8 @@
       "author": "OpenAI",
       "modes": {
         "fast": { "factor": 1.75 }
-      }
+      },
+      "release_date": "2025-04-14"
     },
     "gpt-4o-mini": {
       "kind": "text",
@@ -516,13 +586,15 @@
       "author": "OpenAI",
       "modes": {
         "fast": { "factor": 1.666667 }
-      }
+      },
+      "release_date": "2024-07-18"
     },
     "gpt-4o-mini-transcribe": {
       "kind": "transcription",
       "input": 1.25,
       "output": 5.0,
       "author": "OpenAI",
+      "release_date": "2025-03-20",
       "retirement_date": "2027-02-26"
     },
     "gpt-4o-transcribe": {
@@ -530,12 +602,14 @@
       "input": 2.5,
       "output": 10.0,
       "author": "OpenAI",
+      "release_date": "2025-03-20",
       "retirement_date": "2027-02-26"
     },
     "whisper-1": {
       "kind": "transcription",
       "per_minute": 0.006,
       "author": "OpenAI",
+      "release_date": "2023-03-01",
       "retirement_date": "2027-02-26"
     },
     "gpt-image-2.5-sunburst": {
@@ -544,7 +618,8 @@
       "cached_input": 1.25,
       "output": 30.0,
       "image_input": 8.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-09-08"
     },
     "gpt-image-2.5-flare": {
       "kind": "image",
@@ -552,7 +627,8 @@
       "cached_input": 1.25,
       "output": 30.0,
       "image_input": 8.0,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2026-09-08"
     },
     "gpt-image-2": {
       "kind": "image",
@@ -561,6 +637,7 @@
       "output": 30.0,
       "image_input": 8.0,
       "author": "OpenAI",
+      "release_date": "2026-04-21",
       "retirement_date": "2027-02-10"
     },
     "gpt-image-1.5": {
@@ -571,6 +648,7 @@
       "image_input": 8.0,
       "image_output": 32.0,
       "author": "OpenAI",
+      "release_date": "2025-11-25",
       "retirement_date": "2026-12-01"
     },
     "gpt-image-1-mini": {
@@ -580,6 +658,7 @@
       "output": 8.0,
       "image_input": 2.5,
       "author": "OpenAI",
+      "release_date": "2025-09-26",
       "retirement_date": "2026-12-01"
     },
     "gpt-image-1": {
@@ -589,6 +668,7 @@
       "output": 40.0,
       "image_input": 10.0,
       "author": "OpenAI",
+      "release_date": "2025-04-23",
       "retirement_date": "2026-10-23"
     }
   },
@@ -604,7 +684,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-11-09"
     },
     "claude-fable-5-2": {
       "kind": "text",
@@ -617,7 +698,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-11-09"
     },
     "claude-mythos-5-1": {
       "kind": "text",
@@ -629,7 +711,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-09-01"
     },
     "claude-sonnet-5-5": {
       "kind": "text",
@@ -641,7 +724,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-09-28"
     },
     "claude-opus-5-5": {
       "kind": "text",
@@ -654,7 +738,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-09-22"
     },
     "claude-fable-5-1": {
       "kind": "text",
@@ -666,7 +751,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-09-01"
     },
     "claude-fable-5": {
       "kind": "text",
@@ -678,7 +764,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-06-07"
     },
     "claude-mythos-5": {
       "kind": "text",
@@ -690,7 +777,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-06-09"
     },
     "claude-opus-5": {
       "kind": "text",
@@ -703,7 +791,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-07-24"
     },
     "claude-opus-4-8": {
       "kind": "text",
@@ -716,7 +805,8 @@
       "modes": {
         "fast": { "factor": 2.0 },
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-05-28"
     },
     "claude-opus-4-7": {
       "kind": "text",
@@ -728,7 +818,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-04-14"
     },
     "claude-opus-4-6": {
       "kind": "text",
@@ -740,7 +831,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-02-04"
     },
     "claude-opus-4-5": {
       "kind": "text",
@@ -749,7 +841,8 @@
       "cache_write": 6.25,
       "cache_write_1h": 10.0,
       "output": 25.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2025-11-24"
     },
     "claude-sonnet-5": {
       "kind": "text",
@@ -761,7 +854,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-06-29"
     },
     "claude-sonnet-4-6": {
       "kind": "text",
@@ -773,7 +867,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-02-17"
     },
     "claude-sonnet-4-5": {
       "kind": "text",
@@ -783,6 +878,7 @@
       "cache_write_1h": 6.0,
       "output": 15.0,
       "author": "Anthropic",
+      "release_date": "2025-09-29",
       "retirement_date": "2026-11-30"
     },
     "claude-haiku-5-5": {
@@ -801,7 +897,8 @@
       "author": "Anthropic",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-10-07"
     },
     "claude-haiku-4-5": {
       "kind": "text",
@@ -810,7 +907,8 @@
       "cache_write": 1.25,
       "cache_write_1h": 2.0,
       "output": 5.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2025-10-15"
     },
     "claude-haiku-4-5-20251001": {
       "kind": "text",
@@ -819,12 +917,23 @@
       "cache_write": 1.25,
       "cache_write_1h": 2.0,
       "output": 5.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2025-10-15"
     }
   },
   "xai": {
-    "grok-imagine-image": { "kind": "image", "per_image": 0.02, "author": "xAI" },
-    "grok-imagine-image-2.0": { "kind": "image", "per_image": 0.04, "author": "xAI" },
+    "grok-imagine-image": {
+      "kind": "image",
+      "per_image": 0.02,
+      "author": "xAI",
+      "release_date": "2026-01-28"
+    },
+    "grok-imagine-image-2.0": {
+      "kind": "image",
+      "per_image": 0.04,
+      "author": "xAI",
+      "release_date": "2026-08-07"
+    },
     "grok-4.6": {
       "kind": "text",
       "input": 2.0,
@@ -837,7 +946,8 @@
       "author": "xAI",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-08-12"
     },
     "grok-4.7": {
       "kind": "text",
@@ -851,7 +961,8 @@
       "author": "xAI",
       "modes": {
         "us": { "factor": 1.1 }
-      }
+      },
+      "release_date": "2026-09-21"
     },
     "grok-4.5": {
       "kind": "text",
@@ -862,7 +973,8 @@
       "long_input": 4.0,
       "long_cached_input": 0.6,
       "long_output": 12.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-07-08"
     },
     "grok-build-0.1": {
       "kind": "text",
@@ -873,7 +985,8 @@
       "long_input": 2.0,
       "long_cached_input": 0.4,
       "long_output": 4.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-04-16"
     },
     "grok-4.3": {
       "kind": "text",
@@ -884,7 +997,8 @@
       "long_input": 2.5,
       "long_cached_input": 0.4,
       "long_output": 5.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-04-17"
     },
     "grok-4.20-multi-agent-0309": {
       "kind": "text",
@@ -895,7 +1009,8 @@
       "long_input": 2.5,
       "long_cached_input": 0.4,
       "long_output": 5.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-03-09"
     },
     "grok-4.20-0309-reasoning": {
       "kind": "text",
@@ -906,7 +1021,8 @@
       "long_input": 2.5,
       "long_cached_input": 0.4,
       "long_output": 5.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-03-09"
     },
     "grok-4.20-0309-non-reasoning": {
       "kind": "text",
@@ -917,9 +1033,15 @@
       "long_input": 2.5,
       "long_cached_input": 0.4,
       "long_output": 5.0,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-03-09"
     },
-    "grok-transcribe": { "kind": "transcription", "per_hour": 0.1, "author": "xAI" }
+    "grok-transcribe": {
+      "kind": "transcription",
+      "per_hour": 0.1,
+      "author": "xAI",
+      "release_date": "2026-04-17"
+    }
   },
   "gemini": {
     "gemini-embedding-001": {
@@ -927,6 +1049,7 @@
       "input": 0.15,
       "output": 0.0,
       "author": "Google",
+      "release_date": "2025-05-20",
       "retirement_date": "2028-05-14"
     },
     "gemini-2.5-pro-preview-tts": {
@@ -934,6 +1057,7 @@
       "input": 1.0,
       "output": 20.0,
       "author": "Google",
+      "release_date": "2025-05-01",
       "retirement_date": "2026-12-18"
     },
     "gemini-2.5-flash-preview-tts": {
@@ -941,6 +1065,7 @@
       "input": 0.5,
       "output": 10.0,
       "author": "Google",
+      "release_date": "2025-05-01",
       "retirement_date": "2026-12-18"
     },
     "gemini-3.1-flash-tts-preview": {
@@ -948,6 +1073,7 @@
       "input": 1.0,
       "output": 20.0,
       "author": "Google",
+      "release_date": "2026-04-15",
       "retirement_date": "2026-12-18"
     },
     "gemini-4-hydrogen": {
@@ -959,7 +1085,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
-      }
+      },
+      "release_date": "2026-11-12"
     },
     "gemini-4-carbon": {
       "kind": "text",
@@ -971,6 +1098,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-11-10",
       "price_changes": [
         { "from": "2026-12-01", "input": 4.0, "cached_input": 0.2, "output": 20.0 }
       ]
@@ -985,6 +1113,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-10-13",
       "price_changes": [
         { "from": "2026-12-01", "input": 4.0, "cached_input": 0.2, "output": 20.0 }
       ]
@@ -996,7 +1125,8 @@
       "image_input": 0.45,
       "audio_input": 6.5,
       "video_input": 12.0,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-04-22"
     },
     "gemini-3.8-flash-lite-tts": {
       "kind": "speech",
@@ -1007,6 +1137,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-09-22",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.0, "output": 12.0 }
       ]
@@ -1020,6 +1151,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-09-22",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.0, "output": 18.0 }
       ]
@@ -1034,6 +1166,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-08-13",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -1049,6 +1182,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-05-07",
       "retirement_date": "2027-05-07"
     },
     "gemini-3.8-flash": {
@@ -1061,6 +1195,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-09-02",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -1075,6 +1210,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-07-21",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -1089,6 +1225,7 @@
         "flex": { "factor": 0.5 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2026-05-19",
       "price_changes": [
         { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
       ]
@@ -1102,7 +1239,8 @@
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.02 },
         "priority": { "factor": 1.8, "cached_input": 0.05 }
-      }
+      },
+      "release_date": "2026-07-21"
     },
     "gemini-3.1-pro-preview": {
       "kind": "text",
@@ -1117,7 +1255,8 @@
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.2, "long_cached_input": 0.4 },
         "priority": { "factor": 1.8 }
-      }
+      },
+      "release_date": "2026-02-19"
     },
     "gemini-3.1-pro-preview-customtools": {
       "kind": "text",
@@ -1132,7 +1271,8 @@
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.2, "long_cached_input": 0.4 },
         "priority": { "factor": 1.8 }
-      }
+      },
+      "release_date": "2026-02-19"
     },
     "gemini-3-flash-preview": {
       "kind": "text",
@@ -1144,35 +1284,40 @@
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.05 },
         "priority": { "factor": 1.8 }
-      }
+      },
+      "release_date": "2025-12-17"
     },
     "gemini-nano-banana-2.1": {
       "kind": "image",
       "input": 1.5,
       "output": 7.5,
       "image_output": 30.0,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-10-06"
     },
     "gemini-3.1-flash-image": {
       "kind": "image",
       "input": 0.5,
       "output": 3.0,
       "image_output": 60.0,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-05-28"
     },
     "gemini-3.1-flash-lite-image": {
       "kind": "image",
       "input": 0.25,
       "output": 1.5,
       "image_output": 30.0,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-06-30"
     },
     "gemini-3-pro-image": {
       "kind": "image",
       "input": 2.0,
       "output": 12.0,
       "image_output": 120.0,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-05-28"
     },
     "gemini-2.5-pro": {
       "kind": "text",
@@ -1188,6 +1333,7 @@
         "flex": { "factor": 0.5, "cached_input": 0.125, "long_cached_input": 0.25 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2025-06-17",
       "retirement_date": "2026-12-01",
       "price_changes": [
         { "from": "2026-12-01", "input": 0.75, "cached_input": 0.075, "output": 3.75, "long_input": 0.75, "long_cached_input": 0.075, "long_output": 3.75 },
@@ -1205,6 +1351,7 @@
         "flex": { "factor": 0.5, "cached_input": 0.03 },
         "priority": { "factor": 1.8 }
       },
+      "release_date": "2025-06-17",
       "retirement_date": "2026-12-01",
       "price_changes": [
         { "from": "2026-12-01", "audio_input": 0.3 }
@@ -1220,7 +1367,8 @@
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.01 },
         "priority": { "factor": 1.8 }
-      }
+      },
+      "release_date": "2025-06-17"
     }
   },
   "perplexity": {
@@ -1229,42 +1377,48 @@
       "input": 0.25,
       "cached_input": 0.0625,
       "output": 2.5,
-      "author": "Perplexity"
+      "author": "Perplexity",
+      "release_date": "2025-01-21"
     },
     "perplexity/nemotron-3.5-super-120b-a12b": {
       "kind": "text",
       "input": 0.2,
       "cached_input": 0.04,
       "output": 0.5,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-10-15"
     },
     "perplexity/kimi-k3": {
       "kind": "text",
       "input": 3.0,
       "cached_input": 0.3,
       "output": 15.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-07-16"
     },
     "perplexity/deepseek-v4-pro-0813": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.044,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-08-13"
     },
     "perplexity/glm-5.3-flash": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.03,
       "output": 0.5,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-26"
     },
     "perplexity/glm-5.3": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
     "xai/grok-4.5": {
       "kind": "text",
@@ -1275,7 +1429,8 @@
       "long_cached_input": 0.6,
       "long_output": 12.0,
       "long_context_threshold": 199999,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-07-08"
     },
     "xai/grok-4.6": {
       "kind": "text",
@@ -1286,7 +1441,8 @@
       "long_cached_input": 1.0,
       "long_output": 12.0,
       "long_context_threshold": 199999,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-08-12"
     },
     "xai/grok-4.7": {
       "kind": "text",
@@ -1297,14 +1453,16 @@
       "long_cached_input": 1.0,
       "long_output": 12.0,
       "long_context_threshold": 199999,
-      "author": "xAI"
+      "author": "xAI",
+      "release_date": "2026-09-21"
     },
     "google/gemini-4-hydrogen": {
       "kind": "text",
       "input": 1.5,
       "cached_input": 0.075,
       "output": 7.5,
-      "author": "Google"
+      "author": "Google",
+      "release_date": "2026-11-12"
     },
     "openai/gpt-5.5": {
       "kind": "text",
@@ -1319,7 +1477,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-04-23"
     },
     "openai/gpt-5.6-luna": {
       "kind": "text",
@@ -1334,7 +1493,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "openai/gpt-5.6-terra": {
       "kind": "text",
@@ -1349,7 +1509,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "openai/gpt-5.6-sol": {
       "kind": "text",
@@ -1364,7 +1525,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-07-09"
     },
     "openai/gpt-6-luna": {
       "kind": "text",
@@ -1379,7 +1541,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-09-22"
     },
     "openai/gpt-6-sol": {
       "kind": "text",
@@ -1394,7 +1557,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-09-22"
     },
     "openai/gpt-6-astra": {
       "kind": "text",
@@ -1409,7 +1573,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-09-04"
     },
     "openai/gpt-6.1-sol": {
       "kind": "text",
@@ -1424,7 +1589,8 @@
       "modes": {
         "flex": { "factor": 0.5 },
         "priority": { "factor": 2.0 }
-      }
+      },
+      "release_date": "2026-09-29"
     },
     "anthropic/claude-haiku-5-5": {
       "kind": "text",
@@ -1435,34 +1601,39 @@
       "long_cached_input": 0.05,
       "long_output": 2.5,
       "long_context_threshold": 100000,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2026-10-07"
     },
     "anthropic/claude-sonnet-5-5": {
       "kind": "text",
       "input": 2.0,
       "cached_input": 0.1,
       "output": 10.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2026-09-28"
     },
     "anthropic/claude-opus-5-5": {
       "kind": "text",
       "input": 4.0,
       "cached_input": 0.2,
       "output": 20.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2026-09-22"
     },
     "anthropic/claude-fable-5-2": {
       "kind": "text",
       "input": 8.0,
       "cached_input": 0.2,
       "output": 40.0,
-      "author": "Anthropic"
+      "author": "Anthropic",
+      "release_date": "2026-11-09"
     },
     "sonar": {
       "kind": "text",
       "input": 1.0,
       "output": 1.0,
       "author": "Perplexity",
+      "release_date": "2024-01-01",
       "retirement_date": "2026-09-27"
     },
     "sonar-pro": {
@@ -1470,6 +1641,7 @@
       "input": 3.0,
       "output": 15.0,
       "author": "Perplexity",
+      "release_date": "2024-01-01",
       "retirement_date": "2026-09-27"
     },
     "sonar-reasoning-pro": {
@@ -1477,6 +1649,7 @@
       "input": 2.0,
       "output": 8.0,
       "author": "Perplexity",
+      "release_date": "2024-01-01",
       "retirement_date": "2026-09-27"
     },
     "sonar-deep-research": {
@@ -1484,6 +1657,7 @@
       "input": 2.0,
       "output": 8.0,
       "author": "Perplexity",
+      "release_date": "2025-02-01",
       "retirement_date": "2026-09-27"
     }
   },
@@ -1493,28 +1667,32 @@
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-flash": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-v4-flash": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-v4-pro": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.044,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-08-13"
     }
   },
   "groq": {
@@ -1526,7 +1704,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2025-10-29"
     },
     "meta-llama/llama-prompt-guard-2-86m": {
       "kind": "text",
@@ -1535,7 +1714,8 @@
       "author": "Meta",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2025-04-29"
     },
     "meta-llama/llama-prompt-guard-2-22m": {
       "kind": "text",
@@ -1544,7 +1724,8 @@
       "author": "Meta",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2025-04-29"
     },
     "whisper-large-v3-turbo": {
       "kind": "transcription",
@@ -1552,7 +1733,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2024-10-01"
     },
     "whisper-large-v3": {
       "kind": "transcription",
@@ -1560,7 +1742,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2023-11-06"
     },
     "openai/gpt-oss-120b": {
       "kind": "text",
@@ -1570,7 +1753,8 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2025-08-05"
     },
     "openai/gpt-oss-20b": {
       "kind": "text",
@@ -1580,13 +1764,15 @@
       "author": "OpenAI",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2025-08-05"
     },
     "qwen/qwen3.6-27b": {
       "kind": "text",
       "input": 0.6,
       "output": 3.0,
       "author": "Alibaba",
+      "release_date": "2026-04-22",
       "retirement_date": "2026-09-14"
     },
     "qwen/qwen3.8-27b": {
@@ -1596,7 +1782,8 @@
       "author": "Alibaba",
       "modes": {
         "flex": { "factor": 1.0 }
-      }
+      },
+      "release_date": "2026-08-14"
     }
   },
   "mistral": {
@@ -1605,166 +1792,210 @@
       "input": 1.4,
       "cached_input": 0.14,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
     "zai-glm-5": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.14,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
     "ministral-14b-latest": {
       "kind": "text",
       "input": 0.2,
       "cached_input": 0.02,
       "output": 0.2,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "ministral-8b-latest": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.015,
       "output": 0.15,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "ministral-3b-latest": {
       "kind": "text",
       "input": 0.1,
       "cached_input": 0.01,
       "output": 0.1,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "voxtral-mini-transcribe-latest": {
       "kind": "transcription",
       "per_minute": 0.0035,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-mini-transcribe-3": {
       "kind": "transcription",
       "per_minute": 0.0035,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-mini-transcribe-realtime-latest": {
       "kind": "realtime",
       "per_minute": 0.008,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-mini-transcribe-realtime-3": {
       "kind": "realtime",
       "per_minute": 0.008,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-small-transcribe-latest": {
       "kind": "transcription",
       "per_minute": 0.004,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-small-transcribe-3": {
       "kind": "transcription",
       "per_minute": 0.004,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "codestral-latest": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.03,
       "output": 0.9,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-07-30"
     },
-    "codestral-embed": { "kind": "embedding", "input": 0.15, "output": 0.0, "author": "Mistral" },
-    "mistral-embed": { "kind": "embedding", "input": 0.1, "output": 0.0, "author": "Mistral" },
+    "codestral-embed": {
+      "kind": "embedding",
+      "input": 0.15,
+      "output": 0.0,
+      "author": "Mistral",
+      "release_date": "2025-05-28"
+    },
+    "mistral-embed": {
+      "kind": "embedding",
+      "input": 0.1,
+      "output": 0.0,
+      "author": "Mistral",
+      "release_date": "2023-12-11"
+    },
     "mistral-small-2603": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.015,
       "output": 0.6,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-03-16"
     },
     "mistral-large-4-0": {
       "kind": "text",
       "input": 0.7,
       "cached_input": 0.07,
       "output": 2.1,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-06"
     },
     "mistral-large-4": {
       "kind": "text",
       "input": 0.7,
       "cached_input": 0.07,
       "output": 2.1,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-06"
     },
-    "mistral-embed-2312": { "kind": "embedding", "input": 0.1, "output": 0.0, "author": "Mistral" },
+    "mistral-embed-2312": {
+      "kind": "embedding",
+      "input": 0.1,
+      "output": 0.0,
+      "author": "Mistral",
+      "release_date": "2023-12-11"
+    },
     "codestral-embed-2505": {
       "kind": "embedding",
       "input": 0.15,
       "output": 0.0,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-05-28"
     },
     "codestral-2508": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.03,
       "output": 0.9,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-07-30"
     },
     "voxtral-small-transcribe-3-0": {
       "kind": "transcription",
       "per_minute": 0.004,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-mini-transcribe-realtime-3-0": {
       "kind": "realtime",
       "per_minute": 0.008,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "voxtral-mini-transcribe-3-0": {
       "kind": "transcription",
       "per_minute": 0.0035,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-20"
     },
     "ministral-3b-2512": {
       "kind": "text",
       "input": 0.1,
       "cached_input": 0.01,
       "output": 0.1,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "ministral-8b-2512": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.015,
       "output": 0.15,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "ministral-14b-2512": {
       "kind": "text",
       "input": 0.2,
       "cached_input": 0.02,
       "output": 0.2,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2025-12-02"
     },
     "zai-glm-5-3": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.14,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
     "deepseek-v4-1-flash-1017": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.007,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "zai-glm-5-3-flash": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.03,
       "output": 0.5,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-26"
     },
     "mistral-medium-latest": {
       "kind": "text",
@@ -1772,6 +2003,7 @@
       "cached_input": 0.15,
       "output": 7.5,
       "author": "Mistral",
+      "release_date": "2026-04-28",
       "retirement_date": "2027-04-30"
     },
     "mistral-large-latest": {
@@ -1779,84 +2011,97 @@
       "input": 0.7,
       "cached_input": 0.07,
       "output": 2.1,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-10-06"
     },
     "mistral-small-latest": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.015,
       "output": 0.6,
-      "author": "Mistral"
+      "author": "Mistral",
+      "release_date": "2026-03-16"
     }
   },
   "together": {
     "openai/whisper-large-v3": {
       "kind": "transcription",
       "per_minute": 0.0015,
-      "author": "OpenAI"
+      "author": "OpenAI",
+      "release_date": "2023-11-06"
     },
     "nvidia/parakeet-tdt-0.6b-v3": {
       "kind": "transcription",
       "per_minute": 0.0015,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2025-08-14"
     },
     "nvidia/nemotron-3.5-asr-streaming-0.6b": {
       "kind": "transcription",
       "per_minute": 0.0015,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-06-04"
     },
     "nvidia/nemotron-3-asr-streaming-0.6b": {
       "kind": "transcription",
       "per_minute": 0.0015,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-11-15"
     },
     "zai-org/GLM-5.2": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-06-13"
     },
     "Qwen/Qwen3.7-Max": {
       "kind": "text",
       "input": 2.5,
       "cached_input": 0.5,
       "output": 7.5,
-      "author": "Alibaba"
+      "author": "Alibaba",
+      "release_date": "2026-05-21"
     },
     "meta-models/Muse-Glimmer-30B": {
       "kind": "text",
       "input": 0.35,
       "cached_input": 0.04,
       "output": 1.5,
-      "author": "Meta"
+      "author": "Meta",
+      "release_date": "2026-08-10"
     },
     "thinkingmachines/Inkling-2-Small": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.03,
       "output": 1.0,
-      "author": "Thinking Machines"
+      "author": "Thinking Machines",
+      "release_date": "2026-11-05"
     },
     "elorian-labs/glimpse-1.0": {
       "kind": "text",
       "input": 0.6,
       "cached_input": 0.06,
       "output": 3.0,
-      "author": "Elorian Labs"
+      "author": "Elorian Labs",
+      "release_date": "2026-10-16"
     },
     "ricursive-ai/Ripple-65B-Preview": {
       "kind": "text",
       "input": 0.2,
       "output": 0.6,
-      "author": "Ricursive"
+      "author": "Ricursive",
+      "release_date": "2026-11-04"
     },
     "moonshotai/Kimi-K3.1-Pro": {
       "kind": "text",
       "input": 2.0,
       "cached_input": 0.2,
       "output": 10.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-10-23"
     },
     "MiniMaxAI/MiniMax-M3.1-Flash": {
       "kind": "text",
@@ -1866,7 +2111,8 @@
       "author": "Minimax",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-10-19"
     },
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
       "kind": "text",
@@ -1876,28 +2122,32 @@
       "author": "DeepSeek",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-10-17"
     },
     "reflection/Beam-1.0-501B-A23B": {
       "kind": "text",
       "input": 0.4,
       "cached_input": 0.04,
       "output": 1.2,
-      "author": "Reflection"
+      "author": "Reflection",
+      "release_date": "2026-10-05"
     },
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.02,
       "output": 0.5,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-10-15"
     },
     "meta-models/Muse-Spark-Open-816B-A42B": {
       "kind": "text",
       "input": 1.25,
       "cached_input": 0.15,
       "output": 4.25,
-      "author": "Meta"
+      "author": "Meta",
+      "release_date": "2026-10-15"
     },
     "thinkingmachines/Inkling": {
       "kind": "text",
@@ -1905,10 +2155,23 @@
       "cached_input": 0.17,
       "output": 4.05,
       "author": "Thinking Machines",
+      "release_date": "2026-07-15",
       "retirement_date": "2026-11-06"
     },
-    "Qwen/Qwen3.8-Flash": { "kind": "text", "input": 0.15, "output": 0.47, "author": "Alibaba" },
-    "Qwen/Qwen3.7-Plus": { "kind": "text", "input": 0.32, "output": 1.28, "author": "Alibaba" },
+    "Qwen/Qwen3.8-Flash": {
+      "kind": "text",
+      "input": 0.15,
+      "output": 0.47,
+      "author": "Alibaba",
+      "release_date": "2026-08-26"
+    },
+    "Qwen/Qwen3.7-Plus": {
+      "kind": "text",
+      "input": 0.32,
+      "output": 1.28,
+      "author": "Alibaba",
+      "release_date": "2026-06-02"
+    },
     "deepseek-ai/DeepSeek-V4.1-Flash": {
       "kind": "text",
       "input": 0.3,
@@ -1917,7 +2180,8 @@
       "author": "DeepSeek",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-09-10"
     },
     "zai-org/GLM-5.3-Flash": {
       "kind": "text",
@@ -1927,7 +2191,8 @@
       "author": "Z.ai",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-08-26"
     },
     "zai-org/GLM-5.3": {
       "kind": "text",
@@ -1937,16 +2202,30 @@
       "author": "Z.ai",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-08-14"
     },
-    "Qwen/Qwen3.5-9B": { "kind": "text", "input": 0.17, "output": 0.25, "author": "Alibaba" },
-    "Qwen/Qwen3.6-Plus": { "kind": "text", "input": 0.5, "output": 3.0, "author": "Alibaba" },
+    "Qwen/Qwen3.5-9B": {
+      "kind": "text",
+      "input": 0.17,
+      "output": 0.25,
+      "author": "Alibaba",
+      "release_date": "2026-02-23"
+    },
+    "Qwen/Qwen3.6-Plus": {
+      "kind": "text",
+      "input": 0.5,
+      "output": 3.0,
+      "author": "Alibaba",
+      "release_date": "2026-04-02"
+    },
     "Qwen/Qwen3.8-2.4T-A95B": {
       "kind": "text",
       "input": 2.0,
       "cached_input": 0.5,
       "output": 6.0,
       "author": "Alibaba",
+      "release_date": "2026-08-12",
       "retirement_date": "2026-11-04"
     },
     "MiniMaxAI/MiniMax-M3": {
@@ -1955,6 +2234,7 @@
       "cached_input": 0.06,
       "output": 1.2,
       "author": "Minimax",
+      "release_date": "2026-06-01",
       "retirement_date": "2026-11-06"
     },
     "moonshotai/Kimi-K3": {
@@ -1965,7 +2245,8 @@
       "author": "Moonshot AI",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-07-16"
     },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {
       "kind": "text",
@@ -1975,20 +2256,40 @@
       "author": "DeepSeek",
       "modes": {
         "us": { "factor": 1.25 }
-      }
+      },
+      "release_date": "2026-08-13"
     },
-    "openai/gpt-oss-120b": { "kind": "text", "input": 0.15, "output": 0.6, "author": "OpenAI" },
+    "openai/gpt-oss-120b": {
+      "kind": "text",
+      "input": 0.15,
+      "output": 0.6,
+      "author": "OpenAI",
+      "release_date": "2025-08-05"
+    },
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
       "kind": "text",
       "input": 1.04,
       "output": 1.04,
       "author": "Meta",
+      "release_date": "2024-12-06",
       "retirement_date": "2026-10-22"
     }
   },
   "cerebras": {
-    "qwen-3.8-27b": { "kind": "text", "input": 0.99, "output": 1.49, "author": "Alibaba" },
-    "gpt-oss-120b": { "kind": "text", "input": 0.35, "output": 0.75, "author": "OpenAI" }
+    "qwen-3.8-27b": {
+      "kind": "text",
+      "input": 0.99,
+      "output": 1.49,
+      "author": "Alibaba",
+      "release_date": "2026-08-14"
+    },
+    "gpt-oss-120b": {
+      "kind": "text",
+      "input": 0.35,
+      "output": 0.75,
+      "author": "OpenAI",
+      "release_date": "2025-08-05"
+    }
   },
   "moonshot": {
     "kimi-k3.1-pro-highspeed": {
@@ -1998,7 +2299,8 @@
       "cache_write": 4.0,
       "cache_write_1h": 8.0,
       "output": 20.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-10-23"
     },
     "kimi-k3.1-pro": {
       "kind": "text",
@@ -2007,7 +2309,8 @@
       "cache_write": 2.0,
       "cache_write_1h": 4.0,
       "output": 10.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-10-23"
     },
     "kimi-k3": {
       "kind": "text",
@@ -2015,28 +2318,32 @@
       "cached_input": 0.3,
       "cache_write_1h": 6.0,
       "output": 15.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-07-16"
     },
     "kimi-k2.7-code": {
       "kind": "text",
       "input": 0.95,
       "cached_input": 0.19,
       "output": 4.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-06-12"
     },
     "kimi-k2.7-code-highspeed": {
       "kind": "text",
       "input": 1.9,
       "cached_input": 0.38,
       "output": 8.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-06-12"
     },
     "kimi-k2.6": {
       "kind": "text",
       "input": 0.95,
       "cached_input": 0.16,
       "output": 4.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-04-20"
     }
   },
   "baseten": {
@@ -2045,151 +2352,183 @@
       "input": 0.6,
       "cached_input": 0.12,
       "output": 2.4,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-06-04"
     },
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": {
       "kind": "text",
       "input": 0.2,
       "cached_input": 0.04,
       "output": 0.5,
-      "author": "NVIDIA"
+      "author": "NVIDIA",
+      "release_date": "2026-10-15"
     },
     "meta-models/muse-spark-open": {
       "kind": "text",
       "input": 1.25,
       "cached_input": 0.15,
       "output": 4.25,
-      "author": "Meta"
+      "author": "Meta",
+      "release_date": "2026-10-15"
     },
     "moonshotai/Kimi-K3.1-Pro": {
       "kind": "text",
       "input": 2.0,
       "cached_input": 0.2,
       "output": 10.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-10-23"
     },
     "zai-org/GLM-5.3-Flash": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.03,
       "output": 0.5,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-26"
     },
     "zai-org/GLM-5.3-Fast": {
       "kind": "text",
       "input": 2.1,
       "cached_input": 0.21,
       "output": 6.6,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
     "zai-org/GLM-5.2-Fast": {
       "kind": "text",
       "input": 2.1,
       "cached_input": 0.21,
       "output": 6.6,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-06-13"
     },
     "zai-org/GLM-5.2": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.14,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-06-13"
     },
     "deepseek-ai/DeepSeek-V4.1-Flash-Fast": {
       "kind": "text",
       "input": 0.6,
       "cached_input": 0.014,
       "output": 2.4,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-09-10"
     },
     "deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast": {
       "kind": "text",
       "input": 0.6,
       "cached_input": 0.014,
       "output": 2.4,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.007,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-ai/DeepSeek-V4.1-Flash": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.007,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-09-10"
     },
     "deepseek-ai/DeepSeek-V4-Flash-0731": {
       "kind": "text",
       "input": 0.13,
       "cached_input": 0.028,
       "output": 0.26,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-07-31"
     },
     "reflection/Beam-1.0": {
       "kind": "text",
       "input": 0.4,
       "cached_input": 0.04,
       "output": 1.2,
-      "author": "Reflection"
+      "author": "Reflection",
+      "release_date": "2026-10-05"
     },
     "moonshotai/Kimi-K3": {
       "kind": "text",
       "input": 3.0,
       "cached_input": 0.3,
       "output": 15.0,
-      "author": "Moonshot AI"
+      "author": "Moonshot AI",
+      "release_date": "2026-07-16"
     },
     "deepseek-ai/DeepSeek-V4-Pro-0813": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.132,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-08-13"
     },
     "zai-org/GLM-5.3": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.14,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-14"
     },
-    "openai/gpt-oss-120b": { "kind": "text", "input": 0.1, "output": 0.5, "author": "OpenAI" }
+    "openai/gpt-oss-120b": {
+      "kind": "text",
+      "input": 0.1,
+      "output": 0.5,
+      "author": "OpenAI",
+      "release_date": "2025-08-05"
+    }
   },
   "bytedance": {
-    "seededit-3-0-i2i-250628": { "kind": "image", "per_image": 0.03, "author": "ByteDance" },
+    "seededit-3-0-i2i-250628": {
+      "kind": "image",
+      "per_image": 0.03,
+      "author": "ByteDance",
+      "release_date": "2025-06-28"
+    },
     "glm-5-2-260617": {
       "kind": "text",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-06-13"
     },
     "glm-5-3-flash-260828": {
       "kind": "text",
       "input": 0.15,
       "cached_input": 0.03,
       "output": 0.5,
-      "author": "Z.ai"
+      "author": "Z.ai",
+      "release_date": "2026-08-26"
     },
     "deepseek-v4-flash-260425": {
       "kind": "text",
       "input": 0.44,
       "cached_input": 0.014,
       "output": 1.32,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-04-24"
     },
     "deepseek-v4-pro-260425": {
       "kind": "text",
       "input": 1.32,
       "cached_input": 0.044,
       "output": 3.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-04-24"
     },
     "deepseek-v4-flash-ga-260731": {
       "kind": "text",
@@ -2199,28 +2538,32 @@
       "author": "DeepSeek",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.014 }
-      }
+      },
+      "release_date": "2026-07-31"
     },
     "deepseek-v4-1-flash-260910": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-09-10"
     },
     "deepseek-v4-1-flash-261017": {
       "kind": "text",
       "input": 0.3,
       "cached_input": 0.006,
       "output": 1.2,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "deepseek-v4-1-flash-economy-261017": {
       "kind": "text",
       "input": 0.24,
       "cached_input": 0.005,
       "output": 0.96,
-      "author": "DeepSeek"
+      "author": "DeepSeek",
+      "release_date": "2026-10-17"
     },
     "seed-2-0-code-preview-260328": {
       "kind": "text",
@@ -2231,7 +2574,8 @@
       "long_cached_input": 0.2,
       "long_output": 6.0,
       "long_context_threshold": 128000,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "release_date": "2026-02-14"
     },
     "dola-seed-2-1-turbo": {
       "kind": "text",
@@ -2241,7 +2585,8 @@
       "author": "ByteDance",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.1 }
-      }
+      },
+      "release_date": "2026-06-23"
     },
     "seed-2-0-pro-260328": {
       "kind": "text",
@@ -2255,7 +2600,8 @@
       "author": "ByteDance",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.1, "long_cached_input": 0.2 }
-      }
+      },
+      "release_date": "2026-02-14"
     },
     "seed-2-0-lite-260428": {
       "kind": "text",
@@ -2273,7 +2619,8 @@
       "author": "ByteDance",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.05, "cached_input_audio": 0.75, "long_cached_input": 0.1, "long_cached_input_audio": 1.5 }
-      }
+      },
+      "release_date": "2026-02-14"
     },
     "seed-2-0-mini-260428": {
       "kind": "text",
@@ -2291,7 +2638,8 @@
       "author": "ByteDance",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.02, "cached_input_audio": 0.3, "long_cached_input": 0.04, "long_cached_input_audio": 0.6 }
-      }
+      },
+      "release_date": "2026-02-14"
     },
     "deepseek-v4-pro-ga-260813": {
       "kind": "text",
@@ -2301,22 +2649,40 @@
       "author": "DeepSeek",
       "modes": {
         "flex": { "factor": 0.5, "cached_input": 0.044 }
-      }
+      },
+      "release_date": "2026-08-13"
     },
     "gpt-oss-120b-250805": {
       "kind": "text",
       "input": 0.1,
       "output": 0.5,
       "author": "OpenAI",
+      "release_date": "2025-08-05",
       "unlisted_since": "2026-11-15"
     },
     "dola-seedream-5-0-flash-260915": {
       "kind": "image",
       "per_image": 0.018,
-      "author": "ByteDance"
+      "author": "ByteDance",
+      "release_date": "2026-09-15"
     },
-    "seedream-5-0-lite-260128": { "kind": "image", "per_image": 0.035, "author": "ByteDance" },
-    "seedream-4-5-251128": { "kind": "image", "per_image": 0.04, "author": "ByteDance" },
-    "seedream-4-0-250828": { "kind": "image", "per_image": 0.03, "author": "ByteDance" }
+    "seedream-5-0-lite-260128": {
+      "kind": "image",
+      "per_image": 0.035,
+      "author": "ByteDance",
+      "release_date": "2026-01-28"
+    },
+    "seedream-4-5-251128": {
+      "kind": "image",
+      "per_image": 0.04,
+      "author": "ByteDance",
+      "release_date": "2025-11-28"
+    },
+    "seedream-4-0-250828": {
+      "kind": "image",
+      "per_image": 0.03,
+      "author": "ByteDance",
+      "release_date": "2025-08-28"
+    }
   }
 }

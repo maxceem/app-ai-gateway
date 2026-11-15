@@ -11,7 +11,7 @@ export const RELEASE_COMPATIBILITY = {
   schema: 1,
   classes: 1,
 } as const;
-/** Also written into migrations/0016_realtime_releases.sql's promotion trigger; a test pins the two equal. */
+/** Also written into migrations/0017_realtime_releases.sql's promotion trigger; a test pins the two equal. */
 export const RELEASE_RETENTION_MS =
   (REALTIME_MAX_SESSION_SECONDS + 60 + 3600) * 1000 + REALTIME_LIMITS.outboxRetentionMs;
 const LEASE_MS = 10 * 60_000;

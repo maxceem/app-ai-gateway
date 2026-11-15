@@ -60,6 +60,23 @@ export function formatDateTime(value: string | null | undefined): string {
     : "—";
 }
 
+/**
+ * A usage event's time, short enough for a table: the year only when it is
+ * not the current one. `Nov 11, 12:23 PM`.
+ */
+export function formatEventTime(value: string | null | undefined): string {
+  const date = parseTimestamp(value);
+  if (!date) return "—";
+  const thisYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(thisYear ? {} : { year: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function formatRelative(value: string | null | undefined): string {
   const date = parseTimestamp(value);
   if (!date) return "never";

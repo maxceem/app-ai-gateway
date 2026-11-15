@@ -91,7 +91,7 @@ if (args[0] === "secret") {
 }
 if (args[0] === "d1") {
   const db = new DatabaseSync(process.env.FAKE_DB);
-  if (args[1] === "migrations") db.exec(readFileSync("migrations/0016_realtime_releases.sql", "utf8"));
+  if (args[1] === "migrations") db.exec(readFileSync("migrations/0017_realtime_releases.sql", "utf8"));
   else {
     const sql = args[args.indexOf("--command") + 1];
     let results = [];

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "14915d14-a0c8-44a1-96b1-e284db448b3f",
+  "id": "d665c381-ef80-4517-9e80-bd9908e1407b",
   "prevId": "a0ba82f7-291c-4b47-a21e-13cce91026ab",
   "tables": {
     "account_activation": {
@@ -922,41 +922,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "realtime_session_id": {
-          "name": "realtime_session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "realtime_generation_id": {
-          "name": "realtime_generation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "realtime_protocol": {
-          "name": "realtime_protocol",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "provider_response_id": {
-          "name": "provider_response_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "completion_status": {
-          "name": "completion_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "input_tokens": {
           "name": "input_tokens",
           "type": "integer",
@@ -1005,6 +970,13 @@
         },
         "service_mode": {
           "name": "service_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error": {
+          "name": "error",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

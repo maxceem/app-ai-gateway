@@ -66,7 +66,8 @@ export async function getAppAuthEventSummary(
   const usageFailures = await db
     .select({
       date: eventDay,
-      status: appUsageEvent.status,
+      // Only failures are selected, and every one of them is a provider error.
+      status: sql<"provider_error">`'provider_error'`,
       count: sql<number>`COUNT(*)`,
     })
     .from(appUsageEvent)
@@ -74,9 +75,9 @@ export async function getAppAuthEventSummary(
       eq(appUsageEvent.appId, appId),
       gte(appUsageEvent.createdAt, range.from),
       lt(appUsageEvent.createdAt, usageToExclusive),
-      sql`${appUsageEvent.status} != 'ok'`,
+      sql`${appUsageEvent.error} IS NOT NULL`,
     ))
-    .groupBy(eventDay, appUsageEvent.status)
+    .groupBy(eventDay)
     .orderBy(eventDay);
 
   const rejectionSamples = await db
