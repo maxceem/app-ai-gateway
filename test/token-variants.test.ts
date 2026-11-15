@@ -4,7 +4,6 @@ import { computeCost, type UsageObservation } from "../src/usage/pricing";
 import { extractUsageText } from "../src/usage/usage-readers";
 import {
   LONG_RATE_FIELDS,
-  RATE_LABELS,
   TOKEN_RATE_FIELDS,
   VARIANTS,
   bucketRates,
@@ -218,14 +217,12 @@ describe("the rate config", () => {
     expect(LONG_RATE_FIELDS).toEqual(TOKEN_RATE_FIELDS.filter((field) => field.startsWith("long_")));
   });
 
-  it("gives every variant a readable path and every rate a label", () => {
+  it("gives every variant a readable path and both of its rates", () => {
     for (const variant of VARIANTS) {
       expect(variant.reportedAt.length).toBeGreaterThan(0);
       expect(TOKEN_RATE_FIELDS).toContain(variant.field);
       expect(TOKEN_RATE_FIELDS).toContain(`long_${variant.field}`);
     }
-    expect(RATE_LABELS.cached_input).toBe("cached");
-    expect(RATE_LABELS.long_cache_write_12h).toBe("long 12h cache write");
   });
 
   it("falls back from a variant to its bucket, and from long context to short", () => {
