@@ -618,7 +618,12 @@ endpoint:
 
 Usage event `status` values: `ok`, `provider_error`. Refusal sample `reason`
 values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
-`blocked_billing`, `blocked_replay` (a replayed App Attest proof). `scope` is
+`blocked_billing`, `blocked_replay` (a replayed App Attest proof), and the
+refusals an app's own settings cause, named by the error code the app
+received: `path_not_allowed`, `model_not_allowed`, `provider_not_configured`,
+`provider_disabled`, `pricing_not_configured`, `max_output_tokens_exceeded`,
+`api_style_not_supported`, `payload_too_large` and `endpoint_not_found` (scope
+`app`; `route` or `endpoint_slug` and `model` say what was asked for). `scope` is
 `install`, `apple_account`, `user`, `app` or `account`; `apple_account` is an
 end user's Apple Account budget, unrelated to `account`. Samples are limited to one per identity per minute, so
 sample counts are not exact request totals. Event

@@ -262,6 +262,8 @@ export async function resolveEndpointAttempts(
           400,
           "pricing_not_configured",
           unpricedMessage(entry.type, target.model),
+          undefined,
+          { model: target.model },
         );
       }
       continue;

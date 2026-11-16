@@ -28,8 +28,10 @@ with **Outcome**, **Reason**, **Count**, **Days affected** and **Last seen**
 over the chosen range. This is the first place to look when a release starts
 failing.
 
-Blocked requests are sampled once per authenticated identity per minute across
-the deployment, regardless of route or reason. Their counts are labeled
+Requests stopped by the app's limits are sampled once per authenticated
+identity per minute across the deployment, regardless of route or reason.
+Requests stopped by the app's settings are sampled the same way, but once per
+reason, so a burst of rate limits cannot hide them. Their counts are labeled
 **samples** and are not exact request totals. Authentication failures and
 provider errors are recorded as individual events.
 
@@ -40,6 +42,33 @@ model, app version, and admission latency. The attempted route describes what
 would have been called; the gateway stopped the request before contacting it.
 Filter by reason, scope, or user, then page through older samples. An older
 sample may have an unknown scope when its original record did not preserve it.
+
+Reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `blocked_app_rate` | The app's per-minute or per-day request limit |
+| `blocked_app_budget` | The app's monthly spending budget |
+| `blocked_billing` | The monthly request allowance shared by all your apps |
+| `blocked_user` | An end user you blocked |
+| `blocked_replay` | A reused App Attest proof |
+| `path_not_allowed` | A provider path the app does not allow. **Route** names it, such as `openai/v1/audio/transcriptions`: allow it under the app's providers |
+| `model_not_allowed` | A model the app does not allow. **Model** names it |
+| `provider_not_configured` | A provider the app uses that has no key |
+| `provider_disabled` | A provider that is turned off |
+| `pricing_not_configured` | A model with no price, so its cost cannot be counted. **Model** names it |
+| `max_output_tokens_exceeded` | A request asking for more output than the app allows |
+| `api_style_not_supported` | A request format the provider does not take |
+| `payload_too_large` | A request body over the size limit |
+| `endpoint_not_found` | A custom endpoint the app does not have |
+
+Every reason from `path_not_allowed` down is the error code the app itself
+received. These are recorded only for a caller that proved who it is: a
+request refused before that, such as one with no valid token, is never
+recorded here. Their **Scope** is `app`. On an App Attest app that verifies
+every request, the body is read while the request's proof is checked, so a
+body over the size limit is refused before that and is not recorded as
+`payload_too_large`.
 
 ## Recent attempts
 

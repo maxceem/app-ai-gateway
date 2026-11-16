@@ -2938,7 +2938,16 @@
                     "blocked_app_budget",
                     "blocked_billing",
                     "blocked_user",
-                    "blocked_replay"
+                    "blocked_replay",
+                    "path_not_allowed",
+                    "model_not_allowed",
+                    "provider_not_configured",
+                    "provider_disabled",
+                    "pricing_not_configured",
+                    "max_output_tokens_exceeded",
+                    "api_style_not_supported",
+                    "payload_too_large",
+                    "endpoint_not_found"
                   ]
                 },
                 "scope": {
@@ -3176,7 +3185,16 @@
               "blocked_app_budget",
               "blocked_billing",
               "blocked_user",
-              "blocked_replay"
+              "blocked_replay",
+              "path_not_allowed",
+              "model_not_allowed",
+              "provider_not_configured",
+              "provider_disabled",
+              "pricing_not_configured",
+              "max_output_tokens_exceeded",
+              "api_style_not_supported",
+              "payload_too_large",
+              "endpoint_not_found"
             ]
           },
           "scope": {
@@ -10633,7 +10651,16 @@
                 "blocked_app_budget",
                 "blocked_billing",
                 "blocked_user",
-                "blocked_replay"
+                "blocked_replay",
+                "path_not_allowed",
+                "model_not_allowed",
+                "provider_not_configured",
+                "provider_disabled",
+                "pricing_not_configured",
+                "max_output_tokens_exceeded",
+                "api_style_not_supported",
+                "payload_too_large",
+                "endpoint_not_found"
               ]
             },
             "required": false,

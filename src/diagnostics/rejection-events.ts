@@ -5,7 +5,11 @@ import { log } from "../core/log";
 import { storedAppVersion } from "../core/app-version";
 import type { GatewayIdentity } from "../core/types";
 import type { AttemptAttribution } from "../usage/usage-record";
-import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
+import {
+  isConfigRejectionReason,
+  type RejectionReason,
+  type RejectionScope,
+} from "../shared/rejection-reasons";
 import { errorFacts } from "../core/error-facts";
 
 export interface RejectionEventInput {
@@ -15,7 +19,11 @@ export interface RejectionEventInput {
    * What the refused request was about to call. A refusal on a route that
    * calls no provider — `/me` — has a route of its own and nothing else.
    */
-  attribution: Pick<AttemptAttribution, "providerSlug" | "model" | "route"> | { providerSlug: null; model: null; route: string };
+  attribution:
+    | Pick<AttemptAttribution, "providerSlug" | "model" | "route">
+    | { providerSlug: null; model: null; route: string }
+    /** A request refused while it was being planned: only what its URL and refusal named. */
+    | { providerSlug: string | null; model: string | null; route: string | null };
   endpointSlug?: string | null;
   appVersion: string | null;
   reason: RejectionReason;
@@ -23,17 +31,24 @@ export interface RejectionEventInput {
   latencyMs: number;
 }
 
-/** Samples one refusal per identity and minute, independent of routing or reason. */
+/**
+ * Samples one refusal per identity and minute. A limit refusal shares one
+ * sample whatever its routing or reason. A refusal by the app's settings has a
+ * sample of its own per reason, so a burst of rate limits cannot hide the one
+ * request that names a path the app does not allow.
+ */
 export async function recordRejectionEvent(input: RejectionEventInput): Promise<void> {
   const { env, identity, attribution } = input;
   const createdAt = new Date().toISOString();
+  const byConfig = isConfigRejectionReason(input.reason);
   const subject = JSON.stringify([
     identity.appId,
     identity.userId === null ? "api_key" : "user",
     identity.userId ?? identity.apiKeyId ?? "app",
+    ...(byConfig ? [input.reason] : []),
   ]);
   try {
-    if (!await claimDiagnosticSample(env, "blocked-usage", subject, 60_000)) return;
+    if (!await claimDiagnosticSample(env, byConfig ? "refused-config" : "blocked-usage", subject, 60_000)) return;
   } catch {
     // If coordination is unavailable, fail closed for optional diagnostics.
     return;

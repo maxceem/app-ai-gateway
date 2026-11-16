@@ -253,6 +253,11 @@ export interface GatewayErrorDetails {
    */
   field?: RequestFieldIssue;
   /**
+   * The model a refusal is about, for its refusal sample in the console.
+   * Never serialized: the client named the model itself.
+   */
+  model?: string;
+  /**
    * The failure this refusal stands for, which the error log describes. Never
    * serialized.
    */
@@ -274,6 +279,7 @@ export class GatewayError extends Error {
   readonly userId?: string;
   readonly data?: GatewayErrorData;
   readonly field?: RequestFieldIssue;
+  readonly model?: string;
 
   constructor(
     readonly status: number,
@@ -288,6 +294,7 @@ export class GatewayError extends Error {
     this.userId = details.userId;
     this.data = details.data;
     this.field = details.field;
+    this.model = details.model;
   }
 }
 

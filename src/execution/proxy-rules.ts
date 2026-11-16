@@ -385,11 +385,11 @@ function resolveModel(input: {
     throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
   }
   if (!modelIsAllowed(input.policy.allowed_models, requestedModel)) {
-    throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
+    throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { model: requestedModel });
   }
   const actualModel = lookup(input.rewrites, requestedModel) ?? requestedModel;
   if (!isBillable(provider, input.resolved.route.kind, input.style, actualModel, input.resolved.pricing)) {
-    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
+    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel), undefined, { model: actualModel });
   }
   const { mode, unknown } = requestedServiceMode({
     type: provider,

@@ -40,7 +40,8 @@ when the code does, run once after each deploy together with `monitor`:
   proxy (OpenAI Chat Completions and Responses, Anthropic Messages, Gemini),
   plain and streamed, with the mock confirming the gateway sent the stored
   provider key in the right header and passed none of the app's credentials on;
-  a provider's `429` and `500` reaching the app unchanged; custom endpoints;
+  a provider's `429` and `500` reaching the app unchanged; custom endpoints,
+  and a missing one recorded as a refusal sample;
   a signed-in user exchanging an identity token for a gateway token and calling
   a provider, and what signed-in apps refuse; and an iOS app's App Attest challenge, with
   anything that is not a real attestation refused as a client error, and a
