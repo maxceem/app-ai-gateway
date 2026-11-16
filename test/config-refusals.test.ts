@@ -72,6 +72,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await settle();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -162,6 +163,11 @@ describe("refusals by the app's own settings", () => {
   it("samples once a minute per user and reason, so one cause cannot hide another", async () => {
     const appId = "refused-sampling";
     const key = await seedServerApp(appId);
+    // The sampling window is aligned to the clock's minute, so real time could
+    // cross into the next one between the two identical refusals below and let
+    // both be sampled. Ten seconds into a minute, a day out, it cannot.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Math.floor((Date.now() + 86_400_000) / 60_000) * 60_000 + 10_000);
 
     await call(`/v1/apps/${appId}/proxy/openai/v1/decisions`, { key });
     await call(`/v1/apps/${appId}/proxy/openai/v1/decisions`, { key });

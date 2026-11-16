@@ -9,7 +9,12 @@ afterEach(() => {
 });
 
 describe("proxy hot-path latency", () => {
-  it("keeps 100-request stub-provider p50 below 50 ms and p95 below 150 ms", async () => {
+  // The budgets this test is about are the p50 and p95 below. The whole loop,
+  // 100 sequential requests each signed first, takes about a second on an idle
+  // machine, so Vitest's default five seconds failed it on a slowed runner
+  // before those budgets were ever compared, while they still held with room
+  // to spare. Its timeout is sized against a stuck test instead.
+  it("keeps 100-request stub-provider p50 below 50 ms and p95 below 150 ms", { timeout: 30_000 }, async () => {
     // Seeded with limits configured: the hot path that consults the limiter is
     // the one worth measuring, and an app with none skips it entirely.
     await seedApp("proxy-benchmark", { limits: { rpm: 200, rpd: 1000 } });

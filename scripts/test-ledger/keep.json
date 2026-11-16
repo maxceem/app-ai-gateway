@@ -5,5 +5,8 @@
     "test/entry-exports.test.ts": "Guards the Worker entry module's exports, which a deployment fails without.",
     "test/catalog.test.ts": "Guards that every documented operation is mounted, and nothing else."
   },
-  "tests": {}
+  "tests": {
+    "test/usage-day-totals.test.ts > cheap usage and user reads > month totals from sealed days > adds sealed days, unsealed raw events and the rollup without counting an event twice": "Holds the console's month totals to a fresh sum of raw events through sealing and compaction; its edits followed deliberate changes to how a usage event is stored, which only direct SQL can stage.",
+    "test/usage-day-totals.test.ts > cheap usage and user reads > month totals from sealed days > keeps a sealed day exact when an event arrives late, is repriced, moves, or is deleted": "Holds sealed day rows exact when an event arrives late, is repriced, moves or is deleted; its edits followed deliberate changes to how a usage event is stored, which only direct SQL can stage."
+  }
 }

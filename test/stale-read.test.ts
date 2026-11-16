@@ -180,9 +180,15 @@ describe("a proxied request while D1 stalls", () => {
   const STALL_MS = STALE_READ_BUDGET_MS * 4;
   const contexts: ExecutionContext[] = [];
 
-  /** Every D1 query this environment issues waits `ms` before it runs. */
+  /** Ends the current stall, as D1 recovering would: every query still waiting runs at once. */
+  let recover = () => {};
+
+  /** Every D1 query this environment issues waits `ms` before it runs, or until {@link recover}. */
   function stalling(ms: number): Env {
-    const delay = <T>(run: () => Promise<T>) => later(undefined, ms).then(run);
+    const recovered = new Promise<void>((resolve) => {
+      recover = resolve;
+    });
+    const delay = <T>(run: () => Promise<T>) => Promise.race([later(undefined, ms), recovered]).then(run);
     const statement = (inner: D1PreparedStatement): D1PreparedStatement => new Proxy(inner, {
       get: (target, property, receiver) => {
         const value = Reflect.get(target, property, receiver);
@@ -225,6 +231,11 @@ describe("a proxied request while D1 stalls", () => {
   }
 
   afterEach(async () => {
+    // Once the response is in, D1 recovers. What the request left running in
+    // the background, its usage record and the read it stopped waiting for,
+    // then finishes at once instead of sitting out the rest of its stall:
+    // nothing asserted waits on it, and it took most of each test's time.
+    recover();
     await Promise.all(contexts.splice(0).map((ctx) => waitOnExecutionContext(ctx)));
   });
 
