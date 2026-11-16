@@ -7,8 +7,8 @@ import { seedHuman, seedProvider, seedServerApp } from "./helpers";
 
 /**
  * An app's warnings: what its owner should know about its settings. The one
- * there is today names the passthrough paths that let an app talk to OpenAI
- * directly, out of the gateway's sight. A warning never refuses a save: the
+ * there is today names the passthrough paths that let an app talk to a
+ * provider's realtime API directly, out of the gateway's sight. A warning never refuses a save: the
  * app is saved as sent, and every read and save after says it again.
  */
 
@@ -49,13 +49,31 @@ describe("appWarnings", () => {
     );
   });
 
-  it("says nothing of another provider type's path, an unlisted path, or a slug with no provider", () => {
+  it("warns about xAI's and Gemini's own paths, without suggesting realtime the gateway doesn't run for them", () => {
     const app = config({
       grok: policy(["v1/realtime/client_secrets"]),
+      live: policy(["v1alpha/auth_tokens", "v1beta/auth_tokens"]),
+    });
+    expect(appWarnings(app, [{ slug: "grok", type: "xai" }, { slug: "live", type: "gemini" }])).toEqual([
+      {
+        code: "realtime_client_secrets",
+        message: "You configured `v1/realtime/client_secrets` for provider \"grok\". This endpoint lets your app talk to xAI directly, so the gateway can't count, limit or record those conversations.",
+      },
+      {
+        code: "realtime_client_secrets",
+        message: "You configured `v1alpha/auth_tokens` and `v1beta/auth_tokens` for provider \"live\". These endpoints let your app talk to Gemini directly, so the gateway can't count, limit or record those conversations.",
+      },
+    ]);
+  });
+
+  it("says nothing of another provider type's paths, an unlisted path, or a slug with no provider", () => {
+    const app = config({
+      claude: policy(["v1/realtime/client_secrets", "v1beta/auth_tokens"]),
+      grok: policy(["v1alpha/auth_tokens"]),
       openai: policy([]),
       gone: policy(["v1/realtime/client_secrets"]),
     });
-    expect(appWarnings(app, [{ slug: "grok", type: "xai" }, openai])).toEqual([]);
+    expect(appWarnings(app, [{ slug: "claude", type: "anthropic" }, { slug: "grok", type: "xai" }, openai])).toEqual([]);
     expect(appWarnings(parseAppConfig({
       authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { mode: "all" }, model_rewrites: {} },

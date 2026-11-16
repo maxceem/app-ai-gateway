@@ -6,6 +6,7 @@ import { emptyPolicy } from "@shared/app-defaults";
 import {
   defaultInferencePaths,
   DIRECT_ACCESS_GUIDE_URL,
+  hasGatewayRealtime,
   isDirectAccessPath,
   isPassthroughPath,
   PASSTHROUGH_METHODS,
@@ -321,15 +322,20 @@ function PathRow({
       {directAccess ? (
         <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
           This endpoint lets your app talk to {providerDescriptor(type).label} directly, so the gateway
-          can't count, limit or record the conversations. Use realtime through the gateway instead.{" "}
-          <a
-            href={DIRECT_ACCESS_GUIDE_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="text-primary-ink underline underline-offset-4"
-          >
-            How
-          </a>
+          can't count, limit or record the conversations.
+          {hasGatewayRealtime(type) ? (
+            <>
+              {" "}Use realtime through the gateway instead.{" "}
+              <a
+                href={DIRECT_ACCESS_GUIDE_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary-ink underline underline-offset-4"
+              >
+                How
+              </a>
+            </>
+          ) : null}
         </p>
       ) : null}
     </div>

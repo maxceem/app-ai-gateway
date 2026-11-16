@@ -22,7 +22,7 @@ import {
 } from "../contracts/schemas.ts";
 import { schemaIssueMessage } from "./schema-issues.ts";
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "./providers.ts";
-import type { OutputClampStyle } from "./capabilities.ts";
+import { realtimeProtocols, type OutputClampStyle } from "./capabilities.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
@@ -208,14 +208,23 @@ export function isPassthroughPath(provider: ProviderType, path: string): boolean
 
 /**
  * Passthrough paths that let an app talk to the provider directly: they hand
- * it a short-lived provider credential, and what it does with that never
- * passes the gateway. Listed only for provider types whose realtime
- * conversations the gateway runs, so a warning about one can point to that
- * instead.
+ * it a short-lived provider credential for the provider's realtime API, and
+ * what it does with that never passes the gateway.
  */
 const DIRECT_ACCESS_PATHS: Partial<Record<ProviderType, readonly string[]>> = {
   openai: ["v1/realtime/client_secrets", "v1/realtime/sessions", "v1/realtime/transcription_sessions"],
+  xai: ["v1/realtime/client_secrets"],
+  // Google's REST reference creates them under v1beta, and its SDKs under v1alpha.
+  gemini: ["v1alpha/auth_tokens", "v1beta/auth_tokens"],
 };
+
+/**
+ * Whether the gateway runs realtime conversations for this provider type, so
+ * a warning about {@link DIRECT_ACCESS_PATHS} can suggest them instead.
+ */
+export function hasGatewayRealtime(provider: ProviderType): boolean {
+  return realtimeProtocols("direct", provider).length > 0;
+}
 
 /** Where the realtime guide explains what to use instead of {@link DIRECT_ACCESS_PATHS}. */
 export const DIRECT_ACCESS_GUIDE_URL = "https://docs.appaigateway.com/integrate/realtime/#instead-of-client-secrets";

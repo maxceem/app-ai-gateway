@@ -185,6 +185,20 @@ describe("ProviderAccessTab", () => {
       expect(draftProviders().selected["openai-dev"].allowed_paths).toEqual(["v1/responses"]));
   });
 
+  it("notes xAI's client secrets path without suggesting realtime the gateway doesn't run for it", async () => {
+    const grok = { ...PROVIDERS[1]!, ...served("xai"), id: "provider-xai", type: "xai" as const, slug: "grok", name: "Grok" };
+    renderTab(
+      selectedRouting({ grok: { allowed_paths: ["v1/realtime/client_secrets"], allowed_models: [] } }),
+      [...PROVIDERS, grok],
+    );
+    await screen.findByRole("button", { name: "Restrictions for grok" });
+    await expand("grok");
+    expect(screen.getByText(/^This endpoint lets your app talk to xAI directly/u).textContent).toBe(
+      "This endpoint lets your app talk to xAI directly, so the gateway can't count, limit or record the conversations.",
+    );
+    expect(screen.queryByRole("link", { name: "How" })).toBeNull();
+  });
+
   it("shows a passthrough path with its methods, and keeps settings saved on it from before", async () => {
     renderTab(selectedRouting({
       "openai-dev": {

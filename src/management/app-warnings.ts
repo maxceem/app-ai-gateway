@@ -10,7 +10,7 @@
 
 import type { AppWarning } from "../contracts/responses";
 import type { AppConfig } from "../contracts/schemas";
-import { DIRECT_ACCESS_GUIDE_URL, isDirectAccessPath, providerPolicyFor } from "../shared/app-config";
+import { DIRECT_ACCESS_GUIDE_URL, hasGatewayRealtime, isDirectAccessPath, providerPolicyFor } from "../shared/app-config";
 import { providerDescriptor, type ProviderType } from "../shared/providers";
 
 /** One of the account's provider instances, as far as warnings need it. */
@@ -41,13 +41,14 @@ export function appWarnings(config: AppConfig, providers: Iterable<ProviderRef>)
 function directAccessWarning(provider: ProviderRef, paths: readonly string[]): AppWarning {
   const label = providerDescriptor(provider.type).label;
   const one = paths.length === 1;
+  const risk = `You configured ${listed(paths.map((path) => `\`${path}\``))} for provider "${provider.slug}". ${
+    one ? "This endpoint lets" : "These endpoints let"
+  } your app talk to ${label} directly, so the gateway can't count, limit or record those conversations.`;
+  // Suggested only where the gateway runs this provider's realtime conversations.
+  if (!hasGatewayRealtime(provider.type)) return { code: "realtime_client_secrets", message: risk };
   return {
     code: "realtime_client_secrets",
-    message: `You configured ${listed(paths.map((path) => `\`${path}\``))} for provider "${provider.slug}". ${
-      one ? "This endpoint lets" : "These endpoints let"
-    } your app talk to ${label} directly, so the gateway can't count, limit or record those conversations. Use realtime through the gateway instead, then remove ${
-      one ? "this endpoint" : "these endpoints"
-    }.`,
+    message: `${risk} Use realtime through the gateway instead, then remove ${one ? "this endpoint" : "these endpoints"}.`,
     docs_url: DIRECT_ACCESS_GUIDE_URL,
   };
 }
