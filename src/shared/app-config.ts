@@ -206,6 +206,26 @@ export function isPassthroughPath(provider: ProviderType, path: string): boolean
   return classifyPath(path).protocol.style === "other" && !isInferencePath(provider, path);
 }
 
+/**
+ * Passthrough paths that let an app talk to the provider directly: they hand
+ * it a short-lived provider credential, and what it does with that never
+ * passes the gateway. Listed only for provider types whose realtime
+ * conversations the gateway runs, so a warning about one can point to that
+ * instead.
+ */
+const DIRECT_ACCESS_PATHS: Partial<Record<ProviderType, readonly string[]>> = {
+  openai: ["v1/realtime/client_secrets", "v1/realtime/sessions", "v1/realtime/transcription_sessions"],
+};
+
+/** Where the realtime guide explains what to use instead of {@link DIRECT_ACCESS_PATHS}. */
+export const DIRECT_ACCESS_GUIDE_URL = "https://docs.appaigateway.com/integrate/realtime/#instead-of-client-secrets";
+
+/** Whether an `allowed_paths` entry is one of {@link DIRECT_ACCESS_PATHS} for this provider type. */
+export function isDirectAccessPath(provider: ProviderType, path: string): boolean {
+  const bare = path.trim().replace(/^\/+|\/+$/gu, "");
+  return DIRECT_ACCESS_PATHS[provider]?.includes(bare) ?? false;
+}
+
 /** The methods an `allowed_paths` entry opens a passthrough path for: its own list, or POST alone. */
 export function passthroughMethods(entry: AllowedPath): readonly PassthroughMethod[] {
   return (typeof entry === "string" ? undefined : entry.methods) ?? ["POST"];

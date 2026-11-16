@@ -18,6 +18,7 @@ import {
   SupportMessageRequestSchema,
 } from "../contracts/schemas";
 import { GatewayError, type ErrorCode } from "../core/errors";
+import type { AppWarning } from "../contracts/responses";
 import type { AdminActor } from "../management/actor";
 import { openClaim } from "../management/claims";
 import { operationPolicy, type OperationCaller, type OperationRequest } from "../management/executor";
@@ -858,6 +859,11 @@ function browserTool(definition: {
   };
 }
 
+/** An app's warnings as a sentence to append, or nothing when it has none. */
+function warningsText(warnings: readonly AppWarning[] | undefined): string {
+  return warnings && warnings.length > 0 ? ` Warnings: ${warnings.map((warning) => warning.message).join(" ")}` : "";
+}
+
 function appName(result: Record<string, unknown>): string {
   const app = result.app as { id?: string; name?: string } | undefined;
   return app ? `"${app.name}" (${app.id})` : "the app";
@@ -974,14 +980,10 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_app",
     title: "Get an app",
     description:
-      "Returns one app's whole stored document: name, status, revision and its complete configuration, plus its read-only warnings. Read it before proposing a change: a change is judged against this document and must carry its revision. A warning describes behaviour that stops on its stated date: tell the person about each one. Answers app_not_found for an id that is not one of your apps.",
+      "Returns one app's whole stored document: name, status, revision and its complete configuration, plus its read-only warnings. Read it before proposing a change: a change is judged against this document and must carry its revision. Each warning is something the person should know: tell them about each one. Answers app_not_found for an id that is not one of your apps.",
     operation: "getApp",
     summary: (result) =>
-      `App "${result.app.name}" (${result.app.id}) is ${result.app.status}, at revision ${result.app.revision}.${
-        result.app.warnings.length === 0
-          ? ""
-          : ` Warnings: ${result.app.warnings.map((warning) => warning.message).join(" ")}`
-      }`,
+      `App "${result.app.name}" (${result.app.id}) is ${result.app.status}, at revision ${result.app.revision}.${warningsText(result.app.warnings)}`,
   }),
   {
     name: "validate_app",
@@ -1009,10 +1011,10 @@ export const MCP_TOOLS: readonly McpTool[] = [
       return withCheck(call, () => refuseAppCredential(input));
     },
     summary: (result) => {
-      const appId = (result as { app_id?: string }).app_id;
-      return appId === undefined
+      const { app_id: appId, warnings } = result as { app_id?: string; warnings?: AppWarning[] };
+      return `${appId === undefined
         ? "The document would be accepted as a new app."
-        : `The document would be accepted as an update of ${appId}.`;
+        : `The document would be accepted as an update of ${appId}.`}${warningsText(warnings)}`;
     },
   },
   tool({
@@ -1289,7 +1291,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     }),
     payload: (input) => input.config,
     reserving: (input) => `creating the app "${String((input.config as { name?: unknown } | undefined)?.name)}"`,
-    created: (result) => `Created app ${appName(result)}.`,
+    created: (result) => `Created app ${appName(result)}.${warningsText((result.app as { warnings?: AppWarning[] } | undefined)?.warnings)}`,
   }),
   {
     name: "update_app",
@@ -1311,7 +1313,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     call: (input) => withCheck(operationCall("updateApp", { app: input.app }, input.config), () => refuseAppCredential(input)),
     summary: (result) => {
       const { app } = result as OperationResponse<"updateApp">;
-      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.${warningsText(app.warnings)}`;
     },
   },
   {
@@ -1376,7 +1378,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     },
     summary: (result) => {
       const { app } = result as OperationResponse<"patchApp">;
-      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+      return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.${warningsText(app.warnings)}`;
     },
   },
   tool({

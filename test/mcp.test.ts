@@ -793,11 +793,11 @@ describe("MCP read tools", () => {
     const document = { name: "Draft", config: serverConfig({ proxy: { openai: { allowed_paths: [], allowed_models: [] } } }) };
 
     const draft = await callTool(fixture.read, "validate_app", { config: document });
-    expect(draft.structuredContent).toEqual({ valid: true });
+    expect(draft.structuredContent).toEqual({ valid: true, warnings: [] });
     expect(draft.content[0]!.text).toBe("The document would be accepted as a new app.");
 
     const update = await callTool(fixture.read, "validate_app", { app: fixture.app, config: document });
-    expect(update.structuredContent).toEqual({ valid: true, app_id: fixture.app });
+    expect(update.structuredContent).toEqual({ valid: true, app_id: fixture.app, warnings: [] });
 
     const invalid = { name: "", config: document.config };
     const refused = await callTool(fixture.read, "validate_app", { config: invalid });

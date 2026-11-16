@@ -267,6 +267,30 @@ const cases: Case[] = [
     excludes: ["App ID:"],
   },
   {
+    name: "a dry run and a written application print the app's warnings",
+    command: "app add",
+    result: {
+      dryRun: true,
+      definition: { name: "Example", status: "active", config: UNLIMITED_SERVER_CONFIG },
+      validation: {
+        local: true,
+        remote: true,
+        valid: true,
+        warnings: [{ code: "realtime_client_secrets", message: "You configured `v1/realtime/client_secrets` for provider \"openai\"." }],
+      },
+    },
+    includes: ["- You configured `v1/realtime/client_secrets` for provider \"openai\".", "Nothing was written."],
+  },
+  {
+    name: "a written application prints its warnings before its guidance",
+    command: "app add",
+    result: {
+      app: { ...app.app, warnings: [{ code: "realtime_client_secrets", message: "Use realtime through the gateway instead." }] },
+      guidance: "Store the generated key on your server.",
+    },
+    includes: ["- Use realtime through the gateway instead.", "Store the generated key on your server."],
+  },
+  {
     name: "a snippet written to a file reports only the path",
     command: "app snippet",
     result: { output: "/tmp/snippet.sh" },

@@ -357,15 +357,15 @@ export const AuthEventSummarySchema = z.object({
 }).meta({ id: "AuthEventSummary" });
 
 /**
- * Something about an application that will stop working on a stated date,
- * computed by the gateway when the application is read. Read-only: no write
- * accepts it.
+ * What an application's owner should know about its settings or how it is
+ * used, or behaviour that will stop on a stated date, worked out by the
+ * gateway on every read and save. Read-only: no write accepts it.
  */
 export const AppWarningSchema = z.object({
   code: z.string().meta({ description: "Stable identifier of what the warning is about." }),
-  message: z.string().meta({ description: "What will stop, when, and what to do about it, in one sentence or two." }),
-  until: z.string().optional().meta({ description: "ISO 8601 UTC instant the behaviour stops." }),
-  docs_url: z.string().optional().meta({ description: "Where the change is described." }),
+  message: z.string().meta({ description: "What the problem is and what to do about it, in one sentence or two." }),
+  until: z.string().optional().meta({ description: "When the behaviour stops, as an ISO 8601 UTC instant. Absent when nothing stops." }),
+  docs_url: z.string().optional().meta({ description: "Where to read what to change." }),
 }).meta({ id: "AppWarning" });
 
 /**
@@ -388,7 +388,7 @@ export const AppResponseSchema = z.object({
     created_at: z.string(),
     updated_at: z.string(),
     warnings: z.array(AppWarningSchema).meta({
-      description: "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date.",
+      description: "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one.",
     }),
   }),
 }).meta({ id: "AppResponse" });
@@ -846,11 +846,17 @@ export const AppListResponseSchema = z.object({
 export const AppValidateResponseSchema = z.object({
   valid: z.literal(true),
   app_id: z.string(),
+  warnings: z.array(AppWarningSchema).meta({
+    description: "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date, once the app is saved. A warning never stops the app from working, so it never makes the app invalid.",
+  }),
 });
 
 /** A configuration for an application that does not exist yet would be accepted. */
 export const AppDraftValidateResponseSchema = z.object({
   valid: z.literal(true),
+  warnings: z.array(AppWarningSchema).meta({
+    description: "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date, once the app is saved. A warning never stops the app from working, so it never makes the app invalid.",
+  }),
 });
 
 /**
@@ -859,7 +865,7 @@ export const AppDraftValidateResponseSchema = z.object({
  */
 export const AppCheckResponseSchema = z.object({
   appId: z.string(),
-  validation: AppValidateResponseSchema.meta({
+  validation: AppValidateResponseSchema.omit({ warnings: true }).meta({
     description: "The stored configuration judged as an update of it would be. A configuration that would be refused answers the check itself with 400.",
   }),
   status: z.enum(APP_STATUSES),
@@ -880,7 +886,7 @@ export const AppCheckResponseSchema = z.object({
     description: "What this check did not exercise, one sentence each.",
   }),
   warnings: z.array(AppWarningSchema).meta({
-    description: "The application's warnings, as reading it returns them: behaviour that will stop on a stated date. They never make an application not ready.",
+    description: "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date. A warning never stops the app from working, so the app can still be ready.",
   }),
 });
 

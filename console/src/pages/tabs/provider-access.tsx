@@ -3,7 +3,15 @@ import { Check, ChevronDown, CircleSlash, Plus, Trash2 } from "lucide-react";
 import { OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
 import type { KindCatalog } from "@shared/model-kinds";
 import { emptyPolicy } from "@shared/app-defaults";
-import { defaultInferencePaths, isPassthroughPath, PASSTHROUGH_METHODS, type PassthroughMethod } from "@shared/app-config";
+import {
+  defaultInferencePaths,
+  DIRECT_ACCESS_GUIDE_URL,
+  isDirectAccessPath,
+  isPassthroughPath,
+  PASSTHROUGH_METHODS,
+  type PassthroughMethod,
+} from "@shared/app-config";
+import { providerDescriptor } from "@shared/providers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -211,6 +219,7 @@ function PathRow({
   onRemove: () => void;
 }) {
   const passthrough = type !== undefined && entry.path.trim() !== "" && isPassthroughPath(type, entry.path.trim());
+  const directAccess = type !== undefined && isDirectAccessPath(type, entry.path);
   const methods = entry.methods ?? ["POST"];
   const idPrefix = useId();
   const toggleMethod = (method: PassthroughMethod, on: boolean) => {
@@ -307,6 +316,20 @@ function PathRow({
         <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
           Non-standard path, forwarded as sent. No model check. Its cost counts toward spending
           limits only if the provider reports it. Request limits still apply.
+        </p>
+      ) : null}
+      {directAccess ? (
+        <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+          This endpoint lets your app talk to {providerDescriptor(type).label} directly, so the gateway
+          can't count, limit or record the conversations. Use realtime through the gateway instead.{" "}
+          <a
+            href={DIRECT_ACCESS_GUIDE_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary-ink underline underline-offset-4"
+          >
+            How
+          </a>
         </p>
       ) : null}
     </div>

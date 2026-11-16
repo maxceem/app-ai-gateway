@@ -24,7 +24,10 @@ import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 /** What a local or remote configuration check was able to establish. */
 export type ValidationResult =
   | { local: true; remote: false; skipped: string[] }
-  | ({ local: true; remote: true } & (AppValidateResponse | AppDraftValidateResponse));
+  // A gateway from before warnings answers without them.
+  | ({ local: true; remote: true } & PartialWarnings<AppValidateResponse | AppDraftValidateResponse>);
+
+type PartialWarnings<T> = T extends { warnings: infer W } ? Omit<T, "warnings"> & { warnings?: W } : T;
 
 export interface AppWriteResult {
   snippet?: string;

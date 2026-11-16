@@ -5,6 +5,7 @@ import "../admin-app-writes.test";
 import "../admin-auth-events.test";
 import "../admin-providers.test";
 import "../app-check-snippet.test";
+import "../app-warnings.test";
 
 import "../app-operations.test";
 import "../mcp.test";

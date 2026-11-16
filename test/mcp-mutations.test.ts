@@ -1005,6 +1005,31 @@ describe("MCP direct changes", () => {
     );
   });
 
+  it("says an app's warnings in the text of every app tool that answers with them", async () => {
+    const owner = await withApp("mcp-app-warnings@example.test");
+    const path = "/config/routing/providers/selected/openai/allowed_paths/-";
+    const said = "You configured `v1/realtime/client_secrets` for provider \"openai\".";
+    const read = await callTool(owner.key, "get_app", { app: owner.app });
+    const { name, id: _id, revision, created_at: _c, updated_at: _u, warnings: _w, ...rest } = read.structuredContent.app;
+    expect(read.content[0]?.text).not.toContain("Warnings:");
+
+    const validated = await callTool(owner.key, "validate_app", {
+      app: owner.app,
+      config: { name, ...rest, config: { ...rest.config, routing: { ...rest.config.routing, providers: { mode: "selected", selected: { openai: { allowed_paths: ["v1/realtime/client_secrets"], allowed_models: [] } } } } } },
+    });
+    expect(validated.isError, validated.content[0]?.text).toBeFalsy();
+    expect(validated.content[0]?.text).toContain(`Warnings: ${said}`);
+
+    const patched = await callTool(owner.key, "patch_app", {
+      app: owner.app,
+      revision,
+      operations: [{ op: "add", path, value: "v1/realtime/client_secrets" }],
+    });
+    expect(patched.isError, patched.content[0]?.text).toBeFalsy();
+    expect(patched.content[0]?.text).toContain(`Warnings: ${said}`);
+    expect((await callTool(owner.read, "get_app", { app: owner.app })).content[0]?.text).toContain(`Warnings: ${said}`);
+  });
+
   it("patches only the settings named, against the revision it was read at", async () => {
     const owner = await withApp("mcp-patch-app@example.test");
     const read = await callTool(owner.key, "get_app", { app: owner.app });

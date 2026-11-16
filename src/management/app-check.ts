@@ -13,7 +13,6 @@ import {
 import type { Actor } from "./actor";
 import { validateApp } from "./apps";
 import { listProviders } from "./providers";
-import { appWarnings } from "./app-warnings";
 import type { ManagementScope } from "./scope";
 
 type AppRow = typeof app.$inferSelect;
@@ -74,7 +73,8 @@ export async function checkApp(
   );
   return {
     appId: stored.id,
-    validation,
+    // Its warnings are the check's own, reported once, below.
+    validation: { valid: validation.valid, app_id: validation.app_id },
     status: stored.status,
     providers: named.map(({ id, slug, status }) => ({ id, slug, status })),
     ready: stored.status === "active"
@@ -82,6 +82,6 @@ export async function checkApp(
       && accountRefusal === null,
     accountRefusal,
     limitations: [...APP_CHECK_LIMITATIONS],
-    warnings: appWarnings(stored),
+    warnings: validation.warnings,
   };
 }

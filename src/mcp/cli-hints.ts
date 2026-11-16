@@ -84,7 +84,11 @@ export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
       document: "app.config",
     },
   },
-  validate_app: { command: "app validate", args: ["app"] },
+  validate_app: {
+    command: "app validate",
+    args: ["app"],
+    view: { record: "", columns: ["valid", "app_id=App ID"], notes: ["warnings"] },
+  },
   check_app: {
     command: "app check",
     args: ["app"],
@@ -175,12 +179,12 @@ export const CLI_HINTS: Readonly<Record<string, CliToolHint>> = {
     command: "app replace",
     summary: "Replace an app's whole document",
     args: ["app"],
-    view: { record: "app", columns: ["name", "id", "status", "revision"] },
+    view: { record: "app", columns: ["name", "id", "status", "revision"], notes: ["app.warnings"] },
   },
   patch_app: {
     command: "app update",
     args: ["app"],
-    view: { record: "app", columns: ["name", "id", "status", "revision"] },
+    view: { record: "app", columns: ["name", "id", "status", "revision"], notes: ["app.warnings"] },
   },
   remove_app: { command: "app remove", args: ["app"], confirm: "app" },
   add_app_key: { command: "app key add", args: ["app"] },

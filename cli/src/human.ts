@@ -397,7 +397,11 @@ function app(
         ],
         style,
       ),
-      ...notes(result.validation.remote ? [] : result.validation.skipped),
+      ...notes(
+        result.validation.remote
+          ? (result.validation.warnings ?? []).map((warning) => warning.message)
+          : result.validation.skipped,
+      ),
       ...(dryRun ? ["", "Nothing was written."] : []),
     ];
   }
@@ -468,6 +472,8 @@ function written(
       `${command === "app add" ? "Created" : "Updated"} app ${result.app.name} (${result.app.id}).`,
     ),
     ...kv([["Gateway", context.url], ...details], style),
+    // A gateway from before warnings answers without them.
+    ...notes((result.app.warnings ?? []).map((warning) => warning.message)),
     ...(result.guidance ? ["", result.guidance] : []),
     ...("snippet" in result && result.snippet
       ? ["", ...style.code(result.snippet, language)]

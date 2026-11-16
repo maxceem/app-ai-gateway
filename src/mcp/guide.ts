@@ -51,8 +51,10 @@ URL yourself or act as the person approving it.
 - \`list_providers\`, \`get_provider\`, \`list_provider_gateways\` — the provider
   credentials and provider gateways the account holds, as metadata.
 - \`list_apps\`, \`get_app\` — the apps, and one app's whole stored document.
-  Its \`warnings\` describe behaviour that will stop on the stated date: tell
-  the person, and help them act before then.
+  Its \`warnings\` point out what the person should know about the app's
+  settings or how it is used, or behaviour that stops on a stated date. A
+  warning never stops the app from working. Tell the person about each one and
+  help them act on it.
 - \`validate_app\` — whether an app document would be accepted, without saving it.
 - \`check_app\` — whether an app can serve requests, without sending one.
 - \`get_app_snippet\` — the first request an app can send.

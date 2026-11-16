@@ -366,10 +366,12 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 `status` is `active` or `disabled`. A disabled app refuses every request
 with `403 app_disabled` and keeps everything.
 
-An app's `warnings` describe behaviour that will stop on the stated date:
-each has a `code`, a `message`, and usually `until` and `docs_url`. Tell the
-person about every warning and help them act before its date. Warnings are
-read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
+An app's `warnings` point out what the person should know about the app's
+settings or how it is used, or behaviour that stops on a stated date. A
+warning never stops the app from working. Tell the person about each one and
+help them act on it. Each has a `code` and a `message`, and may have `until`
+and `docs_url`. Reading, creating, updating and validating an app all return
+its warnings. Warnings are read-only: leave `warnings`, `id`, `created_at` and `updated_at` out of the
 body you write back, or the write is refused, and keep the `revision` from the
 read, which an update requires.
 

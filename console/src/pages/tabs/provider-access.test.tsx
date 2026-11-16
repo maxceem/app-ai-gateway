@@ -204,6 +204,12 @@ describe("ProviderAccessTab", () => {
     expect(screen.getAllByText(/^Non-standard path/u)).toHaveLength(1);
     expect(screen.getAllByText("Fixed model")).toHaveLength(1);
     expect(screen.getByText(/Its cost counts toward spending\s+limits only if the provider reports it/u)).toBeTruthy();
+    // A path that lets the app talk to OpenAI directly says so, and links what to use instead.
+    expect(screen.getByText(/^This endpoint lets your app talk to OpenAI directly/u).textContent).toContain(
+      "so the gateway can't count, limit or record the conversations. Use realtime through the gateway instead.",
+    );
+    expect(screen.getByRole("link", { name: "How" }).getAttribute("href"))
+      .toBe("https://docs.appaigateway.com/integrate/realtime/#instead-of-client-secrets");
     // POST, the default, comes first.
     expect(screen.getAllByText(/^(GET|POST|PUT|PATCH|DELETE)$/u).map((label) => label.textContent))
       .toEqual(["POST", "GET", "PUT", "PATCH", "DELETE"]);

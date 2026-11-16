@@ -1086,15 +1086,15 @@
           },
           "message": {
             "type": "string",
-            "description": "What will stop, when, and what to do about it, in one sentence or two."
+            "description": "What the problem is and what to do about it, in one sentence or two."
           },
           "until": {
             "type": "string",
-            "description": "ISO 8601 UTC instant the behaviour stops."
+            "description": "When the behaviour stops, as an ISO 8601 UTC instant. Absent when nothing stops."
           },
           "docs_url": {
             "type": "string",
-            "description": "Where the change is described."
+            "description": "Where to read what to change."
           }
         },
         "required": [
@@ -1414,7 +1414,7 @@
                 "items": {
                   "$ref": "#/components/schemas/AppWarning"
                 },
-                "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
               }
             },
             "required": [
@@ -3387,7 +3387,7 @@
                 "items": {
                   "$ref": "#/components/schemas/AppWarning"
                 },
-                "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
               }
             },
             "required": [
@@ -3481,7 +3481,7 @@
                     "items": {
                       "$ref": "#/components/schemas/AppWarning"
                     },
-                    "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                    "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
                   }
                 },
                 "required": [
@@ -5881,7 +5881,7 @@
                           "items": {
                             "$ref": "#/components/schemas/AppWarning"
                           },
-                          "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                          "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
                         }
                       },
                       "required": [
@@ -7405,11 +7405,19 @@
                     },
                     "app_id": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AppWarning"
+                      },
+                      "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date, once the app is saved. A warning never stops the app from working, so it never makes the app invalid."
                     }
                   },
                   "required": [
                     "valid",
-                    "app_id"
+                    "app_id",
+                    "warnings"
                   ]
                 }
               }
@@ -7497,10 +7505,18 @@
                       "enum": [
                         true
                       ]
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AppWarning"
+                      },
+                      "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date, once the app is saved. A warning never stops the app from working, so it never makes the app invalid."
                     }
                   },
                   "required": [
-                    "valid"
+                    "valid",
+                    "warnings"
                   ]
                 }
               }
@@ -7669,7 +7685,7 @@
                       "items": {
                         "$ref": "#/components/schemas/AppWarning"
                       },
-                      "description": "The application's warnings, as reading it returns them: behaviour that will stop on a stated date. They never make an application not ready."
+                      "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on a stated date. A warning never stops the app from working, so the app can still be ready."
                     }
                   },
                   "required": [
@@ -14039,7 +14055,7 @@
                               "items": {
                                 "$ref": "#/components/schemas/AppWarning"
                               },
-                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                              "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
                             }
                           },
                           "required": [
@@ -14864,7 +14880,7 @@
                               "items": {
                                 "$ref": "#/components/schemas/AppWarning"
                               },
-                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                              "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
                             }
                           },
                           "required": [
@@ -15666,7 +15682,7 @@
                               "items": {
                                 "$ref": "#/components/schemas/AppWarning"
                               },
-                              "description": "Behaviour of this application that will stop on a stated date, computed when the application is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date."
+                              "description": "What the app's owner should know about the app's settings or how it is used, or behaviour that will stop on the date in `until`. Empty when there are none. A warning never stops the app from working. Read-only. Tell the person who owns the app about each one."
                             }
                           },
                           "required": [

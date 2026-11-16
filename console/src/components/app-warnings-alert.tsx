@@ -4,9 +4,10 @@ import { formatDateTime } from "@/lib/format";
 import type { AppWarning } from "@contracts/responses";
 
 /**
- * What about this app stops working on a stated date, as the gateway computed
- * it when the app was read. Nothing here can be edited: each warning says what
- * to change in the app itself, and by when.
+ * What the app's owner should know about its settings or how it is used, or
+ * what stops on a stated date, as the gateway worked it out when the app was
+ * read. Nothing here can be edited: each warning says what to change in the
+ * app itself.
  */
 export function AppWarningsAlert({ warnings }: { warnings: readonly AppWarning[] }) {
   if (warnings.length === 0) return null;

@@ -74,3 +74,32 @@ test("a provider can be added and removed, and its key is never echoed back", as
     await admin(env, "DELETE", `/v1/admin/providers/${encodeURIComponent(created.provider.id)}`);
   }
 });
+
+test("an app that lists OpenAI's client secrets path is saved as sent, and warned about", async () => {
+  type Warned = { app: { id: string; revision: number; warnings: { code: string; docs_url?: string }[] } };
+  const name = temporaryName();
+  const config = {
+    authentication: { type: "api_key", end_user: { source: "none" } },
+    routing: {
+      providers: {
+        mode: "selected",
+        selected: { "smoke-openai": { allowed_paths: ["v1/realtime/client_secrets"], allowed_models: [] } },
+      },
+      model_rewrites: {},
+    },
+  };
+  const { app } = await admin<Warned>(env, "POST", "/v1/admin/apps", { name, config });
+  const path = `/v1/admin/apps/${encodeURIComponent(app.id)}`;
+  try {
+    expect(app.warnings.map((warning) => warning.code)).toEqual(["realtime_client_secrets"]);
+    // Another edit still warns while the path stays.
+    const { app: renamed } = await admin<Warned>(env, "PATCH", path, {
+      revision: app.revision,
+      operations: [{ op: "replace", path: "/name", value: `${name}-renamed` }],
+    });
+    expect(renamed.warnings.map((warning) => warning.code)).toEqual(["realtime_client_secrets"]);
+    expect(renamed.warnings[0]?.docs_url).toMatch(/\/integrate\/realtime\//u);
+  } finally {
+    await admin(env, "DELETE", `${path}?confirm=${encodeURIComponent(app.id)}`);
+  }
+});

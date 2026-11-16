@@ -205,7 +205,7 @@ describe("admin console API", () => {
       }),
     });
     expect(valid.status).toBe(200);
-    await expect(valid.json()).resolves.toEqual({ valid: true });
+    await expect(valid.json()).resolves.toEqual({ valid: true, warnings: [] });
 
     const invalid = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
       method: "POST",

@@ -187,7 +187,7 @@ function summary(config: AppConfig, providerIndex: OrganizationProviders) {
   };
 }
 
-function serializeApp(stored: StoredApp) {
+function serializeApp(stored: StoredApp, providers: OrganizationProviders) {
   return {
     id: stored.id,
     name: stored.name,
@@ -196,8 +196,8 @@ function serializeApp(stored: StoredApp) {
     created_at: stored.createdAt,
     updated_at: stored.updatedAt,
     revision: stored.revision,
-    // Computed on every read, never stored or written.
-    warnings: appWarnings(stored),
+    // Worked out on every read and save, never stored or written.
+    warnings: appWarnings(stored.config, Object.values(providers)),
   };
 }
 
@@ -317,11 +317,8 @@ export async function createApp(
   await requireEntitlement(scope, actor.organizationId);
   const { name } = body;
   const organizationId = actor.organizationId;
-  const config = validatedConfig(
-    env,
-    body.config,
-    await authoritativeOrganizationProviders(env, organizationId),
-  );
+  const providers = await authoritativeOrganizationProviders(env, organizationId);
+  const config = validatedConfig(env, body.config, providers);
   await requireConversationStorage(scope, organizationId, config);
   const cap = await planCap(scope, "app", organizationId);
   for (let attempt = 0; attempt < APP_ID_ATTEMPTS; attempt += 1) {
@@ -334,7 +331,10 @@ export async function createApp(
       key_prefix: generated.keyPrefix, created_at: now,
     } : null;
     const outcome = {
-      app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now, warnings: [] },
+      app: {
+        id: appId, name, config, status, revision: 1, created_at: now, updated_at: now,
+        warnings: appWarnings(config, Object.values(providers)),
+      },
       api_key: createdKey,
     };
     // The app cap guards the app row alone. The default key rides along with the
@@ -384,11 +384,12 @@ export async function createApp(
   throw new GatewayError(409, "conflict", "Could not allocate a unique app ID; retry the same request");
 }
 
-export function getApp(_scope: ManagementScope, _actor: Actor, row: AppRow): AppResponse {
+export async function getApp(scope: ManagementScope, actor: Actor, row: AppRow): Promise<AppResponse> {
   // Parsed rather than passed through: every write validates before it stores,
   // so a row that does not parse is an internal error here exactly as it is on
   // the request path.
-  return { app: serializeApp(storedAppFromRow(row)) };
+  const stored = storedAppFromRow(row);
+  return { app: serializeApp(stored, await authoritativeOrganizationProviders(scope.env, actor.organizationId)) };
 }
 
 /** Whether an edit of an existing application would be accepted, judged as its update would be. */
@@ -400,14 +401,10 @@ export async function validateApp(
 ): Promise<AppValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
   const current = appRecordFromRow(existing).config;
-  const config = validatedConfig(
-    scope.env,
-    body.config,
-    await authoritativeOrganizationProviders(scope.env, actor.organizationId),
-    referencedProviderSlugs(current),
-  );
+  const providers = await authoritativeOrganizationProviders(scope.env, actor.organizationId);
+  const config = validatedConfig(scope.env, body.config, providers, referencedProviderSlugs(current));
   await requireConversationStorage(scope, actor.organizationId, config, current);
-  return { valid: true, app_id: existing.id };
+  return { valid: true, app_id: existing.id, warnings: appWarnings(config, Object.values(providers)) };
 }
 
 /** Whether a configuration for a new application would be accepted, judged as its creation would be. */
@@ -417,13 +414,10 @@ export async function validateAppDraft(
   body: AppWrite,
 ): Promise<AppDraftValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  const config = validatedConfig(
-    scope.env,
-    body.config,
-    await authoritativeOrganizationProviders(scope.env, actor.organizationId),
-  );
+  const providers = await authoritativeOrganizationProviders(scope.env, actor.organizationId);
+  const config = validatedConfig(scope.env, body.config, providers);
   await requireConversationStorage(scope, actor.organizationId, config);
-  return { valid: true };
+  return { valid: true, warnings: appWarnings(config, Object.values(providers)) };
 }
 
 export async function updateApp(
@@ -440,12 +434,8 @@ export async function updateApp(
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
   const current = appRecordFromRow(existing).config;
-  const config = validatedConfig(
-    env,
-    body.config,
-    await authoritativeOrganizationProviders(env, organizationId),
-    referencedProviderSlugs(current),
-  );
+  const providers = await authoritativeOrganizationProviders(env, organizationId);
+  const config = validatedConfig(env, body.config, providers, referencedProviderSlugs(current));
   await requireConversationStorage(scope, organizationId, config, current);
   // Conditional on the row still being this organization's, so an app deleted
   // or handed over between the read above and this write is not resurrected
@@ -461,7 +451,7 @@ export async function updateApp(
   });
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  return { app: serializeApp(written) };
+  return { app: serializeApp(written, providers) };
 }
 
 /**
