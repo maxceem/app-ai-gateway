@@ -29,7 +29,12 @@ import { foldOutcomes } from "@/lib/auth-events";
 import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
 import { isAppleNetwork, networkLabel } from "@/lib/networks";
 import { useAuthEventSummary, useAuthEvents, useRejectionEvents } from "@/lib/queries";
-import { REJECTION_REASONS, REJECTION_SCOPES, type RejectionScope } from "@shared/rejection-reasons";
+import {
+  REJECTION_REASONS,
+  REJECTION_SCOPES,
+  type RejectionReason,
+  type RejectionScope,
+} from "@shared/rejection-reasons";
 
 /**
  * Whose limit refused, in the filter and the table. A record over every scope,
@@ -43,6 +48,28 @@ const REJECTION_SCOPE_LABELS: Record<RejectionScope, string> = {
   apple_account: "Apple Account",
   app: "App",
   account: "Your account",
+};
+
+/**
+ * Why a request was refused, in the filter. A record over every reason, like
+ * the scopes, so a reason the gateway adds fails the build here. The table
+ * shows the code itself, which is what the app received.
+ */
+const REJECTION_REASON_LABELS: Record<RejectionReason, string> = {
+  blocked_app_rate: "App rate limit",
+  blocked_app_budget: "App budget",
+  blocked_billing: "Account allowance",
+  blocked_user: "Blocked user",
+  blocked_replay: "Replayed App Attest proof",
+  path_not_allowed: "Path not allowed",
+  model_not_allowed: "Model not allowed",
+  provider_not_configured: "Provider not configured",
+  provider_disabled: "Provider turned off",
+  pricing_not_configured: "Model has no price",
+  max_output_tokens_exceeded: "Output limit exceeded",
+  api_style_not_supported: "Request format not supported",
+  payload_too_large: "Request too large",
+  endpoint_not_found: "Endpoint not found",
 };
 
 const OUTCOME_FILTERS = [
@@ -193,7 +220,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Recent refusal samples"
-            description="Requests stopped before a provider call. At most one sample per identity per minute; this is diagnostic history, not an exact count."
+            description="Requests stopped before a provider call, by the app's limits or by its settings, such as a path or model it does not allow. At most one sample per identity per minute for limits, and one for each settings cause; this is diagnostic history, not an exact count."
           />
           <div className="flex flex-wrap gap-2 pt-3">
             <Select
@@ -203,16 +230,14 @@ export function ErrorsTab({ appId }: { appId: string }) {
                 setRejectionCursors([]);
               }}
             >
-              <SelectTrigger className="w-[190px]" size="sm" aria-label="Refusal reason">
+              <SelectTrigger className="w-[230px]" size="sm" aria-label="Refusal reason">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All reasons</SelectItem>
-                <SelectItem value="blocked_app_rate">App rate limit</SelectItem>
-                <SelectItem value="blocked_app_budget">App budget</SelectItem>
-                <SelectItem value="blocked_billing">Account allowance</SelectItem>
-                <SelectItem value="blocked_user">Blocked user</SelectItem>
-                <SelectItem value="blocked_replay">Replayed App Attest proof</SelectItem>
+                {REJECTION_REASONS.map((reason) => (
+                  <SelectItem key={reason} value={reason}>{REJECTION_REASON_LABELS[reason]}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Select

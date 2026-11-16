@@ -298,6 +298,37 @@ describe("ErrorsTab", () => {
     expect(screen.getByText("bad_signature")).toBeTruthy();
   });
 
+  it("shows a path the app's settings refused, and filters by that reason", async () => {
+    const rejection: RejectionEvent = {
+      id: 11,
+      user_id: "user-1",
+      install_id: null,
+      api_key_id: null,
+      reason: "path_not_allowed",
+      scope: "app",
+      provider_slug: "openai",
+      model: null,
+      route: "openai/v1/audio/transcriptions",
+      endpoint_slug: null,
+      app_version: "2.0",
+      auth_method: "attest",
+      latency_ms: 4,
+      created_at: "2026-08-30T10:00:00.000Z",
+    };
+    const { fetchMock } = renderTab(
+      summary({ rejection_samples: [{ date: "2026-08-30", reason: "path_not_allowed", scope: "app", count: 2 }] }),
+      [],
+      [rejection],
+    );
+
+    expect(await screen.findByText("openai/v1/audio/transcriptions")).toBeTruthy();
+    expect(screen.getAllByText("path_not_allowed").length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("combobox", { name: "Refusal reason" }));
+    await userEvent.click(screen.getByRole("option", { name: "Path not allowed" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) =>
+      String(input).includes("rejection-events") && String(input).includes("reason=path_not_allowed"))).toBe(true));
+  });
+
   it("labels and filters recent refusal samples in the Errors view", async () => {
     const rejection: RejectionEvent = {
       id: 9,

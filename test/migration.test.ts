@@ -433,6 +433,8 @@ describe("initial database migration", () => {
       .rejects.toThrow(/CHECK constraint failed/u);
     // A replayed App Attest counter is refused per install.
     await insert("migration-rejection-4", "blocked_replay", "install");
+    // A refusal by the app's own settings is recorded under its error code.
+    await insert("migration-rejection-5", "path_not_allowed", "app");
   });
 
   /**

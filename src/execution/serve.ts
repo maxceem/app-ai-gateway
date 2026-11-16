@@ -43,6 +43,8 @@ import { contained } from "../core/background";
 import { readConversationHeaders } from "../conversations/client-headers";
 import { planIncludes } from "../billing/features";
 import { getBillingAccess } from "../billing/gateway";
+import { recordRejectionEvent } from "../diagnostics/rejection-events";
+import { isConfigRejectionReason } from "../shared/rejection-reasons";
 
 export interface ServedVariables extends RequestVariables {
   /**
@@ -114,11 +116,58 @@ async function authenticated(
   return { app, identity, credentialHeader: credential.headerName, assertionCounter };
 }
 
+/** What a served request named in its URL: a provider and its path, or an endpoint. */
+type ServedTarget =
+  | { providerSlug: string; providerPath: string; endpointSlug?: undefined }
+  | { providerSlug?: undefined; providerPath?: undefined; endpointSlug: string };
+
+/** Longer than any route or slug an app configures; what a URL names past it is cut. */
+const REFUSED_TARGET_MAX_LENGTH = 200;
+
+/**
+ * Records a request the app's own settings refused, as a refusal sample the
+ * console shows, so a developer sees which path or model their app asked for
+ * instead of only their app's error. The response is decided already, and the
+ * record runs in the background, so it can never change what the client gets.
+ */
+function recordConfigRefusal(
+  c: ServedContext,
+  error: unknown,
+  refused: {
+    identity: GatewayIdentity;
+    target: ServedTarget;
+    appVersion: string | null;
+    latencyMs: number;
+  },
+): void {
+  if (!(error instanceof GatewayError) || !isConfigRejectionReason(error.code)) return;
+  const reason = error.code;
+  const { target } = refused;
+  const cut = (value: string) => value.slice(0, REFUSED_TARGET_MAX_LENGTH);
+  c.executionCtx.waitUntil(contained("rejection_event", recordRejectionEvent({
+    env: c.env,
+    identity: refused.identity,
+    attribution: target.endpointSlug === undefined
+      ? {
+        providerSlug: cut(target.providerSlug),
+        model: error.model === undefined ? null : cut(error.model),
+        route: cut(`${target.providerSlug}/${target.providerPath}`),
+      }
+      : { providerSlug: null, model: error.model === undefined ? null : cut(error.model), route: null },
+    endpointSlug: target.endpointSlug === undefined ? null : cut(target.endpointSlug),
+    appVersion: refused.appVersion,
+    reason,
+    scope: "app",
+    latencyMs: Math.round(refused.latencyMs),
+  })));
+}
+
 async function serve(
   c: ServedContext,
-  providerSlug: string | undefined,
+  target: ServedTarget,
   prepare: (input: PrepareInput) => Promise<ExecutionPlan>,
 ): Promise<Response> {
+  const providerSlug = target.providerSlug;
   const timings: ServedTimings = {};
   c.set("servedTimings", timings);
   const body = bodyOnce(c.req.raw);
@@ -129,14 +178,22 @@ async function serve(
   // refused before anything is spent on the request.
   const conversation = readConversationHeaders(c.req.raw.headers);
   // Timed whether it succeeds or refuses, as every step is.
+  const appVersion = c.req.header("x-app-version") ?? null;
   const prepareStart = performance.now();
   let plan: ExecutionPlan;
   try {
     plan = await prepare({ env: c.env, request: c.req.raw, body, app, identity, credentialHeader });
+  } catch (error) {
+    recordConfigRefusal(c, error, {
+      identity,
+      target,
+      appVersion,
+      latencyMs: performance.now() - prepareStart,
+    });
+    throw error;
   } finally {
     timings.prepareMs = performance.now() - prepareStart;
   }
-  const appVersion = c.req.header("x-app-version") ?? null;
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(contained("served_request", promise));
   const limiterStart = performance.now();
   try {
@@ -184,12 +241,16 @@ async function serve(
 /** `/v1/apps/:app/proxy/:provider/*`: the client names the provider and its path. */
 export const serveProxy: Handler<{ Bindings: Env; Variables: ServedVariables }> = (c) => {
   const providerSlug = c.req.param("provider") ?? "";
-  return serve(c, providerSlug, (input) =>
+  // The path after the provider, as the plan reads it, for a refusal's sample.
+  const marker = `/proxy/${providerSlug}/`;
+  const at = c.req.path.indexOf(marker);
+  const providerPath = at === -1 ? "" : c.req.path.slice(at + marker.length);
+  return serve(c, { providerSlug, providerPath }, (input) =>
     prepareProxyPlan({ ...input, providerSlug, path: c.req.path }));
 };
 
 /** `/v1/apps/:app/endpoints/:slug`: the application's own configuration names everything. */
 export const serveEndpoint: Handler<{ Bindings: Env; Variables: ServedVariables }> = (c) => {
   const slug = c.req.param("slug") ?? "";
-  return serve(c, undefined, (input) => prepareEndpointPlan({ ...input, slug }));
+  return serve(c, { endpointSlug: slug }, (input) => prepareEndpointPlan({ ...input, slug }));
 };

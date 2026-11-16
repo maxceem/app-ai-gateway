@@ -713,7 +713,7 @@ export const appRejectionEvent = sqliteTable(
     index("idx_rejection_events_app_created").on(table.appId, table.createdAt),
     index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
     index("idx_rejection_events_created").on(table.createdAt),
-    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user', 'blocked_replay')`),
+    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user', 'blocked_replay', 'path_not_allowed', 'model_not_allowed', 'provider_not_configured', 'provider_disabled', 'pricing_not_configured', 'max_output_tokens_exceeded', 'api_style_not_supported', 'payload_too_large', 'endpoint_not_found')`),
     check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'install', 'apple_account', 'app', 'account')`),
   ],
 );

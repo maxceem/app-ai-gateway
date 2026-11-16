@@ -120,6 +120,13 @@
       "when": 1794800323327,
       "tag": "0016_auth_challenge_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1794803170368,
+      "tag": "0017_config_refusal_reasons",
+      "breakpoints": true
     }
   ]
 }
