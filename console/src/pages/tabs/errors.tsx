@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -25,6 +27,7 @@ import { StatCard } from "@/components/stat-card";
 import { AuthOutcomeBadge } from "@/components/status-badge";
 import { foldOutcomes } from "@/lib/auth-events";
 import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
+import { isAppleNetwork, networkLabel } from "@/lib/networks";
 import { useAuthEventSummary, useAuthEvents, useRejectionEvents } from "@/lib/queries";
 import { REJECTION_REASONS, REJECTION_SCOPES, type RejectionScope } from "@shared/rejection-reasons";
 
@@ -49,6 +52,9 @@ const OUTCOME_FILTERS = [
   "service_unavailable",
   "attest_failed",
   "auth_required",
+  "abandoned",
+  "client_failed",
+  "client_recovered",
   "ok",
 ] as const;
 
@@ -78,9 +84,27 @@ export function ErrorsTab({ appId }: { appId: string }) {
   const outcomes = useMemo(() => foldOutcomes(summary.data), [summary.data]);
   const claimDelay = summary.data?.claim_delay;
   const pending = summary.data?.pending_users ?? 0;
+  // A failure on Apple's own network is most likely App Review's: the one
+  // network worth calling out, because a build in review that cannot sign in
+  // may be rejected without the developer ever seeing why.
+  const apple = summary.data?.failing_networks?.find((row) => isAppleNetwork(row.network_asn));
 
   return (
     <div className="space-y-4">
+      {apple ? (
+        <Alert>
+          <AlertCircle />
+          <AlertTitle>
+            Sign-in failed {formatNumber(apple.count)} {apple.count === 1 ? "time" : "times"} on Apple&apos;s network
+          </AlertTitle>
+          <AlertDescription>
+            App Review tests apps from Apple&apos;s network, so a build in review most likely could not use
+            this app&apos;s AI features. Last seen {formatDateTime(apple.last_seen)}. Look for attempts from
+            Apple Inc. under Recent attempts below.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Exchange success"
@@ -308,7 +332,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Recent attempts"
-            description="Every token exchange and key registration, newest first."
+            description="Every token exchange and key registration, and every App Attest challenge that nothing used, newest first."
             action={
               <Select
                 value={outcome}
@@ -342,6 +366,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
                 <TableHead>Outcome</TableHead>
                 <TableHead>Reason</TableHead>
                 <TableHead>App version</TableHead>
+                <TableHead>Network</TableHead>
                 <TableHead className="text-right">Latency</TableHead>
                 <TableHead className="text-right">Claim delay</TableHead>
               </TableRow>
@@ -349,13 +374,13 @@ export function ErrorsTab({ appId }: { appId: string }) {
             <TableBody>
               {events.isPending ? (
                 <TableRow>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={9}>
                     <Skeleton className="h-8 w-full" />
                   </TableCell>
                 </TableRow>
               ) : events.data?.events.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">
                     No attempts.
                   </TableCell>
                 </TableRow>
@@ -384,6 +409,12 @@ export function ErrorsTab({ appId }: { appId: string }) {
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.app_version ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {networkLabel(event.network_asn, event.network_name) ?? "—"}
+                      {isAppleNetwork(event.network_asn) ? (
+                        <span className="block text-amber-600 dark:text-amber-400">probably App Review</span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}

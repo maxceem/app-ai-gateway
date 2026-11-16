@@ -179,6 +179,71 @@
           "challenge"
         ]
       },
+      "AppAttestFailureReport": {
+        "type": "object",
+        "properties": {
+          "challenge": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "step": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "description": "The step that failed after the challenge was issued: attest_key, generate_assertion, issuer_token, register or token. The Swift package reports a register or token step only when the request never got an answer from the gateway; a refusal is recorded by the gateway itself."
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The error's domain, such as com.apple.devicecheck.error or NSURLErrorDomain. Stored only when it is a short token (letters, digits, dots, underscores and hyphens, at most 64 characters); anything else is stored as other."
+              },
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "domain",
+              "code"
+            ]
+          },
+          "underlying_error": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The error's domain, such as com.apple.devicecheck.error or NSURLErrorDomain. Stored only when it is a short token (letters, digits, dots, underscores and hyphens, at most 64 characters); anything else is stored as other."
+              },
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "domain",
+              "code"
+            ],
+            "description": "The error inside the reported one, where it wraps another — often the more telling of the two, such as a network timeout under an App Attest failure."
+          },
+          "recovered": {
+            "type": "boolean",
+            "description": "True when the app recovered from this failure by itself, such as by registering a new key after a reinstall. Recorded as client_recovered instead of client_failed."
+          }
+        },
+        "required": [
+          "challenge",
+          "step",
+          "error"
+        ]
+      },
       "AppAttestTokenRequest": {
         "type": "object",
         "properties": {
@@ -2775,7 +2840,8 @@
                   "type": "string",
                   "enum": [
                     "token_exchange",
-                    "register"
+                    "register",
+                    "challenge"
                   ]
                 },
                 "outcome": {
@@ -2800,6 +2866,39 @@
               ]
             },
             "description": "Authentication attempts per day, grouped by outcome and granular reason."
+          },
+          "failing_networks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "network_asn": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "network_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "last_seen": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "network_asn",
+                "network_name",
+                "count",
+                "last_seen"
+              ]
+            },
+            "description": "The networks failed authentication attempts came from in the window, busiest first, at most ten. Attempts whose network is unknown are left out. Apple's own network (714) is where App Review tests apps."
           },
           "usage_failures": {
             "type": "array",
@@ -2960,8 +3059,10 @@
             "type": "string",
             "enum": [
               "token_exchange",
-              "register"
-            ]
+              "register",
+              "challenge"
+            ],
+            "description": "token_exchange or register for a call to that endpoint. challenge for an App Attest challenge that nothing spent: the app reported a failure on the device, or the challenge expired unused."
           },
           "auth_method": {
             "type": [
@@ -2976,7 +3077,7 @@
           },
           "outcome": {
             "type": "string",
-            "description": "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed."
+            "description": "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed. A challenge event ends abandoned (it expired and the app never said why), client_failed (the app reported the step that failed), or client_recovered (the app reported a failure it recovered from)."
           },
           "reason": {
             "type": [
@@ -2997,6 +3098,20 @@
               "null"
             ],
             "description": "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version."
+          },
+          "network_asn": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The autonomous system number of the network the attempt came from, as Cloudflare reports it. 714 is Apple's own network, where App Review tests apps. Null when unknown and on attempts recorded before networks were kept."
+          },
+          "network_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That network's name, such as Apple Inc. or Verizon Business. A network, never an address."
           },
           "latency_ms": {
             "type": [
@@ -4222,6 +4337,148 @@
           },
           "503": {
             "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff. `service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/auth/failure": {
+      "post": {
+        "tags": [
+          "Application authentication"
+        ],
+        "operationId": "reportAppAttestFailure",
+        "summary": "Report a failure on the device after a challenge",
+        "description": "Sent by the app when a step after POST /v1/apps/{app}/auth/challenge failed on the device, so the app's auth events can say why instead of only that the challenge expired unused. Diagnostic only: it changes nothing about how the app is authenticated. It must name a challenge this app issued that nothing has spent yet, and spends it, so one challenge carries at most one report. The step and the error's domain and code are recorded as a challenge auth event, outcome client_failed, or client_recovered when recovered is true.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app's own version, recorded on the auth event."
+            },
+            "required": false,
+            "description": "The app's own version, recorded on the auth event.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider."
+            },
+            "required": false,
+            "description": "The gateway client package and its version, `<package>/<major>.<minor>.<patch>`, such as `app-ai-gateway-swift/1.7.0`. Releases of the AppAIGateway Swift package after 1.7.0 send it on every request. Recorded as the auth event's client_sdk on a token exchange or key registration; anything that is not one of the gateway's own packages in exactly that form is ignored, and the request is answered as if it were absent. Never forwarded to the provider.",
+            "name": "x-client-sdk",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppAttestFailureReport"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether a report was recorded for the challenge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "recorded": {
+                      "type": "boolean",
+                      "description": "False when the challenge was never issued for this app, or was already spent or reported: nothing was recorded, and there is nothing for the client to do about it."
+                    }
+                  },
+                  "required": [
+                    "recorded"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "No billing plan resolves for the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many application authentication requests from this network address for this application. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`service_unavailable` — the gateway's database or one of its Durable Objects failed or was overloaded, or the call ran past its ten-second deadline. Nothing about the request is known to be wrong. Carries Retry-After; retry after it with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10223,7 +10480,8 @@
               "type": "string",
               "enum": [
                 "token_exchange",
-                "register"
+                "register",
+                "challenge"
               ]
             },
             "required": false,

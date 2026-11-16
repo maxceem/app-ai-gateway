@@ -36,11 +36,15 @@ struct MockAttestProvider: AppAttestProviding {
     var dying: DyingKeys?
     /// Every assertion signed, with the key and the client data hash it was over.
     var signatures: SignatureLog?
+    /// What Apple's attestation answers with instead of an attestation, such
+    /// as a device App Review tests on failing to reach Apple.
+    var attestFailure: NSError?
 
     var isSupported: Bool { true }
     func generateKey() async throws -> String { "generated-key" }
     func attestKey(_ keyID: String, clientDataHash: Data) async throws -> Data {
         attestations?.increment()
+        if let attestFailure { throw attestFailure }
         return Data("attestation".utf8)
     }
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
@@ -130,6 +134,16 @@ final class TokenBodyLog: @unchecked Sendable {
         lock.withLock { bodies.append(object ?? [:]) }
     }
     func snapshot() -> [[String: String]] { lock.withLock { bodies } }
+}
+
+/// Every `auth/failure` report sent, decoded.
+final class FailureReportLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reports: [Data] = []
+    func record(_ request: URLRequest) { lock.withLock { reports.append(requestBody(request)) } }
+    func snapshot() -> [[String: Any]] {
+        lock.withLock { reports }.map { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] ?? [:] }
+    }
 }
 
 /// The body a `URLProtocol` sees: `URLSession` moves `httpBody` into a stream
@@ -635,6 +649,7 @@ struct AppAIGatewayClientTests {
     func aKeyThisDeviceCannotSignWithIsReplaced() async throws {
         let registerCalls = LockedCounter()
         let tokenCalls = LockedCounter()
+        let reports = FailureReportLog()
         MockURLProtocol.handler = { request in
             if request.url!.path.hasSuffix("/auth/challenge") {
                 return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
@@ -642,6 +657,10 @@ struct AppAIGatewayClientTests {
             if request.url!.path.hasSuffix("/auth/register") {
                 registerCalls.increment()
                 return response(request, status: 200, body: #"{"user_id":"user-1"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                reports.record(request)
+                return response(request, status: 200, body: #"{"recorded":true}"#)
             }
             tokenCalls.increment()
             return response(request, status: 200, body: #"{"access_token":"recovered","expires_in":3600}"#)
@@ -660,6 +679,129 @@ struct AppAIGatewayClientTests {
         #expect(registerCalls.snapshot() == 1)
         #expect(tokenCalls.snapshot() == 1)
         #expect(try store.appAttestKeyID(for: "test-app") == "generated-key")
+        // The lost key is reported, as something the package got past itself,
+        // so the challenge it was handed is not left looking abandoned.
+        await client.settleFailureReports()
+        let report = try #require(reports.snapshot().first)
+        #expect(reports.snapshot().count == 1)
+        #expect(report["step"] as? String == "generate_assertion")
+        #expect(report["recovered"] as? Bool == true)
+        #expect(report["challenge"] as? String == "Y2hhbGxlbmdl")
+    }
+
+    /// App Attest failing on the device leaves the gateway holding a challenge
+    /// nobody came back for. The app gets its error at once, and the gateway is
+    /// told which step failed and why, by domain and code alone.
+    @Test
+    func anAttestationThatFailsOnTheDeviceIsReported() async throws {
+        let reports = FailureReportLog()
+        let registerCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                reports.record(request)
+                return response(request, status: 200, body: #"{"recorded":true}"#)
+            }
+            registerCalls.increment()
+            return response(request, status: 500, body: "{}")
+        }
+        let timeout = NSError(domain: NSURLErrorDomain, code: -1001)
+        let failure = NSError(
+            domain: "com.apple.devicecheck.error",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "text that is never sent", NSUnderlyingErrorKey: timeout]
+        )
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(attestFailure: failure),
+            credentialStore: MemoryCredentialStore(),
+            session: session()
+        )
+
+        var thrown: NSError?
+        do {
+            _ = try await client.gatewayAccessToken()
+        } catch {
+            thrown = error as NSError
+        }
+        #expect(thrown?.domain == "com.apple.devicecheck.error")
+        #expect(registerCalls.snapshot() == 0)
+
+        await client.settleFailureReports()
+        let report = try #require(reports.snapshot().first)
+        #expect(report["challenge"] as? String == "Y2hhbGxlbmdl")
+        #expect(report["step"] as? String == "attest_key")
+        #expect((report["error"] as? [String: Any])?["domain"] as? String == "com.apple.devicecheck.error")
+        #expect((report["error"] as? [String: Any])?["code"] as? Int == 3)
+        #expect((report["underlying_error"] as? [String: Any])?["domain"] as? String == NSURLErrorDomain)
+        #expect((report["underlying_error"] as? [String: Any])?["code"] as? Int == -1001)
+        #expect(report["recovered"] == nil)
+        let sent = try #require(String(data: try JSONSerialization.data(withJSONObject: report), encoding: .utf8))
+        #expect(!sent.contains("never sent"))
+    }
+
+    /// A registration the gateway refused is recorded by the gateway itself,
+    /// so the package sends nothing more about it.
+    @Test
+    func aRefusalTheGatewayAnsweredIsNotReportedAgain() async throws {
+        let reports = FailureReportLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                reports.record(request)
+                return response(request, status: 200, body: #"{"recorded":true}"#)
+            }
+            return response(request, status: 403, body: #"{"error":{"code":"attest_failed","message":"no"}}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(),
+            credentialStore: MemoryCredentialStore(),
+            session: session()
+        )
+
+        await #expect(throws: GatewayError.self) { _ = try await client.gatewayAccessToken() }
+        await client.settleFailureReports()
+        #expect(reports.snapshot().isEmpty)
+    }
+
+    /// An exchange that never got an answer — the network went away after the
+    /// challenge — is reported under the step it was on.
+    @Test
+    func anExchangeThatNeverReachedTheGatewayIsReported() async throws {
+        let reports = FailureReportLog()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                reports.record(request)
+                return response(request, status: 200, body: #"{"recorded":true}"#)
+            }
+            throw URLError(.networkConnectionLost)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(),
+            credentialStore: MemoryCredentialStore(keyID: "key-in-good-standing"),
+            session: session()
+        )
+
+        await #expect(throws: (any Error).self) { _ = try await client.gatewayAccessToken() }
+        await client.settleFailureReports()
+        let report = try #require(reports.snapshot().first)
+        #expect(report["step"] as? String == "token")
+        #expect((report["error"] as? [String: Any])?["domain"] as? String == NSURLErrorDomain)
     }
 
     @Test
@@ -1576,6 +1718,9 @@ struct AppAIGatewayClientTests {
                 registers.increment()
                 return response(request, status: 200, body: #"{"user_id":"generated-key"}"#)
             }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                return response(request, status: 200, body: #"{"recorded":true}"#)
+            }
             let issued = tokens.increment()
             return response(request, status: 200, body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
         }
@@ -1662,6 +1807,9 @@ struct AppAIGatewayClientTests {
             if request.url!.path.hasSuffix("/auth/register") {
                 registers.increment()
                 return response(request, status: 200, body: #"{"user_id":"generated-key"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                return response(request, status: 200, body: #"{"recorded":true}"#)
             }
             let issued = tokens.increment()
             return response(request, status: 200, body: "{\"access_token\":\"token-\(issued)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")

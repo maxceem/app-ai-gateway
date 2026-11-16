@@ -6,6 +6,10 @@ description: Token exchange success, failures by cause, and how long paid entitl
 The **Auth & Errors** page shows how the app's clients are getting on with
 authentication, and which requests failed and why.
 
+When a sign-in failed on Apple's own network, the page opens with a notice.
+App Review tests apps from that network, so a build in review most likely
+could not use the app's AI features. Apple's network is AS714 (Apple Inc.).
+
 ## The numbers
 
 - **Exchange success**: the share of token exchanges that succeeded, with the
@@ -39,10 +43,39 @@ sample may have an unknown scope when its original record did not preserve it.
 
 ## Recent attempts
 
-Every token exchange and key registration, newest first: **When**, **User**,
-**Call** (`token_exchange` or `register`, with the auth method), **Outcome**,
-**Reason**, **App version**, **Latency**, and **Claim delay** where the
-exchange ended a wait.
+Every token exchange and key registration, and every App Attest challenge
+that nothing used, newest first: **When**, **User**, **Call**
+(`token_exchange`, `register` or `challenge`, with the auth method),
+**Outcome**, **Reason**, **App version**, **Network**, **Latency**, and
+**Claim delay** where the exchange ended a wait.
+
+**Network** is the network the attempt came from, such as
+`Verizon Business (AS701)`. It is a network, never an address. Attempts from
+Apple's network are marked **probably App Review**.
+
+### Challenges nothing used
+
+An App Attest app signs in with two calls: it asks for a challenge, then
+registers its key or exchanges a token with it. Every challenge is meant for
+exactly one of those. When the second call never comes, the sign-in stopped
+on the device: App Attest failed there, the network went away, or the app
+was closed. The gateway records that as a `challenge` event:
+
+- If the app says what failed, the event is recorded right away. The Swift
+  package 1.9 and later does this. **Reason** reads
+  `<step>:<error domain>:<error code>`, followed by `>` and the error inside
+  it where there is one. For example,
+  `attest_key:com.apple.devicecheck.error:3>NSURLErrorDomain:-1001` means
+  App Attest failed because a request to Apple timed out. **Latency** is
+  how long the device spent between getting the challenge and reporting.
+- Otherwise, the event is recorded when the challenge expires, within about
+  an hour. **Reason** is `challenge_unused`. This also covers apps that do
+  not use the Swift package.
+
+A registration or exchange the gateway refused is recorded once, as itself,
+and never again as a challenge nothing used. The exception is a call refused
+before the gateway looked at it, such as one over the rate limit: it is not
+recorded, so its challenge shows as `abandoned`.
 
 Outcomes:
 
@@ -56,6 +89,9 @@ Outcomes:
 | `internal_error` | Something failed inside the gateway itself |
 | `attest_failed` | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted |
 | `auth_required` | No usable credential, or a blocked user |
+| `abandoned` | A challenge expired and nothing used it. The app never said why |
+| `client_failed` | The app reported a step that failed on the device after it got a challenge |
+| `client_recovered` | The app reported a failure it got past by itself, such as a key lost when the app was reinstalled. Amber: worth seeing, not a failed sign-in |
 
 The **Reason** column carries the granular cause. It is recorded here and
 never sent to the client, so a client sees only the outcome code and what to
@@ -64,11 +100,18 @@ do about it.
 ## Through the API
 
 - `GET /v1/admin/apps/{app}/auth-events/summary?days=30`
-- `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&before_id=`
+- `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&event=&before_id=`
 - `GET /v1/admin/apps/{app}/rejection-events?limit=&reason=&scope=&user=&from=&to=&before_id=`
 
 Each attempt the API lists also carries `client_sdk`: the client package and
 version the attempt named, such as `app-ai-gateway-swift/1.8.0`, or `null`
-when it named none.
+when it named none. It also carries `network_asn` and `network_name`, the
+network the attempt came from, or `null` when that is unknown.
+
+The summary lists `failing_networks`: the networks failed attempts came from,
+busiest first, with a count and when each was last seen.
+
+An app reports a failure on the device with
+`POST /v1/apps/{app}/auth/failure`. The Swift package sends it for you.
 
 Auth events and refusal samples are kept for 90 days.

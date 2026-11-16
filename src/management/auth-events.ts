@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { ParsedOperationQuery } from "../contracts/catalog";
 import type { AuthEventList, AuthEventSummary } from "../contracts/responses";
 import { database } from "../db";
@@ -126,6 +126,26 @@ export async function getAppAuthEventSummary(
     ))
     .get();
 
+  // Where failures came from, busiest first. A recovered failure is left out:
+  // the app got past it on its own. So is an unknown network, which says
+  // nothing about where to look.
+  const failingNetworks = await db
+    .select({
+      network_asn: appAuthEvent.networkAsn,
+      network_name: sql<string | null>`MAX(${appAuthEvent.networkName})`,
+      count: sql<number>`COUNT(*)`,
+      last_seen: sql<string>`MAX(${appAuthEvent.createdAt})`,
+    })
+    .from(appAuthEvent)
+    .where(and(
+      inWindow,
+      notInArray(appAuthEvent.outcome, ["ok", "client_recovered"]),
+      isNotNull(appAuthEvent.networkAsn),
+    ))
+    .groupBy(appAuthEvent.networkAsn)
+    .orderBy(desc(sql`COUNT(*)`))
+    .limit(10);
+
   const total = exchanges?.total ?? 0;
   const ok = exchanges?.ok ?? 0;
   return {
@@ -135,6 +155,7 @@ export async function getAppAuthEventSummary(
     daily,
     usage_failures: usageFailures,
     rejection_samples: rejectionSamples,
+    failing_networks: failingNetworks,
     token_exchange: {
       total,
       ok,
@@ -189,6 +210,8 @@ export async function listAppAuthEvents(
       reason: row.reason,
       app_version: row.appVersion,
       client_sdk: row.clientSdk,
+      network_asn: row.networkAsn,
+      network_name: row.networkName,
       latency_ms: row.latencyMs,
       claim_delay_ms: row.claimDelayMs,
       created_at: row.createdAt,

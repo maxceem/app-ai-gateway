@@ -27,6 +27,24 @@ test("an iOS app's challenge says the exchange accepts an App Store transaction"
   expect(body.accepts_app_transaction).toBe(true);
 });
 
+// The Swift package reports a step that failed on the device after it was
+// handed a challenge, so the developer sees why a sign-in stopped (App Review's
+// devices included). A report spends its challenge: one report per challenge.
+test("an iOS app's failure on the device is recorded once per challenge", async () => {
+  const issued = await call(env, `/v1/apps/${app.id}/auth/challenge`, { method: "POST", headers });
+  await expectStatus(issued, 200, "App Attest challenge");
+  const { challenge } = await json<{ challenge: string }>(issued, "App Attest challenge");
+  const report = { challenge, step: "attest_key", error: { domain: "smoke", code: 1 } };
+
+  const first = await call(env, `/v1/apps/${app.id}/auth/failure`, { headers, body: report });
+  await expectStatus(first, 200, "App Attest failure report");
+  expect((await json<{ recorded: boolean }>(first, "App Attest failure report")).recorded).toBe(true);
+
+  const again = await call(env, `/v1/apps/${app.id}/auth/failure`, { headers, body: report });
+  await expectStatus(again, 200, "App Attest failure report");
+  expect((await json<{ recorded: boolean }>(again, "App Attest failure report")).recorded).toBe(false);
+});
+
 test("a forged App Attest registration is refused as a client error", async () => {
   const response = await call(env, `/v1/apps/${app.id}/auth/register`, {
     headers,

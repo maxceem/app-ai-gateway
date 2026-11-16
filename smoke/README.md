@@ -43,7 +43,8 @@ when the code does, run once after each deploy together with `monitor`:
   a provider's `429` and `500` reaching the app unchanged; custom endpoints;
   a signed-in user exchanging an identity token for a gateway token and calling
   a provider, and what signed-in apps refuse; and an iOS app's App Attest challenge, with
-  anything that is not a real attestation refused as a client error. (Real
+  anything that is not a real attestation refused as a client error, and a
+  failure the app reports after a challenge recorded once. (Real
   attestations need a device.)
 - `management/`, what you manage your apps with: creating, renaming and
   deleting apps and providers without a provider key ever being echoed back;

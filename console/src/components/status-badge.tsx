@@ -224,6 +224,9 @@ const OUTCOME_TONES: Record<string, string> = {
   issuer_claims_missing: "border-amber-500/40 text-amber-600 dark:text-amber-400",
   issuer_verification_unavailable: "border-amber-500/40 text-amber-600 dark:text-amber-400",
   service_unavailable: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  // The app reported a failure it got past by itself, such as a key lost to a
+  // reinstall: worth seeing, not a sign-in that failed.
+  client_recovered: "border-amber-500/40 text-amber-600 dark:text-amber-400",
 };
 
 export function AuthOutcomeBadge({ outcome }: { outcome: string }) {

@@ -132,7 +132,7 @@ describe("app usage accounting", () => {
     app.scheduled({ cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledController, env, ctx);
     expect(waitUntil).not.toHaveBeenCalled();
     const run = createExecutionContext();
-    app.scheduled({ cron: MAINTENANCE_CRON, scheduledTime: Date.now() } as ScheduledController, env, run);
+    app.scheduled({ cron: MAINTENANCE_CRON, scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController, env, run);
     await waitOnExecutionContext(run);
   });
 

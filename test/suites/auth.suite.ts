@@ -1,6 +1,7 @@
 // A barrel: see vitest.suites.config.ts. Nothing here but imports.
 import "../auth.test";
 import "../auth-events.test";
+import "../auth-challenge-outcomes.test";
 import "../platform-errors.test";
 import "../issuer.test";
 import "../apikeys.test";

@@ -14,6 +14,7 @@
  */
 import { z } from "zod";
 import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
+import { AUTH_EVENT_NAMES } from "../shared/auth-events.ts";
 import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
@@ -122,6 +123,12 @@ export const AppAttestChallengeResponseSchema = z.object({
 });
 
 export const AppAttestRegisterResponseSchema = z.object({ user_id: z.string() });
+
+export const AppAttestFailureReportResponseSchema = z.object({
+  recorded: z.boolean().meta({
+    description: "False when the challenge was never issued for this app, or was already spent or reported: nothing was recorded, and there is nothing for the client to do about it.",
+  }),
+});
 
 export const GatewayTokenResponseSchema = z.object({
   access_token: z.string(),
@@ -254,10 +261,12 @@ export const AuthEventSchema = z.object({
   user_id: z.string().nullable().meta({
     description: "The verified issuer identity, where the attempt got far enough to establish one. Null for attempts refused before any identity was trusted.",
   }),
-  event: z.enum(["token_exchange", "register"]),
+  event: z.enum(AUTH_EVENT_NAMES).meta({
+    description: "token_exchange or register for a call to that endpoint. challenge for an App Attest challenge that nothing spent: the app reported a failure on the device, or the challenge expired unused.",
+  }),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
   outcome: z.string().meta({
-    description: "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed.",
+    description: "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed. A challenge event ends abandoned (it expired and the app never said why), client_failed (the app reported the step that failed), or client_recovered (the app reported a failure it recovered from).",
   }),
   reason: z.string().nullable().meta({
     description: "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it.",
@@ -265,6 +274,12 @@ export const AuthEventSchema = z.object({
   app_version: z.string().nullable(),
   client_sdk: z.string().nullable().meta({
     description: "The gateway client package and version the attempt named in its X-Client-SDK header, for example app-ai-gateway-swift/1.7.0. Null when it named none, or anything other than one of the gateway's own packages with a stable semantic version.",
+  }),
+  network_asn: z.number().int().nullable().optional().meta({
+    description: "The autonomous system number of the network the attempt came from, as Cloudflare reports it. 714 is Apple's own network, where App Review tests apps. Null when unknown and on attempts recorded before networks were kept.",
+  }),
+  network_name: z.string().nullable().optional().meta({
+    description: "That network's name, such as Apple Inc. or Verizon Business. A network, never an address.",
   }),
   latency_ms: z.number().int().nullable(),
   claim_delay_ms: z.number().int().nullable().meta({
@@ -313,11 +328,19 @@ export const AuthEventSummarySchema = z.object({
   to: z.string(),
   daily: z.array(z.object({
     date: z.string(),
-    event: z.enum(["token_exchange", "register"]),
+    event: z.enum(AUTH_EVENT_NAMES),
     outcome: z.string(),
     reason: z.string().nullable(),
     count: z.number().int(),
   })).meta({ description: "Authentication attempts per day, grouped by outcome and granular reason." }),
+  failing_networks: z.array(z.object({
+    network_asn: z.number().int().nullable(),
+    network_name: z.string().nullable(),
+    count: z.number().int(),
+    last_seen: z.string(),
+  })).optional().meta({
+    description: "The networks failed authentication attempts came from in the window, busiest first, at most ten. Attempts whose network is unknown are left out. Apple's own network (714) is where App Review tests apps.",
+  }),
   usage_failures: z.array(z.object({
     date: z.string(),
     status: z.string(),

@@ -244,6 +244,51 @@ describe("ErrorsTab", () => {
     expect(screen.getByText("claims_missing")).toBeTruthy();
   });
 
+  it("calls out sign-in failures on Apple's network, where App Review tests apps", async () => {
+    renderTab(
+      summary({
+        daily: [
+          { date: "2026-08-29", event: "challenge", outcome: "abandoned", reason: "challenge_unused", count: 3 },
+        ],
+        failing_networks: [
+          { network_asn: 701, network_name: "Verizon Business", count: 5, last_seen: "2026-08-30 09:00:00" },
+          { network_asn: 714, network_name: "Apple Inc.", count: 3, last_seen: "2026-08-29 21:24:00" },
+        ],
+      }),
+      [
+        event({
+          user_id: null,
+          event: "challenge",
+          auth_method: null,
+          outcome: "abandoned",
+          reason: "challenge_unused",
+          network_asn: 714,
+          network_name: "Apple Inc.",
+        }),
+      ],
+    );
+
+    expect(await screen.findByText("Sign-in failed 3 times on Apple's network")).toBeTruthy();
+    expect(screen.getByText("Apple Inc. (AS714)")).toBeTruthy();
+    expect(screen.getByText("probably App Review")).toBeTruthy();
+    expect(screen.getAllByText("challenge_unused").length).toBeGreaterThan(0);
+  });
+
+  it("says nothing about App Review when no failure came from Apple's network", async () => {
+    renderTab(
+      summary({
+        failing_networks: [
+          { network_asn: 701, network_name: "Verizon Business", count: 5, last_seen: "2026-08-30 09:00:00" },
+        ],
+      }),
+      [event({ outcome: "attest_failed", network_asn: 701, network_name: "Verizon Business" })],
+    );
+
+    expect(await screen.findByText("Verizon Business (AS701)")).toBeTruthy();
+    expect(screen.queryByText(/on Apple's network/)).toBeNull();
+    expect(screen.queryByText("probably App Review")).toBeNull();
+  });
+
   it("says plainly when an attempt established no identity at all", async () => {
     renderTab(summary(), [
       event({ user_id: null, outcome: "issuer_token_rejected", reason: "bad_signature" }),

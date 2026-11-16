@@ -1,6 +1,14 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { sql } from "drizzle-orm";
-import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
+import { and, eq, sql } from "drizzle-orm";
+import {
+  CHALLENGE_TTL_SECONDS,
+  markChallengeAttempted,
+  recordAuthEvent,
+  settleExpiredChallenges,
+} from "../client-auth/auth-events";
+import { clientNetwork } from "../core/client-network";
+import { storedAppVersion } from "../core/app-version";
+import { storedClientSdk } from "../core/client-sdk";
 import { assertAppActive, loadApp } from "../core/app-records";
 import { CLIENT_SDK_HEADER } from "../core/client-sdk";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
@@ -18,6 +26,7 @@ import type { AppRecord } from "../core/types";
 import { database } from "../db";
 import { parseRequest } from "../management/validation";
 import { jsonBody } from "./admin/body";
+import { AppAttestFailureReportSchema } from "../contracts/schemas";
 import { appAuthChallenge, type AuthEventName } from "../db/schema";
 import type { RequestVariables } from "../middleware/request-scope";
 import { errorFacts } from "../core/error-facts";
@@ -101,12 +110,18 @@ async function registerKey<K extends ExchangeType>(input: {
 async function recorded(
   c: Context<{ Bindings: Env; Variables: RequestVariables }>,
   event: AuthEventName,
+  rawBody: Record<string, unknown>,
   handler: (attempt: AuthAttempt) => Promise<Response>,
 ): Promise<Response> {
   const startedAt = Date.now();
   const appId = c.req.param("app") ?? "";
   const appVersion = c.req.header("x-app-version") ?? null;
   const clientSdk = c.req.header(CLIENT_SDK_HEADER) ?? null;
+  const network = clientNetwork(c.req.raw);
+  // Only a value the challenge route could have issued is worth a lookup.
+  const challenge = typeof rawBody.challenge === "string" && rawBody.challenge.length <= 200
+    ? rawBody.challenge
+    : null;
   const attempt: AuthAttempt = { authMethod: null, userId: null, claimDelayMs: null };
   let settled = false;
   const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
@@ -115,6 +130,12 @@ async function recorded(
     // An app that does not exist has nothing to attribute a row to, and
     // recording one would let anyone grow this table with invented app ids.
     if (outcome === "app_not_found") return;
+    // A refused attempt may not have spent its challenge, and has just been
+    // recorded on its own: marked, the challenge is not counted again as
+    // abandoned when it expires.
+    if (outcome !== "ok" && challenge !== null) {
+      c.executionCtx.waitUntil(contained("challenge_attempted", markChallengeAttempted(c.env, appId, challenge)));
+    }
     c.executionCtx.waitUntil(contained("auth_event", recordAuthEvent({
       env: c.env,
       appId,
@@ -125,6 +146,7 @@ async function recorded(
       reason,
       appVersion,
       clientSdk,
+      network,
       latencyMs: Date.now() - startedAt,
       claimDelayMs: attempt.claimDelayMs,
     })));
@@ -187,7 +209,7 @@ export const authRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables 
  * spelling of the endpoint reaches the same handler, and is counted the same.
  */
 export function appAuthRateLimit(
-  policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
+  policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token" | "app_auth_failure",
 ): MiddlewareHandler<{ Bindings: Env; Variables: RequestVariables }> {
   return async (c, next) => {
     if (c.req.method === "POST") {
@@ -206,29 +228,105 @@ authRoutes.post("/challenge", async (c) => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const challenge = btoa(String.fromCharCode(...bytes)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
+  // Who asked is kept beside the challenge for the one case nobody comes back
+  // for it: the `abandoned` event its expiry records can only describe this
+  // request.
+  const network = clientNetwork(c.req.raw);
   await database(c.env.DB).insert(appAuthChallenge).values({
     challenge,
     appId,
-    expiresAt: sql`datetime('now', '+5 minutes')`,
+    expiresAt: sql`datetime('now', ${`+${CHALLENGE_TTL_SECONDS} seconds`})`,
+    appVersion: storedAppVersion(c.req.header("x-app-version") ?? null),
+    clientSdk: storedClientSdk(c.req.header(CLIENT_SDK_HEADER) ?? null),
+    networkAsn: network.asn,
+    networkName: network.name,
   });
-  // One issued challenge in a hundred pays for a sweep of the expired ones, off
-  // the response path. The nightly cron does the same thing; this keeps the
+  // One issued challenge in a hundred pays for a settling of the expired ones,
+  // off the response path. The hourly cron does the same thing; this keeps the
   // table small where no cron runs at all, such as local development.
   if (Math.random() < 0.01) {
     c.executionCtx.waitUntil(
-      pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
+      settleExpiredChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
           error: errorFacts(error),
         });
       }),
     );
   }
-  return c.json({ challenge, expires_in: 300, accepts_app_transaction: true });
+  return c.json({ challenge, expires_in: CHALLENGE_TTL_SECONDS, accepts_app_transaction: true });
 });
+
+/**
+ * A step that failed on the device after it was handed a challenge, reported
+ * by the app so the challenge's auth event can say why instead of only that
+ * nothing came back.
+ *
+ * Unauthenticated by necessity: the device is reporting that it could not
+ * prove itself. What makes it safe to accept is that it is diagnostic only and
+ * bounded. It must name a challenge this app issued and nothing has spent, and
+ * spends it, so one challenge carries at most one report and never also
+ * becomes `abandoned`. It stores only the step and the error's domain and code,
+ * each a short token, never text the device wrote. And it is rate limited per
+ * address like the other routes here.
+ *
+ * Answers `recorded: false`, rather than an error, for a challenge it does not
+ * hold: a client sends this without waiting on it, and has nothing to do about
+ * either answer.
+ */
+authRoutes.post("/failure", async (c) => {
+  const appId = c.req.param("app");
+  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+  const report = parseRequest(AppAttestFailureReportSchema, await jsonObjectBody(c));
+  const [issued] = await database(c.env.DB)
+    .delete(appAuthChallenge)
+    .where(and(eq(appAuthChallenge.challenge, report.challenge), eq(appAuthChallenge.appId, appId)))
+    .returning({
+      expiresAt: appAuthChallenge.expiresAt,
+      appVersion: appAuthChallenge.appVersion,
+      clientSdk: appAuthChallenge.clientSdk,
+    });
+  if (issued === undefined) return c.json({ recorded: false });
+  const issuedAt = Date.parse(`${issued.expiresAt.replace(" ", "T")}Z`) - CHALLENGE_TTL_SECONDS * 1000;
+  await recordAuthEvent({
+    env: c.env,
+    appId,
+    event: "challenge",
+    outcome: report.recovered === true ? "client_recovered" : "client_failed",
+    reason: failureReason(report),
+    appVersion: c.req.header("x-app-version") ?? issued.appVersion,
+    clientSdk: c.req.header(CLIENT_SDK_HEADER) ?? issued.clientSdk,
+    network: clientNetwork(c.req.raw),
+    // From the challenge to the report: how long the device spent on the step
+    // that failed, such as an App Attest call left waiting on Apple.
+    latencyMs: Number.isFinite(issuedAt) ? Math.max(0, Date.now() - issuedAt) : 0,
+  });
+  return c.json({ recorded: true });
+});
+
+/** A reported error's domain, kept only when it is a short token; anything else is `other`. */
+const ERROR_DOMAIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+
+function errorPart(error: { domain: string; code: number }): string {
+  return `${ERROR_DOMAIN.test(error.domain) ? error.domain : "other"}:${error.code}`;
+}
+
+/**
+ * `<step>:<domain>:<code>`, and `>` and the underlying error's domain and code
+ * where the report names one, such as
+ * `attest_key:com.apple.devicecheck.error:3>NSURLErrorDomain:-1001`.
+ */
+function failureReason(report: {
+  step: string;
+  error: { domain: string; code: number };
+  underlying_error?: { domain: string; code: number } | undefined;
+}): string {
+  const underlying = report.underlying_error === undefined ? "" : `>${errorPart(report.underlying_error)}`;
+  return `${report.step}:${errorPart(report.error)}${underlying}`;
+}
 
 authRoutes.post("/register", async (c) => {
   const rawBody = await jsonObjectBody(c);
-  return recorded(c, "register", async (attempt) => {
+  return recorded(c, "register", rawBody, async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
     const app = await loadApp(c.env, appId);
@@ -242,7 +340,7 @@ authRoutes.post("/register", async (c) => {
 
 authRoutes.post("/token", async (c) => {
   const rawBody = await jsonObjectBody(c);
-  return recorded(c, "token_exchange", async (attempt) => {
+  return recorded(c, "token_exchange", rawBody, async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
     const app = await loadApp(c.env, appId);

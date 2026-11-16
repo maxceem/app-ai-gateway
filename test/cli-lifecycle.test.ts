@@ -1,3 +1,4 @@
+import { MAINTENANCE_CRON } from "../src/core/maintenance-cron";
 import {
   compactUsageEvents,
   foldUsageRollupMonths,
@@ -1118,7 +1119,7 @@ it("collects expired accounts on the nightly run only where account deadlines ex
   const nightly = async (cloud: boolean) => {
     const ctx = createExecutionContext();
     worker.scheduled(
-      { cron: "17 3 * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
+      { cron: MAINTENANCE_CRON, scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
       runtime(cloud),
       ctx,
     );

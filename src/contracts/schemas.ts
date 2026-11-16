@@ -818,6 +818,34 @@ export const AppAttestTokenRequestSchema = z.object({
   }),
 }).meta({ id: "AppAttestTokenRequest" });
 
+const ReportedErrorSchema = z.object({
+  domain: z.string().min(1).max(256).meta({
+    description: "The error's domain, such as com.apple.devicecheck.error or NSURLErrorDomain. Stored only when it is a short token (letters, digits, dots, underscores and hyphens, at most 64 characters); anything else is stored as other.",
+  }),
+  code: z.number().int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
+});
+
+/**
+ * Not strict, unlike most request bodies: a newer client may send fields this
+ * gateway does not know, and a diagnostic report is better kept without them
+ * than refused.
+ */
+export const AppAttestFailureReportSchema = z.object({
+  challenge: ChallengeSchema,
+  step: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/, {
+    error: "step must be a short lowercase token, such as attest_key",
+  }).meta({
+    description: "The step that failed after the challenge was issued: attest_key, generate_assertion, issuer_token, register or token. The Swift package reports a register or token step only when the request never got an answer from the gateway; a refusal is recorded by the gateway itself.",
+  }),
+  error: ReportedErrorSchema,
+  underlying_error: ReportedErrorSchema.optional().meta({
+    description: "The error inside the reported one, where it wraps another — often the more telling of the two, such as a network timeout under an App Attest failure.",
+  }),
+  recovered: z.boolean().optional().meta({
+    description: "True when the app recovered from this failure by itself, such as by registering a new key after a reinstall. Recorded as client_recovered instead of client_failed.",
+  }),
+}).meta({ id: "AppAttestFailureReport" });
+
 export const ApiKeyTokenRequestSchema = z.object({
   issuer_token: z.string().min(1),
   api_key: z.string().min(1),

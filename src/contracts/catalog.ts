@@ -15,6 +15,7 @@
  */
 import { z } from "zod";
 import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
+import { AUTH_EVENT_NAMES } from "../shared/auth-events.ts";
 import {
   BillingCancelResponseSchema,
   BillingChangeResponseSchema,
@@ -56,6 +57,7 @@ import {
   ApiKeyCreateRequestSchema,
   ApiKeyTokenRequestSchema,
   AppAttestRegisterRequestSchema,
+  AppAttestFailureReportSchema,
   AppAttestTokenRequestSchema,
   AppSnippetQuerySchema,
   AppPatchSchema,
@@ -86,6 +88,7 @@ import {
   ApiKeyRevokeResponseSchema,
   AppAttestChallengeResponseSchema,
   AppAttestRegisterResponseSchema,
+  AppAttestFailureReportResponseSchema,
   AppCheckResponseSchema,
   AppDeleteResponseSchema,
   AppListResponseSchema,
@@ -472,6 +475,21 @@ export const CATALOG = {
       429: APP_AUTH_RATE_LIMITED,
       503: `${ISSUER_ERRORS[503]} ${SERVICE_UNAVAILABLE}`,
     },
+  },
+
+  reportAppAttestFailure: {
+    method: "POST",
+    path: "/v1/apps/{app}/auth/failure",
+    tags: ["Application authentication"],
+    summary: "Report a failure on the device after a challenge",
+    description: "Sent by the app when a step after POST /v1/apps/{app}/auth/challenge failed on the device, so the app's auth events can say why instead of only that the challenge expired unused. Diagnostic only: it changes nothing about how the app is authenticated. It must name a challenge this app issued that nothing has spent yet, and spends it, so one challenge carries at most one report. The step and the error's domain and code are recorded as a challenge auth event, outcome client_failed, or client_recovered when recovered is true.",
+    security: "public",
+    params: APP_PARAM,
+    headers: AppAuthClientHeadersSchema,
+    request: AppAttestFailureReportSchema,
+    response: AppAttestFailureReportResponseSchema,
+    responseDescription: "Whether a report was recorded for the challenge.",
+    errors: { 402: NO_PLAN, 429: APP_AUTH_RATE_LIMITED, 503: SERVICE_UNAVAILABLE },
   },
 
   exchangeGatewayToken: {
@@ -1145,7 +1163,7 @@ export const CATALOG = {
     query: z.object({
       limit: PageLimitSchema,
       outcome: z.string().optional(),
-      event: z.enum(["token_exchange", "register"]).optional(),
+      event: z.enum(AUTH_EVENT_NAMES).optional(),
       user: z.string().optional(),
       before_id: BeforeIdSchema,
     }),

@@ -113,6 +113,13 @@
       "when": 1794731566023,
       "tag": "0015_usage_error",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1794800323327,
+      "tag": "0016_auth_challenge_outcomes",
+      "breakpoints": true
     }
   ]
 }
