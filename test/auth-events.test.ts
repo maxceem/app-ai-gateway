@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pruneAuthEvents, recordAuthEvent } from "../src/client-auth/auth-events";
 import { pruneRejectionEvents } from "../src/diagnostics/rejection-events";
 import app from "../src/index";
+import { MAINTENANCE_CRON } from "../src/core/maintenance-cron";
 import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedApp, seedServerApp } from "./helpers";
 
 interface AuthEventRow {
@@ -632,7 +633,7 @@ describe("auth event retention", () => {
     ]);
 
     const ctx = createExecutionContext();
-    app.scheduled({ cron: "17 3 * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController, env, ctx);
+    app.scheduled({ cron: MAINTENANCE_CRON, scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController, env, ctx);
     await waitOnExecutionContext(ctx);
 
     const kept = await eventsFor("prune-app");

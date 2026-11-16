@@ -6,7 +6,8 @@ import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiKeyCache } from "../src/client-auth/api-keys";
 import { appAttestEnvironment } from "../src/client-auth/app-attest";
-import { pruneAuthChallenges } from "../src/client-auth/auth-events";
+import { settleExpiredChallenges } from "../src/client-auth/auth-events";
+import { MAINTENANCE_CRON } from "../src/core/maintenance-cron";
 import { appConfigCache } from "../src/core/app-records";
 import {
   ENDPOINT_RATE_LIMITS,
@@ -562,9 +563,10 @@ describe("App Attest challenge retention", () => {
   }
 
   it.each([
-    ["the nightly trigger", "17 3 * * *", "2026-10-01T03:17:00Z"],
+    ["the nightly run", MAINTENANCE_CRON, "2026-10-01T03:17:00Z"],
+    ["an hourly run", MAINTENANCE_CRON, "2026-10-01T14:17:00Z"],
   ] as const)("drops expired challenges from %s", async (_label, cron, scheduledAt) => {
-    const appId = "prune-challenges-nightly";
+    const appId = `prune-challenges-${scheduledAt.slice(11, 13)}h`;
     await seedChallenges(appId);
 
     const ctx = createExecutionContext();
@@ -581,7 +583,7 @@ describe("App Attest challenge retention", () => {
     await seedChallenges("prune-challenge-count");
 
     // Counted across the deployment, not per app: it is one sweep.
-    expect(await pruneAuthChallenges(env.DB)).toBeGreaterThanOrEqual(2);
+    expect((await settleExpiredChallenges(env.DB)).deleted).toBeGreaterThanOrEqual(2);
     await expect(challengesFor("prune-challenge-count")).resolves.toEqual([
       "prune-challenge-count-live",
     ]);

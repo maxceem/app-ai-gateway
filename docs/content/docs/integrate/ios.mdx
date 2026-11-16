@@ -24,7 +24,7 @@ https://github.com/maxceem/app-ai-gateway-swift
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.8.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.9.0")
 ```
 
 Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
@@ -358,6 +358,12 @@ prove themselves.
   on each token exchange and key registration, as `client_sdk` in the
   [auth events API](/applications/auth-events#through-the-api), so you can
   see which package release your installs run. It never reaches the provider.
+- **Failure reports.** From 1.9, when a sign-in step fails on the device
+  after the gateway handed out a challenge, the package tells the gateway
+  which step failed, with the error's domain and code and never its text.
+  App Attest failing on an App Review device is the usual case. It is sent in
+  the background, so your app still gets the error at once. You see it under
+  [challenges nothing used](/applications/auth-events#challenges-nothing-used).
 
 ## Handling a missing entitlement
 

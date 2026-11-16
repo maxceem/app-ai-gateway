@@ -8,11 +8,11 @@ import type { HealthResponse } from "./contracts/responses";
 import type { RequestVariables } from "./middleware/request-scope";
 import {
   AUTH_EVENT_RETENTION_DAYS,
-  pruneAuthChallenges,
+  settleExpiredChallenges,
   pruneAuthEvents,
 } from "./client-auth/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
-import { MAINTENANCE_CRON } from "./core/maintenance-cron";
+import { MAINTENANCE_CRON, NIGHTLY_MAINTENANCE_HOUR_UTC } from "./core/maintenance-cron";
 import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { ROUTE_NOT_FOUND } from "./core/errors";
@@ -145,6 +145,7 @@ app.use("/v1/apps/:app/auth/*", clientCallDeadline);
 app.use("/v1/apps/:app/auth/challenge", appAuthRateLimit("app_auth_challenge"));
 app.use("/v1/apps/:app/auth/register", appAuthRateLimit("app_auth_register"));
 app.use("/v1/apps/:app/auth/token", appAuthRateLimit("app_auth_token"));
+app.use("/v1/apps/:app/auth/failure", appAuthRateLimit("app_auth_failure"));
 app.use("/v1/apps/:app/auth/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
@@ -267,8 +268,8 @@ function sweepFailed(sweep: string, code: string, error: unknown): void {
 }
 
 /**
- * Nightly retention: the authentication event log, spent App Attest challenges,
- * expired CLI and OAuth authorizations, the token generations of ended OAuth
+ * Nightly retention: the authentication event log, expired App Attest
+ * challenges, expired CLI and OAuth authorizations, the token generations of ended OAuth
  * connections, expired unclaimed accounts, and the usage history.
  *
  * Usage events are accounting history, so they are summed into
@@ -284,6 +285,16 @@ function sweepFailed(sweep: string, code: string, error: unknown): void {
  * compaction; what it does not issue it never spends, because the allowance
  * counts statements as they go out rather than reserving them in advance.
  */
+/** Expired App Attest challenges: see `settleExpiredChallenges`. */
+async function settleChallenges(db: D1Database): Promise<void> {
+  try {
+    const { abandoned, deleted } = await settleExpiredChallenges(db);
+    log("info", "auth_challenges_pruned", { deleted, abandoned });
+  } catch (error) {
+    sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
+  }
+}
+
 async function prune(env: Env): Promise<void> {
   const budget = maintenanceQueryBudget(env);
   // Every sweep below issues its statements through this, so the allowance is
@@ -300,12 +311,6 @@ async function prune(env: Env): Promise<void> {
     log("info", "rejection_events_pruned", { deleted, retentionDays: REJECTION_RETENTION_DAYS });
   } catch (error) {
     sweepFailed("rejection_events", "rejection_events_prune_failed", error);
-  }
-  try {
-    const deleted = await pruneAuthChallenges(db);
-    log("info", "auth_challenges_pruned", { deleted });
-  } catch (error) {
-    sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
   }
   try {
     const sweeps = await maintenanceSweepStatements(resolveDeployment(env), env, db, Date.now());
@@ -344,6 +349,11 @@ async function prune(env: Env): Promise<void> {
       sweepFailed("expired_accounts", "expired_accounts_prune_failed", error);
     }
   }
+  // After account cleanup, whose share is half of what the fixed sweeps left:
+  // settling challenges costs two statements, and spending them first would
+  // leave that share one short of a cleanup pass. Counted against the run's
+  // allowance like everything else, so this invocation stays within it.
+  await settleChallenges(db);
   // Stored conversations, where the deployment keeps them. Offered half of
   // what is left, like account cleanup, so usage compaction is never starved;
   // R2 calls are subrequests too, and are charged to the same allowance.
@@ -370,6 +380,16 @@ async function prune(env: Env): Promise<void> {
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     // An unrelated trigger must not spend the maintenance budget.
-    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(contained("maintenance", prune(env)));
+    if (controller.cron !== MAINTENANCE_CRON) return;
+    // Once a day, in one hour of the same trigger: everything, expired
+    // challenges included, inside the one query budget an invocation has.
+    if (new Date(controller.scheduledTime).getUTCHours() === NIGHTLY_MAINTENANCE_HOUR_UTC) {
+      ctx.waitUntil(contained("maintenance", prune(env)));
+      return;
+    }
+    // Every other hour: expired App Attest challenges alone, each one nothing
+    // spent recorded as an abandoned sign-in, so a failure on devices shows up
+    // within the hour rather than the next morning.
+    ctx.waitUntil(contained("auth_challenges", settleChallenges(env.DB)));
   },
 });

@@ -160,6 +160,12 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "exchange a token with this app",
     sharedBy: "everyone sharing your network address",
   },
+  app_auth_failure: {
+    limit: 60,
+    windowMs: 60_000,
+    action: "report a sign-in failure to this app",
+    sharedBy: "everyone sharing your network address",
+  },
 } as const satisfies Record<string, EndpointRateLimit>;
 
 export type EndpointRateLimitName = keyof typeof ENDPOINT_RATE_LIMITS;

@@ -4,6 +4,8 @@ import { log } from "./log";
 /** The work the gateway leaves running after a response, named for the log. */
 export type BackgroundTask =
   | "maintenance"
+  | "auth_challenges"
+  | "challenge_attempted"
   | "served_request"
   | "auth_event"
   | "claim_pending"

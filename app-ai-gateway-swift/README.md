@@ -9,7 +9,7 @@ Add `https://github.com/maxceem/app-ai-gateway-swift` in Xcode's **File → Add
 Package Dependencies**, or add this dependency to `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.8.0")
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.9.0")
 ```
 
 Add the `AppAIGateway` product to your target.
@@ -81,6 +81,13 @@ that costs one extra token exchange and one repeated provider call, and
 nothing more. A thrown error and every other status, `403` and `429` included,
 come back to you untouched. `authorizedRequest` remains available for apps
 that want to drive the retry themselves.
+
+When a sign-in step fails on the device after the gateway handed out a
+challenge, such as App Attest failing to reach Apple, the client reports the
+step and the error's domain and code to `POST /v1/apps/{app}/auth/failure`.
+It never sends the error's text. The report goes out in the background, so
+the error still reaches you at once. A refusal the gateway answered is not
+reported, because the gateway has recorded it already.
 
 A `403 attest_failed` on a request is returned to you, never retried. Calling
 `discardAccessToken()` and building the request again helps when the gateway
@@ -159,7 +166,7 @@ to the same value (a test fails until they match), and merge the pull request
 into `main`. After tests pass, the
 publishing workflow syncs this repository and creates the matching immutable
 version tag. Changes without a version bump sync `main` without changing any
-released version. The current version is `1.8.0`. A failed publish can be retried
+released version. The current version is `1.9.0`. A failed publish can be retried
 with the source repository's **Publish Swift package** workflow.
 
 Licensed under the Apache License 2.0.

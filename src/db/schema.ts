@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { UsageStatus } from "../contracts/responses";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
+import type { AuthEventName } from "../shared/auth-events";
 import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import {
   check,
@@ -717,8 +718,7 @@ export const appRejectionEvent = sqliteTable(
   ],
 );
 
-/** What a `/auth/token` or `/auth/register` attempt was, and how it ended. */
-export type AuthEventName = "token_exchange" | "register";
+export type { AuthEventName } from "../shared/auth-events";
 
 /**
  * One row per authentication attempt, successful or not.
@@ -768,6 +768,14 @@ export const appAuthEvent = sqliteTable(
      * exchange or registration, rather than on every usage event.
      */
     clientSdk: text("client_sdk"),
+    /**
+     * The network the attempt came from, as Cloudflare names it: its
+     * autonomous system number and that system's name, such as `714` and
+     * `Apple Inc.`. A network, never an address. Null where Cloudflare named
+     * none, and on rows recorded before this was kept.
+     */
+    networkAsn: integer("network_asn"),
+    networkName: text("network_name"),
     latencyMs: integer("latency_ms"),
     /**
      * Set only on the exchange that ends a claim-propagation window: how long
@@ -791,6 +799,21 @@ export const appAuthChallenge = sqliteTable(
       .notNull()
       .references(() => app.id),
     expiresAt: text("expires_at").notNull(),
+    /**
+     * Who asked, kept for the one case where nobody comes back: when the
+     * challenge expires unused, the `challenge` auth event recorded for it can
+     * only describe the request that issued it.
+     */
+    appVersion: text("app_version"),
+    clientSdk: text("client_sdk"),
+    networkAsn: integer("network_asn"),
+    networkName: text("network_name"),
+    /**
+     * Set when a registration or exchange named this challenge and was refused
+     * before spending it. That attempt has its own auth event already, so the
+     * challenge expiring afterwards is not a second failure.
+     */
+    attempted: integer("attempted", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("idx_auth_challenges_expiry").on(table.expiresAt)],
 );

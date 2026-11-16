@@ -171,8 +171,18 @@ describe("initial database migration", () => {
       "claim_delay_ms",
       "created_at",
       "client_sdk",
+      "network_asn",
+      "network_name",
     ]);
     expect(authEventColumns.results.find((column) => column.name === "user_id")?.notnull).toBe(0);
+    // Who asked, kept until the challenge is spent or settled, and whether a
+    // refused attempt already named it.
+    const challengeColumns = await env.DB.prepare("PRAGMA table_info(app_auth_challenge)")
+      .all<{ name: string; notnull: number; dflt_value: string | null }>();
+    expect(challengeColumns.results.map((column) => column.name)).toEqual([
+      "challenge", "app_id", "expires_at", "app_version", "client_sdk", "network_asn", "network_name", "attempted",
+    ]);
+    expect(challengeColumns.results.find((column) => column.name === "attempted")).toMatchObject({ notnull: 1 });
     expect(authEventColumns.results.find((column) => column.name === "outcome")?.notnull).toBe(1);
     // Keys moved to app_attest_key, and the counter out of D1 altogether.
     expect(userColumns.results.map((column) => column.name)).toEqual([

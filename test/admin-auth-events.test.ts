@@ -24,6 +24,8 @@ async function recordAuth(
     reason: string | null;
     claimDelayMs: number | null;
     clientSdk: string | null;
+    networkAsn: number | null;
+    networkName: string | null;
     createdAt: string;
   }> = {},
 ) {
@@ -34,14 +36,17 @@ async function recordAuth(
     reason = null,
     claimDelayMs = null,
     clientSdk = null,
+    networkAsn = null,
+    networkName = null,
     createdAt = daysAgo(0),
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_auth_event(
-       event_id, app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, client_sdk, latency_ms, created_at
-     ) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'api_key', ?, ?, ?, ?, 5, ?)`,
+       event_id, app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, client_sdk,
+       network_asn, network_name, latency_ms, created_at
+     ) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'api_key', ?, ?, ?, ?, ?, ?, 5, ?)`,
   )
-    .bind(appId, userId, event, outcome, reason, claimDelayMs, clientSdk, createdAt)
+    .bind(appId, userId, event, outcome, reason, claimDelayMs, clientSdk, networkAsn, networkName, createdAt)
     .run();
 }
 
@@ -219,6 +224,38 @@ describe("application auth event summary", () => {
 
     const rejected = await get("/v1/admin/apps/auth-events-list/auth-events?event=nonsense");
     expect(rejected.status).toBe(400);
+  });
+
+  it("names the network each attempt came from, and the networks failures came from", async () => {
+    const appId = "auth-events-networks";
+    await seedApp(appId);
+    const apple = { networkAsn: 714, networkName: "Apple Inc." };
+    const carrier = { networkAsn: 701, networkName: "Verizon Business" };
+    await recordAuth(appId, { ...apple, event: "challenge", outcome: "abandoned", reason: "challenge_unused", userId: null, createdAt: daysAgo(2) });
+    await recordAuth(appId, { ...apple, event: "challenge", outcome: "client_failed", reason: "attest_key:com.apple.devicecheck.error:3", userId: null, createdAt: daysAgo(1) });
+    await recordAuth(appId, { ...carrier, event: "register", outcome: "attest_failed", userId: null });
+    // Neither is a failure to look into: one succeeded, one recovered on its own.
+    await recordAuth(appId, { ...carrier });
+    await recordAuth(appId, { ...carrier, event: "challenge", outcome: "client_recovered", userId: null });
+    // A failure whose network is unknown says nothing about where to look.
+    await recordAuth(appId, { outcome: "attest_failed", userId: null });
+
+    const summary = await get(`/v1/admin/apps/${appId}/auth-events/summary?days=7`);
+    expect(summary.status).toBe(200);
+    expect(summary.body.failing_networks).toEqual([
+      { network_asn: 714, network_name: "Apple Inc.", count: 2, last_seen: daysAgo(1).slice(0, 10) + expect.any(String) },
+      { network_asn: 701, network_name: "Verizon Business", count: 1, last_seen: expect.any(String) },
+    ].map((row) => ({ ...row, last_seen: expect.any(String) })));
+    expect(summary.body.daily.some((row: any) => row.event === "challenge" && row.outcome === "abandoned")).toBe(true);
+
+    const challenges = await get(`/v1/admin/apps/${appId}/auth-events?event=challenge`);
+    expect(challenges.status).toBe(200);
+    expect(challenges.body.events.map((row: any) => row.outcome)).toEqual([
+      "client_recovered",
+      "client_failed",
+      "abandoned",
+    ]);
+    expect(challenges.body.events[1]).toMatchObject({ network_asn: 714, network_name: "Apple Inc." });
   });
 
   it("pages and filters refusal samples, with independent date bounds", async () => {

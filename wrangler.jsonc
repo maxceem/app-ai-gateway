@@ -16,8 +16,10 @@
     "ALLOWED_REGISTRATION_EMAILS": ""
   },
   // The deploy script generates DEPLOYMENT_ID once and reuses its deployed binding.
-  // Nightly maintenance: retention, expired accounts and authorizations.
-  "triggers": { "crons": ["17 3 * * *"] },
+  // One trigger, hourly: every run settles expired App Attest challenges, and the
+  // 03:17 run also does the nightly maintenance (retention, expired accounts and
+  // authorizations). See src/core/maintenance-cron.ts.
+  "triggers": { "crons": ["17 * * * *"] },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },

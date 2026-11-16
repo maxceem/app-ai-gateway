@@ -375,8 +375,10 @@ Lowering the value shortens that wait; it does not reserve time for fallbacks.
 ### `MAINTENANCE_QUERY_BUDGET`
 
 Plain variable, default `50`. How many D1 queries the nightly maintenance cron
-may issue in one run: it prunes sign-in history and spent challenges, expires
-finished CLI authorizations, and compacts usage history into its rollups.
+may issue in one run: it prunes sign-in history, expires finished CLI
+authorizations, and compacts usage history into its rollups. The same
+trigger settles expired App Attest challenges every hour; in the nightly run
+that counts against this budget too.
 
 Every D1 query is a subrequest, and a Worker invocation may issue 50 of them on
 the Cloudflare Free plan and 1,000 on the Workers Paid plan. The default is the

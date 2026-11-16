@@ -124,6 +124,9 @@ public actor AppAIGatewayClient {
     /// another before then, so an outage does not cost each request an exchange.
     private var nextRefreshAttempt: Date?
     private var rateLimitHold: RateLimitHold?
+    /// Failure reports still being sent, by an id of their own, so a test can
+    /// wait for them; each removes itself once sent.
+    private var failureReports: [UUID: Task<Void, Never>] = [:]
 
     /// A refusal the gateway timed, and the instant its window closes.
     ///
@@ -841,14 +844,28 @@ public actor AppAIGatewayClient {
             appTransaction: appTransaction,
             forceIssuerRefresh: forceIssuerRefresh
         )
-        let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
+        let issuerToken: String?
+        do {
+            issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
+        } catch {
+            reportFailure(challenge: signed.challenge, step: .issuerToken, error: error)
+            throw error
+        }
         do {
             return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed)), signed.keyID)
         } catch let error as GatewayError where error.code == .attestFailed {
             // The gateway holds a key this device is no longer signing with.
             let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
             let retry = try await sign(with: replacement, appTransaction: appTransaction)
-            return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry)), retry.keyID)
+            do {
+                return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry)), retry.keyID)
+            } catch {
+                reportFailure(challenge: retry.challenge, step: .token, error: error)
+                throw error
+            }
+        } catch {
+            reportFailure(challenge: signed.challenge, step: .token, error: error)
+            throw error
         }
     }
 
@@ -900,8 +917,18 @@ public actor AppAIGatewayClient {
                 appTransaction: bound
             )
         } catch {
-            let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
-            return try await sign(with: replacement, appTransaction: appTransaction)
+            // Reported once the replacement settles, so the gateway hears
+            // whether the device got past it: the replacement's own failure,
+            // if it has one, is reported or recorded under its own challenge.
+            do {
+                let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
+                let signed = try await sign(with: replacement, appTransaction: appTransaction)
+                reportFailure(challenge: issued.challenge, step: .generateAssertion, error: error, recovered: true)
+                return signed
+            } catch let replacementError {
+                reportFailure(challenge: issued.challenge, step: .generateAssertion, error: error)
+                throw replacementError
+            }
         }
     }
 
@@ -914,7 +941,13 @@ public actor AppAIGatewayClient {
             keyID: keyID,
             appTransaction: bound
         )
-        let assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
+        let assertion: Data
+        do {
+            assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
+        } catch {
+            reportFailure(challenge: issued.challenge, step: .generateAssertion, error: error)
+            throw error
+        }
         return SignedAssertion(
             keyID: keyID,
             challenge: issued.challenge,
@@ -967,19 +1000,104 @@ public actor AppAIGatewayClient {
     private func registerKey(forceIssuerRefresh: Bool) async throws -> String {
         let keyID = try await attestProvider.generateKey()
         let challenge = try await challenge()
-        let challengeData = try Self.base64URLData(challenge)
-        let attestation = try await attestProvider.attestKey(keyID, clientDataHash: challengeData.sha256)
-        let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
-        struct RegisterResponse: Decodable { let user_id: String }
-        var body = [
-            "key_id": keyID,
-            "attestation": attestation.base64EncodedString(),
-            "challenge": challenge,
-        ]
-        if let issuerToken { body["issuer_token"] = issuerToken }
-        let _: RegisterResponse = try await postJSON(path: "auth/register", body: body)
+        // Every step from here until the gateway answers can fail on the
+        // device, and the gateway would otherwise only learn that the
+        // challenge went unused.
+        var step = ChallengeStep.attestKey
+        do {
+            let challengeData = try Self.base64URLData(challenge)
+            let attestation = try await attestProvider.attestKey(keyID, clientDataHash: challengeData.sha256)
+            step = .issuerToken
+            let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
+            struct RegisterResponse: Decodable { let user_id: String }
+            var body = [
+                "key_id": keyID,
+                "attestation": attestation.base64EncodedString(),
+                "challenge": challenge,
+            ]
+            if let issuerToken { body["issuer_token"] = issuerToken }
+            step = .register
+            let _: RegisterResponse = try await postJSON(path: "auth/register", body: body)
+        } catch {
+            reportFailure(challenge: challenge, step: step, error: error)
+            throw error
+        }
         try credentialStore.setAppAttestKeyID(keyID, for: appID)
         return keyID
+    }
+
+    /// A step after a challenge was issued, as `/auth/failure` names it.
+    enum ChallengeStep: String {
+        case attestKey = "attest_key"
+        case generateAssertion = "generate_assertion"
+        case issuerToken = "issuer_token"
+        case register
+        case token
+    }
+
+    /// Tells the gateway why a challenge it issued will not be spent, so the
+    /// app's auth events can say what failed on the device rather than only
+    /// that nothing came back.
+    ///
+    /// Sent in the background and never waited for: the caller gets its error
+    /// at once, and a report that cannot be sent is simply lost. Nothing is
+    /// sent for an error the gateway answered with, which the gateway has
+    /// recorded already, nor for a cancelled call, which is not a failure.
+    /// Only the error's domain and code are sent, never its text.
+    private func reportFailure(challenge: String, step: ChallengeStep, error: Error, recovered: Bool = false) {
+        guard Self.isReportable(error) else { return }
+        let report = Self.failureReport(challenge: challenge, step: step, error: error, recovered: recovered)
+        guard let body = try? JSONSerialization.data(withJSONObject: report) else { return }
+        var request = URLRequest(url: baseURL.appending(path: "v1/apps/\(appID)/auth/failure"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        Self.identifyClient(&request)
+        request.httpBody = body
+        let session = self.session
+        let id = UUID()
+        failureReports[id] = Task { [weak self] in
+            _ = try? await session.data(for: request)
+            await self?.reportSent(id)
+        }
+    }
+
+    private func reportSent(_ id: UUID) {
+        failureReports[id] = nil
+    }
+
+    /// Waits for every failure report already started. For tests. Each report
+    /// removes itself as its last step, so the loop ends once all are sent.
+    func settleFailureReports() async {
+        while let report = failureReports.values.first {
+            await report.value
+        }
+    }
+
+    static func isReportable(_ error: Error) -> Bool {
+        if error is GatewayError || error is CancellationError { return false }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return false }
+        return true
+    }
+
+    /// The `/auth/failure` body: the step, and the error's domain and code,
+    /// with the error it wraps where there is one.
+    static func failureReport(
+        challenge: String,
+        step: ChallengeStep,
+        error: Error,
+        recovered: Bool = false
+    ) -> [String: Any] {
+        let failure = error as NSError
+        var report: [String: Any] = [
+            "challenge": challenge,
+            "step": step.rawValue,
+            "error": ["domain": failure.domain, "code": failure.code],
+        ]
+        if let underlying = failure.userInfo[NSUnderlyingErrorKey] as? NSError {
+            report["underlying_error"] = ["domain": underlying.domain, "code": underlying.code]
+        }
+        if recovered { report["recovered"] = true }
+        return report
     }
 
     private func challenge() async throws -> String {
