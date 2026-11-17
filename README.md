@@ -1,6 +1,8 @@
 # App AI Gateway
 
 App AI Gateway is the backend for the AI features in your iOS apps, so you do
+
+[![App AI Gateway on StartupScores](https://startupscores.com/badge/app-ai-gateway.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/app-ai-gateway)
 not have to write one. The app calls the gateway, and the gateway calls OpenAI,
 Anthropic, Gemini or whichever provider you use.
 
