@@ -2596,6 +2596,7 @@
       "long_audio_input": 7.5,
       "author": "ByteDance",
       "modes": {
+        "fast": { "factor": 2.0 },
         "flex": { "factor": 0.5, "cached_input": 0.05, "cached_input_audio": 0.75, "long_cached_input": 0.1, "long_cached_input_audio": 1.5 }
       },
       "release_date": "2026-02-14"
