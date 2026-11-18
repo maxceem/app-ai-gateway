@@ -122,3 +122,14 @@
 .nav-docs:hover {
   color: var(--color-fd-foreground);
 }
+
+/* Fumadocs draws a callout's accent as a thin bar 4px inside the card, so it
+   looks detached from the card. Draw it as the card's left edge instead. */
+.callout {
+  border-inline-start: 3px solid var(--callout-color);
+  padding-inline-start: 0.75rem;
+}
+
+.callout > [role="none"] {
+  display: none;
+}
