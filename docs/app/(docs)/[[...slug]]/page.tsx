@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ComponentProps } from "react";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/page";
+import { Callout } from "fumadocs-ui/components/callout";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { OpenAPIPageClient } from "@/components/api-page";
 import { openapi } from "@/lib/openapi";
@@ -25,9 +26,14 @@ export default async function Page(props: { params: Promise<{ slug?: string[] }>
           repeats the method and path the page shows right below; its own
           prose comes from the OpenAPI description instead. */}
       {isEndpointPage(page.slugs) ? null : <DocsDescription>{page.data.description}</DocsDescription>}
-      <DocsBody><MDX components={{ ...defaultMdxComponents, OpenAPIPage }} /></DocsBody>
+      <DocsBody><MDX components={{ ...defaultMdxComponents, Callout: DocsCallout, OpenAPIPage }} /></DocsBody>
     </DocsPage>
   );
+}
+
+/** Fumadocs' callout, with a class that `global.css` uses to restyle its accent line. */
+function DocsCallout({ className, ...props }: ComponentProps<typeof Callout>) {
+  return <Callout className={className ? `callout ${className}` : "callout"} {...props} />;
 }
 
 /** A generated API reference page for one operation, as opposed to `/api/` itself. */
