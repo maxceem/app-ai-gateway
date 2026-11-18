@@ -165,9 +165,9 @@ describe("matchIssuerPreset", () => {
 describe("the RevenueCat entitlement check", () => {
   const revenuecat = ENTITLEMENT_PRESETS.find((preset) => preset.id === "revenuecat")!;
 
-  // The claim RevenueCat's own Firebase extension writes. Getting this wrong
-  // rejects every paying user, and does it silently: the token verifies, the
-  // claim is simply not where the gateway looked.
+  // The claim RevenueCat's own Firebase function kit writes. Getting this
+  // wrong rejects every paying user, and does it silently: the token verifies,
+  // the claim is simply not where the gateway looked.
   it("writes the claim RevenueCat itself writes, asking only for the entitlement", () => {
     expect(revenuecat.inputs.map((input) => input.key)).toEqual(["entitlement"]);
     expect(revenueCatClaim("pro")).toEqual({ path: "revenueCatEntitlements", contains: "pro" });

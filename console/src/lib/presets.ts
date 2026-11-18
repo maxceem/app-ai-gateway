@@ -299,9 +299,9 @@ export interface EntitlementPreset {
 
 /**
  * The claim a RevenueCat entitlement arrives in. Fixed rather than asked for:
- * it is the name RevenueCat's own Firebase extension writes, and the point of
- * the preset is that the shape is known, so the operator is left with the one
- * thing only they can answer — which entitlement. A backend that writes the
+ * it is the name RevenueCat's own Firebase function kit writes, and the point
+ * of the preset is that the shape is known, so the operator is left with the
+ * one thing only they can answer — which entitlement. A backend that writes the
  * entitlement anywhere else is a custom claim, which is the other preset.
  */
 export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";

@@ -15,10 +15,30 @@ The gateway never talks to the App Store. It checks a claim inside the
 verified ID token, and something else has to put that claim there after the
 purchase:
 
-- **RevenueCat** with its Firebase extension writes the user's active
+- **RevenueCat** with its Firebase function kit writes the user's active
   entitlements into their Firebase token as `revenueCatEntitlements`.
 - **Your own backend** can set any custom claim on your identity provider
   after it confirms a purchase.
+
+### RevenueCat's Firebase function kit
+
+The kit is a Cloud Function that runs in your Firebase project. RevenueCat
+sends it every purchase event, and it writes the user's active entitlements
+into the `revenueCatEntitlements` claim. To set it up:
+
+1. Install the kit with the Firebase CLI, following RevenueCat's
+   [Firebase function kit guide](https://www.revenuecat.com/docs/integrations/third-party-integrations/firebase-function-kit).
+2. Set `SET_CUSTOM_CLAIMS` to `ENABLED`. It is off by default, and without
+   it the token never carries the claim, so every paying user is refused.
+3. Paste the deployed function's URL into the **Webhook URL** field of the
+   Firebase integration in the RevenueCat dashboard.
+4. Make a sandbox purchase and check that the user's token carries the
+   entitlement.
+
+RevenueCat used to do this with a Firebase Extension. Google is retiring
+Firebase Extensions, so if you still use it, move to the kit with RevenueCat's
+[migration guide](https://www.revenuecat.com/docs/integrations/third-party-integrations/firebase-extension-migration).
+The kit writes the same claim, so you change nothing in the gateway.
 
 On every token exchange the gateway verifies the token as usual and then
 checks the required claims. A token without them is refused with
