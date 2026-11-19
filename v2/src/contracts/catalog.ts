@@ -515,7 +515,7 @@ export const CATALOG = {
     status: 201,
     response: CreatedManagementKeyResponseSchema,
     responseDescription: "The key, shown once.",
-    errors: SESSION_ONLY_ERRORS,
+    errors: { ...SESSION_ONLY_ERRORS, 409: "`account_changed`: the console now acts in another account than `accountId`; nothing was created." },
   },
 
   revokeCredential: {

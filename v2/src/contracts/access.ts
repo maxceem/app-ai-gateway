@@ -68,6 +68,14 @@ export const ManagementKeyCreateRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
     grant: z.enum(GRANTS).default("manage"),
+    /**
+     * The account the caller means. The console's account is one cookie
+     * shared by every tab, so a tab still showing another account sends it
+     * and is refused, instead of creating the key where the person did not look.
+     */
+    accountId: z.string().min(1).optional().meta({
+      description: "The account you mean. If the console now acts in another one, the key is not created (`409 account_changed`).",
+    }),
   })
   .strict()
   .meta({ id: "ManagementKeyCreateRequest" });

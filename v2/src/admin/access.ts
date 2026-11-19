@@ -96,6 +96,9 @@ export async function listCredentials(c: AdminContext): Promise<Response> {
 export async function createManagementKey(c: AdminContext): Promise<Response> {
   const state = requireConsoleSession(c.get("authState"));
   const body = await parseBody(c, ManagementKeyCreateRequestSchema);
+  if (body.accountId !== undefined && body.accountId !== c.get("actor").accountId) {
+    throw new GatewayError(409, "account_changed", "The console now acts in another account. Reload the page, then try again");
+  }
   const created = await (await c.get("identity")).service.createApiKey({
     actor: state,
     organizationId: c.get("actor").accountId,

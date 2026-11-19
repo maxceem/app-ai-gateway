@@ -23,6 +23,7 @@ import { Hint } from "@/components/hint";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
+import { useConsoleSession } from "@/lib/console-session";
 import { useCreateManagementKey, useCredentials, useRevokeCredential } from "@/lib/queries";
 import type { CreatedManagementKey, Credential, CredentialKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -142,6 +143,7 @@ function HolderCell({ credential }: { credential: Credential }) {
  * alike.
  */
 export function AccessPage() {
+  const { account } = useConsoleSession();
   const list = useCredentials();
   const createKey = useCreateManagementKey();
   const revokeKey = useRevokeCredential();
@@ -155,7 +157,9 @@ export function AccessPage() {
   const create = async () => {
     if (!name.trim()) return;
     try {
-      const result = await createKey.mutateAsync({ name: name.trim(), grant });
+      // The account this page shows: another tab may have switched the
+      // shared cookie, and the gateway refuses the key then (409).
+      const result = await createKey.mutateAsync({ name: name.trim(), grant, accountId: account.id });
       setCreating(false);
       setName("");
       setGrant("manage");

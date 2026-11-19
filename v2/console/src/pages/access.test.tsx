@@ -178,7 +178,8 @@ describe("AccessPage", () => {
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
       // Nothing chosen, so the key may do everything the role allows.
-      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Automation", grant: "manage" });
+      // The account the page shows goes too, so a key never lands in another one.
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Automation", grant: "manage", accountId: "acct-1" });
     });
   });
 
@@ -206,7 +207,7 @@ describe("AccessPage", () => {
 
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
-      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Dashboards", grant: "read" });
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Dashboards", grant: "read", accountId: "acct-1" });
     });
     expect(await screen.findByText(/can read every app and provider here, but cannot change them/i)).toBeTruthy();
   });
