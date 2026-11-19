@@ -1,0 +1,25 @@
+// The v2 gateway Worker. It runs beside v1 until v1 shuts down, under `/v2/*`.
+// A deployment's own name, database id and domains go in a gitignored
+// `wrangler.<profile>.jsonc` next to this file, never here.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway-v2",
+  "main": "src/index.ts",
+  // Keep this the same as the v1 `wrangler.jsonc` until v2 replaces it.
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "app-ai-gateway-v2",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

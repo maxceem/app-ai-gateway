@@ -56,7 +56,9 @@
     "smoke:mock": "pnpm --filter @app-ai-gateway/smoke run mock",
     "smoke:check": "pnpm --filter @app-ai-gateway/smoke check",
     "smoke:test": "pnpm --filter @app-ai-gateway/smoke test",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "v2:check": "pnpm --filter @app-ai-gateway/gateway-v2 check",
+    "v2:test": "pnpm --filter @app-ai-gateway/gateway-v2 test"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.16",

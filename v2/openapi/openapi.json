@@ -1,0 +1,77 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "App AI Gateway API v2",
+    "version": "2.0.0-dev",
+    "description": "A provider-native AI proxy for iOS applications and trusted server backends. Provider keys stay on the gateway; requests are checked, limited and recorded before they reach a provider."
+  },
+  "servers": [
+    {
+      "url": "https://api.appaigateway.com",
+      "description": "The cloud API host. On a self-hosted gateway, use your own origin."
+    }
+  ],
+  "tags": [
+    {
+      "name": "Operations",
+      "description": "Unauthenticated service health."
+    }
+  ],
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "service": {
+            "type": "string",
+            "enum": [
+              "app-ai-gateway"
+            ]
+          },
+          "api": {
+            "type": "string",
+            "enum": [
+              "v2"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "service",
+          "api"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/v2/healthz": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "getHealth",
+        "summary": "Check gateway health",
+        "responses": {
+          "200": {
+            "description": "The Worker is accepting requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}
