@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
-import { authErrorMessage, isRegistrationDisabled } from "@/lib/auth-errors";
+import { authErrorMessage } from "@/lib/auth-errors";
 import { loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
 import { useCapabilities, useSignUp } from "@/lib/queries";
 
@@ -52,10 +52,9 @@ export function SignupPage() {
     }
   };
 
-  // A deployment can close registration between load and submit.
-  if (isRegistrationDisabled(signUp.error)) {
-    return <RegistrationClosed googleAuth={capabilities.data?.googleAuth ?? false} />;
-  }
+  // Registration is open, so a `registration_disabled` refusal is about this
+  // email address: it shows under the form, where the person can change it.
+  // Only a deployment that reports registration closed gets the closed screen.
 
   return (
     <AuthLayout>

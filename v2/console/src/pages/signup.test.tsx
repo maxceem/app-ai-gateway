@@ -74,7 +74,7 @@ describe("SignupPage", () => {
     expect(screen.getByText(/use at least 8 characters/i)).toBeTruthy();
   });
 
-  it("falls back to the closed screen if the server refuses mid-flight", async () => {
+  it("shows an address the deployment does not admit under the form, so it can be changed", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),
       "/v2/auth/sign-up/email": {
@@ -90,6 +90,9 @@ describe("SignupPage", () => {
     await userEvent.type(screen.getByLabelText(/^password$/i), "correct-horse-42");
     await userEvent.click(screen.getByRole("button", { name: /create account/i }));
 
-    expect(await screen.findByText(/registration is closed/i)).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toMatch(/not allowed to register/i);
+    expect(screen.queryByText(/registration is closed/i)).toBeNull();
+    // The form stays, so the person can try another address.
+    expect(screen.getByLabelText(/email/i)).toBeTruthy();
   });
 });
