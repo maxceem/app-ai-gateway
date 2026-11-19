@@ -1,6 +1,6 @@
 import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
-import { isPaymentRequired, isUnauthorized } from "./api";
-import { AUTH_PATHS, isRetryableError, loginUrlFor } from "./auth-redirect";
+import { isUnauthorized } from "./api";
+import { AUTH_PATHS, consoleUrl, isRetryableError, loginUrlFor, routerPath } from "./auth-redirect";
 import { keys } from "./queries";
 
 export interface ConsoleQueryClientOptions {
@@ -11,36 +11,30 @@ export interface ConsoleQueryClientOptions {
 }
 
 function browserRedirect(url: string) {
-  window.history.pushState({}, "", url);
+  window.history.pushState({}, "", consoleUrl(url));
   // React Router's declarative API listens for history events rather than
   // pushes, so the navigation has to be announced explicitly.
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+/** Where the browser is, as a router path: below the console's `/v2` base. */
 function browserPath() {
-  return { pathname: window.location.pathname, search: window.location.search };
+  return { pathname: routerPath(window.location.pathname), search: window.location.search };
 }
 
 /**
  * The console's shared query client.
  *
- * Two server answers are handled globally because any request can produce them
- * and every screen would otherwise have to repeat the same handling:
- *
- * - 401: the session is gone, so the cached session is dropped and the operator
- *   is returned to sign-in with their destination preserved.
- * - 402: the organization's subscription lapsed mid-session. Refreshing billing
- *   status makes the banner appear promptly instead of on the next full reload.
+ * A 401 is handled globally because any request can produce one and every
+ * screen would otherwise have to repeat the same handling: the session is
+ * gone, so the cached session is dropped and the operator is returned to
+ * sign-in with their destination preserved.
  */
 export function createConsoleQueryClient(options: ConsoleQueryClientOptions = {}): QueryClient {
   const redirectToLogin = options.redirectToLogin ?? browserRedirect;
   const currentPath = options.currentPath ?? browserPath;
 
   const handleError = (error: unknown) => {
-    if (isPaymentRequired(error)) {
-      void client.invalidateQueries({ queryKey: keys.billingStatus });
-      return;
-    }
     if (!isUnauthorized(error)) return;
 
     client.setQueryData(keys.session, null);

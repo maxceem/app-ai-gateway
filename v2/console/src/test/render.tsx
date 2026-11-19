@@ -6,15 +6,7 @@ import { createMemoryRouter, Route, RouterProvider, Routes, useLocation } from "
 import { render } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConsoleSessionProvider } from "@/lib/console-session";
-import type {
-  BillingAccess,
-  Capabilities,
-  OrganizationMembership,
-  OrganizationQuota,
-  OrganizationRole,
-  PlanFeatureAccess,
-  Session,
-} from "@/lib/types";
+import type { AccountMembership, AccountRole, Capabilities, Session } from "@/lib/types";
 
 export interface StubRoute {
   status?: number;
@@ -37,10 +29,10 @@ export function stubApi(routes: Record<string, StubRoute>) {
   return fetchMock;
 }
 
-export const CAPABILITIES_URL = "/v1/console/capabilities";
+export const CAPABILITIES_URL = "/v2/console/capabilities";
 
 export function capabilities(overrides: Partial<Capabilities> = {}): StubRoute {
-  return { body: { billing: false, registrationOpen: true, googleAuth: false, emailVerification: false, ...overrides } };
+  return { body: { billing: false, registrationOpen: true, googleAuth: false, oauth: true, ...overrides } };
 }
 
 export function testQueryClient() {
@@ -109,44 +101,19 @@ export function renderPublic(
   };
 }
 
-export function membership(
-  id: string,
-  name: string,
-  role: OrganizationRole = "owner",
-): OrganizationMembership {
-  return {
-    organization: { id, name, claimed: true, expiresAt: null, createdAt: "2026-01-01T00:00:00.000Z" },
-    role,
-    status: "active",
-    joinedAt: "2026-01-01T00:00:00.000Z",
-  };
+export function membership(id: string, name: string, role: AccountRole = "owner"): AccountMembership {
+  return { id, name, role };
 }
 
 export function testSession(overrides: Partial<Session> = {}): Session {
   const role = overrides.role ?? "owner";
   return {
-    user: {
-      id: "user-1",
-      name: "Ada Lovelace",
-      email: "ada@example.test",
-      kind: "human",
-      emailVerified: true,
-      image: null,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    },
-    organization: { id: "org-1", name: "Acme", claimed: true, expiresAt: null, createdAt: "2026-01-01T00:00:00.000Z" },
+    user: { id: "user-1", name: "Ada Lovelace", email: "ada@example.test", emailVerified: true },
+    account: { id: "acct-1", name: "Acme" },
     role,
-    memberships: [membership("org-1", "Acme", role)],
+    grant: "manage",
     credentialType: "session",
-    assurance: "interactive",
-    verificationPending: false,
-    actor: {
-      type: "user",
-      id: "user-1",
-      kind: "human",
-      credentialId: null,
-      actionSource: "console",
-    },
+    accounts: [membership("acct-1", "Acme", role)],
     ...overrides,
   };
 }
@@ -155,8 +122,7 @@ export const CAPABILITIES: Capabilities = {
   billing: false,
   registrationOpen: true,
   googleAuth: false,
-  emailVerification: false,
-  conversationStorage: true,
+  oauth: true,
 };
 
 /** Renders a tree inside an authenticated console session. */
@@ -165,10 +131,6 @@ export function renderAuthenticated(
   options: {
     session?: Partial<Session>;
     capabilities?: Partial<Capabilities>;
-    billing?: BillingAccess;
-    quota?: OrganizationQuota | null;
-    planFeatures?: PlanFeatureAccess;
-    unclaimedAccessEndsAt?: string | null;
     route?: string;
   } = {},
 ) {
@@ -190,10 +152,6 @@ export function renderAuthenticated(
                 <ConsoleSessionProvider
                   session={testSession(options.session)}
                   capabilities={{ ...CAPABILITIES, ...options.capabilities }}
-                  billing={options.billing}
-                  quota={options.quota}
-                  planFeatures={options.planFeatures}
-                  unclaimedAccessEndsAt={options.unclaimedAccessEndsAt}
                 >
                   {ui}
                 </ConsoleSessionProvider>

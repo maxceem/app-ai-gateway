@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { BrandMark } from "@/components/brand-mark";
+import { DEFAULT_LANDING } from "@/lib/auth-redirect";
 import { cn } from "@/lib/utils";
 
 /**
@@ -9,7 +10,7 @@ import { cn } from "@/lib/utils";
 export function Brand({ className, onClick }: { className?: string; onClick?: () => void }) {
   return (
     <Link
-      to="/apps"
+      to={DEFAULT_LANDING}
       onClick={onClick}
       className={cn(
         "flex items-center gap-1.5 rounded-md text-sm font-semibold tracking-tight",

@@ -3,11 +3,11 @@ import headersFile from "../public/_headers?raw";
 
 /**
  * The console's static response headers, as Workers Static Assets applies
- * them from `console/public/_headers`.
+ * them from `v2/console/public/_headers` (moved to the root of `dist/` by the build).
  *
- * The OAuth consent page and the key reveal page rely on these rather than on
+ * The OAuth consent page and the device page rely on these rather than on
  * a rule of their own: either can be reached by client-side navigation — from
- * `/login?from=…` after signing in, say — which loads no document whose path a
+ * `/v2/login?from=…` after signing in, say — which loads no document whose path a
  * narrower rule could match. So the frame protection is one rule for every
  * path, and this keeps anyone from narrowing it.
  */
@@ -41,7 +41,7 @@ describe("console response headers", () => {
   });
 
   it("lets any site read the published price list", () => {
-    const catalog = HEADERS.find((rule) => rule.path === "/models.json");
+    const catalog = HEADERS.find((rule) => rule.path === "/v2/models.json");
     expect(catalog?.headers["access-control-allow-origin"]).toBe("*");
   });
 

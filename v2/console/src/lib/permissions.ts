@@ -1,4 +1,4 @@
-import type { OrganizationRole } from "./types";
+import type { AccountRole } from "./types";
 
 /**
  * Mirrors the gateway's own rules so the console can disable an action before
@@ -6,21 +6,21 @@ import type { OrganizationRole } from "./types";
  * only decides what the UI offers.
  */
 
-export const ROLE_LABELS: Record<OrganizationRole, string> = {
+export const ROLE_LABELS: Record<AccountRole, string> = {
   owner: "Owner",
   admin: "Admin",
   member: "Member",
 };
 
-/** Owners and admins may mutate gateway resources; members are read-only. */
-export function canManage(role: OrganizationRole | null | undefined): boolean {
+/** Owners and admins may change things; members are read-only. */
+export function canManage(role: AccountRole | null | undefined): boolean {
   return role === "owner" || role === "admin";
 }
 
 export const READ_ONLY_REASON =
   "Your role is read-only. Ask an owner or admin to make this change.";
 
-/** The org switcher is noise until the operator actually belongs to more than one. */
-export function shouldShowOrganizationSwitcher(membershipCount: number): boolean {
-  return membershipCount > 1;
+/** The account switcher is noise until the operator belongs to more than one. */
+export function shouldShowAccountSwitcher(accountCount: number): boolean {
+  return accountCount > 1;
 }

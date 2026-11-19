@@ -1,51 +1,57 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ManagementKeysPage } from "./management-keys";
+import { AccessPage } from "./access";
 import { renderAuthenticated } from "@/test/render";
 
 const PLAINTEXT = "agw_mgmt_abcdefghijklmnopqrstuvwxyz0123456789";
 
 const EXISTING = {
   id: "key-1",
-  organizationId: "org-1",
+  kind: "management_key",
   name: "CI deploy",
-  tokenHint: "6789",
-  enabled: true,
-  createdAt: "2026-02-01T00:00:00.000Z",
-  revokedAt: null,
-  source: "console",
-  credentialType: "apiKey",
-  label: null,
   grant: "manage",
+  hint: "6789",
   clientId: null,
+  userId: "user-1",
+  createdAt: "2026-02-01T00:00:00.000Z",
   expiresAt: null,
+  revokedAt: null,
 };
 
 /** An OAuth connection an MCP client holds, as the gateway lists it beside the keys. */
 const CONNECTION = {
   ...EXISTING,
   id: "connection-1",
+  kind: "mcp",
   // The client's own claim for itself: untrusted text the page must show as text.
   name: "<img src=x onerror=alert(1)> Agent",
-  tokenHint: "zzzz",
-  source: "oauth",
-  credentialType: "oauth",
-  label: "<img src=x onerror=alert(1)> Agent",
+  hint: null,
   grant: "read",
   clientId: "https://agent.example/oauth/client.json",
   expiresAt: "2026-03-03T00:00:00.000Z",
 };
 
-function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
+/** A CLI signed in with the built-in OAuth client. */
+const CLI_LOGIN = {
+  ...EXISTING,
+  id: "cli-1",
+  kind: "cli",
+  name: "App AI Gateway CLI",
+  hint: null,
+  clientId: "agw-cli",
+  expiresAt: "2026-03-03T00:00:00.000Z",
+};
+
+function stubKeys(created?: unknown, credentials: unknown[] = [EXISTING]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.startsWith("/v1/admin/keys") && init?.method === "POST") {
-      return new Response(JSON.stringify(created ?? { key: { ...EXISTING, plaintext: PLAINTEXT } }), {
+    if (url.startsWith("/v2/admin/management-keys") && init?.method === "POST") {
+      return new Response(JSON.stringify(created ?? { credential: EXISTING, key: PLAINTEXT }), {
         status: 201,
       });
     }
-    return new Response(JSON.stringify({ keys }), { status: 200 });
+    return new Response(JSON.stringify({ credentials }), { status: 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -71,62 +77,46 @@ function kindOf(row: HTMLElement) {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("ManagementKeysPage", () => {
+describe("AccessPage", () => {
   it("lists existing keys with their metadata", async () => {
     stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     expect(await screen.findByText("CI deploy")).toBeTruthy();
     expect(screen.getByText("…6789")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
   });
 
-  it("tells a CLI's key from a console key by its source and label", async () => {
-    stubKeys(undefined, [
-      EXISTING,
-      {
-        ...EXISTING,
-        id: "key-2",
-        name: "agw login",
-        tokenHint: "1234",
-        source: "cli",
-        label: "CLI on mac-studio",
-      },
-      { ...EXISTING, id: "key-3", name: "agw init", tokenHint: "5678", source: "bootstrap" },
-    ]);
-    renderAuthenticated(<ManagementKeysPage />);
+  it("tells a CLI login from a management key by its kind", async () => {
+    stubKeys(undefined, [EXISTING, CLI_LOGIN]);
+    renderAuthenticated(<AccessPage />);
 
-    const cliRow = (await screen.findByText("agw login")).closest("tr")!;
-    expect(within(cliRow).getByText("CLI on mac-studio")).toBeTruthy();
-    expect(kindOf(cliRow)).toBe("CLI: …1234");
+    const cliRow = (await screen.findByText("App AI Gateway CLI")).closest("tr")!;
+    // The CLI is a client the deployment registers itself, so no domain vouches for it.
+    expect(kindOf(cliRow)).toBe("CLI");
 
-    const consoleRow = screen.getByText("CI deploy").closest("tr")!;
-    expect(kindOf(consoleRow)).toBe("API: …6789");
-
-    const bootstrapRow = screen.getByText("agw init").closest("tr")!;
-    expect(kindOf(bootstrapRow)).toBe("CLI: …5678");
+    const keyRow = screen.getByText("CI deploy").closest("tr")!;
+    expect(kindOf(keyRow)).toBe("API: …6789");
   });
 
   it("lists OAuth connections beside the keys, by kind, client and domain", async () => {
     stubKeys(undefined, [
       EXISTING,
       CONNECTION,
-      { ...CONNECTION, id: "connection-2", name: "Registered tool", label: "Registered tool", clientId: "test-client", grant: "manage" },
+      { ...CONNECTION, id: "connection-2", name: "Registered tool", clientId: "test-client", grant: "manage" },
     ]);
-    const { container } = renderAuthenticated(<ManagementKeysPage />);
+    const { container } = renderAuthenticated(<AccessPage />);
 
     expect(await screen.findByRole("heading", { name: "Access" })).toBeTruthy();
     const keyRow = (await screen.findByText("CI deploy")).closest("tr")!;
     expect(kindOf(keyRow)).toBe("API: …6789");
     expect(within(keyRow).getByText("Never")).toBeTruthy();
 
-    // The declared name is text, never markup, and its domain says who vouched for it;
-    // a connection's token is replaced on every refresh, so it shows no hint.
+    // The declared name is text, never markup, and its domain says who vouched for it.
     const connectionRow = screen.getByText(CONNECTION.name).closest("tr")!;
     expect(container.querySelector("img")).toBeNull();
     expect(kindOf(connectionRow)).toBe("MCP: agent.example");
     expect(within(connectionRow).getByText("Read only")).toBeTruthy();
-    expect(within(connectionRow).queryByText("…zzzz")).toBeNull();
     expect(within(connectionRow).queryByText("Never")).toBeNull();
 
     const registeredRow = screen.getByText("Registered tool").closest("tr")!;
@@ -135,7 +125,7 @@ describe("ManagementKeysPage", () => {
 
   it("revokes a connection with the same operation as a key", async () => {
     const fetchMock = stubKeys(undefined, [CONNECTION]);
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     const menu = await openRowActions(CONNECTION.name);
     await userEvent.click(within(menu).getByRole("menuitem", { name: /revoke connection/i }));
@@ -144,7 +134,7 @@ describe("ManagementKeysPage", () => {
 
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(([url]) => String(url).includes("/v1/admin/keys/connection-1/revoke")),
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/v2/admin/credentials/connection-1/revoke")),
       ).toBe(true);
     });
   });
@@ -152,9 +142,9 @@ describe("ManagementKeysPage", () => {
   it("names each key's grant", async () => {
     stubKeys(undefined, [
       EXISTING,
-      { ...EXISTING, id: "key-2", name: "Dashboards", tokenHint: "1234", grant: "read" },
+      { ...EXISTING, id: "key-2", name: "Dashboards", hint: "1234", grant: "read" },
     ]);
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     const manageRow = (await screen.findByText("CI deploy")).closest("tr")!;
     expect(within(manageRow).getByText("Manage")).toBeTruthy();
@@ -162,18 +152,9 @@ describe("ManagementKeysPage", () => {
     expect(within(readRow).getByText("Read only")).toBeTruthy();
   });
 
-  it("does not call a key that has not been handed over active", async () => {
-    stubKeys(undefined, [{ ...EXISTING, enabled: false }]);
-    renderAuthenticated(<ManagementKeysPage />);
-
-    await screen.findByText("CI deploy");
-    expect(screen.getByText("Not yet active")).toBeTruthy();
-    expect(screen.queryByText("Active")).toBeNull();
-  });
-
   it("shows only the kind for keys created before hints were recorded", async () => {
-    stubKeys(undefined, [{ ...EXISTING, tokenHint: null }]);
-    renderAuthenticated(<ManagementKeysPage />);
+    stubKeys(undefined, [{ ...EXISTING, hint: null }]);
+    renderAuthenticated(<AccessPage />);
 
     const row = (await screen.findByText("CI deploy")).closest("tr")!;
     expect(kindOf(row)).toBe("API");
@@ -181,7 +162,7 @@ describe("ManagementKeysPage", () => {
 
   it("names the key in a modal and sends it", async () => {
     const fetchMock = stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     await createKey("Automation");
 
@@ -194,7 +175,7 @@ describe("ManagementKeysPage", () => {
 
   it("offers the two grants, manage first and chosen, each explained", async () => {
     stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
     const group = await screen.findByRole("radiogroup", { name: /key grant/i });
@@ -206,8 +187,8 @@ describe("ManagementKeysPage", () => {
   });
 
   it("creates a read-only key when that grant is chosen, and says what it can do", async () => {
-    const fetchMock = stubKeys({ key: { ...EXISTING, grant: "read", plaintext: PLAINTEXT } });
-    renderAuthenticated(<ManagementKeysPage />);
+    const fetchMock = stubKeys({ credential: { ...EXISTING, grant: "read" }, key: PLAINTEXT });
+    renderAuthenticated(<AccessPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
     await userEvent.type(await screen.findByLabelText(/key name/i), "Dashboards");
@@ -223,7 +204,7 @@ describe("ManagementKeysPage", () => {
 
   it("reveals the plaintext exactly once and warns it will not reappear", async () => {
     stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     await createKey("Automation");
 
@@ -233,7 +214,7 @@ describe("ManagementKeysPage", () => {
 
   it("removes the plaintext from the screen once acknowledged", async () => {
     stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     await createKey("Automation");
     await screen.findByDisplayValue(PLAINTEXT);
@@ -246,7 +227,7 @@ describe("ManagementKeysPage", () => {
 
   it("stops a read-only member creating or revoking keys", async () => {
     stubKeys();
-    renderAuthenticated(<ManagementKeysPage />, { session: { role: "member" } });
+    renderAuthenticated(<AccessPage />, { session: { role: "member" } });
 
     await screen.findByText("CI deploy");
     expect(screen.getByRole("button", { name: /new key/i })).toHaveProperty("disabled", true);
@@ -258,7 +239,7 @@ describe("ManagementKeysPage", () => {
 
   it("lets an owner revoke a key after confirming", async () => {
     const fetchMock = stubKeys();
-    renderAuthenticated(<ManagementKeysPage />);
+    renderAuthenticated(<AccessPage />);
 
     const menu = await openRowActions("CI deploy");
     await userEvent.click(within(menu).getByRole("menuitem", { name: /revoke key/i }));
@@ -266,7 +247,7 @@ describe("ManagementKeysPage", () => {
 
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(([url]) => String(url).includes("/v1/admin/keys/key-1/revoke")),
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/v2/admin/credentials/key-1/revoke")),
       ).toBe(true);
     });
   });

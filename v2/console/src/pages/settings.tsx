@@ -15,10 +15,10 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/field";
 import { useConsoleSession } from "@/lib/console-session";
 import { authErrorMessage } from "@/lib/auth-errors";
-import { formatDateTime } from "@/lib/format";
+import { ROLE_LABELS } from "@/lib/permissions";
 import { useChangePassword } from "@/lib/queries";
 import { cn } from "@/lib/utils";
-import { CONSOLE_VERSION, PRICES_UPDATED } from "@/lib/version";
+import { CONSOLE_VERSION } from "@/lib/version";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -84,14 +84,13 @@ export function SettingsPage() {
           it never takes a click meant for what is underneath. */}
       <p className="pointer-events-none fixed right-4 bottom-3 text-xs text-muted-foreground tabular-nums lg:right-6 lg:bottom-5">
         v{CONSOLE_VERSION}
-        {PRICES_UPDATED && ` · prices updated ${PRICES_UPDATED}`}
       </p>
     </div>
   );
 }
 
 function AccountSection() {
-  const { session } = useConsoleSession();
+  const { session, account, role } = useConsoleSession();
   const user = session.user;
 
   return (
@@ -100,9 +99,10 @@ function AccountSection() {
         <CardTitle className="text-sm">Account</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
-        <Row label="Name" value={user?.name || "—"} />
-        <Row label="Email" value={user?.email ?? "—"} />
-        <Row label="Member since" value={formatDateTime(user?.createdAt ?? null)} />
+        <Row label="Name" value={user.name || "—"} />
+        <Row label="Email" value={user.email ?? "—"} />
+        <Row label="Account" value={account.name} />
+        <Row label="Role" value={ROLE_LABELS[role]} />
       </CardContent>
     </Card>
   );

@@ -35,6 +35,17 @@ export { AccountLimiter } from "./do/AccountLimiter.ts";
 
 type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 
+/** Where the console's pages live. */
+const CONSOLE_BASE = "/v2";
+
+/** A browser loading a page under `/v2`, not a script calling the API. */
+function isConsolePage(request: Request): boolean {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  const { pathname } = new URL(request.url);
+  if (!pathname.startsWith(`${CONSOLE_BASE}/`)) return false;
+  return (request.headers.get("accept") ?? "").includes("text/html");
+}
+
 const app = new Hono<Env2>();
 
 /** A client operation's path in Hono's syntax. */
@@ -56,7 +67,9 @@ app.get(routePath("getCurrentUser"), clientCallDeadline(), meHandler);
 // OAuth server and the console's pages. Loaded on first use, so none of it is
 // on a provider request's cold start (see `./management/app.ts`).
 const management = lazyRoutes(() => import("./management/app.ts").then((module) => module.default));
-for (const pattern of ["/v2/admin/*", "/v2/cli/*", "/v2/auth/*", "/v2/oauth/*", "/v2/console/*", "/.well-known/oauth-authorization-server/v2", "/.well-known/oauth-protected-resource/v2", "/.well-known/oauth-protected-resource/v2/*"]) {
+// The OAuth endpoints are named one by one: `/v2/oauth/consent` is the
+// console's own page.
+for (const pattern of ["/v2/admin/*", "/v2/cli/*", "/v2/auth/*", "/v2/oauth/authorize", "/v2/oauth/token", "/v2/oauth/revoke", "/v2/oauth/device_authorization", "/v2/console/*", "/.well-known/oauth-authorization-server/v2", "/.well-known/oauth-protected-resource/v2", "/.well-known/oauth-protected-resource/v2/*"]) {
   app.all(pattern, management);
 }
 
@@ -67,9 +80,21 @@ app.all("/v2/mcp", lazyRoutes(() => import("./mcp/app.ts").then((module) => modu
 // Provider requests. No deadline of their own: a provider may stream for minutes.
 app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);
 
-app.notFound((c) =>
-  c.json({ error: { code: "not_found", message: "Nothing is served at this path." } } satisfies ErrorResponse, 404),
-);
+app.notFound(async (c) => {
+  // A page of the console, such as `/v2/access` or `/v2/oauth/consent`: no
+  // file has that path, so a browser gets the console's document, which
+  // routes it itself. It is never framed, as the static files' own rule says
+  // (`console/public/_headers`); set here too, since that file may not apply
+  // to an answer the Worker hands on.
+  if (c.env.ASSETS !== undefined && isConsolePage(c.req.raw)) {
+    const page = await c.env.ASSETS.fetch(new URL(`${CONSOLE_BASE}/`, c.req.url));
+    const headers = new Headers(page.headers);
+    headers.set("Content-Security-Policy", "frame-ancestors 'none'");
+    headers.set("X-Frame-Options", "DENY");
+    return new Response(page.body, { status: page.status, headers });
+  }
+  return c.json({ error: { code: "not_found", message: "Nothing is served at this path." } } satisfies ErrorResponse, 404);
+});
 
 /** 5xx answers about the provider or the app's own setup, not a fault of the gateway. */
 const NOT_OUR_FAULT: ReadonlySet<string> = new Set(["provider_error", "provider_not_configured", "provider_disabled"]);

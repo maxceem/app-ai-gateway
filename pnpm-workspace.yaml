@@ -4,6 +4,7 @@ packages:
   - docs
   - smoke
   - v2
+  - v2/console
 
 allowBuilds:
   cbor-extract: true

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { OrganizationMenuItems } from "./org-switcher";
+import { AccountMenuItems } from "./account-switcher";
 import { DropdownMenu, DropdownMenuContent } from "@/components/ui/dropdown-menu";
 import { useQuery } from "@tanstack/react-query";
 import { membership, renderAuthenticated } from "@/test/render";
@@ -13,28 +13,28 @@ function inOpenMenu() {
   return (
     <DropdownMenu open>
       <DropdownMenuContent>
-        <OrganizationMenuItems />
+        <AccountMenuItems />
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-describe("OrganizationMenuItems", () => {
-  it("renders nothing for a single membership", () => {
+describe("AccountMenuItems", () => {
+  it("renders nothing for a single account", () => {
     renderAuthenticated(inOpenMenu(), {
-      session: { memberships: [membership("org-1", "Acme")] },
+      session: { accounts: [membership("acct-1", "Acme")] },
     });
 
     expect(screen.queryByText("Acme")).toBeNull();
-    expect(screen.queryByText(/organizations/i)).toBeNull();
+    expect(screen.queryByText(/accounts/i)).toBeNull();
   });
 
-  it("lists every membership when there are several", async () => {
+  it("lists every account when there are several", async () => {
     renderAuthenticated(inOpenMenu(), {
       session: {
-        memberships: [
-          membership("org-1", "Acme", "owner"),
-          membership("org-2", "Globex", "member"),
+        accounts: [
+          membership("acct-1", "Acme", "owner"),
+          membership("acct-2", "Globex", "member"),
         ],
       },
     });
@@ -43,13 +43,14 @@ describe("OrganizationMenuItems", () => {
     expect(screen.getByRole("menuitem", { name: /acme/i })).toBeTruthy();
   });
 
-  it("drops every organization-scoped cache when switching", async () => {
+  it("drops every account-scoped cache when switching", async () => {
     const nextSession = {
       session: {
-        user: { id: "user-1", email: "ada@example.test" },
-        organization: { id: "org-2", name: "Globex" },
+        user: { id: "user-1", name: null, email: "ada@example.test", emailVerified: true },
+        account: { id: "acct-2", name: "Globex" },
         role: "member",
-        memberships: [],
+        grant: "manage",
+        accounts: [],
         credentialType: "session",
       },
     };
@@ -59,39 +60,40 @@ describe("OrganizationMenuItems", () => {
 
     const { client } = renderAuthenticated(inOpenMenu(), {
       session: {
-        memberships: [
-          membership("org-1", "Acme", "owner"),
-          membership("org-2", "Globex", "member"),
+        accounts: [
+          membership("acct-1", "Acme", "owner"),
+          membership("acct-2", "Globex", "member"),
         ],
       },
     });
-    // Data belonging to the organization being switched away from.
+    // Data belonging to the account being switched away from.
     client.setQueryData(["apps", "2026-08"], { apps: [{ id: "acme-only-app" }] });
 
     await userEvent.click(await screen.findByRole("menuitem", { name: /globex/i }));
 
     await waitFor(() => {
-      // Keeping it would show the previous tenant's apps under the new org.
+      // Keeping it would show the previous account's apps under the new one.
       expect(client.getQueryData(["apps", "2026-08"])).toBeUndefined();
       expect(client.getQueryData(["session"])).toMatchObject({
-        organization: { id: "org-2" },
+        account: { id: "acct-2" },
       });
     });
   });
 
-  it("refetches what is on screen under the new organization", async () => {
+  it("refetches what is on screen under the new account", async () => {
     const nextSession = {
       session: {
-        user: { id: "user-1", email: "ada@example.test" },
-        organization: { id: "org-2", name: "Globex" },
+        user: { id: "user-1", name: null, email: "ada@example.test", emailVerified: true },
+        account: { id: "acct-2", name: "Globex" },
         role: "member",
-        memberships: [],
+        grant: "manage",
+        accounts: [],
         credentialType: "session",
       },
     };
     vi.stubGlobal("fetch", vi.fn(async () =>
       new Response(JSON.stringify(nextSession), { status: 200 })));
-    // Stands in for a page: what it shows depends on which organization the
+    // Stands in for a page: what it shows depends on which account the
     // cookie names when it fetches, which the switch changes.
     let acting = "Acme";
     function Page() {
@@ -106,9 +108,9 @@ describe("OrganizationMenuItems", () => {
       </>,
       {
         session: {
-          memberships: [
-            membership("org-1", "Acme", "owner"),
-            membership("org-2", "Globex", "member"),
+          accounts: [
+            membership("acct-1", "Acme", "owner"),
+            membership("acct-2", "Globex", "member"),
           ],
         },
       },
@@ -126,9 +128,9 @@ describe("OrganizationMenuItems", () => {
     renderAuthenticated(inOpenMenu(), {
       session: {
         role: "member",
-        memberships: [
-          membership("org-1", "Acme", "member"),
-          membership("org-2", "Globex", "member"),
+        accounts: [
+          membership("acct-1", "Acme", "member"),
+          membership("acct-2", "Globex", "member"),
         ],
       },
     });

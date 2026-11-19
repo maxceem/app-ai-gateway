@@ -2,7 +2,6 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRight, CheckCircle2, Loader2, XCircle } from "lucide-react";
-import type { OAuthConsentDetailsResponse } from "@contracts/responses";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,29 +9,28 @@ import { ChoiceList, type Choice } from "@/components/choice-list";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
 import { authErrorMessage } from "@/lib/auth-errors";
-import { LOGIN_PATH, RETURN_PARAM, SIGNUP_PATH } from "@/lib/auth-redirect";
-import { formatDateTime } from "@/lib/format";
-import { useSignOut } from "@/lib/queries";
+import { loginUrlFor, signupUrlFor } from "@/lib/auth-redirect";
+import { useCapabilities, useSignOut } from "@/lib/queries";
+import type { ConsentDetails } from "@/lib/types";
 import { clearStoredProof, readStoredProof, writeStoredProof } from "@/lib/stored-proof";
 
 /**
- * Where an MCP client's OAuth authorization request sends a person: the
- * client says who it is and what it wants, and the person allows it into one
- * of their accounts, continues without an account, or denies it.
+ * Where an OAuth client's authorization request sends a person (an MCP client,
+ * or the CLI on a machine with a browser): the client says who it is and what
+ * it wants, and the person allows it into one of their accounts, or denies it.
  *
- * Outside the authenticated shell, like the CLI's approval page, because the
- * whole point of two of its three states is that nobody may be signed in yet:
+ * Outside the authenticated shell, because one of its states is that nobody
+ * may be signed in yet:
  *
  * - signed in: the client, the grant it asked for, which account it gets and
  *   with how much of the person's role, then Allow or Deny;
- * - nobody signed in: sign in, create an account, Google where the deployment
- *   has it — each of which brings the browser back here — or, where the
- *   deployment admits one, continue without an account;
+ * - nobody signed in: sign in, create an account, or Google where the
+ *   deployment has it, each of which brings the browser back here;
  * - refused: a person signed in who belongs to no account the client could use.
  *
- * What it offers is the gateway's verdict (`blockedBy`, `guestAvailable`), so
- * the button shown and the answer pressing it gets agree. Every answer is a
- * redirect back to the client, which the page follows.
+ * What it offers is the gateway's verdict (`blockedBy`), so the button shown
+ * and the answer pressing it gets agree. Every answer is a redirect back to
+ * the client, which the page follows.
  *
  * The client's name is its own claim, and arbitrary text: it is rendered as
  * text, always beside the domain that served it, and never as anything else.
@@ -44,7 +42,7 @@ import { clearStoredProof, readStoredProof, writeStoredProof } from "@/lib/store
  *
  * It must never be framed, or a page could trick a signed-in person into
  * pressing Allow. That is the console-wide `frame-ancestors 'none'` rule in
- * `console/public/_headers`, not a rule of this page's own: it is often
+ * `v2/console/public/_headers`, not a rule of this page's own: it is often
  * reached by client-side navigation after signing in, which loads no document
  * a path-specific rule could match.
  */
@@ -58,7 +56,7 @@ function storageKeyFor(id: string): string {
   return `app-ai-gateway:oauth-consent:${consentPath(id)}`;
 }
 
-type Grant = OAuthConsentDetailsResponse["requestedGrant"];
+type Grant = ConsentDetails["requestedGrant"];
 
 const GRANTS: Choice<Grant>[] = [
   {
@@ -91,7 +89,7 @@ export function OAuthConsentPage() {
 
   const details = useQuery({
     queryKey: ["oauth-consent", id],
-    queryFn: () => call("getOauthConsentDetails", { params: { id }, body: { submissionToken: token } }),
+    queryFn: () => call("getOauthConsent", { params: { id }, body: { proof: token } }),
     enabled: Boolean(id && token),
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
@@ -112,16 +110,12 @@ export function OAuthConsentPage() {
   };
 
   const allow = useMutation({
-    mutationFn: (body: { organizationId: string; grant: Grant }) =>
-      call("allowOauthConsent", { params: { id }, body: { submissionToken: token, ...body } }),
-    onSuccess: (result) => leave(result.redirect, false),
-  });
-  const guest = useMutation({
-    mutationFn: () => call("continueOauthWithoutAccount", { params: { id }, body: { submissionToken: token } }),
+    mutationFn: (body: { accountId: string; grant: Grant }) =>
+      call("allowOauthConsent", { params: { id }, body: { proof: token, ...body } }),
     onSuccess: (result) => leave(result.redirect, false),
   });
   const deny = useMutation({
-    mutationFn: () => call("denyOauthConsent", { params: { id }, body: { submissionToken: token } }),
+    mutationFn: () => call("denyOauthConsent", { params: { id }, body: { proof: token } }),
     onSuccess: (result) => leave(result.redirect, true),
   });
 
@@ -183,12 +177,10 @@ export function OAuthConsentPage() {
 
   const error = allow.isError
     ? authErrorMessage(allow.error, "The connection could not be approved")
-    : guest.isError
-      ? authErrorMessage(guest.error, "The account could not be created")
-      : deny.isError
-        ? authErrorMessage(deny.error, "Could not decline the connection")
-        : null;
-  const busy = allow.isPending || guest.isPending || deny.isPending;
+    : deny.isError
+      ? authErrorMessage(deny.error, "Could not decline the connection")
+      : null;
+  const busy = allow.isPending || deny.isPending;
 
   return (
     <ConsentShell id={id} expiresAt={data.expiresAt}>
@@ -196,15 +188,9 @@ export function OAuthConsentPage() {
 
       {data.state !== "pending" ? (
         <Settled state={data.state} />
-      ) : data.blockedBy === "registration_required" ? (
-        <SignedOut
-          details={data}
-          id={id}
-          busy={busy}
-          guestPending={guest.isPending}
-          onGuest={() => guest.mutate()}
-        />
-      ) : data.blockedBy === "no_eligible_organization" ? (
+      ) : data.blockedBy === "sign_in_required" ? (
+        <SignedOut id={id} />
+      ) : data.blockedBy === "no_account" ? (
         <NoEligibleAccount viewer={data.viewer} onDone={() => void details.refetch()} />
       ) : (
         <AllowForm
@@ -269,7 +255,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * claim, so it is always paired with what vouches for it: the domain that
  * served its metadata document, or the deployment's own registration.
  */
-function ClientSummary({ details }: { details: OAuthConsentDetailsResponse }) {
+function ClientSummary({ details }: { details: ConsentDetails }) {
   const asked = GRANTS.find((grant) => grant.value === details.requestedGrant)!;
   return (
     <div className="space-y-3">
@@ -293,7 +279,7 @@ function ClientSummary({ details }: { details: OAuthConsentDetailsResponse }) {
 }
 
 /** An authorization already decided, or past its ten minutes: nothing to offer but the way back. */
-function Settled({ state }: { state: OAuthConsentDetailsResponse["state"] }) {
+function Settled({ state }: { state: ConsentDetails["state"] }) {
   const [title, text] = state === "completed"
     ? ["Already approved", "This connection was approved already. You can close this tab."]
     : state === "denied"
@@ -309,69 +295,25 @@ function Settled({ state }: { state: OAuthConsentDetailsResponse["state"] }) {
 
 /**
  * Nobody is signed in. Signing in, creating an account and Google each leave
- * this page and come back to it; continuing without an account does not, and
- * is offered only where the deployment admits one. It says plainly what it
- * creates, when that is deleted, and — where the client asked for less — that
- * the connection gets the `manage` grant anyway, since it is the account's
- * only way in.
+ * this page and come back to it.
  */
-function SignedOut({
-  details,
-  id,
-  busy,
-  guestPending,
-  onGuest,
-}: {
-  details: OAuthConsentDetailsResponse;
-  id: string;
-  busy: boolean;
-  guestPending: boolean;
-  onGuest: () => void;
-}) {
-  const back = encodeURIComponent(consentPath(id));
+function SignedOut({ id }: { id: string }) {
+  const capabilities = useCapabilities();
+  const back = consentPath(id);
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">Sign in to choose which of your accounts this app may use.</p>
-      {details.googleEnabled ? <GoogleButton returnPath={consentPath(id)} /> : null}
+      {capabilities.data?.googleAuth ? <GoogleButton returnPath={back} /> : null}
       <div className="grid gap-2">
         <Button asChild className="w-full">
-          <Link to={`${LOGIN_PATH}?${RETURN_PARAM}=${back}`}>Sign in</Link>
+          <Link to={loginUrlFor(back)}>Sign in</Link>
         </Button>
-        {details.registrationOpen ? (
+        {capabilities.data?.registrationOpen ? (
           <Button asChild variant="outline" className="w-full">
-            <Link to={`${SIGNUP_PATH}?${RETURN_PARAM}=${back}`}>Create an account</Link>
+            <Link to={signupUrlFor(back)}>Create an account</Link>
           </Button>
         ) : null}
       </div>
-
-      {details.guestAvailable ? (
-        <div className="space-y-3 border-t pt-4">
-          <div className="space-y-2 text-sm text-muted-foreground">
-            <p>
-              Or continue without an account: the gateway creates a new account nobody has claimed yet,
-              and this app manages it.
-            </p>
-            {details.guestExpiresAt ? (
-              <p>
-                It is deleted on {formatDateTime(details.guestExpiresAt)} unless you claim it. The app can
-                start the claim for you whenever you are ready.
-              </p>
-            ) : (
-              <p>It does not expire, and you can claim it whenever you are ready.</p>
-            )}
-            {details.requestedGrant === "read" ? (
-              <p className="text-foreground">
-                The app asked for read-only access, but a connection without an account always gets the
-                Manage grant, because it is the only way into that account.
-              </p>
-            ) : null}
-          </div>
-          <Button type="button" variant="secondary" className="w-full" disabled={busy} onClick={onGuest}>
-            {guestPending ? <Loader2 className="size-4 animate-spin" /> : null}
-            Continue without an account
-          </Button>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -385,7 +327,7 @@ function NoEligibleAccount({
   viewer,
   onDone,
 }: {
-  viewer: OAuthConsentDetailsResponse["viewer"];
+  viewer: ConsentDetails["viewer"];
   onDone: () => void;
 }) {
   const signOut = useSignOut();
@@ -426,10 +368,10 @@ function AllowForm({
   onAllow,
   onSignedOut,
 }: {
-  details: OAuthConsentDetailsResponse;
+  details: ConsentDetails;
   busy: boolean;
   allowing: boolean;
-  onAllow: (body: { organizationId: string; grant: Grant }) => void;
+  onAllow: (body: { accountId: string; grant: Grant }) => void;
   onSignedOut: () => void;
 }) {
   const signOut = useSignOut();
@@ -441,7 +383,7 @@ function AllowForm({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (selected) onAllow({ organizationId: selected, grant });
+    if (selected) onAllow({ accountId: selected, grant });
   };
 
   const who = details.viewer?.name ?? details.viewer?.email ?? "Signed-in user";

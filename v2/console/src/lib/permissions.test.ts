@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canManage, shouldShowOrganizationSwitcher } from "./permissions";
+import { canManage, shouldShowAccountSwitcher } from "./permissions";
 
 describe("canManage", () => {
   it("treats owners and admins as mutators and members as read-only", () => {
@@ -10,10 +10,10 @@ describe("canManage", () => {
   });
 });
 
-describe("shouldShowOrganizationSwitcher", () => {
+describe("shouldShowAccountSwitcher", () => {
   it("hides the switcher until there is something to switch between", () => {
-    expect(shouldShowOrganizationSwitcher(0)).toBe(false);
-    expect(shouldShowOrganizationSwitcher(1)).toBe(false);
-    expect(shouldShowOrganizationSwitcher(2)).toBe(true);
+    expect(shouldShowAccountSwitcher(0)).toBe(false);
+    expect(shouldShowAccountSwitcher(1)).toBe(false);
+    expect(shouldShowAccountSwitcher(2)).toBe(true);
   });
 });

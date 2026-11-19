@@ -637,3 +637,55 @@ export const CATALOG = {
 export type Catalog = typeof CATALOG;
 export type OperationName = keyof Catalog;
 export type OperationResponse<K extends OperationName> = z.output<Catalog[K]["response"]>;
+
+/** The `{name}` segments of a path template, as a type. */
+type PathParameterNames<P extends string> =
+  P extends `${string}{${infer Name}}${infer Rest}` ? Name | PathParameterNames<Rest> : never;
+
+export type OperationParams<K extends OperationName> = Record<PathParameterNames<Catalog[K]["path"]>, string>;
+
+/** An optional schema field of each operation, or `never` where it has none. */
+type SchemaOf<Field extends string> = {
+  [K in OperationName]: Catalog[K] extends { readonly [F in Field]: infer S extends z.ZodType } ? S : z.ZodNever;
+};
+
+/** A query string as a client writes it: the schema's input, so defaulted fields are optional. */
+export type OperationQuery<K extends OperationName> = z.input<SchemaOf<"query">[K]>;
+
+/** A request body as a client writes it, before the schema's defaults apply. */
+export type OperationRequest<K extends OperationName> = z.input<SchemaOf<"request">[K]>;
+
+type HasParams<K extends OperationName> = PathParameterNames<Catalog[K]["path"]> extends never ? false : true;
+
+/** A `?a=1&b=2` suffix, or the empty string when nothing is set. */
+export function searchSuffix(params: Record<string, string | number | boolean | undefined | null>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+/**
+ * The URL of one operation, filled in from its own template (v1's helper,
+ * ported). The console builds every request path with it, so no client
+ * writes a path of its own.
+ */
+export function operationPath<K extends OperationName>(
+  name: K,
+  ...rest: HasParams<K> extends true
+    ? [params: OperationParams<K>, query?: OperationQuery<K>]
+    : [params?: undefined, query?: OperationQuery<K>]
+): string {
+  const [params, query] = rest as [Record<string, string> | undefined, object | undefined];
+  const filled = CATALOG[name].path.replace(/\{(\w+)\}/gu, (_match, key: string) => {
+    const value = params?.[key];
+    // An empty segment would send the request to another endpoint.
+    if (value === undefined) throw new Error(`${String(name)} needs a "${key}" path parameter`);
+    return encodeURIComponent(value);
+  });
+  return query === undefined
+    ? filled
+    : filled + searchSuffix(query as Record<string, string | number | boolean | undefined | null>);
+}

@@ -1,43 +1,16 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { cloudflare } from "@cloudflare/vite-plugin";
-import { loadEnv, type Plugin } from "vite";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-// Plain JS, and the same helper the deploy path uses to merge a profile
-// overlay over the tracked config. It ships no declarations.
-// @ts-expect-error - untyped .mjs
-import { resolveWranglerConfig } from "../scripts/wrangler-config.mjs";
-// The day the model price list last changed, shown in Settings; see the script.
-// @ts-expect-error - untyped .mjs
-import { pricesRevision } from "../scripts/prices-revision.mjs";
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+/** Where the console lives: under `/v2`, beside v1's console on the same host (plan section 9.1). */
+const BASE = "/v2/";
 
 /**
- * The Wrangler configuration the dev Worker runs on.
- *
- * The tracked `wrangler.jsonc` is the complete self-hosted deployment and
- * declares no optional services, which is right for it and for the Deploy
- * button. A developer running against one — a billing Worker in another
- * `wrangler dev` — names a deployment profile in a gitignored `.env` at the
- * repository root (`APP_AI_GATEWAY_PROFILE=local`), and the same overlay
- * mechanism the deploy path uses supplies the merged config. Absent that, this
- * resolves to exactly the file it always did.
- */
-function workerConfigPathFor(mode: string): string {
-  const profile = loadEnv(mode, repoRoot, "APP_AI_GATEWAY_").APP_AI_GATEWAY_PROFILE;
-  return profile
-    ? resolveWranglerConfig(profile).configPath
-    : path.resolve(repoRoot, "wrangler.jsonc");
-}
-
-/**
- * The shipped model price list, published beside the console as
- * `/models.json`: exactly the file this build's gateway bills with, served as a
- * static asset (no Worker runs for it) so anyone can read or track the prices.
- * Its CORS and cache headers are in `public/_headers`.
+ * The v2 Worker's price list, published beside the console as
+ * `/v2/models.json`, as v1 publishes its own: a static file anyone can read.
  */
 function modelPrices(): Plugin {
   return {
@@ -47,104 +20,48 @@ function modelPrices(): Plugin {
       this.emitFile({
         type: "asset",
         fileName: "models.json",
-        source: readFileSync(path.resolve(repoRoot, "src/usage/models.json"), "utf8"),
+        source: readFileSync(path.resolve(import.meta.dirname, "../src/pricing/models.json"), "utf8"),
       });
     },
   };
 }
 
-export default defineConfig(({ command, mode, isPreview }) => {
-  // Development is a single Vite server: the Cloudflare plugin runs the API
-  // Worker in workerd and Vite serves the console with HMR on the same origin.
-  // Production builds stay client-only because Wrangler deploys the Worker and
-  // the generated console/dist assets using the repository's existing flow.
-  const cloudflareDev = command === "serve" && !isPreview && mode !== "test";
+/** The paths the v2 Worker answers itself, sent to `wrangler dev` while developing. */
+const WORKER_PATHS = ["/v2/admin", "/v2/auth", "/v2/console", "/v2/oauth", "/v2/cli", "/v2/mcp", "/.well-known"];
 
-  return {
-    define: {
-      __PRICES_UPDATED__: JSON.stringify((pricesRevision() as { updated: string | null }).updated),
+export default defineConfig({
+  base: BASE,
+  plugins: [react(), tailwindcss(), modelPrices()],
+  resolve: {
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+      // The v2 API's contracts: the operation catalog and its schemas. Plain
+      // zod, with no Hono or Worker code behind it.
+      "@contracts": path.resolve(import.meta.dirname, "../src/contracts"),
     },
-    plugins: [
-      react(),
-      tailwindcss(),
-      modelPrices(),
-      ...(cloudflareDev
-        ? [cloudflare({
-          configPath: workerConfigPathFor(mode),
-          // Local development needs test accounts for any email. This plugin
-          // runs only in the dev server, so the override never enters a deployment.
-          config: { vars: { ALLOWED_REGISTRATION_EMAILS: "*" } },
-          inspectorPort: false,
-          // The same local D1, KV and Durable Object state `wrangler dev` uses.
-          // The plugin would otherwise persist beside this config — the Vite
-          // root is `console/` — giving the repository two local databases that
-          // look alike and drift apart: `pnpm run db:migrate:local` reaches only
-          // the one at the repository root, so the other stays on whatever
-          // schema it was last given, and a migration appears to have worked
-          // while the dev server keeps reading the old tables.
-          persistState: { path: path.resolve(import.meta.dirname, "../.wrangler/state") },
-        })]
-        : []),
-    ],
-    resolve: {
-      alias: {
-        "@": path.resolve(import.meta.dirname, "./src"),
-        // The shared capability matrix, one directory up and outside this package.
-        // It imports nothing, so bundling it costs the tables themselves and
-        // pulls no server dependency into the browser build.
-        "@shared": path.resolve(import.meta.dirname, "../src/shared"),
-        // The API contracts: the operation catalog and the schemas it composes.
-        // Runtime zod, which this bundle already carries for the application
-        // configuration grammar, and no Hono or Worker code behind it.
-        "@contracts": path.resolve(import.meta.dirname, "../src/contracts"),
-      },
-    },
-    server: {
-      port: 5173,
-      strictPort: true,
-    },
-    test: {
-      // Auth screens and capability gating are only meaningful when rendered, so
-      // the suite runs in a DOM. happy-dom rather than jsdom: the suite is
-      // dominated by rendering, and on this one it measured about twice as
-      // fast — 47.6s to 24.0s across every file. It implements less, which the
-      // polyfills below already anticipated; the one gap that mattered was ARIA
-      // property reflection (`el.ariaDisabled`), so the assertions that used it
-      // read the attribute the component actually sets instead.
-      environment: "happy-dom",
-      setupFiles: ["./src/test/setup.ts"],
-      // Records each run's results when a ledger directory is chosen, and does
-      // nothing otherwise; see scripts/test-ledger/README.md.
-      reporters: ["default", ["../scripts/test-ledger/reporter.mjs", { suite: "console" }]],
-      restoreMocks: true,
-      // Building the window is what this suite actually spends its time on —
-      // far more than running the tests inside it — so both knobs here aim at
-      // that cost rather than at the tests. Threads share one process per
-      // worker instead of forking a new one per file, and `isolate: false`
-      // reuses a worker's window and module registry across the files it runs,
-      // which is what removes the bulk of it. Nothing here is order-dependent:
-      // `restoreMocks` resets spies and the Testing Library `cleanup` in
-      // `setup.ts` unmounts between tests, so a file starts on an empty DOM.
-      // Verified by running the suite under `--sequence.shuffle`.
-      pool: "threads",
-      isolate: false,
-      // The interaction tests are CPU-bound, not waiting on anything: rendering a
-      // page and driving a modal through a simulated DOM costs real milliseconds
-      // per keystroke, so the heaviest of them spend over a second of work even
-      // with the machine to themselves. Run in parallel across every file that
-      // work contends and the same test takes three to four times as long, which
-      // put the slowest ones within a few hundred milliseconds of the 5s default
-      // and made them fail on load rather than on merit. The timeout is here to
-      // catch a test that has genuinely hung, so it is sized against that: 20s is
-      // far more than the slowest test needs and still far less than forever.
-      testTimeout: 20_000,
-    },
-    build: {
-      outDir: "dist",
-      emptyOutDir: true,
-      // Assets are public; shipping ~6 MB of source maps on every deploy is not
-      // worth it for a console whose source lives in this repo.
-      sourcemap: false,
-    },
-  };
+  },
+  server: {
+    port: 5174,
+    strictPort: true,
+    // Run the v2 Worker with `wrangler dev` (port 8787) beside this server.
+    proxy: Object.fromEntries(WORKER_PATHS.map((prefix) => [prefix, "http://localhost:8787"])),
+  },
+  test: {
+    environment: "happy-dom",
+    setupFiles: ["./src/test/setup.ts"],
+    reporters: ["default", ["../../scripts/test-ledger/reporter.mjs", { suite: "v2-console" }]],
+    restoreMocks: true,
+    // The same settings as v1's console suite, for the same reasons: building
+    // the test window is the cost, so workers reuse it across files.
+    pool: "threads",
+    isolate: false,
+    testTimeout: 20_000,
+  },
+  build: {
+    // The Worker serves `dist/` as its static assets, so a file at
+    // `dist/v2/assets/x.js` answers `/v2/assets/x.js`.
+    outDir: "dist/v2",
+    emptyOutDir: true,
+    sourcemap: false,
+  },
 });

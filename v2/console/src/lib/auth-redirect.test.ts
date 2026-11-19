@@ -1,17 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
-  authPathWithPlan,
-  CHECKOUT_RETURN_PATH,
-  checkoutReturnPathFor,
-  checkoutSucceeded,
-  pathWithoutCheckout,
+  consoleUrl,
   isRetryableError,
   isSafeReturnPath,
   loginUrlFor,
   oauthErrorNotice,
-  planKeyFrom,
-  postAuthPath,
   returnPathFrom,
 } from "./auth-redirect";
 
@@ -56,9 +50,9 @@ describe("returnPathFrom", () => {
   });
 
   it("falls back to the landing page for missing or unsafe values", () => {
-    expect(returnPathFrom("")).toBe("/apps");
-    expect(returnPathFrom("?from=https%3A%2F%2Fevil.example")).toBe("/apps");
-    expect(returnPathFrom("?from=%2F%2Fevil.example")).toBe("/apps");
+    expect(returnPathFrom("")).toBe("/access");
+    expect(returnPathFrom("?from=https%3A%2F%2Fevil.example")).toBe("/access");
+    expect(returnPathFrom("?from=%2F%2Fevil.example")).toBe("/access");
   });
 });
 
@@ -68,7 +62,7 @@ describe("loginUrlFor", () => {
   });
 
   it("stays bare for the landing page and unsafe input", () => {
-    expect(loginUrlFor("/apps")).toBe("/login");
+    expect(loginUrlFor("/access")).toBe("/login");
     expect(loginUrlFor("//evil.example")).toBe("/login");
     expect(loginUrlFor(null)).toBe("/login");
   });
@@ -117,89 +111,9 @@ describe("oauthErrorNotice", () => {
   });
 });
 
-describe("plan intent carried in the query string", () => {
-  it("accepts the catalog's own plan keys", () => {
-    for (const key of ["free", "starter", "growth", "scale", "growth_v2", "pro-plus"]) {
-      expect(planKeyFrom(`?plan=${key}`), key).toBe(key);
-    }
-  });
-
-  it("refuses anything that is not a plain slug", () => {
-    // It arrives from a link anyone can write, and ends up in a URL and on screen.
-    for (const raw of [
-      "",
-      "Growth",
-      "growth plan",
-      "../../etc",
-      "%3Cscript%3E",
-      "a".repeat(33),
-    ]) {
-      expect(planKeyFrom(`?plan=${raw}`), raw).toBeNull();
-    }
-    expect(planKeyFrom("")).toBeNull();
-    expect(planKeyFrom("?from=%2Fapps")).toBeNull();
-  });
-
-  it("sends a paid plan to checkout once the operator is authenticated", () => {
-    expect(postAuthPath("?plan=growth")).toBe("/checkout?plan=growth");
-  });
-
-  it("treats the free plan as no intent at all, since it is what they already have", () => {
-    expect(postAuthPath("?plan=free")).toBe("/apps");
-  });
-
-  it("outranks a return path, which only this console's own 401 handling writes", () => {
-    expect(postAuthPath("?from=%2Fproviders&plan=growth")).toBe("/checkout?plan=growth");
-    expect(postAuthPath("?from=%2Fproviders")).toBe("/providers");
-  });
-
-  it("survives a round trip through the sign-in screen", () => {
-    const url = loginUrlFor(postAuthPath("?plan=growth"));
-    expect(url).toBe("/login?from=%2Fcheckout%3Fplan%3Dgrowth");
-    // The query is the whole point: a checkout path without it buys nothing.
-    expect(returnPathFrom(url.slice(url.indexOf("?")))).toBe("/checkout?plan=growth");
-  });
-
-  it("carries the plan onto the other auth screen, and nothing when there is none", () => {
-    expect(authPathWithPlan("/login", "growth")).toBe("/login?plan=growth");
-    expect(authPathWithPlan("/login", null)).toBe("/login");
-  });
-});
-
-describe("checkout return", () => {
-  it("recognises only the completed-checkout marker", () => {
-    expect(checkoutSucceeded("?checkout=success")).toBe(true);
-    expect(checkoutSucceeded("?checkout=cancelled")).toBe(false);
-    expect(checkoutSucceeded("?checkout=")).toBe(false);
-    expect(checkoutSucceeded("")).toBe(false);
-    // Anyone may write this onto a URL; it only ever announces, so the worst a
-    // crafted link achieves is a toast and a re-read of the plan.
-    expect(checkoutSucceeded("?plan=growth")).toBe(false);
-  });
-
-  it("spends the marker and its plan without disturbing the rest of the query", () => {
-    expect(pathWithoutCheckout("/apps", "?checkout=success")).toBe("/apps");
-    expect(pathWithoutCheckout("/apps", "?checkout=success&month=2026-09")).toBe(
-      "/apps?month=2026-09",
-    );
-    // The plan is spent with it: on the landing it is a record of what was
-    // just bought, not a request to buy it.
-    expect(pathWithoutCheckout("/apps", "?checkout=success&plan=growth")).toBe("/apps");
-    expect(pathWithoutCheckout("/apps", "")).toBe("/apps");
-  });
-
-  it("returns to the landing page carrying the marker", () => {
-    expect(CHECKOUT_RETURN_PATH).toBe("/apps?checkout=success");
-    expect(checkoutSucceeded(CHECKOUT_RETURN_PATH.slice(CHECKOUT_RETURN_PATH.indexOf("?")))).toBe(
-      true,
-    );
-  });
-
-  it("names the purchased plan on the return leg, which carries no body", () => {
-    const path = checkoutReturnPathFor("growth");
-    const search = path.slice(path.indexOf("?"));
-    expect(checkoutSucceeded(search)).toBe(true);
-    expect(planKeyFrom(search)).toBe("growth");
-    expect(pathWithoutCheckout("/apps", search)).toBe("/apps");
+describe("consoleUrl", () => {
+  it("puts the console's /v2 base in front of a router path", () => {
+    expect(consoleUrl("/access")).toBe("/v2/access");
+    expect(consoleUrl("/login?from=%2Faccess")).toBe("/v2/login?from=%2Faccess");
   });
 });

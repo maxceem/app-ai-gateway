@@ -26,7 +26,7 @@ describe("signOut", () => {
 
     // A bodyless POST is answered 415 by better-call and leaves the session up.
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("/v1/auth/sign-out");
+    expect(String(url)).toBe("/v2/auth/sign-out");
     expect(init!.body).toBe("{}");
     expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
   });
@@ -39,8 +39,8 @@ describe("startGoogleSignIn", () => {
 
     expect(socialBody(fetchMock)).toMatchObject({
       provider: "google",
-      callbackURL: "/apps",
-      errorCallbackURL: "/login",
+      callbackURL: "/v2/access",
+      errorCallbackURL: "/v2/login",
     });
   });
 
@@ -50,8 +50,8 @@ describe("startGoogleSignIn", () => {
 
     // A failed Google sign-in must not cost the operator their destination.
     expect(socialBody(fetchMock)).toMatchObject({
-      callbackURL: "/apps/my-app/usage",
-      errorCallbackURL: "/login?from=%2Fapps%2Fmy-app%2Fusage",
+      callbackURL: "/v2/apps/my-app/usage",
+      errorCallbackURL: "/v2/login?from=%2Fapps%2Fmy-app%2Fusage",
     });
   });
 
@@ -61,8 +61,8 @@ describe("startGoogleSignIn", () => {
 
     // The return path arrives from the URL, so it is sanitized, not trusted.
     expect(socialBody(fetchMock)).toMatchObject({
-      callbackURL: "/apps",
-      errorCallbackURL: "/login",
+      callbackURL: "/v2/access",
+      errorCallbackURL: "/v2/login",
     });
   });
 
@@ -70,7 +70,7 @@ describe("startGoogleSignIn", () => {
     const fetchMock = stubSocial();
     await startGoogleSignIn("//evil.example");
 
-    expect(socialBody(fetchMock)).toMatchObject({ callbackURL: "/apps" });
+    expect(socialBody(fetchMock)).toMatchObject({ callbackURL: "/v2/access" });
   });
 
   it("navigates to the provider URL", async () => {

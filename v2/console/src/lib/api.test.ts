@@ -32,7 +32,7 @@ describe("request headers", () => {
 
     vi.unstubAllGlobals();
     const bodyless = mockFetch({ body: "{}" });
-    await call("revokeManagementKey", { params: { id: "abc" } });
+    await call("revokeCredential", { params: { id: "abc" } });
     expect(new Headers(bodyless.mock.calls[0]![1].headers).get("content-type")).toBeNull();
   });
 });
@@ -41,7 +41,7 @@ describe("paths", () => {
   it("builds each operation's URL from the catalog, encoding what it fills in", async () => {
     const fetchMock = mockFetch({ body: "{}" });
     await call("revokeAppKey", { params: { app: "my app", key: "k/1" } });
-    expect(fetchMock.mock.calls[0]![0]).toBe("/v1/admin/apps/my%20app/keys/k%2F1/revoke");
+    expect(fetchMock.mock.calls[0]![0]).toBe("/v2/admin/apps/my%20app/keys/k%2F1/revoke");
 
     vi.unstubAllGlobals();
     const listing = mockFetch({ body: "{}" });
@@ -49,7 +49,7 @@ describe("paths", () => {
       params: { app: "a" },
       query: { month: "2026-08", status: undefined, query: "", limit: 50 },
     });
-    expect(listing.mock.calls[0]![0]).toBe("/v1/admin/apps/a/users?month=2026-08&limit=50");
+    expect(listing.mock.calls[0]![0]).toBe("/v2/admin/apps/a/users?month=2026-08&limit=50");
   });
 
   it("refuses to send a request whose path parameter is missing", async () => {

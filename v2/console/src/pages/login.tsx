@@ -8,13 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { authErrorMessage } from "@/lib/auth-errors";
-import {
-  authPathWithPlan,
-  oauthErrorNotice,
-  planKeyFrom,
-  postAuthPath,
-  SIGNUP_PATH,
-} from "@/lib/auth-redirect";
+import { oauthErrorNotice, postAuthPath, signupUrlFor } from "@/lib/auth-redirect";
 import { useCapabilities, useSignIn } from "@/lib/queries";
 
 export function LoginPage() {
@@ -27,13 +21,8 @@ export function LoginPage() {
 
   // A provider redirect reports failure in the query string, not a response body.
   const oauthError = oauthErrorNotice(location.search);
-  /*
-   * Where this sign-in ends. Normally the page the operator was headed for; a
-   * plan pressed on the marketing site outranks it, since a returning customer
-   * who clicked a price arrives here rather than on sign-up.
-   */
+  // Where this sign-in ends: the page the operator was headed for.
   const returnPath = postAuthPath(location.search);
-  const planKey = planKeyFrom(location.search);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -107,7 +96,7 @@ export function LoginPage() {
             <p className="text-center text-sm text-muted-foreground">
               No account?{" "}
               <Link
-                to={authPathWithPlan(SIGNUP_PATH, planKey)}
+                to={signupUrlFor(returnPath)}
                 className="text-primary-ink underline underline-offset-4"
               >
                 Create one

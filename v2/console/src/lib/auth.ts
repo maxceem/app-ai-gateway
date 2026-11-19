@@ -1,14 +1,14 @@
 import { request } from "./api";
-import { DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
+import { consoleUrl, DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
 
 /**
- * Better Auth's HTTP surface, mounted by the Worker at `/v1/auth`.
+ * Better Auth's HTTP surface, mounted by the Worker at `/v2/auth`.
  *
  * The console talks to it with plain fetch rather than a client SDK: cf-auth
  * ships server-side only, and these five calls are the entire surface the
  * console needs.
  */
-export const AUTH_BASE = "/v1/auth";
+export const AUTH_BASE = "/v2/auth";
 
 export interface SignInInput {
   email: string;
@@ -17,11 +17,6 @@ export interface SignInInput {
 
 export interface SignUpInput extends SignInInput {
   name: string;
-  /**
-   * The console path the verification email continues at, on a deployment
-   * that verifies addresses. Relative, which is all the gateway accepts.
-   */
-  callbackURL?: string;
 }
 
 /** Better Auth's endpoints all take a JSON body and answer with one. */
@@ -80,7 +75,8 @@ export function changePassword(input: {
  * it, alongside the `?error=` the sign-in screen renders.
  *
  * `returnPath` reaches here from the query string, so it is sanitized rather
- * than trusted.
+ * than trusted. Both URLs carry the console's `/v2` base: the browser goes
+ * there directly, not through the router.
  */
 export async function startGoogleSignIn(returnPath?: string): Promise<void> {
   const destination = isSafeReturnPath(returnPath) ? returnPath : DEFAULT_LANDING;
@@ -88,8 +84,8 @@ export async function startGoogleSignIn(returnPath?: string): Promise<void> {
     `${AUTH_BASE}/sign-in/social`,
     {
       provider: "google",
-      callbackURL: destination,
-      errorCallbackURL: loginUrlFor(destination),
+      callbackURL: consoleUrl(destination),
+      errorCallbackURL: consoleUrl(loginUrlFor(destination)),
     },
   );
   if (!result?.url) throw new Error("Google sign-in is unavailable right now.");

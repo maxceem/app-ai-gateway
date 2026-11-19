@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { authErrorMessage, isRegistrationDisabled } from "@/lib/auth-errors";
-import { authPathWithPlan, LOGIN_PATH, planKeyFrom, postAuthPath } from "@/lib/auth-redirect";
+import { loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
 import { useCapabilities, useSignUp } from "@/lib/queries";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -22,13 +22,7 @@ export function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  /*
-   * A plan pressed on the marketing site before this account existed. It has to
-   * outlive every hop this screen can make — the form, Google's redirect, and
-   * the operator deciding they already have an account — or the intent is spent
-   * on the sign-up form and silently dropped.
-   */
-  const planKey = planKeyFrom(location.search);
+  // Where this sign-up ends: the page the operator was headed for.
   const destination = postAuthPath(location.search);
 
   // Capabilities decide whether this screen exists at all.
@@ -51,12 +45,7 @@ export function SignupPage() {
     event.preventDefault();
     if (!ready) return;
     try {
-      await signUp.mutateAsync({
-        name: name.trim(),
-        email: email.trim(),
-        password,
-        callbackURL: destination,
-      });
+      await signUp.mutateAsync({ name: name.trim(), email: email.trim(), password });
       await navigate(destination, { replace: true });
     } catch {
       // Rendered inline below.
@@ -138,7 +127,7 @@ export function SignupPage() {
           <p className="text-center text-sm text-muted-foreground">
             Already have an account?{" "}
             <Link
-              to={authPathWithPlan(LOGIN_PATH, planKey)}
+              to={loginUrlFor(destination)}
               className="text-primary-ink underline underline-offset-4"
             >
               Sign in
@@ -147,33 +136,13 @@ export function SignupPage() {
         </CardContent>
       </Card>
 
-      {/* The linked documents govern the hosted service only, so a
-          self-hosted deployment (no billing) must not show them. Sitting
-          outside the card, opposite the wordmark, keeps the fine print clear
-          of the sign-in line without needing a rule to separate it. */}
-      {capabilities.data?.billing ? (
-        <p className="max-w-sm text-center text-xs text-balance text-muted-foreground">
-          By creating an account you agree to the{" "}
-          <a
-            href="https://appaigateway.com/terms/"
-            target="_blank"
-            rel="noopener"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            Terms of Service
-          </a>{" "}
-          and{" "}
-          <a
-            href="https://appaigateway.com/privacy/"
-            target="_blank"
-            rel="noopener"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            Privacy Policy
-          </a>
-          .
-        </p>
-      ) : null}
+      {/* The deployment names its own terms and privacy policy, if it has
+          them; a self-hosted one usually names neither. Outside the card,
+          opposite the wordmark, keeps the fine print clear of the form. */}
+      <LegalLine
+        termsUrl={capabilities.data?.termsOfServiceUrl}
+        privacyUrl={capabilities.data?.privacyPolicyUrl}
+      />
     </AuthLayout>
   );
 }
@@ -197,8 +166,7 @@ function RegistrationClosed({ googleAuth }: { googleAuth: boolean }) {
           <Alert>
             <AlertTitle>This gateway does not accept public sign-ups</AlertTitle>
             <AlertDescription>
-              Sign in with an existing account. If this gateway was initialized
-              from the CLI, finish its protected account claim from that CLI.
+              Sign in with an existing account.
             </AlertDescription>
           </Alert>
           {googleAuth ? <GoogleButton label="Continue with Google" /> : null}
@@ -208,5 +176,25 @@ function RegistrationClosed({ googleAuth }: { googleAuth: boolean }) {
         </CardContent>
       </Card>
     </AuthLayout>
+  );
+}
+
+const LEGAL_LINK = "underline underline-offset-4 hover:text-foreground";
+
+/** "By creating an account you agree to…", naming only the documents the deployment has. */
+function LegalLine({ termsUrl, privacyUrl }: { termsUrl?: string | undefined; privacyUrl?: string | undefined }) {
+  if (!termsUrl && !privacyUrl) return null;
+  const terms = termsUrl ? (
+    <a href={termsUrl} target="_blank" rel="noopener" className={LEGAL_LINK}>Terms of Service</a>
+  ) : null;
+  const privacy = privacyUrl ? (
+    <a href={privacyUrl} target="_blank" rel="noopener" className={LEGAL_LINK}>Privacy Policy</a>
+  ) : null;
+  return (
+    <p className="max-w-sm text-center text-xs text-balance text-muted-foreground">
+      By creating an account you agree to the {terms}
+      {terms && privacy ? " and " : null}
+      {privacy}.
+    </p>
   );
 }

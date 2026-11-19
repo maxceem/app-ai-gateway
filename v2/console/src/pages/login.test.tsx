@@ -12,7 +12,7 @@ describe("LoginPage", () => {
   it("signs in with email and password", async () => {
     const fetchMock = stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
+      "/v2/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
     });
 
     renderPublic(<LoginPage />, { route: "/login" });
@@ -34,7 +34,7 @@ describe("LoginPage", () => {
   it("shows a readable message when the credentials are wrong", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-in/email": {
+      "/v2/auth/sign-in/email": {
         status: 401,
         body: { code: "INVALID_EMAIL_OR_PASSWORD", message: "Invalid email or password" },
       },
@@ -131,8 +131,8 @@ describe("LoginPage deep links", () => {
   it("returns the operator to the page they were sent away from", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
-      "/v1/admin/session": { body: { session: {} } },
+      "/v2/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
+      "/v2/admin/session": { body: { session: {} } },
     });
 
     const { router } = renderPublic(<LoginPage />, {
@@ -151,8 +151,8 @@ describe("LoginPage deep links", () => {
   it("lands on the console default when there is nothing to return to", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
-      "/v1/admin/session": { body: { session: {} } },
+      "/v2/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
+      "/v2/admin/session": { body: { session: {} } },
     });
 
     const { router } = renderPublic(<LoginPage />, { route: "/login" });
@@ -161,6 +161,6 @@ describe("LoginPage deep links", () => {
     await userEvent.type(screen.getByLabelText(/password/i), "correct-horse-42");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    await waitFor(() => expect(router.location.pathname).toBe("/apps"));
+    await waitFor(() => expect(router.location.pathname).toBe("/access"));
   });
 });

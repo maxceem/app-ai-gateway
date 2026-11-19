@@ -54,32 +54,6 @@ describe("401 handling", () => {
   });
 });
 
-describe("402 handling", () => {
-  it("refreshes billing status so the banner appears without a reload", async () => {
-    const { client, redirectToLogin } = setup();
-    const invalidate = vi.spyOn(client, "invalidateQueries");
-
-    await failQuery(client, new ApiError(402, "payment_required", "subscription lapsed"));
-
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: keys.billingStatus });
-    // A lapsed subscription must not look like a lost session.
-    expect(redirectToLogin).not.toHaveBeenCalled();
-  });
-
-  it("refreshes billing status for a failed mutation too", async () => {
-    const { client } = setup();
-    const invalidate = vi.spyOn(client, "invalidateQueries");
-
-    await client
-      .getMutationCache()
-      .build(client, { mutationFn: () => Promise.reject(new ApiError(402, "payment_required", "")) })
-      .execute(undefined)
-      .catch(() => undefined);
-
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: keys.billingStatus });
-  });
-});
-
 describe("retry policy", () => {
   it("does not retry deterministic client errors", async () => {
     const client = createConsoleQueryClient({ redirectToLogin: vi.fn() });

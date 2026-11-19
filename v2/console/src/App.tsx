@@ -4,25 +4,15 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppShell } from "@/components/app-shell";
-import { UnsavedDraftProvider } from "@/lib/unsaved-draft";
-import { AppDetailPage } from "@/pages/app-detail";
-import { AppsPage } from "@/pages/apps";
-import { BillingPage } from "@/pages/billing";
-import { CheckoutPage } from "@/pages/checkout";
-import { CliApprovePage } from "@/pages/cli-approve";
-import { CliCodePage } from "@/pages/cli-code";
+import { AccessPage } from "@/pages/access";
+import { DevicePage } from "@/pages/device";
 import { LoginPage } from "@/pages/login";
-import { ManagementKeysPage } from "@/pages/management-keys";
 import { OAuthConsentPage } from "@/pages/oauth-consent";
-import { ProvidersPage } from "@/pages/providers";
-import { RevealPage } from "@/pages/reveal";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
-import { VerifyEmailPage } from "@/pages/verify-email";
 import { ConsoleSessionProvider } from "@/lib/console-session";
-import { DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { DEFAULT_LANDING, loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
-import { useBillingStatus, useCapabilities, useSession } from "@/lib/queries";
+import { useCapabilities, useSession } from "@/lib/queries";
 
 function FullPageSpinner() {
   return (
@@ -43,8 +33,6 @@ function AuthenticatedConsole() {
   const capabilities = useCapabilities();
   const session = useSession();
   const location = useLocation();
-  // Billing status feeds the global banner, so it is fetched at the shell level.
-  const billing = useBillingStatus(Boolean(capabilities.data?.billing) && session.isSuccess);
 
   if (session.isPending || capabilities.isPending) return <FullPageSpinner />;
 
@@ -68,59 +56,24 @@ function AuthenticatedConsole() {
   }
 
   return (
-    <ConsoleSessionProvider
-      session={session.data}
-      capabilities={capabilities.data}
-      billing={billing.data?.access}
-      quota={billing.data?.quota}
-      planLimits={billing.data?.limits}
-      planFeatures={billing.data?.features}
-      unclaimedAccessEndsAt={billing.data?.unclaimedAccessEndsAt}
-    >
-      <UnsavedDraftProvider>
+    <ConsoleSessionProvider session={session.data} capabilities={capabilities.data}>
       <AppShell>
         <Routes>
           <Route path="/" element={<Navigate to={DEFAULT_LANDING} replace />} />
-          <Route path="/apps" element={<AppsPage />} />
-          <Route path="/apps/:appId" element={<Navigate to={DEFAULT_APP_SECTION} replace />} />
-          <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
-          <Route path="/apps/:appId/:tab/:section" element={<AppDetailPage />} />
-          <Route path="/providers" element={<ProvidersPage />} />
-          <Route path="/providers/:section" element={<ProvidersPage />} />
-          <Route path="/access" element={<ManagementKeysPage />} />
-          {/* Where the page lived while it listed keys alone. */}
-          <Route path="/keys" element={<Navigate to="/access" replace />} />
+          <Route path="/access" element={<AccessPage />} />
           <Route
             path="/settings"
             element={<Navigate to={`/settings/${DEFAULT_SETTINGS_SECTION}`} replace />}
           />
           <Route path="/settings/:section" element={<SettingsPage />} />
-          {capabilities.data.billing ? (
-            <Route path="/billing" element={<BillingPage />} />
-          ) : null}
-          {/*
-            Registered whatever the deployment sells, unlike /billing above:
-            the marketing site links here, and a self-hosted console answering
-            an inbound ?plan= link with its catch-all would look like the link
-            was broken. The page states the refusal by redirecting instead.
-          */}
-          <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="*" element={<Navigate to={DEFAULT_LANDING} replace />} />
         </Routes>
       </AppShell>
-      </UnsavedDraftProvider>
     </ConsoleSessionProvider>
   );
 }
 
-/**
- * Sends an already-signed-in operator away from the auth screens.
- *
- * To the plan they came for when the link carried one: someone pressing a price
- * on the marketing site lands on `/signup?plan=growth` whether or not they
- * already have an account, and dropping them on the apps page would answer a
- * request to buy with silence.
- */
+/** Sends an already-signed-in operator away from the auth screens, to where they were headed. */
 function PublicOnly({ children }: { children: React.ReactNode }) {
   const session = useSession();
   const location = useLocation();
@@ -131,6 +84,10 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Every route is below the console's `/v2` base (the router's `basename`),
+ * so `/login` here is `/v2/login` in the address bar.
+ */
 export default function App() {
   return (
     <TooltipProvider>
@@ -152,32 +109,13 @@ export default function App() {
           }
         />
         {/*
-          The human half of a CLI browser handoff. Outside both the
-          authenticated shell and `PublicOnly`: an account claim starts with
-          nobody signed in, and an already-signed-in person approving a provider
-          secret must not be redirected away from the link their CLI printed.
-        */}
-        <Route path="/cli/approve/:id" element={<CliApprovePage />} />
-        {/* Where a person types the terminal's pairing code instead of following its link. */}
-        <Route path="/cli" element={<CliCodePage />} />
-        {/*
-          Where a person sees, once, a key an agent created for them. Outside
-          the shell like the approval page: a person is sent here by a link,
+          Where an OAuth client's authorization request sends a person.
+          Outside the shell: it starts with nobody signed in as often as not,
           and signing in brings them back.
         */}
-        <Route path="/reveal/:id" element={<RevealPage />} />
-        {/*
-          Where an MCP client's OAuth authorization request sends a person.
-          Outside the shell for the approval page's reason: it starts with
-          nobody signed in as often as not, and signing in brings them back.
-        */}
         <Route path="/oauth/consent" element={<OAuthConsentPage />} />
-        {/*
-          Where the link in a verification email lands. Outside the shell and
-          `PublicOnly` both: the link alone proves the address, so it works
-          signed in or not, and on another device than the one that asked.
-        */}
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
+        {/* Where a person types the code a CLI without a browser shows. Outside the shell for the same reason. */}
+        <Route path="/device" element={<DevicePage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

@@ -23,34 +23,27 @@ import { Hint } from "@/components/hint";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
-import {
-  useCreateManagementKey,
-  useManagementKeys,
-  useRevokeManagementKey,
-} from "@/lib/queries";
-import type { CreatedManagementKey, ManagementKey } from "@/lib/types";
+import { useCreateManagementKey, useCredentials, useRevokeCredential } from "@/lib/queries";
+import type { CreatedManagementKey, Credential, CredentialKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
- * What a credential is for, as one short tag and the sentence behind it: a key
- * created here is for the API, a key a CLI received is the CLI's, and an OAuth
- * connection is an MCP client's.
- *
- * The gateway reports a key's source as a plain string, so a value this
- * console does not know yet is still shown, as itself, rather than hidden.
+ * What a credential is for, as one short tag and the sentence behind it. A
+ * kind this console does not know yet is still shown, as itself.
  */
-const KEY_SOURCES: Record<string, { tag: string; title: string }> = {
-  console: { tag: "API", title: "A key created in this console" },
-  cli: { tag: "CLI", title: "Issued to a CLI that was approved in a browser" },
-  bootstrap: { tag: "CLI", title: "The key a CLI started this account with" },
+const CREDENTIAL_KINDS: Record<CredentialKind, { tag: string; title: string }> = {
+  management_key: { tag: "API", title: "A management key, for scripts, CI and direct API calls" },
+  cli: {
+    tag: "CLI",
+    title: "A CLI signed in with your browser. Its sign-in renews itself while the CLI uses it.",
+  },
+  mcp: {
+    tag: "MCP",
+    title: "An MCP client connected with OAuth. Its sign-in renews itself while the client uses it.",
+  },
 };
 
-const CONNECTION_KIND = {
-  tag: "MCP",
-  title: "An MCP client connected with OAuth. Its token renews itself while the client uses it.",
-};
-
-type KeyGrant = ManagementKey["grant"];
+type KeyGrant = Credential["grant"];
 
 /**
  * How much of the creator's role a key may use, as the create dialog offers it
@@ -84,12 +77,11 @@ function KeyGrantBadge({ grant }: { grant: KeyGrant }) {
 }
 
 /**
- * An OAuth connection rather than a key: what an MCP client holds once a
- * person allowed it on the consent page, or continued without an account.
- * It is listed, and revoked, exactly like a key.
+ * An OAuth sign-in rather than a key: what a CLI or an MCP client holds once
+ * a person allowed it. It is listed, and revoked, exactly like a key.
  */
-function isConnection(key: ManagementKey): boolean {
-  return key.credentialType === "oauth";
+function isConnection(credential: Credential): boolean {
+  return credential.kind !== "management_key";
 }
 
 /**
@@ -112,18 +104,18 @@ export function clientDomain(clientId: string | null): string | null {
  * that vouches for a connection's client. A connection gets no token hint,
  * because its token is replaced every time the client renews it.
  */
-function KindCell({ credential }: { credential: ManagementKey }) {
+function KindCell({ credential }: { credential: Credential }) {
   const connection = isConnection(credential);
-  const known = connection ? CONNECTION_KIND : KEY_SOURCES[credential.source];
+  const known = CREDENTIAL_KINDS[credential.kind] as { tag: string; title: string } | undefined;
   const detail = connection
     ? clientDomain(credential.clientId)
-    : credential.tokenHint === null
+    : credential.hint === null
       ? null
-      : `…${credential.tokenHint}`;
+      : `…${credential.hint}`;
   return (
     <Hint content={known?.title}>
       <span>
-        {known?.tag ?? credential.source}
+        {known?.tag ?? credential.kind}
         {detail ? (
           <>
             :{" "}
@@ -140,36 +132,25 @@ function KindCell({ credential }: { credential: ManagementKey }) {
  * itself, so it is shown as plain text, never as anything a page could
  * interpret; the domain that vouched for it is beside the kind.
  */
-function HolderCell({ credential }: { credential: ManagementKey }) {
-  if (isConnection(credential)) {
-    return <p className="font-medium break-all">{credential.name}</p>;
-  }
-  return (
-    <>
-      <p className="font-medium">{credential.name}</p>
-      {/* Who holds it, as the CLI described itself, when that says more than the name. */}
-      {credential.label && credential.label !== credential.name ? (
-        <p className="text-xs text-muted-foreground">{credential.label}</p>
-      ) : null}
-    </>
-  );
+function HolderCell({ credential }: { credential: Credential }) {
+  return <p className={cn("font-medium", isConnection(credential) && "break-all")}>{credential.name}</p>;
 }
 
 /**
  * Access: everything that can manage this account without a browser session —
- * management keys, and the OAuth connections MCP clients hold — listed alike
- * and revoked alike.
+ * management keys, CLI logins and MCP connections — listed alike and revoked
+ * alike.
  */
-export function ManagementKeysPage() {
-  const list = useManagementKeys();
+export function AccessPage() {
+  const list = useCredentials();
   const createKey = useCreateManagementKey();
-  const revokeKey = useRevokeManagementKey();
+  const revokeKey = useRevokeCredential();
 
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [grant, setGrant] = useState<KeyGrant>("manage");
   const [created, setCreated] = useState<CreatedManagementKey | null>(null);
-  const [pendingRevoke, setPendingRevoke] = useState<ManagementKey | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<Credential | null>(null);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -178,7 +159,7 @@ export function ManagementKeysPage() {
       setCreating(false);
       setName("");
       setGrant("manage");
-      setCreated(result.key);
+      setCreated(result);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the key");
     }
@@ -198,7 +179,7 @@ export function ManagementKeysPage() {
     }
   };
 
-  const keys = list.data?.keys ?? [];
+  const keys = list.data?.credentials ?? [];
   const pendingConnection = pendingRevoke !== null && isConnection(pendingRevoke);
 
   return (
@@ -285,12 +266,8 @@ export function ManagementKeysPage() {
                         <span className="text-muted-foreground">
                           Revoked <RelativeTime value={key.revokedAt} />
                         </span>
-                      ) : key.enabled ? (
-                        <span className="text-foreground">Active</span>
                       ) : (
-                        // Issued by an approval flow that has not handed it over
-                        // yet, so it cannot sign a request even though it is here.
-                        <span className="text-muted-foreground">Not yet active</span>
+                        <span className="text-foreground">Active</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -348,14 +325,14 @@ export function ManagementKeysPage() {
         description={
           <>
             This is the only time the plaintext for{" "}
-            <span className="font-medium text-foreground">{created?.name}</span> is available — you
+            <span className="font-medium text-foreground">{created?.credential.name}</span> is available — you
             will not see it again. The gateway stores only a hash.
           </>
         }
         label="Management key"
-        secret={created?.plaintext ?? ""}
+        secret={created?.key ?? ""}
         footnote={
-          created?.grant === "read"
+          created?.credential.grant === "read"
             ? "Store it in your secret manager. It can read every app and provider here, but cannot change them."
             : "Store it in your secret manager. It acts with full authority over every app and provider key here."
         }

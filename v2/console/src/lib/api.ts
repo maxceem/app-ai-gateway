@@ -35,8 +35,8 @@ export const isPaymentRequired = (error: unknown) =>
 
 /**
  * Two error envelopes reach this client. The gateway wraps its own failures in
- * `{ error: { code, message } }`, while Better Auth answers `/v1/auth/*`
- * straight from better-call with a flat `{ code, message }` and SCREAMING_CASE
+ * `{ error: { code, message } }`, while Better Auth answers its own routes
+ * straight from better-call (under `/v2/auth`) with a flat `{ code, message }` and SCREAMING_CASE
  * codes. Normalizing both here keeps every caller on one `ApiError` shape.
  */
 function toApiError(status: number, payload: unknown): ApiError {

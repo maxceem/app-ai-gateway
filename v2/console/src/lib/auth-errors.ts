@@ -1,7 +1,7 @@
 import { ApiError } from "./api";
 
 /**
- * Better Auth answers `/v1/auth/*` with SCREAMING_SNAKE codes and terse
+ * Better Auth answers `/v2/auth/*` with SCREAMING_SNAKE codes and terse
  * messages aimed at developers. These translations are what an operator sees on
  * the sign-in and sign-up screens.
  */

@@ -1,55 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useLocation } from "react-router-dom";
-import { AlertCircle, PanelLeft } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useLocation } from "react-router-dom";
+import { PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { SidebarContent } from "@/components/app-sidebar";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { VerifyEmailBanner } from "@/components/verify-email-banner";
-import { useConsoleSession } from "@/lib/console-session";
-import { billingNotice, quotaNotice, unclaimedAccessNotice } from "@/lib/billing";
-
-/**
- * Warns about billing state above every page so an inactive subscription — or
- * a request allowance for the current plan period about to run out — is visible
- * wherever the operator happens to be. Never rendered when billing is off,
- * keeping self-hosted deployments free of billing traces.
- *
- * A subscription problem outranks an allowance one: an organization that may
- * not serve traffic at all has no allowance worth discussing.
- */
-function BillingBanner() {
-  const { capabilities, billing, quota, organization, planLimits, unclaimedAccessEndsAt } = useConsoleSession();
-  const location = useLocation();
-  const notice = capabilities.billing
-    ? unclaimedAccessNotice(unclaimedAccessEndsAt)
-      ?? billingNotice(billing, planLimits)
-      ?? quotaNotice(quota, organization)
-    : null;
-  // The billing page states all of this itself, right next to the controls
-  // that act on it; repeating it above would show the same words twice.
-  if (!notice || location.pathname === "/billing") return null;
-
-  return (
-    <Alert
-      variant={notice.tone === "destructive" ? "destructive" : "default"}
-      className="mb-4"
-    >
-      <AlertCircle />
-      <AlertTitle>{notice.title}</AlertTitle>
-      <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span>{notice.description}</span>
-        {notice.actionable ? (
-          <Button asChild size="sm" variant="outline">
-            <Link to="/billing">View plans</Link>
-          </Button>
-        ) : null}
-      </AlertDescription>
-    </Alert>
-  );
-}
 
 /**
  * Below `lg` the sidebar becomes a drawer, so the same header carries the
@@ -99,8 +55,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <MobileHeader />
         <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-            <VerifyEmailBanner />
-            <BillingBanner />
             {children}
           </div>
         </main>

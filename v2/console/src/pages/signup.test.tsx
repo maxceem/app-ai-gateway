@@ -25,7 +25,7 @@ describe("SignupPage", () => {
   it("creates an account when registration is open", async () => {
     const fetchMock = stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-up/email": { body: { token: "t", user: {} } },
+      "/v2/auth/sign-up/email": { body: { token: "t", user: {} } },
     });
 
     renderPublic(<SignupPage />, { route: "/signup" });
@@ -77,7 +77,7 @@ describe("SignupPage", () => {
   it("falls back to the closed screen if the server refuses mid-flight", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),
-      "/v1/auth/sign-up/email": {
+      "/v2/auth/sign-up/email": {
         status: 403,
         body: { error: { code: "registration_disabled", message: "Not allowed to register" } },
       },

@@ -1,9 +1,15 @@
 import { ApiError } from "./api";
 
+/**
+ * Where the console lives: under `/v2`, beside v1's console on the same host.
+ * The router's `basename`, and the same value as `base` in `vite.config.ts`.
+ */
+export const CONSOLE_BASE = "/v2";
+
 export const LOGIN_PATH = "/login";
 export const SIGNUP_PATH = "/signup";
-export const DEFAULT_LANDING = "/apps";
-export const CHECKOUT_PATH = "/checkout";
+/** Where a signed-in person lands. The apps pages come in the next part of the console. */
+export const DEFAULT_LANDING = "/access";
 
 /** Screens that render without a session; a 401 there is a failed attempt, not an expiry. */
 export const AUTH_PATHS: ReadonlySet<string> = new Set([LOGIN_PATH, SIGNUP_PATH]);
@@ -41,117 +47,48 @@ export function isSafeReturnPath(path: string | null | undefined): path is strin
 
 /**
  * The path to return to after signing in, defaulting to the console landing
- * page.
- *
- * The stored path keeps its own query string: {@link isSafeReturnPath} judges
- * the pathname alone, so `/checkout?plan=growth` survives a round trip through
- * sign-in intact. That is load-bearing for plan intent, which is carried in
- * exactly that shape.
+ * page. The stored path keeps its own query string: {@link isSafeReturnPath}
+ * judges the pathname alone.
  */
 export function returnPathFrom(search: string): string {
   const raw = new URLSearchParams(search).get(RETURN_PARAM);
   return isSafeReturnPath(raw) ? raw : DEFAULT_LANDING;
 }
 
-/** Carries a plan the visitor picked on the marketing site, before they had an account. */
-export const PLAN_PARAM = "plan";
-
-/**
- * The billing service's free tier. It is what every organization already has,
- * so it is never something to send anyone to checkout for.
- */
-export const FREE_PLAN_KEY = "free";
-
-/**
- * Plan keys are lowercase slugs in the billing catalog (`free`, `starter`,
- * `growth`, `scale`). The pattern is deliberately narrower than the catalog:
- * this value arrives from a link anyone can write and is pasted into a URL and
- * rendered, so it is constrained to a shape that cannot carry anything else.
- * Whether the key names a real plan is settled later, against the catalog.
- */
-const PLAN_KEY_PATTERN = /^[a-z0-9_-]{1,32}$/u;
-
-/** The plan named in a query string, or `null` when there is no usable one. */
-export function planKeyFrom(search: string): string | null {
-  const raw = new URLSearchParams(search).get(PLAN_PARAM);
-  return raw !== null && PLAN_KEY_PATTERN.test(raw) ? raw : null;
+/** A browser path as the router sees it: the console's `/v2` base taken off. */
+export function routerPath(pathname: string): string {
+  if (pathname === CONSOLE_BASE) return "/";
+  return pathname.startsWith(`${CONSOLE_BASE}/`) ? pathname.slice(CONSOLE_BASE.length) : pathname;
 }
 
-/** The console path that starts checkout for one plan. */
-export function checkoutPathFor(planKey: string): string {
-  return `${CHECKOUT_PATH}?${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
-}
-
-/** The same plan carried onto another auth screen, so it survives the hop. */
-export function authPathWithPlan(path: string, planKey: string | null): string {
-  return planKey === null ? path : `${path}?${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
-}
-
-/**
- * Where an operator belongs the moment they are authenticated.
- *
- * A paid plan named in the query string is an intent formed before the account
- * existed — someone pressed a price on the marketing site — so it outranks the
- * `from` path, which is only ever written by this console's own 401 handling
- * and cannot be present on a link from outside. The free plan is not a
- * destination: it is what the organization already has.
- */
+/** Where an operator belongs the moment they are authenticated. */
 export function postAuthPath(search: string): string {
-  const planKey = planKeyFrom(search);
-  if (planKey !== null && planKey !== FREE_PLAN_KEY) return checkoutPathFor(planKey);
   return returnPathFrom(search);
 }
 
 /** The sign-in URL that remembers where the operator was headed. */
 export function loginUrlFor(path: string | null | undefined): string {
-  if (!isSafeReturnPath(path) || path === DEFAULT_LANDING) return LOGIN_PATH;
-  return `${LOGIN_PATH}?${RETURN_PARAM}=${encodeURIComponent(path)}`;
+  return authUrlFor(LOGIN_PATH, path);
+}
+
+/** The sign-up URL that remembers where the operator was headed. */
+export function signupUrlFor(path: string | null | undefined): string {
+  return authUrlFor(SIGNUP_PATH, path);
+}
+
+function authUrlFor(screen: string, path: string | null | undefined): string {
+  if (!isSafeReturnPath(path) || path === DEFAULT_LANDING) return screen;
+  return `${screen}?${RETURN_PARAM}=${encodeURIComponent(path)}`;
 }
 
 /**
- * Marks the console landing that a completed checkout returns to.
- *
- * The provider redirects the browser back with nothing but a URL, so the fact
- * that a purchase just happened can only travel as a query parameter. It is
- * read once, announced, and stripped: reloading a bare landing page must not
- * congratulate anyone a second time.
+ * The URL a top-level navigation needs for a console path. The router works
+ * below `/v2` and leaves it out of every path, but a URL handed to the
+ * browser or to the server for a redirect (Google's return, for one) must
+ * carry it.
  */
-export const CHECKOUT_PARAM = "checkout";
-export const CHECKOUT_SUCCESS = "success";
-
-/** True when this load is the return leg of a completed checkout. */
-export function checkoutSucceeded(search: string): boolean {
-  return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
-}
-
-/** The same location with the checkout marker and its plan spent, keeping any other query. */
-export function pathWithoutCheckout(pathname: string, search: string): string {
-  const params = new URLSearchParams(search);
-  params.delete(CHECKOUT_PARAM);
-  params.delete(PLAN_PARAM);
-  const rest = params.toString();
-  return rest ? `${pathname}?${rest}` : pathname;
-}
-
-/**
- * Where a completed checkout sends the operator.
- *
- * The console names this on the checkout it asks for, so it is also the one
- * place the destination is decided. The billing service holds the same URL as
- * a fallback for a caller that supplies none; this one wins whenever the
- * console is the caller.
- */
-export const CHECKOUT_RETURN_PATH = `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}`;
-
-/**
- * The same destination, naming the plan that was bought.
- *
- * The plan is spent on arrival exactly as the checkout marker is — {@link
- * pathWithoutCheckout} strips both — so it reports the purchase and then stops
- * existing, rather than lingering on the landing as an intent to buy something.
- */
-export function checkoutReturnPathFor(planKey: string): string {
-  return `${CHECKOUT_RETURN_PATH}&${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
+export function consoleUrl(path: string): string {
+  return `${CONSOLE_BASE}${path}`;
 }
 
 export interface OAuthErrorNotice {
