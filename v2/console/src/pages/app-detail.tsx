@@ -67,12 +67,15 @@ function saveError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-/** Saves the app with one part of it changed, at the revision it was read at. */
+/**
+ * Saves the app with one part of it changed, at the revision it was read at.
+ * Returns the app as the gateway stored it, or null when the save failed.
+ */
 function useSaveApp(app: App) {
   const update = useUpdateApp(app.id);
   const save = async (change: { name?: string; status?: App["status"]; config?: AppConfig | unknown }, done: string) => {
     try {
-      await update.mutateAsync({
+      const result = await update.mutateAsync({
         name: change.name ?? app.name,
         status: change.status ?? app.status,
         // An explicit config is sent as typed, even `null`: the gateway refuses
@@ -81,10 +84,10 @@ function useSaveApp(app: App) {
         revision: app.revision,
       });
       toast.success(done);
-      return true;
+      return result.app;
     } catch (error) {
       toast.error(saveError(error, "Could not save the app"));
-      return false;
+      return null;
     }
   };
   return { save, pending: update.isPending };
@@ -816,6 +819,23 @@ function SettingsTab({ app }: { app: App }) {
   useEffect(() => {
     if (changedElsewhere && draftsSaved) setChangedElsewhere(false);
   }, [changedElsewhere, draftsSaved]);
+  // A saved draft becomes what the gateway stored, defaults filled in, and
+  // ends any conflict: comparing the two could differ only by those defaults.
+  const saveName = async () => {
+    const saved = await save({ name: name.trim() }, "App renamed");
+    if (!saved) return;
+    setName(saved.name);
+    setNameBase(saved.name);
+    setChangedElsewhere(false);
+  };
+  const saveConfig = async () => {
+    const saved = await save({ config: parsed }, "Configuration saved");
+    if (!saved) return;
+    const text = JSON.stringify(saved.config, null, 2);
+    setText(text);
+    setTextBase(text);
+    setChangedElsewhere(false);
+  };
   const discardDrafts = () => {
     setName(app.name);
     setText(stored);
@@ -875,7 +895,7 @@ function SettingsTab({ app }: { app: App }) {
               <Label htmlFor="app-rename">Name</Label>
               <Input id="app-rename" value={name} maxLength={100} disabled={readOnly} onChange={(event) => setName(event.target.value)} />
             </div>
-            <GuardedButton variant="outline" disabled={!name.trim() || name.trim() === app.name || pending} onClick={() => void save({ name: name.trim() }, "App renamed")}>
+            <GuardedButton variant="outline" disabled={!name.trim() || name.trim() === app.name || pending} onClick={() => void saveName()}>
               Rename
             </GuardedButton>
           </div>
@@ -914,7 +934,7 @@ function SettingsTab({ app }: { app: App }) {
             <Button type="button" variant="outline" disabled={parseError !== null || validate.isPending} onClick={() => void check()}>
               Check
             </Button>
-            <GuardedButton disabled={parseError !== null || pending} onClick={() => void save({ config: parsed }, "Configuration saved")}>
+            <GuardedButton disabled={parseError !== null || pending} onClick={() => void saveConfig()}>
               {pending ? <Loader2 className="size-4 animate-spin" /> : null}
               Save configuration
             </GuardedButton>

@@ -229,13 +229,17 @@ describe("AppDetailPage", () => {
           const body = JSON.parse(String(init.body));
           // The rename lands on top of someone else's change; a later save
           // stores what it sent.
-          current = body.config === undefined || current.revision === 2 ? changed : testApp({ ...body, revision: current.revision + 1 });
+          // Like the gateway, the stored config gets its omitted defaults.
+          const withDefaults = (config: Record<string, unknown>) => ({ ...config, limits: testApp().config.limits });
+          current = current.revision === 2 ? changed : testApp({ ...body, config: withDefaults(body.config), revision: current.revision + 1 });
         }
         return new Response(JSON.stringify({ app: current }));
       }),
     );
     renderTab("settings");
-    const mine = { ...testApp().config, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-a"] } } } };
+    // The draft leaves out `limits`, which the gateway fills in on save.
+    const { limits: _omitted, ...withoutLimits } = testApp().config;
+    const mine = { ...withoutLimits, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-a"] } } } };
     fireEvent.change(await screen.findByLabelText("Configuration"), { target: { value: JSON.stringify(mine) } });
     const rename = screen.getByLabelText("Name");
     await userEvent.clear(rename);
