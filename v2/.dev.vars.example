@@ -1,0 +1,3 @@
+# Secrets of the v2 Worker. Never commit real values.
+# JWT_SECRET signs gateway tokens: at least 32 bytes, for example `openssl rand -base64 32`.
+JWT_SECRET=

@@ -15,6 +15,17 @@
     "logs": { "enabled": true, "head_sampling_rate": 1 },
     "traces": { "enabled": true, "head_sampling_rate": 0.01 }
   },
+  // Hourly: settle expired App Attest challenges.
+  "triggers": { "crons": ["17 * * * *"] },
+  "durable_objects": {
+    "bindings": [
+      // The end user's limiter: for now, the App Attest replay counter of each install.
+      { "name": "END_USER_LIMITER", "class_name": "EndUserLimiter" },
+      // Flood limits on the app sign-in routes, per app and network address.
+      { "name": "FLOOD_LIMITER", "class_name": "FloodLimiter" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EndUserLimiter", "FloodLimiter"] }],
   "d1_databases": [
     {
       "binding": "DB",

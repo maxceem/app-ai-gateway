@@ -5,7 +5,7 @@
  * This and `scripts/openapi.ts` are the only modules that import
  * `@hono/zod-openapi`, which is why the catalog itself is plain zod.
  */
-import { OpenAPIHono, type RouteConfig } from "@hono/zod-openapi";
+import { OpenAPIHono, z, type RouteConfig } from "@hono/zod-openapi";
 import { CATALOG, ErrorResponseSchema, type OperationName, type OperationSpec } from "./catalog.ts";
 
 const json = (description: string, schema: OperationSpec["response"]) => ({
@@ -22,9 +22,24 @@ function routeConfig(name: OperationName): RouteConfig {
     operationId: name,
     summary: entry.summary,
     ...(entry.description === undefined ? {} : { description: entry.description }),
-    ...(entry.request === undefined
-      ? {}
-      : { request: { body: { required: true, content: { "application/json": { schema: entry.request } } } } }),
+    ...(entry.security === "gateway" ? { security: [{ GatewayBearer: [] }] } : {}),
+    request: {
+      ...(entry.params === undefined
+        ? {}
+        : {
+            params: z.object(
+              Object.fromEntries(
+                Object.entries(entry.params).map(([name, param]) => [
+                  name,
+                  z.string().openapi({ param: { name, in: "path" }, description: param.description }),
+                ]),
+              ),
+            ),
+          }),
+      ...(entry.request === undefined
+        ? {}
+        : { body: { required: true, content: { "application/json": { schema: entry.request } } } }),
+    },
     responses: {
       200: json(entry.responseDescription, entry.response),
       ...Object.fromEntries(
@@ -36,6 +51,12 @@ function routeConfig(name: OperationName): RouteConfig {
 
 export function createOpenAPIDocument() {
   const registry = new OpenAPIHono();
+  registry.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
+    type: "http",
+    scheme: "bearer",
+    description:
+      "A gateway access token from POST /v2/apps/{app}/auth/token, or an app key for a server app that signs no users in. On App Attest apps that sign every request, the request also carries X-AppAttest-Proof.",
+  });
   for (const name of Object.keys(CATALOG) as OperationName[]) {
     registry.openAPIRegistry.registerPath(routeConfig(name));
   }
@@ -50,6 +71,10 @@ export function createOpenAPIDocument() {
     servers: [
       { url: "https://api.appaigateway.com", description: "The cloud API host. On a self-hosted gateway, use your own origin." },
     ],
-    tags: [{ name: "Operations", description: "Unauthenticated service health." }],
+    tags: [
+      { name: "Operations", description: "Unauthenticated service health." },
+      { name: "App sign-in", description: "App Attest challenges and keys, and exchanging a client proof for a gateway token." },
+      { name: "Application", description: "The signed-in caller's own state." },
+    ],
   });
 }

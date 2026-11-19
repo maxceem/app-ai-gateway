@@ -15,9 +15,24 @@
     {
       "name": "Operations",
       "description": "Unauthenticated service health."
+    },
+    {
+      "name": "App sign-in",
+      "description": "App Attest challenges and keys, and exchanging a client proof for a gateway token."
+    },
+    {
+      "name": "Application",
+      "description": "The signed-in caller's own state."
     }
   ],
   "components": {
+    "securitySchemes": {
+      "GatewayBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A gateway access token from POST /v2/apps/{app}/auth/token, or an app key for a server app that signs no users in. On App Attest apps that sign every request, the request also carries X-AppAttest-Proof."
+      }
+    },
     "schemas": {
       "HealthResponse": {
         "type": "object",
@@ -46,6 +61,287 @@
           "service",
           "api"
         ]
+      },
+      "AppAttestChallengeResponse": {
+        "type": "object",
+        "properties": {
+          "challenge": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "accepts_app_transaction": {
+            "type": "boolean",
+            "description": "True when the token exchange accepts app_transaction. A client sends one, and signs over its hash, only when this says so."
+          }
+        },
+        "required": [
+          "challenge",
+          "expires_in"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "description": "Machine-readable facts about this refusal, present only where the code alone is not actionable. A rate_limited refusal carries scope, limit, windowSeconds, retryAfterSeconds and resetAt."
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "AppAttestRegisterResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ]
+      },
+      "AppAttestRegisterRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "attestation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "challenge": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "key_id",
+          "attestation",
+          "challenge"
+        ]
+      },
+      "AppAttestFailureReportResponse": {
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "boolean",
+            "description": "False when the challenge was never issued for this app, or was already spent or reported."
+          }
+        },
+        "required": [
+          "recorded"
+        ]
+      },
+      "AppAttestFailureReport": {
+        "type": "object",
+        "properties": {
+          "challenge": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "step": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "description": "The step that failed after the challenge was issued: attest_key, generate_assertion, issuer_token, register or token."
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The error's domain, such as com.apple.devicecheck.error. Stored only when it is a short token (letters, digits, dots, underscores and hyphens, at most 64 characters); anything else is stored as other."
+              },
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "domain",
+              "code"
+            ]
+          },
+          "underlying_error": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "The error's domain, such as com.apple.devicecheck.error. Stored only when it is a short token (letters, digits, dots, underscores and hyphens, at most 64 characters); anything else is stored as other."
+              },
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "domain",
+              "code"
+            ]
+          },
+          "recovered": {
+            "type": "boolean",
+            "description": "True when the app recovered by itself, such as by registering a new key. Recorded as client_recovered."
+          }
+        },
+        "required": [
+          "challenge",
+          "step",
+          "error"
+        ]
+      },
+      "GatewayTokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "verify_on": {
+            "type": "string",
+            "enum": [
+              "every_request",
+              "token_exchange"
+            ],
+            "description": "On App Attest apps: every_request means every request sent with this token must carry X-AppAttest-Proof; token_exchange means requests carry only the token. Absent on other apps."
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in"
+        ]
+      },
+      "AppAttestTokenRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "assertion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "challenge": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "app_transaction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify names no account, and the install is counted on its own."
+          }
+        },
+        "required": [
+          "key_id",
+          "assertion",
+          "challenge"
+        ]
+      },
+      "ApiKeyTokenRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "api_key": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "issuer_token",
+          "api_key"
+        ],
+        "additionalProperties": false
+      },
+      "CurrentUserResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "install_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The App Attest key id of the install making the request, on App Attest apps. Null on server apps."
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "blocked": {
+                "type": "boolean",
+                "description": "Whether this user has been blocked in the console."
+              }
+            },
+            "required": [
+              "blocked"
+            ]
+          }
+        },
+        "required": [
+          "user_id",
+          "install_id",
+          "limits"
+        ]
       }
     },
     "parameters": {}
@@ -65,6 +361,496 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/auth/challenge": {
+      "post": {
+        "tags": [
+          "App sign-in"
+        ],
+        "operationId": "appAuthChallenge",
+        "summary": "Create an App Attest challenge",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A five-minute, single-use challenge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppAttestChallengeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The app is disabled, or does not support this sign-in method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in calls to this app from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time, or a platform service is briefly unavailable. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/auth/register": {
+      "post": {
+        "tags": [
+          "App sign-in"
+        ],
+        "operationId": "appAuthRegister",
+        "summary": "Register an App Attest key",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppAttestRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The key was registered for the install, or for the issuer's user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppAttestRegisterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The proof or the issuer token was rejected, the challenge is invalid or used, the user is blocked, or the app does not support this sign-in method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in calls to this app from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The issuer's keys cannot be fetched, or the gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/auth/failure": {
+      "post": {
+        "tags": [
+          "App sign-in"
+        ],
+        "operationId": "appAuthFailure",
+        "summary": "Report a failure on the device after a challenge",
+        "description": "Sent by the app when a step after the challenge failed on the device, so the app's auth events can say why. Diagnostic only. It must name a challenge this app issued that nothing has used yet, and uses it up, so one challenge carries at most one report.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppAttestFailureReport"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether a report was recorded for the challenge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppAttestFailureReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The app is disabled, or does not support this sign-in method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in calls to this app from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time, or a platform service is briefly unavailable. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/auth/token": {
+      "post": {
+        "tags": [
+          "App sign-in"
+        ],
+        "operationId": "appAuthToken",
+        "summary": "Exchange a client proof for a gateway token",
+        "description": "App Attest clients send key_id, assertion and challenge; the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Server apps with an issuer send api_key and issuer_token. The verified issuer claim is always the user.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AppAttestTokenRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ApiKeyTokenRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A gateway access token, valid for one hour.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The proof or the issuer token was rejected, the challenge is invalid or used, the user is blocked, or the app does not support this sign-in method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in calls to this app from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The issuer's keys cannot be fetched, or the gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/me": {
+      "get": {
+        "tags": [
+          "Application"
+        ],
+        "operationId": "getCurrentUser",
+        "summary": "Get the current user",
+        "description": "Who the caller is. On App Attest apps, install_id names the install. Signed with X-AppAttest-Proof like every other request where the app signs every request.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's user id and install id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, or the app is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist, or identifies no end users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }

@@ -463,3 +463,62 @@ export const openWork = sqliteTable(
     check("open_work_owner_type", oneOf(table.ownerType, OWNER_TYPES)),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// App sign-in (step 1a part 2)
+
+/**
+ * App Attest challenges, valid for five minutes and spent once. Who asked is
+ * kept beside the challenge, so an expired one can still be recorded as an
+ * `abandoned` auth event.
+ */
+export const appAuthChallenge = sqliteTable(
+  "app_auth_challenge",
+  {
+    challenge: text("challenge").primaryKey(),
+    appId: text("app_id")
+      .notNull()
+      .references(() => app.id),
+    expiresAt: integer("expires_at").notNull(),
+    appVersion: text("app_version"),
+    clientSdk: text("client_sdk"),
+    networkAsn: integer("network_asn"),
+    networkName: text("network_name"),
+    /** A register, token or failure call named this challenge, so its expiry is not counted as abandoned. */
+    attempted: integer("attempted", { mode: "boolean" }).notNull().default(false),
+  },
+  (table) => [index("app_auth_challenge_expiry").on(table.expiresAt)],
+);
+
+/** The events `app_auth_event.event` records. */
+export type AuthEventName = "challenge" | "register" | "token_exchange";
+
+/**
+ * One row per app sign-in attempt (challenge outcome, key registration or
+ * token exchange), successful or refused. Kept 90 days. `outcome` is `ok`, an
+ * error code, or a challenge outcome; the list grows, so it is not checked.
+ */
+export const appAuthEvent = sqliteTable(
+  "app_auth_event",
+  {
+    id: text("id").primaryKey(),
+    appId: text("app_id").notNull(),
+    userId: text("user_id"),
+    event: text("event").$type<AuthEventName>().notNull(),
+    authMethod: text("auth_method"),
+    outcome: text("outcome").notNull(),
+    /** A short token, such as an issuer rejection reason or a device step and error code. */
+    reason: text("reason"),
+    appVersion: text("app_version"),
+    clientSdk: text("client_sdk"),
+    networkAsn: integer("network_asn"),
+    networkName: text("network_name"),
+    latencyMs: integer("latency_ms"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("app_auth_event_app_created").on(table.appId, table.createdAt),
+    index("app_auth_event_app_user_created").on(table.appId, table.userId, table.createdAt),
+    index("app_auth_event_created").on(table.createdAt),
+  ],
+);
