@@ -1092,6 +1092,18 @@
     }
   },
   "gemini": {
+    "gemini-4-neon": {
+      "kind": "text",
+      "input": 3.0,
+      "cached_input": 0.15,
+      "output": 15.0,
+      "author": "Google",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 1.8 }
+      },
+      "release_date": "2026-11-19"
+    },
     "gemini-embedding-001": {
       "kind": "embedding",
       "input": 0.15,
@@ -1420,6 +1432,42 @@
     }
   },
   "perplexity": {
+    "openai/gpt-6.2-astra": {
+      "kind": "text",
+      "input": 8.0,
+      "cached_input": 0.4,
+      "cache_write": 10.0,
+      "output": 40.0,
+      "long_input": 16.0,
+      "long_cached_input": 0.8,
+      "long_cache_write": 20.0,
+      "long_output": 60.0,
+      "long_context_threshold": 272000,
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      },
+      "release_date": "2026-11-19"
+    },
+    "openai/gpt-6.2-sol": {
+      "kind": "text",
+      "input": 2.0,
+      "cached_input": 0.1,
+      "cache_write": 2.5,
+      "output": 10.0,
+      "long_input": 4.0,
+      "long_cached_input": 0.2,
+      "long_cache_write": 5.0,
+      "long_output": 15.0,
+      "long_context_threshold": 272000,
+      "author": "OpenAI",
+      "modes": {
+        "flex": { "factor": 0.5 },
+        "priority": { "factor": 2.0 }
+      },
+      "release_date": "2026-11-19"
+    },
     "perplexity/sonar": {
       "kind": "text",
       "input": 0.25,
@@ -2091,6 +2139,14 @@
     }
   },
   "together": {
+    "Qwen/Qwen4-Max": {
+      "kind": "text",
+      "input": 1.425,
+      "cached_input": 0.07125,
+      "output": 4.275,
+      "author": "Alibaba",
+      "release_date": "2026-11-19"
+    },
     "openai/whisper-large-v3": {
       "kind": "transcription",
       "per_minute": 0.0015,
@@ -2158,6 +2214,7 @@
     "ricursive-ai/Ripple-65B-Preview": {
       "kind": "text",
       "input": 0.2,
+      "cached_input": 0.02,
       "output": 0.6,
       "author": "Ricursive",
       "release_date": "2026-11-04"
@@ -2168,6 +2225,9 @@
       "cached_input": 0.2,
       "output": 10.0,
       "author": "Moonshot AI",
+      "modes": {
+        "us": { "factor": 1.25 }
+      },
       "release_date": "2026-10-23"
     },
     "MiniMaxAI/MiniMax-M3.1-Flash": {
