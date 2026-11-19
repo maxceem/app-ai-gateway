@@ -35,7 +35,8 @@ export type AllowanceAdmission =
 
 export class AccountLimiter extends DurableObject<Env> {
   private minutes: { key: string; ms: number; readAt: number } | null = null;
-  private minutesRead: Promise<number> | null = null;
+  /** Reads in flight, by account and date range, so two ranges never share one answer. */
+  private readonly minutesReads = new Map<string, Promise<number>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -107,7 +108,8 @@ export class AccountLimiter extends DurableObject<Env> {
   }
 
   private readSessionMs(key: string, input: { accountId: string; fromDay: string; toDay: string; now: number }): Promise<number> {
-    if (this.minutesRead !== null) return this.minutesRead;
+    const pending = this.minutesReads.get(key);
+    if (pending !== undefined) return pending;
     const read = this.env.DB.prepare(
       `SELECT COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE account_id = ? AND day >= ? AND day < ?`,
     )
@@ -125,9 +127,9 @@ export class AccountLimiter extends DurableObject<Env> {
         throw error;
       })
       .finally(() => {
-        if (this.minutesRead === read) this.minutesRead = null;
+        if (this.minutesReads.get(key) === read) this.minutesReads.delete(key);
       });
-    this.minutesRead = read;
+    this.minutesReads.set(key, read);
     return read;
   }
 }

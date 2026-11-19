@@ -15,6 +15,7 @@ import { CATALOG, type ErrorResponse, type OperationName, type OperationResponse
 import { errorFacts } from "./core/error-facts.ts";
 import { GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
+import { runSweep, SWEEP_CRON } from "./ledger/sweep.ts";
 import { asGatewayError } from "./core/platform-errors.ts";
 import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
@@ -123,8 +124,15 @@ app.onError((error, c: Context<Env2>) => {
 
 export default {
   fetch: app.fetch,
-  /** Hourly: record expired, unused App Attest challenges as abandoned, and delete them. */
-  async scheduled(_controller, env, ctx) {
+  /**
+   * Every minute: the sweep of open work. Hourly (any other cron): record
+   * expired, unused App Attest challenges as abandoned, and delete them.
+   */
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === SWEEP_CRON) {
+      ctx.waitUntil(runSweep(env).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
+      return;
+    }
     ctx.waitUntil(
       settleExpiredChallenges(env.DB).then(
         (settled) => log("info", "auth_challenges_settled", settled),

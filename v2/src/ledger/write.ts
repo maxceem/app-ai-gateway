@@ -208,3 +208,100 @@ export function logLostEntry(entry: LedgerEntry, error: unknown): void {
     error: errorFacts(error),
   });
 }
+
+/** A charge row read from D1 (`SELECT * FROM charge`), as the code builds it. */
+export function chargeFromRow(row: Record<string, unknown>): ChargeRow {
+  const text = (column: string) => (row[column] === null || row[column] === undefined ? null : String(row[column]));
+  const num = (column: string) => (row[column] === null || row[column] === undefined ? null : Number(row[column]));
+  const json = <T>(column: string): T | null => {
+    const value = row[column];
+    return typeof value === "string" ? (JSON.parse(value) as T) : null;
+  };
+  return {
+    id: String(row.id),
+    kind: row.kind as ChargeKind,
+    accountId: String(row.account_id),
+    appId: String(row.app_id),
+    endUserId: text("end_user_id"),
+    installId: text("install_id"),
+    appleAccountId: text("apple_account_id"),
+    appKeyId: text("app_key_id"),
+    ownerType: row.owner_type as OwnerType,
+    ownerId: String(row.owner_id),
+    seq: num("seq"),
+    providerType: String(row.provider_type),
+    providerConnectionId: text("provider_connection_id"),
+    operation: String(row.operation),
+    preset: text("preset"),
+    model: text("model"),
+    status: row.status as ChargeStatus,
+    httpStatus: num("http_status"),
+    errorCode: text("error_code"),
+    costNano: num("cost_nano") as NanoDollars | null,
+    measured: row.measured as Measured,
+    priceSource: row.price_source as PriceSource,
+    priceIsEstimate: Boolean(row.price_is_estimate),
+    inputTokens: num("input_tokens"),
+    cachedInputTokens: num("cached_input_tokens"),
+    cacheWriteTokens: num("cache_write_tokens"),
+    outputTokens: num("output_tokens"),
+    unit: text("unit"),
+    units: num("units"),
+    measures: json<Record<string, number>>("measures_json") ?? {},
+    rates: json<Record<string, number>>("rates_json"),
+    sessionMs: num("session_ms"),
+    correctionKind: (row.correction_kind ?? null) as CorrectionKind | null,
+    correctsChargeId: text("corrects_charge_id"),
+    latencyMs: num("latency_ms"),
+    appVersion: text("app_version"),
+    authMethod: text("auth_method"),
+    clientTraceId: text("client_trace_id"),
+    usedAt: Number(row.used_at),
+    usageDay: String(row.usage_day),
+    writtenAt: Number(row.written_at),
+  };
+}
+
+/** One charge by id, or null. */
+export async function readCharge(db: D1Database, id: string): Promise<ChargeRow | null> {
+  const row = await db.prepare("SELECT * FROM charge WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  return row === null ? null : chargeFromRow(row);
+}
+
+/** The statement that inserts one charge, `ON CONFLICT(id) DO NOTHING`. */
+export function insertChargeStatement(db: D1Database, charge: ChargeRow): D1PreparedStatement {
+  return db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge)));
+}
+
+/**
+ * The statement that inserts one charge whose cost is a SQL expression, such
+ * as a difference worked out from other rows in the same batch. `cost` is a
+ * SQL fragment with its own parameters, `costParams`, bound in place of the
+ * `cost_nano` value. The row is skipped if its id exists.
+ */
+export function insertChargeWithCostStatement(
+  db: D1Database,
+  charge: ChargeRow,
+  cost: string,
+  costParams: readonly unknown[],
+): D1PreparedStatement {
+  const placeholders: string[] = [];
+  const params: unknown[] = [];
+  for (const [column, read] of CHARGE_COLUMNS) {
+    if (column === "cost_nano") {
+      placeholders.push(`(${cost})`);
+      params.push(...costParams);
+    } else {
+      placeholders.push("?");
+      params.push(read(charge));
+    }
+  }
+  // `WHERE true` keeps SQLite from reading ON CONFLICT as part of the SELECT.
+  return db
+    .prepare(
+      `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => column).join(", ")})
+       SELECT ${placeholders.join(", ")} WHERE true
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(...params);
+}
