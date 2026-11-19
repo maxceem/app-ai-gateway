@@ -5,13 +5,14 @@
  * In order:
  *
  * 1. Load the app and the provider connection the path names.
- * 2. Check who is calling (`authenticateRequest`) and whether the end user
- *    is blocked.
+ * 2. Check who is calling (`authenticateRequest`), use up a signed
+ *    request's App Attest counter so it can never be sent again, and check
+ *    whether the end user is blocked.
  * 3. Match the path to a declared operation, closed by default, and check the
  *    app allows that connection, operation and model.
- * 4. Read the body once (20 MiB at most), then admit the request: the App
- *    Attest replay check, the app's own limits, and the plan allowance, in
- *    that order (`../limits/admission.ts`). Then apply the request policy.
+ * 4. Read the body once (20 MiB at most), apply the request policy (the
+ *    output cap refuses here), then admit the request: the app's own limits
+ *    and the plan allowance, in that order (`../limits/admission.ts`).
  * 5. Send it with the connection's key, and pipe the answer back unchanged,
  *    provider errors included.
  * 6. After the answer is sent, read its usage, price it and write one charge.
@@ -24,6 +25,7 @@ import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
+import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
 import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -114,14 +116,27 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     ...(description === null ? {} : { providerAuthHeader: description.auth.header }),
   });
   const appVersion = c.req.header("x-app-version") ?? null;
-  if (identity.credentialType === "gateway_token" && appVersion === null) {
-    throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
-  }
 
   // From here on the caller is known, so a refusal is recorded as a rejection event.
   let operationName: string | null = null;
   let model: string | null = null;
   try {
+    // A signed request is single use, whatever happens to it next: its
+    // counter is used up right after the proof is checked, before anything
+    // else can refuse it. Never skipped (the replay check's own deadline).
+    if (assertionCounter !== null && identity.installId !== null) {
+      try {
+        await useAssertionCounter(c.env, app.id, identity.installId, assertionCounter);
+      } catch (error) {
+        // A replayed proof is a refusal to record, as v1; a limiter that did not answer is not.
+        throw error instanceof GatewayError && error.code === "attest_failed" ? refusal(error, "blocked_replay", "install") : error;
+      }
+    }
+    // After the counter: the header is not signed, so a request refused for
+    // lacking it must not be sendable again with it added.
+    if (identity.credentialType === "gateway_token" && appVersion === null) {
+      throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
+    }
     // An app key's last use, at most hourly, as v1. Never part of the answer.
     if (identity.apiKeyId !== undefined) {
       const apiKeyId = identity.apiKeyId;
@@ -178,19 +193,21 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
     }
 
+    // The output cap refuses on its own, so it runs before admission: a request
+    // it refuses must not spend a request limit or the plan allowance.
+    const capped = applyChatOutputCap(body, routing.max_output_tokens);
+    const metered = requestStreamUsage(body);
+
     // Admission comes last, once the request is known to be one that can be
-    // served: the replay check, the app's own limits, then the plan allowance.
+    // served: the app's own limits, then the plan allowance.
     await admitRequest({
       env: c.env,
       app,
       identity,
-      assertionCounter: identity.installId === null ? null : assertionCounter,
       waitUntil: (promise) => c.executionCtx.waitUntil(promise),
       refuse: refusal,
     });
 
-    const capped = applyChatOutputCap(body, routing.max_output_tokens);
-    const metered = requestStreamUsage(body);
     const sent = capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes;
 
     const attempt: CallAttempt = {

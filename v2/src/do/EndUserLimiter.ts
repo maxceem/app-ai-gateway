@@ -11,7 +11,7 @@
  * and can arrive in another, so a counter up to COUNTER_WINDOW behind the
  * highest one seen is still accepted once; one further behind never is.
  */
-import { RequestLimitObject, type RequestLimitCheck, type RequestLimitResult } from "./request-limits.ts";
+import { RequestLimitObject } from "./request-limits.ts";
 
 export const COUNTER_WINDOW = 64;
 
@@ -36,21 +36,6 @@ export class EndUserLimiter extends RequestLimitObject {
   }
 
   /** Accepts one assertion counter, or refuses it as a replay. */
-  /**
-   * The replay check, then the end user's limits, in one call. The counter is
-   * accepted and recorded first, synchronously, so a replay is refused before
-   * anything is counted, and two requests carrying one assertion cannot both
-   * pass.
-   */
-  async check(
-    input: RequestLimitCheck & { assertionCounter?: number },
-  ): Promise<RequestLimitResult | { allowed: false; reason: "replay" }> {
-    if (input.assertionCounter !== undefined && !this.accept(input.assertionCounter)) {
-      return { allowed: false, reason: "replay" };
-    }
-    return this.checkRequest(input);
-  }
-
   useCounter(counter: number): { accepted: boolean } {
     return { accepted: this.accept(counter) };
   }

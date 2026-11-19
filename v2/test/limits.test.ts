@@ -14,7 +14,17 @@ import { GatewayError } from "../src/core/errors.ts";
 import type { AppRecord, GatewayIdentity } from "../src/core/types.ts";
 import { admitRequest, type AdmissionInput } from "../src/limits/admission.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import {
+  ACCOUNT_ID,
+  attestAuthentication,
+  clearCaches,
+  registerTestInstall,
+  seedAccount,
+  seedAppKey,
+  seedRoutedApp,
+  signedProof,
+  tokenForInstall,
+} from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 
@@ -70,23 +80,31 @@ const userIdentity: GatewayIdentity = {
   appleAccountId: null,
 };
 
-const installIdentity: GatewayIdentity = {
-  appId: "app_unit",
-  userId: "install-1",
-  credentialType: "gateway_token",
-  authMethod: "attest",
-  installId: "install-1",
-  appleAccountId: null,
-};
 
-/** A stub limiter namespace: every method answers with `answer` after `delayMs`, and the calls are recorded. */
-function limiter(name: string, calls: string[], answer: () => unknown, delayMs = 0) {
-  const call = async () => {
-    calls.push(name);
-    if (delayMs > 0) await sleep(delayMs);
-    return answer();
+/**
+ * A stub limiter namespace: each method answers after `delayMs`, and the calls
+ * are recorded. `useCounter` (the replay check) answers `counter`; the others `answer`.
+ */
+function limiter(
+  name: string,
+  calls: string[],
+  answer: () => unknown,
+  delayMs = 0,
+  counter: () => unknown = () => ({ accepted: true }),
+  counterDelayMs = delayMs,
+) {
+  const call = (respond: () => unknown, ms: number, label: string) => async () => {
+    calls.push(label);
+    if (ms > 0) await sleep(ms);
+    return respond();
   };
-  return { getByName: () => ({ check: call, checkRequest: call, admit: call, useCounter: call }) };
+  return {
+    getByName: () => ({
+      checkRequest: call(answer, delayMs, name),
+      admit: call(answer, delayMs, name),
+      useCounter: call(counter, counterDelayMs, `${name}:replay`),
+    }),
+  };
 }
 
 const allowed = () => ({ allowed: true, budget: "none" });
@@ -95,7 +113,6 @@ function input(overrides: Partial<AdmissionInput> & { env: Env }): AdmissionInpu
   return {
     app: app({ per_user: { requests: { per_minute: 10 } }, per_app: { requests: { per_minute: 10 } } }),
     identity: userIdentity,
-    assertionCounter: null,
     waitUntil: () => undefined,
     refuse: (refusal) => refusal,
     ...overrides,
@@ -141,6 +158,22 @@ describe("admission order and timeout rules", () => {
     expect(calls).toEqual(["user", "app"]);
   });
 
+  it("keeps the plan read alive when the app's own limits refuse first", async () => {
+    const kept: Promise<unknown>[] = [];
+    const stubbed = {
+      ...env,
+      END_USER_LIMITER: limiter("user", [], allowed),
+      APP_LIMITER: limiter("app", [], () => ({ allowed: false, reason: "rate", retryAfterSeconds: 7 })),
+      BILLING: billing({ maxRequestsPerMonth: 100 }, 50),
+    } as unknown as Env;
+    await expect(
+      admitRequest(input({ env: stubbed, waitUntil: (promise) => void kept.push(promise) })),
+    ).rejects.toMatchObject({ code: "app_rate_limited" });
+    // The refusal came before the plan read was awaited; it is still handed to waitUntil.
+    expect(kept.length).toBeGreaterThan(0);
+    await Promise.all(kept);
+  });
+
   it("serves a request when a limit check is slow or fails, and logs it", async () => {
     const calls: string[] = [];
     const stubbed = {
@@ -168,45 +201,6 @@ describe("admission order and timeout rules", () => {
     // The first ran out the deadline; the app's and the account's turns came after it, so they were skipped.
     expect(calls).toEqual(["user"]);
     expect(logged(warn)).toEqual(expect.arrayContaining(["app_limits_unchecked", "allowance_uncounted"]));
-  });
-
-  it("starts the shared deadline after the replay check, so a slow replay check never makes the budget checks skip", async () => {
-    const calls: string[] = [];
-    const stubbed = {
-      ...env,
-      END_USER_LIMITER: limiter("user", calls, allowed, 80),
-      APP_LIMITER: limiter("app", calls, () => ({ allowed: false, reason: "budget" }), 10),
-    } as unknown as Env;
-    const attestApp = app(
-      { per_app: { spending: { monthly_nano: 0 } } },
-      { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app" } },
-    );
-    await expect(
-      admitRequest(input({ env: stubbed, app: attestApp, identity: installIdentity, assertionCounter: 5, replayDeadlineMs: 500, limitsDeadlineMs: 50 })),
-    ).rejects.toMatchObject({ status: 429, code: "app_budget_exhausted", data: { scope: "app" } });
-    expect(calls).toEqual(["user", "app"]);
-  });
-
-  it("refuses a request that needs the replay check when the end user's limiter does not answer", async () => {
-    const attestApp = app({}, { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app" } });
-    const slow = { ...env, END_USER_LIMITER: limiter("user", [], allowed, 200) } as unknown as Env;
-    await expect(
-      admitRequest(input({ env: slow, app: attestApp, identity: installIdentity, assertionCounter: 5, replayDeadlineMs: 30 })),
-    ).rejects.toMatchObject({ status: 503, code: "service_unavailable" });
-    const failing = { ...env, END_USER_LIMITER: { getByName: () => ({ check: async () => { throw new Error("gone"); } }) } } as unknown as Env;
-    await expect(
-      admitRequest(input({ env: failing, app: attestApp, identity: installIdentity, assertionCounter: 5 })),
-    ).rejects.toMatchObject({ status: 503 });
-  });
-
-  it("refuses a replayed counter, and marks it as a replay", async () => {
-    const attestApp = app({}, { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app" } });
-    const marks: string[] = [];
-    const stubbed = { ...env, END_USER_LIMITER: limiter("user", [], () => ({ allowed: false, reason: "replay" })) } as unknown as Env;
-    await expect(
-      admitRequest(input({ env: stubbed, app: attestApp, identity: installIdentity, assertionCounter: 5, refuse: (e, reason, scope) => (marks.push(`${reason}/${scope}`), e) })),
-    ).rejects.toMatchObject({ status: 403, code: "attest_failed" });
-    expect(marks).toEqual(["blocked_replay/install"]);
   });
 
   it("calls no limiter at all for an app with no limits on a self-hosted deployment", async () => {
@@ -248,6 +242,71 @@ describe("the plan allowance", () => {
       status: 429,
       code: "billing_request_quota_exceeded",
     });
+  });
+
+  it("bounds working out the plan period by the shared deadline", async () => {
+    const plain = { ...input({ env }).app, accountId: "acc_slow_created", limits: app().limits };
+    const calls: string[] = [];
+    // Billing answers at once; the account's creation day (D1) takes far longer than the deadline.
+    const slowDb = {
+      prepare: () => ({ bind: () => ({ first: async () => (await sleep(400), { created_at: new Date().toISOString() }) }) }),
+    };
+    const stubbed = {
+      ...env,
+      DB: slowDb,
+      BILLING: billing({ maxRequestsPerMonth: 10 }),
+      ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 10 })),
+    } as unknown as Env;
+    const started = Date.now();
+    await admitRequest(input({ env: stubbed, app: plain, limitsDeadlineMs: 40 }));
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(calls).toEqual([]);
+    expect(logged(warn)).toContain("allowance_uncounted");
+  });
+
+  it("refuses without the counter only when the counter itself confirmed the plan used up", async () => {
+    const { admitAllowance } = await import("../src/billing/allowance.ts");
+    const period = { periodId: "free:x:2026-11-01T00:00:00.000Z", periodEnd: new Date(Date.now() + 86_400_000).toISOString(), limit: 3 };
+    // The counter confirms 2 of 3.
+    expect(await admitAllowance({ admit: () => ({ allowed: true, used: 2, limit: 3 }) }, "acc_s4", period, () => undefined, 100)).toMatchObject({
+      kind: "answered",
+    });
+    // Then it fails twice: both requests are served uncounted, never refused on a guess.
+    const failing = { admit: async () => { throw new Error("counter gone"); } };
+    expect(await admitAllowance(failing, "acc_s4", period, () => undefined, 100)).toEqual({ kind: "uncounted" });
+    expect(await admitAllowance(failing, "acc_s4", period, () => undefined, 100)).toEqual({ kind: "uncounted" });
+    // Once the counter confirms the plan used up, a failure refuses.
+    await admitAllowance({ admit: () => ({ allowed: false, used: 3, limit: 3, retryAfterSeconds: 60 }) }, "acc_s4", period, () => undefined, 100);
+    expect(await admitAllowance(failing, "acc_s4", period, () => undefined, 100)).toMatchObject({ kind: "exhausted", used: 3 });
+  });
+
+  it("never refuses on the last known plan while billing is down, even one the counter saw used up", async () => {
+    const accountId = `acc_stale_${crypto.randomUUID().slice(0, 8)}`;
+    const at = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Stale', 'usr_test', ?, ?)",
+    ).bind(accountId, at, at).run();
+    const plain = { ...input({ env }).app, accountId, limits: app().limits };
+    let billingUp = true;
+    const flaky = {
+      getTenantAccess: async () => {
+        if (!billingUp) throw new Error("billing down");
+        return { plan: { planKey: "p", planName: "P", isDefault: true, limits: { maxRequestsPerMonth: 1 } }, subscription: null };
+      },
+    };
+    const hosted = { ...env, BILLING: flaky } as unknown as Env;
+    // The one request of the plan is used, and the counter confirmed it.
+    await admitRequest(input({ env: hosted, app: plain }));
+    // Billing goes down; once the short cache has expired, only the last known plan is left.
+    billingUp = false;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 31_000);
+    try {
+      await expect(admitRequest(input({ env: hosted, app: plain }))).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(logged(warn)).toEqual(expect.arrayContaining(["billing_access_stale", "allowance_uncounted"]));
   });
 
   it("serves uncounted when plan data cannot be read as a limit", async () => {
@@ -491,6 +550,91 @@ describe("limits on the proxy path", () => {
     expect(await rejections(target.appId)).toEqual(
       expect.arrayContaining([{ reason: "blocked_app_rate", scope: "app" }, { reason: "blocked_billing", scope: "account" }]),
     );
+  });
+});
+
+describe("refusals that need no limiter", () => {
+  it("refuse a request over the output cap before it spends a request limit or the plan allowance", async () => {
+    const accountId = `acc_cap_${crypto.randomUUID().slice(0, 8)}`;
+    const target = await routedApp({ per_app: { requests: { per_minute: 1 } } }, accountId);
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, ?, 100) WHERE id = ?")
+      .bind(`$.routing.providers.${target.slug}.max_output_tokens`, target.appId)
+      .run();
+    clearCaches();
+    const hosted = { ...env, BILLING: billing({ maxRequestsPerMonth: 1 }) } as unknown as Env;
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const ctx = createExecutionContext();
+    const over = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${target.appId}/proxy/${target.slug}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${target.key}`, "content-type": "application/json", "x-end-user-id": "user-7" },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [], max_tokens: 101 }),
+      }),
+      hosted,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(over.status).toBe(403);
+    // The app's one request a minute and the plan's one request are both still there.
+    expect((await chat(target, hosted)).status).toBe(200);
+  });
+});
+
+describe("signed requests", () => {
+  it("are single use whatever refuses them: one refused by the output cap cannot be sent again once the cap is raised", async () => {
+    const { slug } = await routedApp({});
+    const appId = await seedRoutedApp(attestAuthentication(), { providers: { [slug]: { operations: ["openai.chat"], max_output_tokens: 100 } } });
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const url = `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`;
+    const body = new TextEncoder().encode(JSON.stringify({ model: "gpt-4o-mini", messages: [], max_tokens: 101 }));
+    const proof = await signedProof({ install, token, method: "POST", url, body, counter: 1 });
+    const send = async () => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(url, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-app-version": "1.0", "x-appattest-proof": proof },
+          body,
+        }),
+        env,
+        ctx,
+      );
+      const json = (await response.json()) as { error?: { code?: string } };
+      await waitOnExecutionContext(ctx);
+      return { status: response.status, code: json.error?.code };
+    };
+    expect(await send()).toEqual({ status: 403, code: "max_output_tokens_exceeded" });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, ?, 1000) WHERE id = ?")
+      .bind(`$.routing.providers.${slug}.max_output_tokens`, appId)
+      .run();
+    clearCaches();
+    expect(await send()).toEqual({ status: 403, code: "attest_failed" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("are single use even when refused for a missing X-App-Version, which is not signed", async () => {
+    const { slug } = await routedApp({});
+    const appId = await seedRoutedApp(attestAuthentication(), { providers: { [slug]: { operations: ["openai.chat"] } } });
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const url = `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`;
+    const body = new TextEncoder().encode(JSON.stringify({ model: "gpt-4o-mini", messages: [] }));
+    const proof = await signedProof({ install, token, method: "POST", url, body, counter: 1 });
+    const send = async (appVersion: string | null) => {
+      const ctx = createExecutionContext();
+      const headers: Record<string, string> = { authorization: `Bearer ${token}`, "content-type": "application/json", "x-appattest-proof": proof };
+      if (appVersion !== null) headers["x-app-version"] = appVersion;
+      const response = await worker.fetch(new Request(url, { method: "POST", headers, body }), env, ctx);
+      const json = (await response.json()) as { error?: { code?: string } };
+      await waitOnExecutionContext(ctx);
+      return { status: response.status, code: json.error?.code };
+    };
+    expect(await send(null)).toEqual({ status: 400, code: "invalid_request" });
+    expect(await send("1.0")).toEqual({ status: 403, code: "attest_failed" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

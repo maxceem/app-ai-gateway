@@ -85,9 +85,11 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
     });
     const appId = await seedApp(attestAuthentication());
     const address = "203.0.113.77";
-    for (let i = 0; i < 60; i += 1) {
-      expect((await call(`/v2/apps/${appId}/auth/challenge`, { method: "POST", address })).status).toBe(200);
-    }
+    // Sent together to stay fast; the limiter counts each one atomically.
+    const statuses = await Promise.all(
+      Array.from({ length: 60 }, async () => (await call(`/v2/apps/${appId}/auth/challenge`, { method: "POST", address })).status),
+    );
+    expect(statuses).toEqual(Array(60).fill(200));
     const refused = await call(`/v2/apps/${appId}/auth/challenge`, { method: "POST", address });
     expect(refused.status).toBe(429);
     expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);

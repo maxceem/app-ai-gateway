@@ -1,10 +1,9 @@
 /**
  * Admission for one provider request (plan section 4.2, "Admission"): the
- * three limiter objects, called one after another, each only when it has
+ * limiter objects, called one after another, each only when it has
  * something to check.
  *
- * 1. The end user's limiter: the App Attest replay check and the user's
- *    limits (`EndUserLimiter`).
+ * 1. The end user's limiter: the user's limits (`EndUserLimiter`).
  * 2. The app's limiter: the app's own limits (`AppLimiter`).
  * 3. The account's limiter: the plan allowance, hosted only, always last
  *    (`AccountLimiter`).
@@ -12,34 +11,32 @@
  * The order means a request the customer's own limits refuse never uses the
  * plan allowance it pays for.
  *
- * Deadlines and the timeout rules, in one place:
+ * The App Attest replay check, on the end user's limiter too, is not here: it
+ * runs right after the caller is checked (`useAssertionCounter`), on its own
+ * deadline and never skipped, so a signed request is single use whatever
+ * refuses it afterwards.
  *
- * - The replay check has its own deadline. If the end user's limiter does not
- *   answer it, the request is refused (503): it is never served unchecked.
- * - Every other check shares one `LIMITS_DEADLINE_MS` deadline that starts
- *   after the replay check, so a slow replay check never makes the budget
- *   checks skip, and three slow limiters never cost three deadlines. A slow
- *   answer counts as no answer, and a limiter whose turn comes after the
- *   deadline is skipped the same way.
- * - A limit, budget or allowance that does not answer is skipped and the
- *   request is served, logged as a warning (`AGENTS.md`).
+ * Every check here shares one `LIMITS_DEADLINE_MS` deadline, so three slow
+ * limiters never cost three deadlines. A slow answer counts as no answer, and
+ * a limiter whose turn comes after the deadline is skipped the same way. A
+ * limit, budget or allowance that does not answer is skipped and the request
+ * is served, logged as a warning (`AGENTS.md`).
  */
 import { configuredBudgetScope, scopeHasLimits, type BudgetScope } from "../contracts/app-config.ts";
 import { admitAllowance } from "../billing/allowance.ts";
 import { admitAppTraffic, getAppTrafficBillingAccess, APP_TRAFFIC_BILLING_DEADLINE_MS } from "../billing/access.ts";
 import { billingBinding } from "../billing/contract.ts";
 import { billingQuotaFor } from "../billing/quota.ts";
-import { installLimiterName, REPLAY_CHECK_DEADLINE_MS } from "../client-auth/replay.ts";
+import { installLimiterName } from "../client-auth/replay.ts";
 import type { GatewayBillingAccess } from "../contracts/billing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { serviceUnavailable } from "../core/platform-errors.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import type { RequestLimitResult } from "../do/request-limits.ts";
 import { nextUtcMonthStart, type SpendKey } from "./spend.ts";
 
-/** The deadline the checks after the replay check share. */
+/** The deadline every admission check shares. */
 export const LIMITS_DEADLINE_MS = 2_000;
 
 /** Marks a refusal with the rejection event it records. */
@@ -49,12 +46,9 @@ export interface AdmissionInput {
   env: Env;
   app: AppRecord;
   identity: GatewayIdentity;
-  /** The App Attest assertion counter the request was signed with, or null. */
-  assertionCounter: number | null;
   waitUntil: (promise: Promise<unknown>) => void;
   refuse: RefusalMarker;
   /** For tests. */
-  replayDeadlineMs?: number;
   limitsDeadlineMs?: number;
   billingDeadlineMs?: number;
 }
@@ -133,7 +127,6 @@ async function within<T>(promise: Promise<T>, ms: number, waitUntil: (p: Promise
 /** Admits one provider request, or throws the refusal. */
 export async function admitRequest(input: AdmissionInput): Promise<void> {
   const { env, app, identity, refuse } = input;
-  const replayDeadlineMs = input.replayDeadlineMs ?? REPLAY_CHECK_DEADLINE_MS;
   const limitsDeadlineMs = input.limitsDeadlineMs ?? LIMITS_DEADLINE_MS;
   const now = Date.now();
 
@@ -143,6 +136,10 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
     billingBinding(env) === null
       ? null
       : getAppTrafficBillingAccess(env, app.accountId, input.waitUntil, input.billingDeadlineMs ?? APP_TRAFFIC_BILLING_DEADLINE_MS);
+  // Kept alive whatever happens next: a limit may refuse the request before
+  // this read is awaited, and a read cut off then would stay in the billing
+  // cache unsettled. It never rejects, and its own deadline bounds it.
+  if (billingAccess !== null) input.waitUntil(billingAccess.catch(() => undefined));
 
   const perUser = app.limits.per_user;
   const userLimits = {
@@ -154,36 +151,14 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
   const caller = endUserCaller(app, identity);
   const userHasLimits = scopeHasLimits(perUser);
 
-  // 1a. The replay check, with the user's limits in the same call. Never skipped.
-  if (caller !== null && input.assertionCounter !== null) {
-    const pending = rpc<RequestLimitResult | { allowed: false; reason: "replay" }>(env.END_USER_LIMITER.getByName(caller.name).check({
-      ...(userHasLimits ? userLimits : { now, rpm: null, rpd: null, budgetNano: null }),
-      spend: caller.spend,
-      assertionCounter: input.assertionCounter,
-    }));
-    const answer = await within(pending, replayDeadlineMs, input.waitUntil);
-    if (answer.kind === "failed") {
-      log("error", "replay_check_failed", { app: app.id, error: errorFacts(answer.error) });
-      throw serviceUnavailable("platform_unavailable", "The gateway could not check this request; retry shortly", answer.error);
-    }
-    if (answer.kind === "late") {
-      log("error", "replay_check_slow", { app: app.id, deadlineMs: replayDeadlineMs });
-      throw serviceUnavailable("deadline_exceeded", "The gateway could not check this request in time; retry shortly");
-    }
-    if (!answer.value.allowed && answer.value.reason === "replay") {
-      throw refuse(new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed"), "blocked_replay", "install");
-    }
-    settleAppLimit(answer.value, caller, now, refuse, app.id);
-  }
-
-  // From here on, one shared deadline.
+  // One shared deadline for every check.
   const deadlineAt = Date.now() + limitsDeadlineMs;
   const remaining = () => deadlineAt - Date.now();
 
-  // 1b. The user's limits, when there was no replay check to carry them.
-  if (caller !== null && input.assertionCounter === null && userHasLimits) {
+  // 1b. The user's limits.
+  if (caller !== null && userHasLimits) {
     const answer = remaining() <= 0 ? LATE : await within(
-      rpc<RequestLimitResult>(env.END_USER_LIMITER.getByName(caller.name).check({ ...userLimits, spend: caller.spend })),
+      rpc<RequestLimitResult>(env.END_USER_LIMITER.getByName(caller.name).checkRequest({ ...userLimits, spend: caller.spend })),
       remaining(),
       input.waitUntil,
     );
@@ -285,16 +260,28 @@ async function admitPlanAllowance(
     return;
   }
   const access = accessAnswer.value;
-  // No plan resolving at all is still 402, as v1. Billing that cannot be read is served.
-  admitAppTraffic(access, app.accountId);
-  let quota;
-  try {
-    quota = await billingQuotaFor(access, env, app.accountId);
-  } catch (error) {
-    // Plan data this gateway cannot turn into a period is our problem, not the app's.
-    log("warn", "allowance_uncounted", { account: app.accountId, reason: "plan_unreadable", error: errorFacts(error) });
+  // The last known plan, served while billing cannot answer, is never grounds
+  // to refuse: the account may have upgraded since. The request is served
+  // uncounted (AGENTS.md: refuse only when the allowance is known to be used up).
+  if (access.state === "billed" && access.stale === true) {
+    log("warn", "allowance_uncounted", { account: app.accountId, reason: "billing_stale" });
     return;
   }
+  // No plan resolving at all is still 402, as v1. Billing that cannot be read is served.
+  admitAppTraffic(access, app.accountId);
+  // Working out the period can read D1 (the account's creation day), so it is
+  // bounded by the shared deadline too.
+  const quotaAnswer = remaining() <= 0 ? LATE : await within(billingQuotaFor(access, env, app.accountId), remaining(), input.waitUntil);
+  if (quotaAnswer.kind !== "answer") {
+    // Plan data this gateway cannot turn into a period, or a slow read, is our problem, not the app's.
+    log("warn", "allowance_uncounted", {
+      account: app.accountId,
+      reason: quotaAnswer.kind === "late" ? "deadline" : "plan_unreadable",
+      ...(quotaAnswer.kind === "failed" ? { error: errorFacts(quotaAnswer.error) } : {}),
+    });
+    return;
+  }
+  const quota = quotaAnswer.value;
   if (quota.kind === "unmetered") return;
   const { period } = quota;
   if (remaining() <= 0) {

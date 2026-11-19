@@ -6,7 +6,7 @@
  * we fail to serve costs a customer's user an error. So whenever the counter
  * cannot answer in time, the request is served uncounted and logged
  * `allowance_uncounted`. The one refusal that survives is the one the account
- * earned: a plan this isolate last saw used up stays used up.
+ * earned: a plan the counter last confirmed used up stays used up.
  */
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
@@ -78,13 +78,16 @@ export async function admitAllowance(
   } finally {
     clearTimeout(timer);
   }
+  // Refused only when the counter itself last said the period is used up:
+  // requests served uncounted since are guesses, and a guess never refuses
+  // (AGENTS.md: the allowance must be known to be used up).
   const reading = lastReadings.get(accountId);
-  if (reading?.periodId === input.periodId && reading.used + reading.uncounted >= input.limit) {
+  if (reading?.periodId === input.periodId && reading.used >= input.limit) {
     const end = Date.parse(input.periodEnd);
     return {
       kind: "exhausted",
       allowed: false,
-      used: reading.used + reading.uncounted,
+      used: reading.used,
       limit: input.limit,
       retryAfterSeconds: Number.isFinite(end) ? Math.max(1, Math.ceil((end - Date.now()) / 1_000)) : 1,
     };

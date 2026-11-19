@@ -154,8 +154,9 @@ export function admitAppTraffic(access: GatewayBillingAccess, accountId: string)
 
 /**
  * The plan limits from a plan's `limits`. A value plan data cannot be read as
- * is a misconfiguration this gateway cannot turn into a limit, so it refuses
- * the request rather than guessing, as v1.
+ * is a misconfiguration this gateway cannot turn into a limit, so this throws.
+ * The request path catches it and serves the request uncounted, logged as
+ * `allowance_uncounted`; only settings-side callers refuse with it.
  */
 export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
   if (access.state !== "billed" || access.plan === null || access.plan.limits === undefined) return {};
