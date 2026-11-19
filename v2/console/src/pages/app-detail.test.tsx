@@ -255,6 +255,30 @@ describe("AppDetailPage", () => {
     expect(screen.queryByText(/changed since you started editing/i)).toBeNull();
   });
 
+  it("locks the name and configuration while a save runs", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        if (url === APP_URL && init?.method === "PUT") return new Promise<Response>((resolve) => (answer = resolve));
+        return new Response(JSON.stringify({ app: testApp() }));
+      }),
+    );
+    renderTab("settings");
+    const rename = await screen.findByLabelText("Name");
+    await userEvent.clear(rename);
+    await userEvent.type(rename, "Renamed");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).disabled).toBe(true));
+    expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^check$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /save configuration/i }) as HTMLButtonElement).disabled).toBe(true);
+    answer(new Response(JSON.stringify({ app: testApp({ name: "Renamed", revision: 3 }) })));
+    await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).disabled).toBe(false));
+  });
+
   it("saves the whole configuration as typed", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("settings");

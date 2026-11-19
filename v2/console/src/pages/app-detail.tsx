@@ -893,7 +893,7 @@ function SettingsTab({ app }: { app: App }) {
           <div className="flex max-w-md items-end gap-2">
             <div className="flex-1 space-y-2">
               <Label htmlFor="app-rename">Name</Label>
-              <Input id="app-rename" value={name} maxLength={100} disabled={readOnly} onChange={(event) => setName(event.target.value)} />
+              <Input id="app-rename" value={name} maxLength={100} disabled={readOnly || pending} onChange={(event) => setName(event.target.value)} />
             </div>
             <GuardedButton variant="outline" disabled={!name.trim() || name.trim() === app.name || pending} onClick={() => void saveName()}>
               Rename
@@ -926,12 +926,13 @@ function SettingsTab({ app }: { app: App }) {
             className="min-h-72 font-mono text-xs"
             spellCheck={false}
             value={text}
-            disabled={readOnly}
+            // Locked while a save runs, so its answer never overwrites a later edit.
+            disabled={readOnly || pending}
             onChange={(event) => setText(event.target.value)}
           />
           {parseError ? <p className="text-sm text-destructive">Not valid JSON: {parseError}</p> : null}
           <div className="flex gap-2">
-            <Button type="button" variant="outline" disabled={parseError !== null || validate.isPending} onClick={() => void check()}>
+            <Button type="button" variant="outline" disabled={parseError !== null || validate.isPending || pending} onClick={() => void check()}>
               Check
             </Button>
             <GuardedButton disabled={parseError !== null || pending} onClick={() => void saveConfig()}>
