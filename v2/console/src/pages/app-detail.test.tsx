@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
@@ -215,6 +215,40 @@ describe("AppDetailPage", () => {
     expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).value).toBe('{"mine":true}');
     await userEvent.click(screen.getByRole("button", { name: /discard my edits/i }));
     expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).value).toBe(JSON.stringify(changed.config, null, 2));
+  });
+
+  it("ends the conflict notice once the kept draft is saved, so a fresh edit does not bring it back", async () => {
+    const changed = testApp({ name: "Renamed", revision: 3, config: { ...testApp().config, routing: { providers: {} } } });
+    let current = testApp();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        if (url === APP_URL && init?.method === "PUT") {
+          const body = JSON.parse(String(init.body));
+          // The rename lands on top of someone else's change; a later save
+          // stores what it sent.
+          current = body.config === undefined || current.revision === 2 ? changed : testApp({ ...body, revision: current.revision + 1 });
+        }
+        return new Response(JSON.stringify({ app: current }));
+      }),
+    );
+    renderTab("settings");
+    const mine = { ...testApp().config, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-a"] } } } };
+    fireEvent.change(await screen.findByLabelText("Configuration"), { target: { value: JSON.stringify(mine) } });
+    const rename = screen.getByLabelText("Name");
+    await userEvent.clear(rename);
+    await userEvent.type(rename, "Renamed");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(await screen.findByText(/changed since you started editing/i)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(screen.queryByText(/changed since you started editing/i)).toBeNull());
+    const next = { ...mine, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-b"] } } } };
+    fireEvent.change(screen.getByLabelText("Configuration"), { target: { value: JSON.stringify(next) } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText(/changed since you started editing/i)).toBeNull();
   });
 
   it("saves the whole configuration as typed", async () => {

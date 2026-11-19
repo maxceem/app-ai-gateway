@@ -810,6 +810,12 @@ function SettingsTab({ app }: { app: App }) {
     else setChangedElsewhere(true);
     setTextBase(stored);
   }, [stored, textBase, text]);
+  // Once both drafts match what is saved, by a save or by discarding, the
+  // conflict is over: a later edit starts fresh.
+  const draftsSaved = name.trim() === app.name && sameJson(text, stored);
+  useEffect(() => {
+    if (changedElsewhere && draftsSaved) setChangedElsewhere(false);
+  }, [changedElsewhere, draftsSaved]);
   const discardDrafts = () => {
     setName(app.name);
     setText(stored);
