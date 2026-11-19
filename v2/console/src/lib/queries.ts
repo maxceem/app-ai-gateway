@@ -290,7 +290,8 @@ export function useDeleteProvider() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => call("deleteProvider", { params: { id } }),
-    onSuccess: () => invalidateProviders(client),
+    // A refused delete refreshes too: the connection may already be gone.
+    onSettled: () => invalidateProviders(client),
   });
 }
 

@@ -94,6 +94,43 @@ describe("ProvidersPage", () => {
     await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, status: "disabled" }));
   });
 
+  it("reloads the list when a remove is refused, as the connection may already be gone", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(JSON.stringify({ error: { code: "provider_not_found", message: "gone" } }), { status: 404 });
+      }
+      return new Response(JSON.stringify({ providers: [PROVIDER] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lists = () => fetchMock.mock.calls.filter(([input, init]) => String(input) === "/v2/admin/providers" && (init?.method ?? "GET") === "GET").length;
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /remove/i }));
+    const before = lists();
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /^remove$/i }));
+    await waitFor(() => expect(lists()).toBeGreaterThan(before));
+  });
+
+  it("drops a key test's answer once the key was edited", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/v2/admin/providers/test") return new Promise<Response>((resolve) => (answer = resolve));
+        return new Response(JSON.stringify({ providers: [] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    const key = screen.getByLabelText(/api key/i);
+    await userEvent.type(key, SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /test key/i }));
+    await userEvent.type(key, "-other");
+    answer(new Response(JSON.stringify({ validated: true })));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("stops a read-only member adding a provider", async () => {
     stub();
     renderAuthenticated(<ProvidersPage />, { session: { role: "member" } });

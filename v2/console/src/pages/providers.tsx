@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Ban, CheckCircle2, KeyRound, Plus, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,6 +30,12 @@ export function ProvidersPage() {
   const [adding, setAdding] = useState(false);
   // By id, so the dialog always saves at the revision the list last read.
   const [rotatingId, setRotatingId] = useState<string | null>(null);
+  const rotating = list.data?.providers.find((provider) => provider.id === rotatingId) ?? null;
+  // A connection removed elsewhere ends the replace, so its draft never moves
+  // to the next connection.
+  useEffect(() => {
+    if (rotatingId !== null && list.data && rotating === null) setRotatingId(null);
+  }, [rotatingId, list.data, rotating]);
   const [removing, setRemoving] = useState<ProviderConnection | null>(null);
 
   const providers = list.data?.providers ?? [];
@@ -141,10 +147,8 @@ export function ProvidersPage() {
       </Card>
 
       <AddProviderDialog open={adding} onOpenChange={setAdding} />
-      <ReplaceKeyDialog
-        provider={providers.find((provider) => provider.id === rotatingId) ?? null}
-        onClose={() => setRotatingId(null)}
-      />
+      {/* Keyed by connection, so each replace starts with an empty draft. */}
+      <ReplaceKeyDialog key={rotatingId ?? "none"} provider={rotating} onClose={() => setRotatingId(null)} />
 
       <ConfirmDialog
         open={removing !== null}
@@ -219,14 +223,25 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 function useKeyTest() {
   const test = useTestProvider();
   const [result, setResult] = useState<TestOutcome>(null);
+  // Each run and each clear starts a new generation, so an answer that comes
+  // back after the key was edited or the dialog closed is dropped.
+  const generation = useRef(0);
   const run = (body: { type: string; secret: string; baseUrl?: string }) => {
+    const mine = ++generation.current;
     setResult(null);
+    const keep = (outcome: TestOutcome) => {
+      if (generation.current === mine) setResult(outcome);
+    };
     test
       .mutateAsync(body)
-      .then(setResult, () => setResult("failed"))
+      .then(keep, () => keep("failed"))
       .finally(() => test.reset());
   };
-  return { run, result, pending: test.isPending, clear: () => setResult(null) };
+  const clear = () => {
+    generation.current += 1;
+    setResult(null);
+  };
+  return { run, result, pending: test.isPending, clear };
 }
 
 function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {

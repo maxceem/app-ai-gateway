@@ -189,6 +189,34 @@ describe("AppDetailPage", () => {
     );
   });
 
+  it("keeps an unsaved configuration when the app changed meanwhile, and says so", async () => {
+    // Someone else changed the configuration; the rename's answer and every
+    // later read carry that change.
+    const changed = testApp({ name: "Renamed", revision: 3, config: { ...testApp().config, routing: { providers: {} } } });
+    let renamed = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === APP_URL && init?.method === "PUT") renamed = true;
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        return new Response(JSON.stringify({ app: renamed ? changed : testApp() }));
+      }),
+    );
+    renderTab("settings");
+    const editor = await screen.findByLabelText("Configuration");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, '{{"mine":true}');
+    const rename = screen.getByLabelText("Name");
+    await userEvent.clear(rename);
+    await userEvent.type(rename, "Renamed");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(await screen.findByText(/changed since you started editing/i)).toBeTruthy();
+    expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).value).toBe('{"mine":true}');
+    await userEvent.click(screen.getByRole("button", { name: /discard my edits/i }));
+    expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).value).toBe(JSON.stringify(changed.config, null, 2));
+  });
+
   it("saves the whole configuration as typed", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("settings");

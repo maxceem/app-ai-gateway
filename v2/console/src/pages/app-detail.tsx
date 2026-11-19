@@ -770,6 +770,15 @@ function KeysTab({ app }: { app: App }) {
 }
 
 // ---------------------------------------------------------------------------
+/** Whether typed JSON means the same as the stored text, ignoring layout. */
+function sameJson(typed: string, stored: string): boolean {
+  try {
+    return JSON.stringify(JSON.parse(typed), null, 2) === stored;
+  } catch {
+    return false;
+  }
+}
+
 // Settings: name, on or off, the whole configuration, and deleting
 
 function SettingsTab({ app }: { app: App }) {
@@ -778,15 +787,34 @@ function SettingsTab({ app }: { app: App }) {
   const { save, pending } = useSaveApp(app);
   const validate = useValidateApp(app.id);
   const remove = useDeleteApp();
-  const [name, setName] = useState(app.name);
-  const [text, setText] = useState(() => JSON.stringify(app.config, null, 2));
-  const [deleting, setDeleting] = useState(false);
-  // Each draft resets only when what it edits changed, so renaming keeps
-  // unsaved configuration edits, and saving the configuration keeps an
-  // unsubmitted name.
   const stored = JSON.stringify(app.config, null, 2);
-  useEffect(() => setName(app.name), [app.name]);
-  useEffect(() => setText(stored), [stored]);
+  const [name, setName] = useState(app.name);
+  const [text, setText] = useState(stored);
+  const [deleting, setDeleting] = useState(false);
+  // What each draft started from. When the stored value changes, an untouched
+  // draft follows it, and so does one that now matches it (such as after its
+  // own save). An edited draft is kept, and the page says the saved version
+  // changed, so nothing typed is lost and the next save uses the new revision.
+  const [nameBase, setNameBase] = useState(app.name);
+  const [textBase, setTextBase] = useState(stored);
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
+  useEffect(() => {
+    if (app.name === nameBase) return;
+    if (name === nameBase || name.trim() === app.name) setName(app.name);
+    else setChangedElsewhere(true);
+    setNameBase(app.name);
+  }, [app.name, nameBase, name]);
+  useEffect(() => {
+    if (stored === textBase) return;
+    if (text === textBase || sameJson(text, stored)) setText(stored);
+    else setChangedElsewhere(true);
+    setTextBase(stored);
+  }, [stored, textBase, text]);
+  const discardDrafts = () => {
+    setName(app.name);
+    setText(stored);
+    setChangedElsewhere(false);
+  };
 
   let parsed: unknown = undefined;
   let parseError: string | null = null;
@@ -818,6 +846,19 @@ function SettingsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      {changedElsewhere && (name.trim() !== app.name || !sameJson(text, stored)) ? (
+        <Alert>
+          <AlertCircle />
+          <AlertTitle>This app was changed since you started editing</AlertTitle>
+          <AlertDescription>
+            <p>Your unsaved edits are kept below. Saving them replaces the latest saved version.</p>
+            <Button type="button" size="sm" variant="outline" className="mt-2" onClick={discardDrafts}>
+              Discard my edits
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Name and status</CardTitle>
