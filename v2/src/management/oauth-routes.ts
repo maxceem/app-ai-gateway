@@ -43,10 +43,14 @@ const MAX_FORM_BYTES = 16 * 1024;
 
 const NOT_FOUND = { error: { code: "not_found", message: "Nothing is served at this path." } };
 
-/** The OAuth service, or null on another host than the console's or where none runs. */
+/**
+ * The OAuth service, or null anywhere but the console's own origin (scheme,
+ * host and port, so plain HTTP on the same name is refused too), or where
+ * none runs.
+ */
 async function oauthFor(c: OAuthContext): Promise<CfAuthOAuth | null> {
   const origin = consoleOrigin(c.env);
-  if (origin === null || new URL(c.req.url).host !== new URL(origin).host) return null;
+  if (origin === null || new URL(c.req.url).origin !== origin) return null;
   const identity = await identityFor(c);
   return identity.config.oauth === null ? null : identity.oauth;
 }

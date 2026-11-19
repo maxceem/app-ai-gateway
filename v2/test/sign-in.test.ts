@@ -141,6 +141,13 @@ describe("OAuth discovery", () => {
     expect((await call(OAUTH_PATHS.authorizationServerMetadata, { base: API })).status).toBe(404);
   });
 
+  it("answers only on the console's exact origin, not plain HTTP on the same name", async () => {
+    const plainHttp = "http://console.gateway.test";
+    expect((await call(OAUTH_PATHS.authorizationServerMetadata, { base: plainHttp })).status).toBe(404);
+    const token = await call(OAUTH_PATHS.token, { base: plainHttp, form: { grant_type: "refresh_token" } });
+    expect(token.status).toBe(404);
+  });
+
   it("mounts exactly the paths cf-auth names", async () => {
     const identity = await createIdentity(env, CONSOLE);
     const paths = identity.oauth.routePaths();

@@ -61,8 +61,9 @@ Inside `v2/`:
 - `JWT_SECRET` signs gateway tokens: at least 32 bytes.
 - `SECRET_VAULT_LOCAL_KEK_V1` seals provider keys in `local` vault mode: 32 bytes, base64. Back it up:
   without it, stored provider keys cannot be opened.
-- `BETTER_AUTH_SECRET` signs console sessions and seals OAuth codes: at least 32 bytes. Changing it
-  signs everyone out.
+- `BETTER_AUTH_SECRET` signs console sessions and seals OAuth codes: at least 32 bytes. Every
+  deployment needs it: without it, the whole management API answers 503, management keys included.
+  Changing it signs everyone out.
 
 ## Sign-in settings
 
@@ -84,3 +85,16 @@ name, database id, domains and placement go in a gitignored
 `wrangler.<profile>.jsonc` next to it, used with `wrangler -c`. Migrations are
 applied with `wrangler d1 migrations apply DB --remote -c wrangler.<profile>.jsonc`
 before the Worker is deployed.
+
+One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
+Workers built before it still read on every management-key request. Deploy the new Worker first,
+then apply `0005`. The new Worker works with the column still there.
+
+On a host shared with v1, the v2 Worker needs these routes, while v1 keeps its own paths
+(`/.well-known/oauth-*` without `/v2` included):
+
+- `/v2` and `/v2/*`;
+- `/.well-known/oauth-authorization-server/v2`;
+- `/.well-known/oauth-protected-resource/v2` and `/.well-known/oauth-protected-resource/v2/*`.
+
+Without the last two, the CLI and MCP clients cannot find the sign-in server.
