@@ -345,7 +345,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
       const { providers } = body as OperationResponse<"listProviders">;
       const wanted = String(input.provider);
       const provider = providers.find((candidate) => candidate.id === wanted) ?? providers.find((candidate) => candidate.slug === wanted);
-      if (!provider) throw new GatewayError(404, "provider_not_found", `None of your provider connections has the id or slug ${wanted}`);
+      // The message never repeats the argument: it may be a key pasted by mistake.
+      if (!provider) throw new GatewayError(404, "provider_not_found", "None of your provider connections has this id or slug");
       return { provider };
     },
     summary: (result) => {

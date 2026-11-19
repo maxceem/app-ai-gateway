@@ -78,6 +78,11 @@ async function callOperation(request: ToolRequest, caller: ToolCaller): Promise<
     if (value === undefined || value === "") {
       throw new GatewayError(400, "invalid_request", `${name}: required`);
     }
+    // `encodeURIComponent` leaves these as they are, and a URL folds them
+    // into another path, so the call would reach another operation.
+    if (value === "." || value === "..") {
+      throw new GatewayError(400, "invalid_request", `${name}: not a valid id`);
+    }
     path = path.replace(`{${name}}`, encodeURIComponent(value));
   }
   const url = new URL(path, caller.origin);

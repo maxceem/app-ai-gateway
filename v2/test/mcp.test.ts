@@ -275,8 +275,19 @@ describe("tools", () => {
     expect(found.structuredContent.provider.id).toBe(provider.id);
     expect(found.structuredContent.provider.secretHint).toBe("abcd");
     expect(JSON.stringify(found)).not.toContain(SECRET);
-    const missing = await callTool(key, "get_provider", { provider: "nope" });
+    const missing = await callTool(key, "get_provider", { provider: "pasted-key-value-1234" });
     expect(missing.structuredContent.error).toBe("provider_not_found");
+    expect(JSON.stringify(missing)).not.toContain("pasted-key-value-1234");
+  });
+
+  it("refuse a path argument of . or .., which a URL would fold into another route", async () => {
+    const key = await seedManagementKey();
+    for (const app of [".", ".."]) {
+      const refused = await callTool(key, "get_app", { app });
+      expect(refused.structuredContent, app).toMatchObject({ error: "invalid_request", message: "app: not a valid id" });
+    }
+    const user = await callTool(key, "get_app_user", { app: "any", user: ".." });
+    expect(user.structuredContent).toMatchObject({ error: "invalid_request", message: "user: not a valid id" });
   });
 
   it("change an app with a patch, and delete only with confirm", async () => {
