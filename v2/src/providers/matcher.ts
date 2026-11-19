@@ -8,8 +8,11 @@
  *    refused.
  * 2. The provider's refused paths, ignoring case. These win even over a path
  *    the customer listed.
- * 3. Declared operations, in the order the provider lists them.
- * 4. Passthrough paths the customer listed for this connection.
+ * 3. Passthrough paths the customer listed for this connection. They come
+ *    before declared operations, so a release that declares an operation
+ *    for a listed path never switches it on its own: the customer makes
+ *    that switch (plan section 4.5).
+ * 4. Declared operations, in the order the provider lists them.
  * 5. Everything else is refused.
  *
  * Which operations an app allows is decided after this, by the app's settings.
@@ -183,26 +186,20 @@ export class ProviderMatcher {
       }
     }
 
-    for (const compiled of this.operations) {
-      if (compiled.operation.match.method !== method) continue;
-      const parts = matchTemplate(compiled.template, segments, { closedLists: this.closedLists(compiled, context) });
-      if (parts === null) continue;
-      return {
-        kind: "operation",
-        operation: compiled.operation,
-        parts,
-        upstream: {
-          host: compiled.host,
-          path: compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts),
-        },
-      };
-    }
-
     for (const listed of context.passthrough ?? []) {
       if (listed.listed.method !== method) continue;
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
       return { kind: "passthrough", listed: listed.listed, parts, upstream: { host: "main", path: joinSegments(segments) } };
+    }
+
+    for (const compiled of this.operations) {
+      if (compiled.operation.match.method !== method) continue;
+      const parts = matchTemplate(compiled.template, segments, { closedLists: this.closedLists(compiled, context) });
+      if (parts === null) continue;
+      const path = compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts);
+      if (path === null) return { kind: "refused", reason: "bad_path", detail: "dot_segment" };
+      return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
 
     return { kind: "refused", reason: "not_declared" };

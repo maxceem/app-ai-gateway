@@ -127,12 +127,13 @@ describe("passthrough paths", () => {
     });
   });
 
-  it("prefers a declared operation over a listed path", () => {
+  it("keeps a listed path as passthrough when an operation is declared for it later", () => {
     const listed = compilePassthrough([{ method: "POST", path: "v1/chat/completions" }]);
     expect(matcher.match("POST", "v1/chat/completions", { passthrough: listed })).toMatchObject({
-      kind: "operation",
-      operation: { name: "openai.chat" },
+      kind: "passthrough",
+      listed: { path: "v1/chat/completions" },
     });
+    expect(matcher.match("POST", "v1/chat/completions")).toMatchObject({ kind: "operation" });
   });
 
   it("refuses a listing with a multi-segment part, a wildcard or a bad price when saved", () => {
@@ -155,6 +156,39 @@ describe("passthrough paths", () => {
     expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed })).toMatchObject({
       reason: "refused_path",
     });
+  });
+});
+
+describe("upstream templates", () => {
+  const provider = defineProvider({
+    type: "test",
+    hosts: { main: "example.com" },
+    auth: { header: "x", format: "{key}" },
+    refused: [],
+    operations: [
+      defineOperation({
+        name: "t.prefixed",
+        match: { method: "GET", path: "v1/x{id}" },
+        upstream: { path: "v1/{id}/data" },
+        lifecycle: "call",
+        transport: "http",
+        model: { in: "fixed", model: "m" },
+        meter: { kind: "request_count" },
+      }),
+    ],
+  });
+  const matcher = new ProviderMatcher(provider);
+
+  it("never send a part that became a dot segment once its prefix was removed", () => {
+    expect(matcher.match("GET", "v1/x42")).toMatchObject({ upstream: { path: "/v1/42/data" } });
+    expect(matcher.match("GET", "v1/x..")).toEqual({ kind: "refused", reason: "bad_path", detail: "dot_segment" });
+    expect(matcher.match("GET", "v1/x.")).toEqual({ kind: "refused", reason: "bad_path", detail: "dot_segment" });
+  });
+
+  it("still refuse such a value by a refused pattern, before a listed path can match it", () => {
+    const refusing = new ProviderMatcher({ ...provider, refused: ["v1/x{id}"] });
+    const passthrough = compilePassthrough([{ method: "GET", path: "v1/{segment}" }]);
+    expect(refusing.match("GET", "v1/x..", { passthrough })).toMatchObject({ reason: "refused_path" });
   });
 });
 

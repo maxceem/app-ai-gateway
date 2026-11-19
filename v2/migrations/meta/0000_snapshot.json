@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2b1e20ec-914e-4c4a-b369-c0edab68c41c",
+  "id": "f37fc094-8520-4607-b2e9-9c56d1d39711",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "account_activation": {
@@ -472,6 +472,10 @@
         "budget_day_scope": {
           "name": "budget_day_scope",
           "value": "\"budget_day\".\"scope\" IN ('app', 'user', 'install', 'apple_account')"
+        },
+        "budget_day_cost_integer": {
+          "name": "budget_day_cost_integer",
+          "value": "typeof(\"budget_day\".\"cost_nano\") = 'integer'"
         }
       }
     },
@@ -835,6 +839,10 @@
         "charge_usage_day": {
           "name": "charge_usage_day",
           "value": "length(\"charge\".\"usage_day\") = 10"
+        },
+        "charge_cost_integer": {
+          "name": "charge_cost_integer",
+          "value": "\"charge\".\"cost_nano\" IS NULL OR typeof(\"charge\".\"cost_nano\") = 'integer'"
         }
       }
     },
@@ -2561,6 +2569,10 @@
         "usage_day_outcome": {
           "name": "usage_day_outcome",
           "value": "\"usage_day\".\"outcome\" IN ('ok', 'failed')"
+        },
+        "usage_day_cost_integer": {
+          "name": "usage_day_cost_integer",
+          "value": "typeof(\"usage_day\".\"cost_nano\") = 'integer'"
         }
       }
     }

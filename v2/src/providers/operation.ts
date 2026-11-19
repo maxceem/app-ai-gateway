@@ -18,9 +18,12 @@
  *   model ids with slashes (fal's `fal-ai/flux/dev`). A template has at most
  *   one.
  *
- * `defineProvider` checks these rules at compile time: a model in the path
- * must name a part of the template, every `{name...}` part needs its closed
- * list, and an upstream template may use only the parts the match template has.
+ * `defineOperation` checks some of these rules at compile time: a model in
+ * the path must name a part of the template, every `{name...}` part needs its
+ * closed list, a template has at most one, and an upstream template may use
+ * only the parts the match template has. The rest (empty segments, two parts
+ * in one segment, a name used twice) are checked when the provider's matcher
+ * is built, which a test does for every provider.
  */
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

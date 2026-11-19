@@ -247,7 +247,9 @@ export const appAttestKey = sqliteTable(
  *   console and the CLI show it as "—". SQLite's SUM skips NULL.
  * - Writing a row whose id already exists is ignored, so a retried write never
  *   counts twice. The rollup trigger (step 1a part 3) runs only for rows
- *   really inserted.
+ *   really inserted. Write with `ON CONFLICT(id) DO NOTHING`, never
+ *   `INSERT OR IGNORE`: that would also silently drop a row that breaks a
+ *   CHECK, and the charge would be lost without an error.
  */
 export const charge = sqliteTable(
   "charge",
@@ -354,6 +356,8 @@ export const charge = sqliteTable(
     check("charge_corrects_only_corrections", sql`${table.correctsChargeId} IS NULL OR ${table.kind} = 'correction'`),
     check("charge_session_ms", sql`${table.sessionMs} IS NULL OR ${table.kind} = 'slice'`),
     check("charge_usage_day", sql`length(${table.usageDay}) = 10`),
+    // SQLite would store 1.5 in an INTEGER column as a float. Money is whole nano-dollars (D20).
+    check("charge_cost_integer", sql`${table.costNano} IS NULL OR typeof(${table.costNano}) = 'integer'`),
   ],
 );
 
@@ -404,6 +408,7 @@ export const usageDay = sqliteTable(
     }),
     index("usage_day_account").on(table.accountId, table.day),
     check("usage_day_outcome", oneOf(table.outcome, ["ok", "failed"])),
+    check("usage_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
 );
 
@@ -425,6 +430,7 @@ export const budgetDay = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.appId, table.scope, table.scopeId, table.day] }),
     check("budget_day_scope", oneOf(table.scope, BUDGET_SCOPES)),
+    check("budget_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
 );
 

@@ -66,7 +66,8 @@ CREATE TABLE `budget_day` (
 	`cost_nano` integer DEFAULT 0 NOT NULL,
 	`session_ms` integer DEFAULT 0 NOT NULL,
 	PRIMARY KEY(`app_id`, `scope`, `scope_id`, `day`),
-	CONSTRAINT "budget_day_scope" CHECK("budget_day"."scope" IN ('app', 'user', 'install', 'apple_account'))
+	CONSTRAINT "budget_day_scope" CHECK("budget_day"."scope" IN ('app', 'user', 'install', 'apple_account')),
+	CONSTRAINT "budget_day_cost_integer" CHECK(typeof("budget_day"."cost_nano") = 'integer')
 );
 --> statement-breakpoint
 CREATE TABLE `charge` (
@@ -119,7 +120,8 @@ CREATE TABLE `charge` (
         AND ("charge"."correction_kind" IS NULL OR "charge"."correction_kind" IN ('units', 'dollars', 'pricing'))),
 	CONSTRAINT "charge_corrects_only_corrections" CHECK("charge"."corrects_charge_id" IS NULL OR "charge"."kind" = 'correction'),
 	CONSTRAINT "charge_session_ms" CHECK("charge"."session_ms" IS NULL OR "charge"."kind" = 'slice'),
-	CONSTRAINT "charge_usage_day" CHECK(length("charge"."usage_day") = 10)
+	CONSTRAINT "charge_usage_day" CHECK(length("charge"."usage_day") = 10),
+	CONSTRAINT "charge_cost_integer" CHECK("charge"."cost_nano" IS NULL OR typeof("charge"."cost_nano") = 'integer')
 );
 --> statement-breakpoint
 CREATE INDEX `charge_app_used` ON `charge` (`app_id`,`used_at`);--> statement-breakpoint
@@ -371,7 +373,8 @@ CREATE TABLE `usage_day` (
 	`units` integer DEFAULT 0 NOT NULL,
 	`session_ms` integer DEFAULT 0 NOT NULL,
 	PRIMARY KEY(`app_id`, `day`, `provider_type`, `provider_connection_id`, `model`, `outcome`, `unit`),
-	CONSTRAINT "usage_day_outcome" CHECK("usage_day"."outcome" IN ('ok', 'failed'))
+	CONSTRAINT "usage_day_outcome" CHECK("usage_day"."outcome" IN ('ok', 'failed')),
+	CONSTRAINT "usage_day_cost_integer" CHECK(typeof("usage_day"."cost_nano") = 'integer')
 );
 --> statement-breakpoint
 CREATE INDEX `usage_day_account` ON `usage_day` (`account_id`,`day`);

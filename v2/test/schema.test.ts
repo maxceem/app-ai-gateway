@@ -33,10 +33,12 @@ function charge(fields: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-async function insert(row: Record<string, unknown>, conflict = "") {
+/** Writes a charge. `retry` writes it the way the ledger does: a duplicate id is skipped. */
+async function insert(row: Record<string, unknown>, retry = false) {
   const columns = Object.keys(row);
   return env.DB.prepare(
-    `INSERT ${conflict} INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    `INSERT INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})` +
+      (retry ? " ON CONFLICT(id) DO NOTHING" : ""),
   )
     .bind(...Object.values(row))
     .run();
@@ -49,10 +51,14 @@ describe("charge", () => {
 
   it("ignores a charge id that already exists, so a retried write counts once", async () => {
     await insert(charge({}));
-    const retry = await insert(charge({ cost_nano: 9_999 }), "OR IGNORE");
+    const retry = await insert(charge({ cost_nano: 9_999 }), true);
     expect(retry.meta.changes).toBe(0);
     const row = await env.DB.prepare("SELECT cost_nano FROM charge WHERE id = 'c1'").first();
     expect(row).toEqual({ cost_nano: 1_500 });
+  });
+
+  it("still refuses a bad row written the ledger's way, instead of dropping it silently", async () => {
+    await expect(insert(charge({ id: "new", cost_nano: 1.5 }), true)).rejects.toThrow(/CHECK constraint failed/);
   });
 
   it("stores a failed attempt with no cost, and sums skip it", async () => {
@@ -86,6 +92,7 @@ describe("charge", () => {
     ["a corrected charge on a non-correction", { corrects_charge_id: "c0" }],
     ["session time on an attempt", { session_ms: 1000 }],
     ["a usage day that is not a day", { usage_day: "2026-11-1" }],
+    ["a fractional cost", { cost_nano: 1.5 }],
   ])("refuses %s", async (_, fields) => {
     await expect(insert(charge(fields))).rejects.toThrow(/CHECK constraint failed/);
   });
@@ -104,8 +111,9 @@ describe("open_work", () => {
   it("ignores the same work written twice", async () => {
     const write = () =>
       env.DB.prepare(
-        `INSERT OR IGNORE INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, created_at)
-         VALUES ('job:j1', 'job_check', 'acc', 'app', 'job', 'j1', ?, ?)`,
+        `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, created_at)
+         VALUES ('job:j1', 'job_check', 'acc', 'app', 'job', 'j1', ?, ?)
+         ON CONFLICT(id) DO NOTHING`,
       )
         .bind(AT, AT)
         .run();

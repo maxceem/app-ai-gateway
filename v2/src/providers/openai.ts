@@ -22,7 +22,10 @@ export const openai = defineProvider({
       transport: "stream",
       style: "openai-chat",
       model: { in: "body", field: "model" },
-      policy: { add: { "stream_options.include_usage": true }, lockable: ["model", "max_completion_tokens"] },
+      // Usage in a stream needs `stream_options.include_usage`, but OpenAI refuses
+      // `stream_options` on a request that does not stream. Step 3 adds it only
+      // when `stream` is true, as v1 does.
+      policy: { lockable: ["model", "max_completion_tokens"] },
       meter: { kind: "response_json", style: "openai-chat" },
     }),
     defineOperation({

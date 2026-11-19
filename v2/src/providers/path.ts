@@ -91,7 +91,10 @@ export interface ParseOptions {
 
 const PART = /^([^{}]*)\{([A-Za-z_][A-Za-z0-9_]*)(\.\.\.)?\}([^{}]*)$/;
 
-/** Parses a template, applying the same rules `defineOperation` checks at compile time. */
+/**
+ * Parses a template and checks all its rules: the ones `defineOperation`
+ * checks at compile time, plus the ones only a parser can see.
+ */
 export function parseTemplate(source: string, options: ParseOptions = {}): Template {
   const trimmed = source.startsWith("/") ? source.slice(1) : source;
   if (trimmed === "") throw new TemplateError(source, "is empty");
@@ -202,8 +205,12 @@ export function matchTemplate(
 /**
  * Builds an upstream path from a template and the parts of a match. A
  * `{name...}` value keeps its `/`s; every other character is encoded.
+ *
+ * Returns null if a segment comes out as `.` or `..`. That can happen when a
+ * part loses the prefix or suffix it had in the request (`x..` matched by
+ * `x{id}`), and the provider would read it as a dot segment.
  */
-export function fillTemplate(template: Template, parts: Parts): string {
+export function fillTemplate(template: Template, parts: Parts): string | null {
   const out: string[] = [];
   for (const segment of template.segments) {
     switch (segment.kind) {
@@ -226,5 +233,6 @@ export function fillTemplate(template: Template, parts: Parts): string {
         throw new TemplateError(template.source, "is a pattern, not an upstream template");
     }
   }
+  if (out.some((segment) => segment === "." || segment === "..")) return null;
   return joinSegments(out);
 }
