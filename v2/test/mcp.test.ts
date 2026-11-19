@@ -200,6 +200,14 @@ describe("the MCP endpoint", () => {
     expect(((await insecure.json()) as { error: { message: string } }).error.message).toBe("Configure a secure console origin");
   });
 
+  it("answers 503 when CONSOLE_ORIGIN is set but not valid, rather than serving every host, as v1", async () => {
+    const key = await seedManagementKey();
+    const invalid = { ...env, CONSOLE_ORIGIN: "http://console.example.com" } as unknown as Env;
+    const response = await send({ base: API, headers: bearer(key), body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, environment: invalid });
+    expect(response.status).toBe(503);
+    expect(((await response.json()) as { error: { message: string } }).error.message).toBe("Configure a secure console origin");
+  });
+
   it("works with a CLI or MCP sign-in, bound to the account the person picked", async () => {
     const started = await send({ path: OAUTH_PATHS.deviceAuthorization, form: { client_id: CLI_CLIENT_ID, scope: "read" } });
     const { device_code, user_code } = (await started.json()) as { device_code: string; user_code: string };

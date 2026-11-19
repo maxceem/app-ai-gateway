@@ -6,7 +6,8 @@
  * In order:
  * 1. The host must be the console's (404 otherwise). Without `CONSOLE_ORIGIN`,
  *    any secure host serves it (503 on an insecure one), with management keys
- *    only, since there is no OAuth.
+ *    only, since there is no OAuth. A `CONSOLE_ORIGIN` that is not valid
+ *    answers 503.
  * 2. The browser origin must be one it serves (403).
  * 3. A preflight is answered here.
  * 4. The bearer gate (401) hands the caller to the server.
@@ -17,7 +18,7 @@
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono, type ExecutionContext as HonoExecutionContext } from "hono";
 import { gatewayErrorOf } from "../auth/identity.ts";
-import { allowedBrowserOrigins, consoleOrigin, secureOrigin } from "../auth/settings.ts";
+import { allowedBrowserOrigins, consoleOrigin, secureOrigin, setting } from "../auth/settings.ts";
 import { GatewayError } from "../core/errors.ts";
 import { authenticateMcp } from "./auth.ts";
 import { jsonRpcRefusal } from "./refusal.ts";
@@ -50,8 +51,9 @@ app.all(MCP_PATH, async (c) => {
   const own = new URL(c.req.url).origin;
   const configured = consoleOrigin(c.env);
   // Without a console origin, the request's own is used, and it must be a
-  // secure one (v1's rule, and its answer).
-  if (configured === null && !secureOrigin(new URL(c.req.url))) {
+  // secure one. A console origin that is set but not valid is refused, never
+  // replaced with the request's own (v1's rules, and its answer).
+  if (configured === null && (setting(c.env, "CONSOLE_ORIGIN") !== undefined || !secureOrigin(new URL(c.req.url)))) {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const consoleAt = configured ?? own;

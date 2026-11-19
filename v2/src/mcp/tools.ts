@@ -298,11 +298,11 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_models",
     title: "List priced models",
     description:
-      "Returns the model price list this deployment bills with, by provider type and model, in dollars per million units. Use it to choose a model an app may allow, or to explain a cost. A model missing here has no price, and an app that allows it by name is refused when saved or validated.",
+      "Returns the built-in price list this deployment bills with, by provider type and model, in dollars per million units. Use it to choose a model an app may allow, or to explain a cost. A provider connection can also set its own prices, which get_provider shows. A model with neither price is refused when an app that allows it by name is saved or validated.",
     operation: "listModelPrices",
     cli: {
       command: "model list",
-      view: { rows: "prices.*.*", columns: ["$1=Provider", "$2=Model", "kind", "input=Input $/1M", "output=Output $/1M", "unlisted_since=Unlisted since"] },
+      view: { rows: "prices.*.*", columns: ["$1=Provider", "$2=Model", "kind", "input=Input $/1M", "output=Output $/1M", "unlisted_since=Unlisted since", "retirement_date=Retires"] },
     },
     summary: ({ prices }) => {
       const providers = Object.keys(prices);
