@@ -8,7 +8,12 @@ export default defineConfig({
       const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
       return {
         wrangler: { configPath: "./wrangler.jsonc" },
-        miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+        miniflare: {
+          bindings: {
+            JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
+            TEST_MIGRATIONS: migrations,
+          },
+        },
       };
     }),
   ],
