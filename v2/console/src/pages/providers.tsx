@@ -28,7 +28,8 @@ export function ProvidersPage() {
   const update = useUpdateProvider();
   const remove = useDeleteProvider();
   const [adding, setAdding] = useState(false);
-  const [rotating, setRotating] = useState<ProviderConnection | null>(null);
+  // By id, so the dialog always saves at the revision the list last read.
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ProviderConnection | null>(null);
 
   const providers = list.data?.providers ?? [];
@@ -118,7 +119,7 @@ export function ProvidersPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <RowActions label={provider.name}>
-                      <RowAction onSelect={() => setRotating(provider)}>
+                      <RowAction onSelect={() => setRotatingId(provider.id)}>
                         <KeyRound />
                         Replace key
                       </RowAction>
@@ -140,7 +141,10 @@ export function ProvidersPage() {
       </Card>
 
       <AddProviderDialog open={adding} onOpenChange={setAdding} />
-      <ReplaceKeyDialog provider={rotating} onClose={() => setRotating(null)} />
+      <ReplaceKeyDialog
+        provider={providers.find((provider) => provider.id === rotatingId) ?? null}
+        onClose={() => setRotatingId(null)}
+      />
 
       <ConfirmDialog
         open={removing !== null}
@@ -185,8 +189,18 @@ export function testResultText(result: ProviderTestResult): { ok: boolean; text:
   }
 }
 
-function TestResult({ result }: { result: ProviderTestResult | undefined }) {
+/** A test's answer, or `failed` when the test itself could not run. */
+type TestOutcome = ProviderTestResult | "failed" | null;
+
+function TestResult({ result }: { result: TestOutcome }) {
   if (!result) return null;
+  if (result === "failed") {
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        The key could not be tested just now. You can still save it.
+      </p>
+    );
+  }
   const { ok, text } = testResultText(result);
   return (
     <p role="status" className={ok ? "flex items-start gap-1.5 text-sm text-muted-foreground" : "text-sm text-destructive"}>
@@ -198,9 +212,26 @@ function TestResult({ result }: { result: ProviderTestResult | undefined }) {
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 
+/**
+ * Runs a key test and keeps only its answer: the mutation, which holds the
+ * key, is reset as soon as it settles.
+ */
+function useKeyTest() {
+  const test = useTestProvider();
+  const [result, setResult] = useState<TestOutcome>(null);
+  const run = (body: { type: string; secret: string; baseUrl?: string }) => {
+    setResult(null);
+    test
+      .mutateAsync(body)
+      .then(setResult, () => setResult("failed"))
+      .finally(() => test.reset());
+  };
+  return { run, result, pending: test.isPending, clear: () => setResult(null) };
+}
+
 function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const create = useCreateProvider();
-  const test = useTestProvider();
+  const test = useKeyTest();
   const [type, setType] = useState(PROVIDER_TYPES[0]?.type ?? "");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -210,7 +241,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     setName("");
     setSlug("");
     setSecret("");
-    test.reset();
+    test.clear();
   };
   const slugInvalid = slug !== "" && !SLUG.test(slug);
 
@@ -222,6 +253,8 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       onOpenChange(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not add the provider");
+    } finally {
+      create.reset();
     }
   };
 
@@ -243,7 +276,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           value={type}
           onValueChange={(value) => {
             setType(value);
-            test.reset();
+            test.clear();
           }}
         >
           <SelectTrigger id="provider-type" className="w-full">
@@ -285,32 +318,27 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
             autoComplete="off"
             onChange={(event) => {
               setSecret(event.target.value);
-              test.reset();
+              test.clear();
             }}
           />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!secret || test.isPending}
-            onClick={() => test.mutate({ type, secret })}
-          >
+          <Button type="button" variant="outline" disabled={!secret || test.pending} onClick={() => test.run({ type, secret })}>
             Test key
           </Button>
         </div>
       </Field>
-      <TestResult result={test.data} />
+      <TestResult result={test.result} />
     </FormDialog>
   );
 }
 
 function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
-  const test = useTestProvider();
+  const test = useKeyTest();
   const [secret, setSecret] = useState("");
 
   const close = () => {
     setSecret("");
-    test.reset();
+    test.clear();
     onClose();
   };
 
@@ -322,6 +350,8 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
       close();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not replace the key");
+    } finally {
+      update.reset();
     }
   };
 
@@ -347,20 +377,21 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
             autoComplete="off"
             onChange={(event) => {
               setSecret(event.target.value);
-              test.reset();
+              test.clear();
             }}
           />
           <Button
             type="button"
             variant="outline"
-            disabled={!secret || !provider || test.isPending}
-            onClick={() => provider && test.mutate({ type: provider.type, secret })}
+            disabled={!secret || !provider || test.pending}
+            // Against the connection's own host, if it has one.
+            onClick={() => provider && test.run({ type: provider.type, secret, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}) })}
           >
             Test key
           </Button>
         </div>
       </Field>
-      <TestResult result={test.data} />
+      <TestResult result={test.result} />
     </FormDialog>
   );
 }

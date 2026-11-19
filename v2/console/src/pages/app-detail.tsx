@@ -75,7 +75,9 @@ function useSaveApp(app: App) {
       await update.mutateAsync({
         name: change.name ?? app.name,
         status: change.status ?? app.status,
-        config: change.config ?? app.config,
+        // An explicit config is sent as typed, even `null`: the gateway refuses
+        // what is not valid, rather than this page saving the old one instead.
+        config: "config" in change ? change.config : app.config,
         revision: app.revision,
       });
       toast.success(done);
@@ -779,10 +781,12 @@ function SettingsTab({ app }: { app: App }) {
   const [name, setName] = useState(app.name);
   const [text, setText] = useState(() => JSON.stringify(app.config, null, 2));
   const [deleting, setDeleting] = useState(false);
-  useEffect(() => {
-    setName(app.name);
-    setText(JSON.stringify(app.config, null, 2));
-  }, [app.revision, app.name, app.config]);
+  // Each draft resets only when what it edits changed, so renaming keeps
+  // unsaved configuration edits, and saving the configuration keeps an
+  // unsubmitted name.
+  const stored = JSON.stringify(app.config, null, 2);
+  useEffect(() => setName(app.name), [app.name]);
+  useEffect(() => setText(stored), [stored]);
 
   let parsed: unknown = undefined;
   let parseError: string | null = null;
@@ -794,7 +798,8 @@ function SettingsTab({ app }: { app: App }) {
 
   const check = async () => {
     try {
-      await validate.mutateAsync({ name: name.trim(), config: parsed, status: app.status });
+      // The saved name, as Save sends: renaming has its own button.
+      await validate.mutateAsync({ name: app.name, config: parsed, status: app.status });
       toast.success("The configuration is valid");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The configuration is not valid");

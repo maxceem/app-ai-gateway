@@ -167,6 +167,28 @@ describe("AppDetailPage", () => {
     expect(screen.queryByRole("link", { name: "Keys" })).toBeNull();
   });
 
+  it("sends an explicit null configuration as typed, for the gateway to refuse", async () => {
+    const fetchMock = stub({ [`PUT ${APP_URL}`]: { status: 400, body: { error: { code: "invalid_request", message: "config: required" } } } });
+    renderTab("settings");
+    const editor = await screen.findByLabelText("Configuration");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "null");
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(putBody(fetchMock)).toMatchObject({ config: null }));
+  });
+
+  it("deletes the app only with the typed id, which the request repeats", async () => {
+    const fetchMock = stub({ [`DELETE ${APP_URL}?confirm=my-app`]: { body: { deleted: true } } });
+    renderTab("settings");
+    await userEvent.click(await screen.findByRole("button", { name: /^delete app$/i }));
+    await userEvent.type(await screen.findByLabelText(/to continue/i), "my-app");
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^delete app$/i }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input, init]) => String(input) === `${APP_URL}?confirm=my-app` && init?.method === "DELETE")).toBe(true),
+    );
+  });
+
   it("saves the whole configuration as typed", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("settings");

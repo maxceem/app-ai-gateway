@@ -20,10 +20,10 @@ const PROVIDER = {
 
 const SECRET = "sk-test-0123456789";
 
-function stub(providers: unknown[] = [PROVIDER], test: unknown = { validated: true }) {
+function stub(providers: unknown[] = [PROVIDER], test: unknown = { validated: true }, testStatus = 200) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "/v2/admin/providers/test") return new Response(JSON.stringify(test));
+    if (url === "/v2/admin/providers/test") return new Response(JSON.stringify(test), { status: testStatus });
     if (url === "/v2/admin/providers" && init?.method === "POST") return new Response(JSON.stringify({ provider: PROVIDER }), { status: 201 });
     if (url.startsWith("/v2/admin/providers/") && init?.method === "PUT") return new Response(JSON.stringify({ provider: PROVIDER }));
     return new Response(JSON.stringify({ providers }));
@@ -62,6 +62,27 @@ describe("ProvidersPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /^add provider$/i, hidden: false }));
     await waitFor(() =>
       expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({ type: "elevenlabs", name: "Main", secret: SECRET }),
+    );
+  });
+
+  it("says so when a key test could not run", async () => {
+    stub([], { error: { code: "internal_error", message: "boom" } }, 500);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.type(screen.getByLabelText(/api key/i), SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /test key/i }));
+    expect((await screen.findByRole("status")).textContent).toMatch(/could not be tested just now/i);
+  });
+
+  it("tests a replacement key against the connection's own host", async () => {
+    const fetchMock = stub([{ ...PROVIDER, baseUrl: "https://proxy.example.com/v1" }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /replace key/i }));
+    await userEvent.type(await screen.findByLabelText(/api key/i), SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /test key/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/test", "POST")).toEqual({ type: "openai", secret: SECRET, baseUrl: "https://proxy.example.com/v1" }),
     );
   });
 

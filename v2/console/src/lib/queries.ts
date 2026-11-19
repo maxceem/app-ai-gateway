@@ -179,6 +179,9 @@ export function useUpdateApp(appId: string) {
       client.setQueryData(keys.app(appId), result);
       invalidateApp(client, appId);
     },
+    // A refused save, such as a stale revision, reloads the app, so the next
+    // try starts from the latest version.
+    onError: () => invalidateApp(client, appId),
   });
 }
 
@@ -192,7 +195,8 @@ export function useValidateApp(appId: string) {
 export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (appId: string) => call("deleteApp", { params: { app: appId } }),
+    // The API asks for the app id again, so a delete is never by accident.
+    mutationFn: (appId: string) => call("deleteApp", { params: { app: appId }, query: { confirm: appId } }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.apps }),
   });
 }
@@ -248,11 +252,27 @@ export function useProviders() {
   return useQuery({ queryKey: keys.providers, queryFn: () => call("listProviders") });
 }
 
+/**
+ * A connection's change can make an app ready or not, so every app's check
+ * is refreshed with the list. A refused update is refreshed too, so a retry
+ * after someone else's change uses the new revision.
+ */
+function invalidateProviders(client: ReturnType<typeof useQueryClient>) {
+  void client.invalidateQueries({ queryKey: keys.providers });
+  void client.invalidateQueries({ queryKey: ["app-check"] });
+}
+
+/**
+ * The key a person typed rides in a mutation's variables. These mutations
+ * keep nothing once they settle (`gcTime: 0`), and their dialogs reset them
+ * when they close, so the key is not left in memory.
+ */
 export function useCreateProvider() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: OperationRequest<"createProvider">) => call("createProvider", { body }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+    gcTime: 0,
+    onSettled: () => invalidateProviders(client),
   });
 }
 
@@ -261,7 +281,8 @@ export function useUpdateProvider() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: OperationRequest<"updateProvider"> }) =>
       call("updateProvider", { params: { id }, body }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+    gcTime: 0,
+    onSettled: () => invalidateProviders(client),
   });
 }
 
@@ -269,14 +290,15 @@ export function useDeleteProvider() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => call("deleteProvider", { params: { id } }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+    onSuccess: () => invalidateProviders(client),
   });
 }
 
-/** Tests a key against its provider. Stores nothing. */
+/** Tests a key against its provider. Stores nothing, and keeps nothing once it settles. */
 export function useTestProvider() {
   return useMutation({
     mutationFn: (body: OperationRequest<"testProvider">) => call("testProvider", { body }),
+    gcTime: 0,
   });
 }
 

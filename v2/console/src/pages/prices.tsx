@@ -16,12 +16,28 @@ export interface PriceRow {
   kind: string | null;
   input: number | null;
   output: number | null;
+  /** Rates per minute, hour or image, already worded with their unit. */
+  other: string[];
   unlistedSince: string | null;
   retirementDate: string | null;
 }
 
 const numberOrNull = (value: unknown): number | null => (typeof value === "number" ? value : null);
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+/** Prices that are not per million units, with the unit each is in. */
+const OTHER_RATES = [
+  ["per_minute", "minute"],
+  ["per_hour", "hour"],
+  ["per_image", "image"],
+] as const;
+
+function otherRates(entry: Record<string, unknown>): string[] {
+  return OTHER_RATES.flatMap(([field, unit]) => {
+    const value = numberOrNull(entry[field]);
+    return value === null ? [] : [`$${value} / ${unit}`];
+  });
+}
 
 /** The price file as rows, one per model, sorted by provider and model. */
 export function priceRows(prices: PriceList): PriceRow[] {
@@ -34,6 +50,7 @@ export function priceRows(prices: PriceList): PriceRow[] {
         kind: textOrNull(entry.kind),
         input: numberOrNull(entry.input),
         output: numberOrNull(entry.output),
+        other: otherRates(entry),
         unlistedSince: textOrNull(entry.unlisted_since),
         retirementDate: textOrNull(entry.retirement_date),
       });
@@ -61,7 +78,7 @@ export function PricesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Prices"
-        description="What each model costs, in dollars per million units: tokens for text models, and the model's own unit for the rest."
+        description="What each model costs. Input and output are in dollars per million units: tokens for text models, and the model's own unit for the rest. Other rates are per minute, hour or image."
         action={
           <Input
             aria-label="Filter models"
@@ -90,19 +107,20 @@ export function PricesPage() {
               <TableHead>Kind</TableHead>
               <TableHead className="text-right">Input</TableHead>
               <TableHead className="text-right">Output</TableHead>
+              <TableHead className="text-right">Other rates</TableHead>
               <TableHead>Notes</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {prices.isPending ? (
               <TableRow>
-                <TableCell colSpan={6}>
+                <TableCell colSpan={7}>
                   <Skeleton className="h-5 w-full" />
                 </TableCell>
               </TableRow>
             ) : shown.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No models match.
                 </TableCell>
               </TableRow>
@@ -114,6 +132,7 @@ export function PricesPage() {
                   <TableCell className="text-muted-foreground">{row.kind ?? "—"}</TableCell>
                   <TableCell className="text-right tabular-nums">{rate(row.input)}</TableCell>
                   <TableCell className="text-right tabular-nums">{rate(row.output)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.other.length > 0 ? row.other.join(", ") : "—"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {[
                       row.unlistedSince ? `Unlisted since ${row.unlistedSince}` : null,
