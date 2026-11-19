@@ -351,6 +351,58 @@ describe("AppDetailPage", () => {
     expect(screen.queryByText(/was removed/i)).toBeNull();
   });
 
+  it("keeps the conflict notice after a configuration save while the name draft is still unresolved", async () => {
+    let current = testApp();
+    let puts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        if (url === APP_URL && init?.method === "PUT") {
+          puts += 1;
+          if (puts === 1) {
+            current = testApp({ name: "Production", revision: 3 });
+            return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "stale" } }), { status: 409 });
+          }
+          const body = JSON.parse(String(init.body));
+          current = testApp({ ...current, config: body.config, revision: current.revision + 1 });
+        }
+        return new Response(JSON.stringify({ app: current }));
+      }),
+    );
+    renderTab("settings");
+    const rename = await screen.findByLabelText("Name");
+    await userEvent.clear(rename);
+    await userEvent.type(rename, "Mobile");
+    fireEvent.change(screen.getByLabelText("Configuration"), {
+      target: { value: JSON.stringify({ ...testApp().config, routing: { providers: {} } }) },
+    });
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    expect(await screen.findByText(/changed since you started editing/i)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(puts).toBe(2));
+    await waitFor(() => expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).disabled).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Mobile");
+    expect(screen.getByText(/changed since you started editing/i)).toBeTruthy();
+  });
+
+  it("says the keys or users could not load, rather than that there are none", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/keys": { status: 503, body: { error: { code: "internal_error", message: "boom" } } },
+      "GET /v2/admin/apps/my-app/users?limit=50&offset=0": { status: 503, body: { error: { code: "internal_error", message: "boom" } } },
+    });
+    const view = renderTab("keys");
+    expect(await screen.findByText(/could not load the keys/i)).toBeTruthy();
+    expect(screen.queryByText("No keys.")).toBeNull();
+    view.unmount();
+    renderTab("users");
+    expect(await screen.findByText(/could not load the users/i)).toBeTruthy();
+    expect(screen.queryByText(/no users yet/i)).toBeNull();
+  });
+
   it("saves the whole configuration as typed", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("settings");

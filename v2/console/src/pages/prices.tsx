@@ -18,6 +18,11 @@ export interface PriceRow {
   output: number | null;
   /** Rates per minute, hour or image, already worded with their unit. */
   other: string[];
+  /**
+   * Higher rates the model charges once a request's input passes a number of
+   * tokens, or null when its price has none.
+   */
+  long: { threshold: number; input: number | null; output: number | null } | null;
   unlistedSince: string | null;
   retirementDate: string | null;
 }
@@ -39,6 +44,12 @@ function otherRates(entry: Record<string, unknown>): string[] {
   });
 }
 
+function longRates(entry: Record<string, unknown>): PriceRow["long"] {
+  const threshold = numberOrNull(entry.long_context_threshold);
+  if (threshold === null) return null;
+  return { threshold, input: numberOrNull(entry.long_input), output: numberOrNull(entry.long_output) };
+}
+
 /** The price file as rows, one per model, sorted by provider and model. */
 export function priceRows(prices: PriceList): PriceRow[] {
   const rows: PriceRow[] = [];
@@ -51,6 +62,7 @@ export function priceRows(prices: PriceList): PriceRow[] {
         input: numberOrNull(entry.input),
         output: numberOrNull(entry.output),
         other: otherRates(entry),
+        long: longRates(entry),
         unlistedSince: textOrNull(entry.unlisted_since),
         retirementDate: textOrNull(entry.retirement_date),
       });
@@ -60,6 +72,22 @@ export function priceRows(prices: PriceList): PriceRow[] {
 }
 
 const rate = (value: number | null) => (value === null ? "—" : `$${value}`);
+
+/**
+ * One rate cell. A model with long-context prices shows its base rate, then
+ * the higher rate and the input size it starts above.
+ */
+function RateCell({ base, long, threshold }: { base: number | null; long: number | null | undefined; threshold: number | undefined }) {
+  if (threshold === undefined || long === null || long === undefined) return <>{rate(base)}</>;
+  return (
+    <div className="flex flex-col items-end">
+      <span>{rate(base)} base</span>
+      <span className="text-xs text-muted-foreground">
+        {rate(long)} above {threshold.toLocaleString("en-US")} input tokens
+      </span>
+    </div>
+  );
+}
 
 /**
  * The prices this gateway bills with, per million units, as the price file
@@ -78,7 +106,7 @@ export function PricesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Prices"
-        description="What each model costs. Input and output are in dollars per million units: tokens for text models, and the model's own unit for the rest. Other rates are per minute, hour or image."
+        description="What each model costs. Input and output are in dollars per million units: tokens for text models, and the model's own unit for the rest. Some models charge a higher rate once a request's input passes a number of tokens; those show both. Other rates are per minute, hour or image."
         action={
           <Input
             aria-label="Filter models"
@@ -130,8 +158,12 @@ export function PricesPage() {
                   <TableCell>{providerLabel(row.type)}</TableCell>
                   <TableCell className="font-mono text-xs">{row.model}</TableCell>
                   <TableCell className="text-muted-foreground">{row.kind ?? "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums">{rate(row.input)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{rate(row.output)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <RateCell base={row.input} long={row.long?.input} threshold={row.long?.threshold} />
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <RateCell base={row.output} long={row.long?.output} threshold={row.long?.threshold} />
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{row.other.length > 0 ? row.other.join(", ") : "—"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {[

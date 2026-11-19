@@ -131,6 +131,29 @@ describe("ProvidersPage", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("locks the replace-key form while its save runs, so the key shown is the key sent", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.startsWith("/v2/admin/providers/") && init?.method === "PUT") return new Promise<Response>((resolve) => (answer = resolve));
+        return new Response(JSON.stringify({ providers: [PROVIDER] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /replace key/i }));
+    await userEvent.type(await screen.findByLabelText(/new api key/i), SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^replace key$/i }));
+    // A disabled fieldset locks every control inside it in a browser; jsdom
+    // does not compute that, so the test checks the fieldset itself.
+    const locked = (element: HTMLElement) => element.closest("fieldset")?.disabled === true;
+    await waitFor(() => expect(locked(screen.getByLabelText(/new api key/i))).toBe(true));
+    expect(locked(screen.getByRole("button", { name: /test key/i }))).toBe(true);
+    answer(new Response(JSON.stringify({ provider: PROVIDER })));
+  });
+
   it("stops a read-only member adding a provider", async () => {
     stub();
     renderAuthenticated(<ProvidersPage />, { session: { role: "member" } });

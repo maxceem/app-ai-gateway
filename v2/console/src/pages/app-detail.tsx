@@ -604,6 +604,12 @@ function UsersTab({ app }: { app: App }) {
                   <Skeleton className="h-5 w-full" />
                 </TableCell>
               </TableRow>
+            ) : users.isError ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
+                  Could not load the users. {users.error instanceof Error ? users.error.message : ""}
+                </TableCell>
+              </TableRow>
             ) : list.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
@@ -719,6 +725,12 @@ function KeysTab({ app }: { app: App }) {
               <TableRow>
                 <TableCell colSpan={6}>
                   <Skeleton className="h-5 w-full" />
+                </TableCell>
+              </TableRow>
+            ) : keysList.isError ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
+                  Could not load the keys. {keysList.error instanceof Error ? keysList.error.message : ""}
                 </TableCell>
               </TableRow>
             ) : list.length === 0 ? (
@@ -855,7 +867,8 @@ function SettingsTab({ app }: { app: App }) {
     const text = JSON.stringify(saved.config, null, 2);
     setText(text);
     setTextBase(text);
-    setChangedElsewhere(false);
+    // The draft now matches what was stored exactly, so the `draftsSaved`
+    // effect ends the conflict once the name draft matches too.
   };
   const discardDrafts = () => {
     setName(app.name);
