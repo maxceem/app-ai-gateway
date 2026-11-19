@@ -190,6 +190,16 @@ describe("the MCP endpoint", () => {
     expect(refused.headers.get("access-control-expose-headers")).toContain("WWW-Authenticate");
   });
 
+  it("without a console origin, answers on any secure host and 503 on an insecure one, as v1", async () => {
+    const key = await seedManagementKey();
+    const unset = { ...env, CONSOLE_ORIGIN: undefined } as unknown as Env;
+    const request = { headers: bearer(key), body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, environment: unset };
+    expect((await send({ ...request, base: API })).status).toBe(200);
+    const insecure = await send({ ...request, base: "http://gateway.example.test" });
+    expect(insecure.status).toBe(503);
+    expect(((await insecure.json()) as { error: { message: string } }).error.message).toBe("Configure a secure console origin");
+  });
+
   it("works with a CLI or MCP sign-in, bound to the account the person picked", async () => {
     const started = await send({ path: OAUTH_PATHS.deviceAuthorization, form: { client_id: CLI_CLIENT_ID, scope: "read" } });
     const { device_code, user_code } = (await started.json()) as { device_code: string; user_code: string };

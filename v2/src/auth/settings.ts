@@ -46,7 +46,7 @@ export function loopbackHost(hostname: string): boolean {
 }
 
 /** HTTPS, or plain HTTP on a loopback host for local development; never with credentials. */
-function secureOrigin(url: URL): boolean {
+export function secureOrigin(url: URL): boolean {
   return (url.protocol === "https:" || (url.protocol === "http:" && loopbackHost(url.hostname)))
     && !url.username
     && !url.password;
