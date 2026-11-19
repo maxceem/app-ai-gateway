@@ -1,7 +1,8 @@
 /**
- * Everything that is not an app's own call: the management API
- * (`/v2/admin/*`), sign-in (`/v2/auth/*`), the OAuth server (`/v2/oauth/*`
- * and its discovery documents) and the console's pages (`/v2/console/*`).
+ * Everything that is not an app's own call or MCP: the management API
+ * (`/v2/admin/*`), the CLI's tool catalog (`/v2/cli/*`), sign-in
+ * (`/v2/auth/*`), the OAuth server (`/v2/oauth/*` and its discovery
+ * documents) and the console's pages (`/v2/console/*`).
  *
  * The entry module (`../index.ts`) loads this on first use, so none of it,
  * nor the sign-in library, nor the management schemas, is evaluated on a
@@ -38,6 +39,7 @@ import {
   validateApp,
   validateAppDraft,
 } from "../admin/apps.ts";
+import { callCliTool, listCliTools } from "../admin/cli-tools.ts";
 import { listModelPrices } from "../admin/prices.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
@@ -84,6 +86,9 @@ admin.post(path("createProvider"), createProvider);
 admin.get(path("getProvider"), getProvider);
 admin.put(path("updateProvider"), updateProvider);
 admin.delete(path("deleteProvider"), deleteProvider);
+// The CLI's tool catalog: the list is public, a call is the caller's.
+admin.get(path("listCliTools"), listCliTools);
+admin.post(path("callCliTool"), adminAuth, callCliTool);
 
 app.route("/", admin);
 app.route("/", identityRoutes);

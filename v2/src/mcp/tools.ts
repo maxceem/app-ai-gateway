@@ -1,0 +1,620 @@
+/**
+ * The tools the MCP server offers, and the CLI builds its commands from (v1's
+ * table, ported to the v2 management API).
+ *
+ * Every tool runs one management API operation, as a request made inside the
+ * Worker on behalf of the caller (`./run.ts`), so its authorization, its
+ * checks and its answer are the operation's own. What a tool adds is what an
+ * agent needs and an HTTP client does not: a verb-first name, a description of
+ * when to use it, one input object in place of a path, a query and a body, and
+ * a sentence summing up the answer.
+ *
+ * The table is an allowlist. Each tool names its operations, and every one
+ * must be in {@link MCP_READ_OPERATIONS} or {@link MCP_WRITE_OPERATIONS}: a
+ * write cannot be added by naming it. Nothing here takes or answers a secret.
+ * Creating an app, a provider connection or an app key does (a key, or a key
+ * shown once), so those are not tools yet: they need a person to enter or see
+ * the secret in a browser, which arrives with the console.
+ *
+ * The order is deliberate: `tools/list` answers with it, and a stable order
+ * lets a client cache the list.
+ */
+import { z } from "zod";
+import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
+import type { CliToolHint } from "../contracts/cli.ts";
+import { GatewayError, type ErrorCode } from "../core/errors.ts";
+import { isSecretFieldName } from "./secret-fields.ts";
+
+/** The operations a tool may run that need only the read grant. */
+export const MCP_READ_OPERATIONS = [
+  "getAdminSession",
+  "listModelPrices",
+  "listProviders",
+  "listApps",
+  "getApp",
+  "validateApp",
+  "validateAppDraft",
+  "checkApp",
+  "listAppKeys",
+  "listAppUsers",
+  "getAppUser",
+] as const satisfies readonly OperationName[];
+
+/**
+ * The writes a tool may run, each the operation of one tool: updates guarded
+ * by a revision, deletions confirmed by the caller, revoking an app key, and
+ * blocking an app's user. None takes or returns a secret.
+ */
+export const MCP_WRITE_OPERATIONS = [
+  "updateApp",
+  "patchApp",
+  "deleteApp",
+  "revokeAppKey",
+  "blockAppUser",
+  "unblockAppUser",
+  "updateProvider",
+  "deleteProvider",
+] as const satisfies readonly OperationName[];
+
+export type ReadOperation = (typeof MCP_READ_OPERATIONS)[number];
+export type WriteOperation = (typeof MCP_WRITE_OPERATIONS)[number];
+export type ToolOperation = ReadOperation | WriteOperation;
+
+/** The annotations a client shows beside a tool, as the protocol spells them. */
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint?: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+/** One operation, and what a tool call asks of it. */
+export interface ToolRequest {
+  readonly operation: ToolOperation;
+  /** The `{name}` segments of the operation's path. */
+  readonly params?: Readonly<Record<string, string>>;
+  /** The query string, each value as it would be written in a URL. */
+  readonly query?: Readonly<Record<string, string>>;
+  /** The JSON body, for an operation that takes one. */
+  readonly body?: unknown;
+}
+
+export interface McpTool {
+  /** Verb-first snake_case, the name an agent calls. */
+  readonly name: string;
+  readonly title: string;
+  /** For an agent: what it returns, when to use it, and what it does not do. */
+  readonly description: string;
+  /** The operations it may run: one, or the two a dual tool chooses between. */
+  readonly operations: readonly ToolOperation[];
+  /** Its arguments. Advertised by `tools/list`; the operation judges the values. */
+  readonly input: z.ZodObject;
+  readonly annotations: ToolAnnotations;
+  /** Where it sits among `agw`'s commands. */
+  readonly cli: CliToolHint;
+  /** What to do after a refusal, where this tool knows better than {@link nextAction}. */
+  readonly next?: Partial<Record<ErrorCode, string>>;
+  /** A check of the tool's own, run before the operation. */
+  check?(input: Record<string, unknown>): void;
+  /** The operation one call runs, and its request. */
+  request(input: Record<string, unknown>): ToolRequest;
+  /** Where a tool answers with part of the operation's body: that part. */
+  result?(body: unknown, input: Record<string, unknown>): unknown;
+  /** One or two sentences for the text block beside the structured result. */
+  summary(result: unknown, input: Record<string, unknown>): string;
+}
+
+// ---------------------------------------------------------------------------
+// Inputs
+
+/** What each `{name}` path segment is, as a tool argument. */
+const PATH_ARGUMENTS: Readonly<Record<string, z.ZodString>> = {
+  app: z.string().min(1).meta({ description: "The app's id, as list_apps returns it." }),
+  user: z.string().min(1).meta({ description: "The end user's id, as list_app_users returns it." }),
+  key: z.string().min(1).meta({ description: "The key's id, as list_app_keys returns it." }),
+  id: z.string().min(1).meta({ description: "The provider connection's id, as list_providers returns it." }),
+};
+
+/** The `{name}` segments of a catalog path. */
+export function pathParameterNames(path: string): string[] {
+  return [...path.matchAll(/\{(\w+)\}/gu)].map((match) => match[1]!);
+}
+
+/** An operation's path parameters, then its query fields: the catalog's own schemas for both. */
+function operationInput(operation: ToolOperation): z.ZodObject {
+  const spec = CATALOG[operation];
+  const params: Record<string, z.ZodType> = {};
+  for (const name of pathParameterNames(spec.path)) {
+    const argument = PATH_ARGUMENTS[name];
+    if (!argument) throw new Error(`${operation} names {${name}}, which no tool argument describes`);
+    params[name] = argument;
+  }
+  const query = "query" in spec ? (spec.query as z.ZodObject).shape : {};
+  return z.object(params).extend(query);
+}
+
+/** A tool argument as the string it would be in a path or a query string. */
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * The request one call's arguments make of one operation: the path
+ * parameters it names, everything else as the query string. Nothing here
+ * judges an argument; the operation does.
+ */
+function plainRequest(operation: ToolOperation, input: Record<string, unknown>, body?: unknown): ToolRequest {
+  const names = pathParameterNames(CATALOG[operation].path);
+  const params: Record<string, string> = {};
+  const query: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue;
+    if (names.includes(key)) params[key] = asText(value);
+    else query[key] = asText(value);
+  }
+  return { operation, params, query, ...(body === undefined ? {} : { body }) };
+}
+
+/** The path parameters of a call, and nothing else. */
+function pathOnly(operation: ToolOperation, input: Record<string, unknown>): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const name of pathParameterNames(CATALOG[operation].path)) {
+    const value = input[name];
+    if (value !== undefined && value !== null) params[name] = asText(value);
+  }
+  return params;
+}
+
+const READS: ToolAnnotations = { readOnlyHint: true, idempotentHint: true, openWorldHint: false };
+
+function writes(effect: { destructive: boolean; idempotent: boolean }): ToolAnnotations {
+  return { readOnlyHint: false, destructiveHint: effect.destructive, idempotentHint: effect.idempotent, openWorldHint: false };
+}
+
+/** A tool that runs one operation with its own path and query as input. */
+function tool<K extends ToolOperation>(definition: {
+  name: string;
+  title: string;
+  description: string;
+  operation: K;
+  input?: z.ZodObject;
+  effect?: K extends WriteOperation ? { destructive: boolean; idempotent: boolean } : never;
+  cli: CliToolHint;
+  check?: (input: Record<string, unknown>) => void;
+  next?: Partial<Record<ErrorCode, string>>;
+  summary: (result: OperationResponse<K>) => string;
+}): McpTool {
+  const { operation } = definition;
+  return {
+    name: definition.name,
+    title: definition.title,
+    description: definition.description,
+    operations: [operation],
+    input: definition.input ?? operationInput(operation),
+    annotations: definition.effect ? writes(definition.effect) : READS,
+    cli: definition.cli,
+    ...(definition.next ? { next: definition.next } : {}),
+    ...(definition.check ? { check: definition.check } : {}),
+    request: (input) => plainRequest(operation, input),
+    summary: (result) => definition.summary(result as OperationResponse<K>),
+  };
+}
+
+/** The argument a deletion repeats, so that nothing is deleted by a call that did not mean to. */
+const CONFIRM_ARGUMENT = z.string().min(1).meta({
+  description: "The id of what is deleted, repeated exactly. Without it, nothing is deleted.",
+});
+
+/** Refuses a deletion whose `confirm` is not the id it deletes. */
+function confirmed(field: string, noun: string) {
+  return (input: Record<string, unknown>) => {
+    if (typeof input[field] !== "string" || input.confirm !== input[field]) {
+      throw new GatewayError(400, "invalid_request", `confirm: pass the ${noun}'s id again as confirm; nothing was deleted`);
+    }
+  };
+}
+
+/**
+ * Refuses a patch that writes a setting named like a credential (v1's check).
+ * The shared scan of the arguments reads only each operation's own fields, so
+ * the name a value is written under is read here: the last segment of each
+ * `add` or `replace` pointer, decoded. The refusal names the operation, never
+ * the value.
+ */
+function refuseCredentialTargets(input: Record<string, unknown>): void {
+  if (!Array.isArray(input.operations)) return;
+  for (const [index, operation] of input.operations.entries()) {
+    if (operation === null || typeof operation !== "object") continue;
+    const { op, path } = operation as { op?: unknown; path?: unknown };
+    if ((op !== "add" && op !== "replace") || typeof path !== "string") continue;
+    const key = path.split("/").at(-1)!.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (isSecretFieldName(key)) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        `operations.${index}.path: an app document holds no credentials, so a tool never writes a setting named like one`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Summaries
+
+function plural(count: number, one: string, many = `${one}s`): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** A short list of names, and how many more there are. */
+function listed(names: readonly string[], limit = 10): string {
+  if (names.length <= limit) return names.join(", ");
+  return `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`;
+}
+
+/** Nano-dollars as dollars. */
+function usd(nano: number): string {
+  const dollars = nano / 1e9;
+  return `$${dollars.toFixed(dollars !== 0 && Math.abs(dollars) < 0.01 ? 4 : 2)}`;
+}
+
+type Provider = OperationResponse<"listProviders">["providers"][number];
+
+const GET_PROVIDER_INPUT = z.object({
+  provider: z.string().min(1).meta({ description: "The provider connection's id or its slug, as list_providers returns them." }),
+});
+
+const APP_UPDATE = CATALOG.updateApp.request;
+const APP_PATCH = CATALOG.patchApp.request;
+const APP_DOCUMENT = CATALOG.validateApp.request;
+const PROVIDER_UPDATE = CATALOG.updateProvider.request;
+
+function appSaved(result: unknown): string {
+  const { app } = result as OperationResponse<"updateApp">;
+  return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+}
+
+// ---------------------------------------------------------------------------
+// The table
+
+export const MCP_TOOLS: readonly McpTool[] = [
+  tool({
+    name: "get_account",
+    title: "Get the account",
+    description:
+      "Returns who these credentials are and the account they act in: the person, the account's id and name, their role in it, and the credential's grant (read, or manage for changes). Call it first. Changes nothing.",
+    operation: "getAdminSession",
+    cli: {
+      command: "account status",
+      summary: "Show the account these credentials act in",
+      view: {
+        record: "session",
+        columns: ["account.name=Account", "account.id=Account ID", "user.email=Signed in as", "role", "grant", "credentialType=Credential"],
+      },
+    },
+    summary: ({ session }) =>
+      `Account "${session.account.name}" (${session.account.id}): ${session.user.email ?? session.user.id} is ${session.role} with the ${session.grant} grant.`,
+  }),
+  tool({
+    name: "list_models",
+    title: "List priced models",
+    description:
+      "Returns the built-in price list this deployment bills with, by provider type and model, in dollars per million units. Use it to choose a model an app may allow, or to explain a cost. A provider connection can also set its own prices, which get_provider shows. A model with neither price is refused when an app that allows it by name is saved or validated.",
+    operation: "listModelPrices",
+    cli: {
+      command: "model list",
+      view: { rows: "prices.*.*", columns: ["$1=Provider", "$2=Model", "kind", "input=Input $/1M", "output=Output $/1M", "unlisted_since=Unlisted since", "retirement_date=Retires"] },
+    },
+    summary: ({ prices }) => {
+      const providers = Object.keys(prices);
+      const models = providers.reduce((sum, provider) => sum + Object.keys(prices[provider]!).length, 0);
+      return `${plural(models, "priced model")} across ${plural(providers.length, "provider type")}.`;
+    },
+  }),
+  tool({
+    name: "list_providers",
+    title: "List provider connections",
+    description:
+      "Returns every provider connection your account holds, disabled ones included: id, type, slug, name, status, base URL, custom pricing and revision. Never a key, only its last characters as secretHint. Use it before configuring an app, whose routing names connections by slug.",
+    operation: "listProviders",
+    cli: { command: "provider list", view: { rows: "providers", columns: ["slug", "type", "status", "id"] } },
+    summary: ({ providers }) =>
+      providers.length === 0
+        ? "No provider connections yet. A provider key is never passed to a tool: add the connection in the console or with agw."
+        : `${plural(providers.length, "provider connection")}: ${listed(providers.map((provider) => `${provider.slug} (${provider.type}, ${provider.status})`))}.`,
+  }),
+  {
+    name: "get_provider",
+    title: "Get a provider connection",
+    description:
+      "Returns one provider connection's metadata by its id or its slug: type, name, status, base URL, pricing, revision and secretHint. Never the key itself. Answers provider_not_found when none of your connections has that id or slug.",
+    operations: ["listProviders"],
+    input: GET_PROVIDER_INPUT,
+    annotations: READS,
+    cli: {
+      command: "provider show",
+      args: ["provider"],
+      view: { record: "provider", columns: ["slug", "name", "id", "type", "status", "baseUrl=Base URL", "secretHint=Key", "revision", "createdAt=Created"] },
+    },
+    check: (input) => {
+      if (typeof input.provider !== "string" || input.provider === "") {
+        throw new GatewayError(400, "invalid_request", "provider: the provider connection's id or slug is required");
+      }
+    },
+    request: () => ({ operation: "listProviders" }),
+    result: (body, input) => {
+      const { providers } = body as OperationResponse<"listProviders">;
+      const wanted = String(input.provider);
+      const provider = providers.find((candidate) => candidate.id === wanted) ?? providers.find((candidate) => candidate.slug === wanted);
+      // The message never repeats the argument: it may be a key pasted by mistake.
+      if (!provider) throw new GatewayError(404, "provider_not_found", "None of your provider connections has this id or slug");
+      return { provider };
+    },
+    summary: (result) => {
+      const { provider } = result as { provider: Provider };
+      return `Provider connection ${provider.slug} (${provider.type}) is ${provider.status}, at revision ${provider.revision}.`;
+    },
+  },
+  tool({
+    name: "list_apps",
+    title: "List apps",
+    description:
+      "Returns every app in your account with its status, revision and whole configuration. Use it to find an app's id, which every other app tool takes as `app`.",
+    operation: "listApps",
+    cli: {
+      command: "app list",
+      view: { rows: "apps", columns: ["id", "name", "status", "config.authentication.type=Type", "revision"] },
+    },
+    summary: ({ apps }) =>
+      apps.length === 0 ? "No apps yet." : `${plural(apps.length, "app")}: ${listed(apps.map((app) => `${app.id} (${app.status})`))}.`,
+  }),
+  tool({
+    name: "get_app",
+    title: "Get an app",
+    description:
+      "Returns one app's whole stored document: name, status, revision and its complete configuration. Read it before proposing a change: a change is judged against this document and must carry its revision. Answers app_not_found for an id that is not one of your apps.",
+    operation: "getApp",
+    cli: {
+      command: "app show",
+      args: ["app"],
+      view: {
+        record: "app",
+        columns: ["name", "id", "status", "config.authentication.type=Type", "revision", "updated_at=Updated"],
+        document: "app.config",
+      },
+    },
+    summary: ({ app }) => `App "${app.name}" (${app.id}) is ${app.status}, at revision ${app.revision}.`,
+  }),
+  {
+    name: "validate_app",
+    title: "Validate an app configuration",
+    description:
+      "Checks an app document without saving anything: the {name, config, status?} body creating or updating an app takes. With `app`, it is judged as an update of that app; without, as a new app. A refusal is the reason it would be refused, in the gateway's own words, as a tool error. Use it before any change to an app. To change an existing app, copy name, config and status from the app get_app returns, and nothing else: id, revision, created_at and updated_at are refused here.",
+    operations: ["validateApp", "validateAppDraft"],
+    input: z.object({
+      app: z.string().min(1).optional().meta({ description: "The id of the app this would update. Omit it to judge the document as a new app." }),
+      config: APP_DOCUMENT.meta({
+        description: "The app document to judge: {name, config, status?}, exactly the body creating or updating an app takes, without id or revision.",
+      }),
+    }),
+    annotations: READS,
+    cli: { command: "app validate", args: ["app"] },
+    request: (input) =>
+      input.app === undefined || input.app === null
+        ? { operation: "validateAppDraft", body: input.config }
+        : { operation: "validateApp", params: { app: asText(input.app) }, body: input.config },
+    summary: (result) => {
+      const appId = (result as { app_id?: string }).app_id;
+      return appId === undefined ? "The document would be accepted as a new app." : `The document would be accepted as an update of ${appId}.`;
+    },
+  },
+  tool({
+    name: "check_app",
+    title: "Check whether an app is ready",
+    description:
+      "Checks whether an app can serve requests, without sending any: checks its stored configuration, lists every provider connection its routing names with that connection's status, and reports ready when the app is active and at least one of them is active. It does not try App Attest, sign-in or the provider keys, and says so in limitations.",
+    operation: "checkApp",
+    cli: { command: "app check", args: ["app"], view: { rows: "providers", columns: ["slug=Provider", "status", "id"], notes: ["limitations"] } },
+    summary: (result) => {
+      const active = result.providers.filter((provider) => provider.status === "active").length;
+      const standing = `${result.status}, and ${active} of ${plural(result.providers.length, "provider connection")} it names ${active === 1 ? "is" : "are"} active`;
+      return `App ${result.app_id} is ${result.ready ? "" : "not "}ready: it is ${standing}. No request was sent.`;
+    },
+  }),
+  tool({
+    name: "list_app_keys",
+    title: "List an app's keys",
+    description:
+      "Returns an app-key app's keys as metadata: id, name, the key's first characters, status, when it was created and last used. A key is shown once, when it is created, and never by this tool.",
+    operation: "listAppKeys",
+    cli: {
+      command: "app key list",
+      args: ["app"],
+      view: { rows: "keys", columns: ["id", "name", "key_prefix=Prefix", "status", "created_at=Created", "last_used_at=Last used"] },
+    },
+    summary: (result) => {
+      const active = result.keys.filter((key) => key.status === "active").length;
+      return `${plural(result.keys.length, "key")} for ${result.app_id}, ${active} active. Keys themselves are never returned.`;
+    },
+  }),
+  tool({
+    name: "list_app_users",
+    title: "List an app's users",
+    description:
+      "Returns the end users an app has seen, with their status and usage for one month, a page at a time (limit, offset). Filter by part of the user id (query) or by status. Use it to find a user before get_app_user, or to see who is blocked. It does not block or unblock anyone.",
+    operation: "listAppUsers",
+    cli: {
+      command: "app user list",
+      args: ["app"],
+      view: { rows: "users", columns: ["id", "status", "installs", "usage.charges=Charges", "usage.cost_nano=Cost (nano-$)", "last_seen_at=Last seen"] },
+    },
+    summary: (result) => `${plural(result.users.length, "user")} of ${result.total} for ${result.app_id} in ${result.month}, from offset ${result.offset}.`,
+  }),
+  tool({
+    name: "get_app_user",
+    title: "Get an app user",
+    description:
+      "Returns one end user of an app: status, installs and usage for one month. Use it to explain why one user is refused or what they cost.",
+    operation: "getAppUser",
+    cli: {
+      command: "app user show",
+      args: ["app", "user"],
+      view: {
+        record: "user",
+        columns: ["id", "status", "installs", "created_at=Created", "last_seen_at=Last seen", "usage.charges=Charges", "usage.failed=Failed", "usage.cost_nano=Cost (nano-$)"],
+      },
+    },
+    summary: ({ app_id, month, user }) =>
+      `User ${user.id} of ${app_id} is ${user.status}, with ${plural(user.usage.charges, "charge")} costing ${usd(user.usage.cost_nano)} in ${month}.`,
+  }),
+  {
+    name: "update_provider",
+    title: "Update a provider connection",
+    description:
+      "Changes a provider connection's name, custom pricing or status (\"disabled\" pauses it and keeps its key; prefer that to removing it). Send the revision list_providers returned: a connection changed since is refused rather than overwritten. A key is never an argument: change it in the console or with agw.",
+    operations: ["updateProvider"],
+    input: z.object({ id: PATH_ARGUMENTS.id! }).extend(PROVIDER_UPDATE.omit({ secret: true }).shape),
+    annotations: writes({ destructive: false, idempotent: true }),
+    cli: { command: "provider update", args: ["id"] },
+    next: {
+      conflict: "The connection changed since you read it. Call list_providers for its current revision and call update_provider again.",
+    },
+    request: ({ id, ...body }) => ({ operation: "updateProvider", params: { id: asText(id) }, body }),
+    summary: (result) => {
+      const { provider } = result as OperationResponse<"updateProvider">;
+      return `Provider connection ${provider.slug} (${provider.id}) is updated and ${provider.status}.`;
+    },
+  },
+  tool({
+    name: "remove_provider",
+    title: "Remove a provider connection",
+    description:
+      "Deletes a provider connection and its key, for good: apps that use it start failing within a minute. Only when the person asked for the deletion; update_provider with status \"disabled\" pauses one instead. Pass the connection's id twice, as id and as confirm; without confirm nothing is deleted.",
+    operation: "deleteProvider",
+    input: operationInput("deleteProvider").extend({ confirm: CONFIRM_ARGUMENT }),
+    effect: { destructive: true, idempotent: true },
+    cli: { command: "provider remove", args: ["id"], confirm: "id" },
+    check: confirmed("id", "provider connection"),
+    summary: (result) => `Provider connection ${result.provider_id} is deleted, with its key.`,
+  }),
+  {
+    name: "update_app",
+    title: "Update an app",
+    description:
+      "Replaces an app's whole document {name, config, status?, revision} with the one given: copy name, config and status from the app get_app returns, change them, check them with validate_app, then send them with the revision get_app returned. id, created_at and updated_at are refused. To change a few settings, patch_app is shorter and cannot touch anything else. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app.",
+    operations: ["updateApp"],
+    input: z.object({
+      app: PATH_ARGUMENTS.app!,
+      config: APP_UPDATE.meta({ description: "The whole app document {name, config, status?, revision}: name, config and status as get_app returns them, plus its revision. Not id, created_at or updated_at." }),
+    }),
+    annotations: writes({ destructive: false, idempotent: true }),
+    cli: { command: "app replace", summary: "Replace an app's whole document", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
+    next: {
+      app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current document and revision, reapply your change and call update_app again.",
+      app_revision_required: "Send the revision get_app returned inside config.",
+    },
+    request: (input) => ({ operation: "updateApp", params: pathOnly("updateApp", input), body: input.config }),
+    summary: appSaved,
+  },
+  {
+    name: "patch_app",
+    title: "Change part of an app",
+    description:
+      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. A value is written as given, so null means unlimited for a limit; only remove deletes. Send the revision get_app returned. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted.",
+    operations: ["patchApp"],
+    input: z.object({
+      app: PATH_ARGUMENTS.app!,
+      revision: APP_PATCH.shape.revision.meta({ description: "The revision get_app returned." }),
+      operations: APP_PATCH.shape.operations.meta({
+        description: "RFC 6902 add, replace or remove operations at JSON Pointers into get_app's app document, applied in order.",
+      }),
+    }),
+    annotations: writes({ destructive: false, idempotent: false }),
+    cli: { command: "app update", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
+    check: refuseCredentialTargets,
+    next: {
+      app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
+      app_revision_required: "Send the revision get_app returned.",
+      invalid_request: "The message names the operation by index, or the setting the result got wrong. Call get_app to see what is at each path, fix that operation and send the patch again; nothing was saved.",
+    },
+    request: ({ revision, operations, ...rest }) => ({
+      operation: "patchApp",
+      params: pathOnly("patchApp", rest),
+      body: { ...(revision === undefined ? {} : { revision }), operations },
+    }),
+    summary: appSaved,
+  },
+  tool({
+    name: "remove_app",
+    title: "Remove an app",
+    description:
+      "Deletes an app for good, with its keys, end users and App Attest keys; its usage history is kept. Only when the person asked for the deletion; patch_app with status \"disabled\" pauses one instead. Pass the app's id twice, as app and as confirm; without confirm nothing is deleted.",
+    operation: "deleteApp",
+    input: operationInput("deleteApp").extend({ confirm: CONFIRM_ARGUMENT }),
+    effect: { destructive: true, idempotent: true },
+    cli: { command: "app remove", args: ["app"], confirm: "app" },
+    check: confirmed("app", "app"),
+    next: { invalid_request: "Pass the app's id as confirm, exactly as app; nothing was deleted." },
+    summary: (result) => `App ${result.app_id} is deleted. Its usage history is kept.`,
+  }),
+  tool({
+    name: "revoke_app_key",
+    title: "Revoke an app key",
+    description:
+      "Revokes one of an app-key app's keys: requests sending it are refused within a minute, and it cannot be restored. Revoking a key that already is answers the same.",
+    operation: "revokeAppKey",
+    effect: { destructive: true, idempotent: true },
+    cli: { command: "app key revoke", args: ["app", "key"], view: { record: "key", columns: ["id", "name", "status"] } },
+    summary: (result) => `Key ${result.key.name} (${result.key.id}) of ${result.app_id} is ${result.key.status}.`,
+  }),
+  tool({
+    name: "block_app_user",
+    title: "Block an app user",
+    description:
+      "Blocks one end user of an app: the gateway refuses their sign-in and requests until they are unblocked, within ten seconds everywhere. Blocking a user who already is answers the same. A user list_app_users marks is_virtual cannot be blocked.",
+    operation: "blockAppUser",
+    effect: { destructive: true, idempotent: true },
+    cli: { command: "app user block", args: ["app", "user"] },
+    summary: (result) => `User ${result.user_id} of ${result.app_id} is ${result.blocked ? "blocked" : "not blocked"}.`,
+  }),
+  tool({
+    name: "unblock_app_user",
+    title: "Unblock an app user",
+    description: "Lifts a block on one end user of an app, so their requests are served again.",
+    operation: "unblockAppUser",
+    effect: { destructive: false, idempotent: true },
+    cli: { command: "app user unblock", args: ["app", "user"] },
+    summary: (result) => `User ${result.user_id} of ${result.app_id} is ${result.blocked ? "blocked" : "not blocked"}.`,
+  }),
+];
+
+// ---------------------------------------------------------------------------
+// Refusals
+
+/**
+ * What an agent should do after a refusal, naming a tool where one helps. The
+ * gateway's message says what is wrong; this says what to do about it.
+ */
+const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
+  app_not_found: "Call list_apps for the ids of your apps.",
+  provider_not_found: "Call list_providers for the ids and slugs of your provider connections.",
+  key_not_found: "Call list_app_keys for the app's key ids.",
+  not_found: "Check the id and call the matching list tool.",
+  invalid_request: "Correct the arguments as the message says and call the tool again.",
+  pricing_not_configured: "Call list_models for the priced models, and allow only those.",
+  grant_insufficient: "This credential has the read grant. A change needs a management key with the manage grant, or a connection a person allowed with the manage grant.",
+  forbidden: "Your role in this account does not allow this. Ask an owner or admin of the account.",
+  session_required: "This needs a person signed in to the console. Ask them to do it there, in a browser.",
+  auth_required: "Reconnect with a valid management key or sign in again.",
+  rate_limited: "Wait a minute and call the tool again.",
+  service_unavailable: "The gateway's infrastructure failed for a moment; nothing about the call was wrong. Wait a few seconds and call the tool again. For a change, first read it back with the matching get or list tool: it may have landed.",
+  billing_unavailable: "Billing could not be reached, so nothing was saved. Wait a few seconds and call the tool again.",
+  conflict: "Something changed while the call ran. Read it again with the matching get or list tool and retry with what it returns.",
+  app_revision_conflict: "Call get_app for the current document and revision, reapply your change and call the tool again.",
+  app_revision_required: "Send the revision get_app returned.",
+  billing_plan_limit_reached: "The account cannot hold more of these. Remove one it no longer needs, or ask the person.",
+  tool_not_found: "Call tools/list for the tools this gateway offers.",
+};
+
+export function nextAction(code: ErrorCode): string {
+  return NEXT_ACTIONS[code] ?? "Read the message; call get_account to check the account and credential if it is unclear.";
+}

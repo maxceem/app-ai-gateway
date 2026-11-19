@@ -64,6 +64,7 @@ import {
   ManagementKeyCreateRequestSchema,
 } from "./access.ts";
 import { CLIENT_CATALOG } from "./client-catalog.ts";
+import { CliToolCallRequestSchema, CliToolCallResponseSchema, CliToolCatalogResponseSchema } from "./cli.ts";
 import type { OperationSpec } from "./operation.ts";
 
 export { ErrorResponseSchema, HealthResponseSchema, type ErrorResponse, type HttpMethod, type OperationSpec, type SecurityKind } from "./operation.ts";
@@ -424,6 +425,37 @@ export const CATALOG = {
     responseDescription: "The provider connection was deleted.",
     errors: ADMIN_ERRORS,
   },
+  listCliTools: {
+    method: "GET",
+    path: "/v2/cli/tools",
+    tags: ["CLI"],
+    summary: "List the tools the CLI builds its commands from",
+    description:
+      "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI keeps this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+    security: "public",
+    response: CliToolCatalogResponseSchema,
+    responseDescription: "The tools and the revision that names this list.",
+  },
+
+  callCliTool: {
+    method: "POST",
+    path: "/v2/cli/tools/{tool}",
+    params: { tool: { description: "The tool's name, as listCliTools returns it." } },
+    tags: ["CLI"],
+    summary: "Run one tool, as the CLI does",
+    description:
+      "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as an MCP `tools/call`: a read needs any credential, and a change needs what that change needs over the API. A refusal is an HTTP error with the gateway's error code. Every answer, a refusal included, carries the list's revision in `Agw-Tools-Revision`; a CLI holding another one fetches the list again. Send the tool's `guard` from your list in `Agw-Tool-Guard`: when it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs.",
+    security: "management",
+    request: CliToolCallRequestSchema,
+    response: CliToolCallResponseSchema,
+    responseDescription: "The tool's structured result and its one-line summary.",
+    errors: {
+      ...ADMIN_ERRORS,
+      404: "`tool_not_found`: this deployment has no tool of that name. Any other code: what the tool names does not exist.",
+      409: "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran. Otherwise the change conflicts with the current state.",
+    },
+  },
+
   getAdminSession: {
     method: "GET",
     path: "/v2/admin/session",

@@ -9,8 +9,8 @@
  * (`/v2/apps/{app}/proxy/{provider}/...`, outside the catalog because they
  * follow the provider descriptions) itself. The management API, people's
  * sign-in, the OAuth server and the console's pages are loaded on first use
- * (`./management/app.ts`). The two OAuth discovery documents live under
- * `/.well-known/`, outside `/v2`.
+ * (`./management/app.ts`), and so is the MCP endpoint (`./mcp/app.ts`). The
+ * OAuth discovery documents live under `/.well-known/`, outside `/v2`.
  */
 import { Hono, type Context } from "hono";
 import { settleExpiredChallenges } from "./client-auth/auth-events.ts";
@@ -56,9 +56,13 @@ app.get(routePath("getCurrentUser"), clientCallDeadline(), meHandler);
 // OAuth server and the console's pages. Loaded on first use, so none of it is
 // on a provider request's cold start (see `./management/app.ts`).
 const management = lazyRoutes(() => import("./management/app.ts").then((module) => module.default));
-for (const pattern of ["/v2/admin/*", "/v2/auth/*", "/v2/oauth/*", "/v2/console/*", "/.well-known/oauth-authorization-server/v2", "/.well-known/oauth-protected-resource/v2", "/.well-known/oauth-protected-resource/v2/*"]) {
+for (const pattern of ["/v2/admin/*", "/v2/cli/*", "/v2/auth/*", "/v2/oauth/*", "/v2/console/*", "/.well-known/oauth-authorization-server/v2", "/.well-known/oauth-protected-resource/v2", "/.well-known/oauth-protected-resource/v2/*"]) {
   app.all(pattern, management);
 }
+
+// The MCP endpoint, loaded on first use apart from the rest, so the MCP SDK
+// is evaluated only by an MCP request (see `./mcp/app.ts`).
+app.all("/v2/mcp", lazyRoutes(() => import("./mcp/app.ts").then((module) => module.default)));
 
 // Provider requests. No deadline of their own: a provider may stream for minutes.
 app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);

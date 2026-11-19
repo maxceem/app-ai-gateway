@@ -114,16 +114,17 @@ describe("lazy loading", () => {
     return { files, packages };
   }
 
-  it("keeps the management code, its schemas and the sign-in library off a provider request's path", () => {
+  it("keeps the management code, MCP, their schemas and the sign-in library off a provider request's path", () => {
     const { files, packages } = staticGraph();
     expect(files.size).toBeGreaterThan(20);
     const reached = [...files].filter((file) =>
-      /^\.\.\/src\/(management|admin)\//u.test(file)
-      || ["../src/auth/identity.ts", "../src/contracts/catalog.ts", "../src/contracts/admin.ts", "../src/contracts/access.ts"].includes(file),
+      /^\.\.\/src\/(management|admin|mcp)\//u.test(file)
+      || ["../src/auth/identity.ts", "../src/contracts/catalog.ts", "../src/contracts/admin.ts", "../src/contracts/access.ts", "../src/contracts/cli.ts"].includes(file),
     );
     expect(reached).toEqual([]);
     expect([...packages].filter((name) => name.startsWith("@maxceem/cf-auth") && name !== "@maxceem/cf-auth/schema")).toEqual([]);
     expect([...packages].filter((name) => name.startsWith("better-auth"))).toEqual([]);
+    expect([...packages].filter((name) => name.startsWith("@modelcontextprotocol"))).toEqual([]);
   });
 });
 

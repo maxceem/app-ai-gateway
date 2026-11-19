@@ -56,7 +56,10 @@ export type ErrorCode =
   | "operation_denied"
   | "already_completed"
   | "no_eligible_organization"
-  | "registration_disabled";
+  | "registration_disabled"
+  // MCP tools and the CLI's tool catalog (v1's codes).
+  | "tool_not_found"
+  | "tool_changed";
 
 export type GatewayErrorData = Record<string, string | number | boolean>;
 

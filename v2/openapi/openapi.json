@@ -2007,6 +2007,161 @@
           "provider_id"
         ]
       },
+      "CliToolCatalogResponse": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CliTool"
+            }
+          }
+        },
+        "required": [
+          "revision",
+          "tools"
+        ]
+      },
+      "CliTool": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "annotations": {
+            "type": "object",
+            "properties": {
+              "readOnlyHint": {
+                "type": "boolean"
+              },
+              "destructiveHint": {
+                "type": "boolean"
+              },
+              "idempotentHint": {
+                "type": "boolean"
+              },
+              "openWorldHint": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "readOnlyHint",
+              "idempotentHint",
+              "openWorldHint"
+            ]
+          },
+          "cli": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "confirm": {
+                "type": "string"
+              },
+              "shortcuts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requires": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "view": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "type": "string"
+                  },
+                  "record": {
+                    "type": "string"
+                  },
+                  "columns": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "document": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "guard": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "description",
+          "inputSchema",
+          "annotations",
+          "cli"
+        ]
+      },
+      "CliToolCallResponse": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "tool",
+          "summary",
+          "result"
+        ]
+      },
+      "CliToolCallRequest": {
+        "type": "object",
+        "additionalProperties": {}
+      },
       "AdminSessionResponse": {
         "type": "object",
         "properties": {
@@ -5262,6 +5417,130 @@
           },
           "404": {
             "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/cli/tools": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "listCliTools",
+        "summary": "List the tools the CLI builds its commands from",
+        "description": "The MCP server's tools, each with the command `agw` offers it as, the input fields it takes positionally, and how its result is shown. The CLI keeps this list and builds every command it does not implement itself from it, so a tool added to the gateway is a command of every installed CLI without a release. The list is the same for every caller of one deployment, so it needs no credential.",
+        "responses": {
+          "200": {
+            "description": "The tools and the revision that names this list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliToolCatalogResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/cli/tools/{tool}": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "callCliTool",
+        "summary": "Run one tool, as the CLI does",
+        "description": "Runs one MCP tool with the arguments in the body, through the same operations, authorization and refusals as an MCP `tools/call`: a read needs any credential, and a change needs what that change needs over the API. A refusal is an HTTP error with the gateway's error code. Every answer, a refusal included, carries the list's revision in `Agw-Tools-Revision`; a CLI holding another one fetches the list again. Send the tool's `guard` from your list in `Agw-Tool-Guard`: when it differs from the tool's current one, the call is refused with `409 tool_changed` before anything runs.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The tool's name, as listCliTools returns it."
+            },
+            "required": true,
+            "description": "The tool's name, as listCliTools returns it.",
+            "name": "tool",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CliToolCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tool's structured result and its one-line summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliToolCallResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`tool_not_found`: this deployment has no tool of that name. Any other code: what the tool names does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`tool_changed`: the tool has become destructive or needs more of the CLI since the caller's list; nothing ran. Otherwise the change conflicts with the current state.",
             "content": {
               "application/json": {
                 "schema": {
