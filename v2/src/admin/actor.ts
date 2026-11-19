@@ -97,8 +97,37 @@ export async function managementActor(state: AuthState): Promise<AdminActor> {
 
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
+/** A caller another entry point of this Worker has already authenticated. */
+export interface PresetCaller {
+  readonly state: AuthState;
+  readonly actor: AdminActor;
+  readonly identity: Promise<CfAuth>;
+}
+
+/**
+ * Requests built inside this Worker on behalf of a caller it has already
+ * authenticated: an MCP tool call, or a CLI tool call, runs its operation as
+ * a request to the management API. Only code in this Worker can put an entry
+ * here, so no request from outside can carry a caller in.
+ */
+const PRESET_CALLERS = new WeakMap<Request, PresetCaller>();
+
+/** Marks an in-process request as made by `caller`, and returns it. */
+export function asCaller(request: Request, caller: PresetCaller): Request {
+  PRESET_CALLERS.set(request, caller);
+  return request;
+}
+
 /** Puts the caller on the context, or refuses with 401. */
 export const adminAuth: MiddlewareHandler<AdminEnv> = async (c, next) => {
+  const preset = PRESET_CALLERS.get(c.req.raw);
+  if (preset !== undefined) {
+    c.set("identity", preset.identity);
+    c.set("authState", preset.state);
+    c.set("actor", preset.actor);
+    await next();
+    return;
+  }
   const authorization = c.req.header("authorization");
   const token = bearerToken(authorization);
   try {

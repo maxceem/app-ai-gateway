@@ -25,6 +25,7 @@ what is built so far.
 | `src/ledger/sweep.ts` | The minute sweep of open work: earliest due first, small batches, a time limit per item, retries, and giving up after a set number of tries. |
 | `src/proxy/` | The call path: matching, the app's routing policy, the OpenAI chat request policy, sending upstream, watching the answer, reading usage and writing one charge per attempt. |
 | `src/admin/` | The management API: who is calling (a management key, an OAuth token or a console session), access (accounts, management keys, CLI and MCP sign-ins), apps, app keys, end users and provider connections. |
+| `src/mcp/` | The MCP endpoint (`/v2/mcp`, loaded on first use): the bearer gate, the tools (each runs one management API operation as the caller), the guide, and the tool list the CLI builds its commands from (`/v2/cli/tools`). No tool takes or returns a secret. |
 | `src/providers/` | The provider description format, path handling and the matcher, the first provider descriptions, and provider connections as the request path reads them. |
 | `src/vault/` | Sealing provider keys, from v1: `local` or `kms` mode. |
 | `src/client-auth/` | Who is calling: app keys, issuer tokens, gateway tokens, App Attest keys, assertions and per-request proofs, AppTransaction, the replay check, blocked users and auth events. `authenticateRequest` is the request path's entry point. |
@@ -51,7 +52,7 @@ Inside `v2/`:
 - `pnpm run openapi:generate`: rewrite `openapi/openapi.json` after changing the catalog. Never edit it by hand.
 - `pnpm run types`: rewrite `worker-configuration.d.ts` after changing `wrangler.jsonc`.
 - `V2_BASE_URL=<origin> pnpm run smoke`: the smoke checks. The first-call checks also need
-  `V2_MANAGEMENT_KEY` and `V2_MOCK_URL` (the deployed mock), and the sign-in checks
+  `V2_MANAGEMENT_KEY` and `V2_MOCK_URL` (the deployed mock), and the sign-in and MCP checks
   `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
