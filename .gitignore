@@ -16,6 +16,7 @@ backups/
 _archive/
 /dist/
 console/dist/
+/v2/console/dist/
 docs/.next/
 docs/.source/
 docs/out/

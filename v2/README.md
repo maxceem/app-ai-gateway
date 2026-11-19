@@ -12,10 +12,11 @@ what is built so far.
 
 | Path | What it is |
 | --- | --- |
-| `src/index.ts` | The Worker: the health check, app sign-in and `/me`, and provider requests (`/v2/apps/{app}/proxy/{provider}/...`). Everything else is a JSON 404. The management code is loaded on first use (`src/management/`). An hourly cron settles expired App Attest challenges and cleans up sign-in approvals. Every refusal is logged once as `gateway_error`. |
+| `src/index.ts` | The Worker: the health check, app sign-in and `/me`, and provider requests (`/v2/apps/{app}/proxy/{provider}/...`). A browser loading a console page with no file of its own, such as `/v2/login`, gets the console's document. Everything else is a JSON 404. The management code is loaded on first use (`src/management/`). An hourly cron settles expired App Attest challenges and cleans up sign-in approvals. Every refusal is logged once as `gateway_error`. |
 | `src/management/` | Loaded on first use, so it is never on a provider request's cold start: the management API, people's sign-in (`/v2/auth/*`), the OAuth server for the CLI and MCP clients (`/v2/oauth/*` and `/.well-known/oauth-authorization-server/v2`), and the console's pages (`/v2/console/*`). |
 | `src/auth/` | Sign-in settings from the environment (`settings.ts`), and the one place the sign-in library (`@maxceem/cf-auth`) is loaded (`identity.ts`). |
 | `src/contracts/` | Every API operation, declared once (`catalog.ts`, which joins the app's own operations in `client-catalog.ts` and the management ones); the shapes of sign-in and access (`access.ts`); the app sign-in bodies (`auth.ts`), the management API's shapes (`admin.ts`) and the app settings, `authentication`, `routing` and `limits` (`app-config.ts`); and the billing service's shapes and plan limits (`billing.ts`). The OpenAPI document is generated from them. Provider requests are not in the catalog: they follow the provider descriptions. |
+| `console/` | The console, a React app ported from v1's (`console/` at the repository root). It is built into `console/dist/v2/` and served as this Worker's static files, under `/v2` (`/v2/login`, `/v2/access`, `/v2/oauth/consent`, `/v2/device`). |
 | `src/db/schema.ts` | The D1 schema. `migrations/` is generated from it; `0002_ledger.sql` also holds the hand-written rollup trigger. |
 | `src/money.ts` | Money as whole nano-dollars (D20): the branded type and its helpers. Rounding happens once, when a charge is priced. |
 | `src/pricing/` | The price file (`models.json`, v1's, copied as it is), its integer rates, customer rates, and pricing token usage. |
@@ -45,6 +46,8 @@ Run from the repository root:
 
 - `pnpm run v2:check`: types, generated Worker types and the generated OpenAPI document.
 - `pnpm run v2:test`: the tests.
+- `pnpm run v2:console:check`, `pnpm run v2:console:test`: the console's types and tests.
+- `pnpm run v2:console:build`: build the console. Every deploy needs it first.
 
 Inside `v2/`:
 
@@ -53,7 +56,8 @@ Inside `v2/`:
 - `pnpm run types`: rewrite `worker-configuration.d.ts` after changing `wrangler.jsonc`.
 - `V2_BASE_URL=<origin> pnpm run smoke`: the smoke checks. The first-call checks also need
   `V2_MANAGEMENT_KEY` and `V2_MOCK_URL` (the deployed mock), and the sign-in and MCP checks
-  `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only.
+  `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only. The console
+  checks need `V2_CONSOLE_URL` alone.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
 
@@ -85,7 +89,8 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 name, database id, domains and placement go in a gitignored
 `wrangler.<profile>.jsonc` next to it, used with `wrangler -c`. Migrations are
 applied with `wrangler d1 migrations apply DB --remote -c wrangler.<profile>.jsonc`
-before the Worker is deployed.
+before the Worker is deployed. Build the console (`pnpm run v2:console:build`) before every
+deploy: the Worker uploads `console/dist/` as its static files.
 
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,

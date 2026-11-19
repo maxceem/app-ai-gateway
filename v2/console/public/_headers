@@ -1,0 +1,15 @@
+# Applied by Workers Static Assets to every console response. The build moves
+# this file to the root of `dist/`, the only place it is read. The console is
+# never legitimately framed, and a page reached by client-side navigation (the
+# OAuth consent page, the device page) never loads a document of its own whose
+# headers a narrower rule could match. So one rule covers every path, and no
+# path-specific frame rule may narrow it; src/headers.test.ts holds that.
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+
+# The model price list is public data meant to be read from anywhere, and it
+# changes only when a release deploys.
+/v2/models.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=300

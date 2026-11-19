@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "exactOptionalPropertyTypes": false,
+    "types": ["vite/client"],
+    // `@contracts` is the v2 API's own catalog of operations and the schemas
+    // it composes: plain zod, with nothing server-side behind it.
+    "paths": {
+      "@/*": ["./src/*"],
+      "@contracts/*": ["../src/contracts/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts", "../src/contracts"]
+}

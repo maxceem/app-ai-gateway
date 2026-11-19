@@ -258,6 +258,19 @@ describe("management keys and sign-ins", () => {
     expect((await call("/v2/admin/apps", { base: API, headers: { authorization: `Bearer ${key}` } })).status).toBe(401);
   });
 
+  it("are not created in another account than the one the page showed", async () => {
+    const human = await seedHuman();
+    // A tab still showing another account, after another tab switched the shared cookie.
+    const stale = await asConsole(human.cookie, "/v2/admin/management-keys", { json: { name: "CI", accountId: "acc_other" } });
+    expect(stale.status).toBe(409);
+    expect(((await stale.json()) as { error: { code: string } }).error.code).toBe("account_changed");
+    const listed = (await (await asConsole(human.cookie, "/v2/admin/credentials")).json()) as { credentials: unknown[] };
+    expect(listed.credentials).toEqual([]);
+
+    const current = await asConsole(human.cookie, "/v2/admin/management-keys", { json: { name: "CI", accountId: human.accountId } });
+    expect(current.status).toBe(201);
+  });
+
   it("still lets an existing management key manage the account", async () => {
     const key = await seedManagementKey();
     const response = await call("/v2/admin/session", { base: API, headers: { authorization: `bearer ${key}` } });

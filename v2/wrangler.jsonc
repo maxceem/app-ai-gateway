@@ -9,6 +9,15 @@
   "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  // The console, built by `pnpm --filter @app-ai-gateway/console-v2 build`
+  // into `console/dist/v2/`, so its files answer `/v2/...`. A path with no
+  // file reaches the Worker, which answers the console's page for a browser
+  // (`src/index.ts`) and JSON for everything else.
+  "assets": {
+    "directory": "./console/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
   "preview_urls": false,
   "observability": {
     "enabled": true,

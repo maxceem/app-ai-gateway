@@ -45,6 +45,7 @@ export type ErrorCode =
   | "conflict"
   | "app_revision_required"
   | "app_revision_conflict"
+  | "account_changed"
   | "provider_not_found"
   | "key_not_found"
   | "billing_plan_limit_reached"

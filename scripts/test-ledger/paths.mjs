@@ -4,7 +4,7 @@
 // Files that are neither (docs, examples, workflows) are left out of both, so
 // editing them never looks like either.
 
-const TEST = [/^test\//, /^smoke\//, /^cli\/test\//, /^console\/src\/test\//, /^v2\/test\//, /^v2\/smoke\//, /\.test\.[cm]?[jt]sx?$/];
+const TEST = [/^test\//, /^smoke\//, /^cli\/test\//, /^console\/src\/test\//, /^v2\/test\//, /^v2\/smoke\//, /^v2\/console\/src\/test\//, /\.test\.[cm]?[jt]sx?$/];
 
 const CODE_DIRS = [
   /^src\//,
@@ -16,6 +16,7 @@ const CODE_DIRS = [
   /^v2\/src\//,
   /^v2\/migrations\//,
   /^v2\/scripts\//,
+  /^v2\/console\/src\//,
 ];
 
 const CODE_FILES = new Set([
@@ -34,6 +35,8 @@ const CODE_FILES = new Set([
   "v2/tsconfig.json",
   "v2/vitest.config.ts",
   "v2/worker-configuration.d.ts",
+  "v2/console/package.json",
+  "v2/console/vite.config.ts",
 ]);
 
 /** @returns {"test" | "code" | null} */

@@ -1,0 +1,64 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
+import { PanelLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { SidebarContent } from "@/components/app-sidebar";
+import { Brand } from "@/components/brand";
+import { ThemeToggle } from "@/components/theme-toggle";
+
+/**
+ * Below `lg` the sidebar becomes a drawer, so the same header carries the
+ * trigger, the logo, and the theme control the sidebar holds on wider screens.
+ */
+function MobileHeader() {
+  const [open, setOpen] = useState(false);
+  const location = useLocation();
+
+  // A drawer left open across a navigation would cover the page it revealed.
+  useEffect(() => setOpen(false), [location.pathname]);
+
+  return (
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur lg:hidden">
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger asChild>
+          <Button variant="ghost" size="icon" aria-label="Open navigation">
+            <PanelLeft className="size-4" />
+          </Button>
+        </SheetTrigger>
+        <SheetContent side="left" className="w-72 border-sidebar-border p-0" showCloseButton={false}>
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SidebarContent onNavigate={() => setOpen(false)} />
+        </SheetContent>
+      </Sheet>
+      <Brand />
+      <div className="ml-auto">
+        <ThemeToggle />
+      </div>
+    </header>
+  );
+}
+
+/**
+ * Sidebar plus an inset content surface. The page sits on the sidebar tone and
+ * the content floats above it, so the two regions read apart without a hard
+ * divider running the height of the window.
+ */
+export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-dvh bg-sidebar">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 lg:block">
+        <SidebarContent />
+      </aside>
+
+      <div className="flex min-h-dvh flex-col lg:pl-64">
+        <MobileHeader />
+        <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
+          <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            {children}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
