@@ -492,7 +492,7 @@ export const CATALOG = {
     tags: ["Admin providers"],
     summary: "Test a provider key without saving it",
     description:
-      "Sends the provider one free request that needs a valid key, to the same host live requests would use, and reports what it answered. Nothing is stored, and saving a connection never runs this test. Only `rejected` says the key is wrong.",
+      "Sends the provider one free request that needs a valid key, to the same host live requests would use, and reports what it answered. Nothing is stored, and saving a connection never runs this test. Only `rejected` says the key is probably wrong: a key restricted so it cannot list models may also get it, because some providers answer 401 for a missing permission.",
     security: "management",
     request: ProviderTestRequestSchema,
     response: ProviderTestResponseSchema,

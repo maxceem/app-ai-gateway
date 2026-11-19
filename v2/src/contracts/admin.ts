@@ -321,7 +321,8 @@ export const ProviderTestRequestSchema = z
   .meta({ id: "ProviderTestRequest" });
 
 /**
- * What a key test found. Only `rejected` says the key is wrong. Every other
+ * What a key test found. Only `rejected` says the key is probably wrong (a key
+ * restricted so it cannot list models may also get it). Every other
  * reason means "not proven", and must never stop someone from saving a key
  * they know is right.
  */
@@ -330,7 +331,7 @@ export const ProviderTestResponseSchema = z
     validated: z.boolean(),
     reason: z.enum(["no_probe", "unreachable", "unexpected_status", "rejected"]).optional().meta({
       description:
-        "Why the key was not confirmed. no_probe: this provider has no cheap call to test with. unreachable: no answer in time. unexpected_status: an answer that proves nothing either way. rejected: the provider refused the key.",
+        "Why the key was not confirmed. no_probe: this provider has no cheap call to test with. unreachable: no answer in time. unexpected_status: an answer that proves nothing either way. rejected: the provider refused the key with 401. Usually the key is wrong, but some providers answer 401 for a key restricted so it cannot list models.",
     }),
     status: z.number().int().optional().meta({ description: "The provider's HTTP status, for unexpected_status and rejected." }),
   })

@@ -2,10 +2,11 @@
  * Testing a provider key before it is saved (v1's provider probe, ported).
  *
  * The test sends one free `GET` that needs a valid key, to the same origin
- * live requests would use. Only a 401 or 403 says the key is wrong. Anything
- * else (no answer, a 404 from a custom base URL, a provider with no free
- * call) proves nothing either way, and must never stop someone from saving a
- * key they know is right. Saving never runs this test, as v1.
+ * live requests would use. Only a 401 says the key is probably wrong. A 403
+ * means the key works but may not list models. That, and anything else (no
+ * answer, a 404 from a custom base URL, a provider with no free call), proves
+ * nothing either way, and must never stop someone from saving a key they know
+ * is right. Saving never runs this test, as v1.
  */
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
@@ -38,7 +39,7 @@ export async function probeProviderKey(description: ProviderDescription, origin:
     return { validated: false, reason: "unreachable" };
   }
   await response.body?.cancel();
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     log("warn", "provider_probe_rejected", { providerType: description.type, status: response.status });
     return { validated: false, reason: "rejected", status: response.status };
   }

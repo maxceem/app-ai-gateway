@@ -421,13 +421,16 @@ describe("price list and key test", () => {
 
     fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 401 }));
     expect((await test({})).body).toEqual({ validated: false, reason: "rejected", status: 401 });
+    // A 403 is a key that works but may not list models: it proves nothing.
+    fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 403 }));
+    expect((await test({})).body).toEqual({ validated: false, reason: "unexpected_status", status: 403 });
     fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 404 }));
     expect((await test({ baseUrl: "https://llm.example.com/" })).body).toEqual({ validated: false, reason: "unexpected_status", status: 404 });
-    expect(fetchSpy.mock.calls[2]![0]).toBe("https://llm.example.com/v1/models");
+    expect(fetchSpy.mock.calls[3]![0]).toBe("https://llm.example.com/v1/models");
     fetchSpy.mockRejectedValueOnce(new Error("connection refused"));
     expect((await test({})).body).toEqual({ validated: false, reason: "unreachable" });
     expect((await test({ type: "fal" })).body).toEqual({ validated: false, reason: "no_probe" });
-    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
 
     expect((await test({ baseUrl: "https://10.0.0.1/" })).status).toBe(400);
     expect((await test({ type: "nobody" })).status).toBe(400);

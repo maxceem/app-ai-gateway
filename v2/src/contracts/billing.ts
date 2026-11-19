@@ -128,8 +128,6 @@ export const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1
   .pipe(z.number().int().nonnegative())
   .optional();
 
-/** Plan limits as plan data carries them. Keys this gateway does not read are ignored. */
-
 
 export type BillingSubscriptionStatus = z.infer<typeof BillingSubscriptionStatusSchema>;
 export type EntitledPlan = z.infer<typeof EntitledPlanSchema>;
