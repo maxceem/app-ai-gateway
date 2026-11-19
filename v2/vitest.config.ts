@@ -22,5 +22,7 @@ export default defineConfig({
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
     include: ["test/**/*.test.ts"],
+    // Every run goes to the test ledger when one is set up (scripts/test-ledger/).
+    reporters: ["default", ["../scripts/test-ledger/reporter.mjs", { suite: "v2" }]],
   },
 });

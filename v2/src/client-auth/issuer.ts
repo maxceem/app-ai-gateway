@@ -46,7 +46,12 @@ export const jwksCache = ttlCache<string, JwksCacheEntry>({
  * later, well inside the cache's own lifetime.
  */
 const JWKS_REFETCH_COOLDOWN_MS = 60_000;
-const JWKS_FETCH_TIMEOUT_MS = 5_000;
+/**
+ * How long a JWKS fetch may take. A setting rather than a constant only so a
+ * test can shorten it: the runtime's own clock drives the timeout, and fake
+ * timers cannot.
+ */
+export const jwksFetch = { timeoutMs: 5_000 };
 const ALLOWED_ISSUER_ALGORITHMS = new Set(["RS256", "PS256", "ES256", "ES384", "ES512", "EdDSA"]);
 
 /**
@@ -76,7 +81,7 @@ async function loadJwks(url: string, entry: JwksCacheEntry): Promise<JWK[]> {
       headers: { Accept: "application/json" },
       // An issuer that accepts the connection and then never answers would
       // otherwise hold this request open for as long as the platform allows.
-      signal: AbortSignal.timeout(JWKS_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(jwksFetch.timeoutMs),
     });
   } catch {
     reject("jwks_unreachable");
