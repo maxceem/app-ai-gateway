@@ -187,10 +187,13 @@ export function billingPlanLimits(access: GatewayBillingAccess, keys: readonly P
 /**
  * The plan, for a settings write that a plan can limit. Unlike app traffic, a
  * write never guesses: billing that cannot be read answers 503 (worth
- * retrying), and an account with no plan at all answers 402, as v1.
+ * retrying), also while only a stale last reading is kept, and an account
+ * with no plan at all answers 402, as v1.
  */
 export function requireActiveBilling(access: GatewayBillingAccess): GatewayBillingAccess {
-  if (access.state === "unavailable") {
+  // A stale reading is the last answer kept through an outage, not a reading:
+  // a write refuses as for no answer at all, even when that answer was "no plan".
+  if (access.state === "unavailable" || (access.state === "billed" && access.stale === true)) {
     throw new GatewayError(503, "billing_unavailable", "Billing could not be reached, so nothing was saved; retry shortly", {
       "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
     });

@@ -302,7 +302,7 @@ export const CATALOG = {
     tags: ["Admin applications"],
     summary: "Check an edit of an app without saving it",
     description:
-      "Judged as an update of this app would be, so a provider connection its stored config already names stays accepted after the connection was deleted. Needs only the read grant: nothing is saved.",
+      "Judged as an update of this app would be. After a provider connection is deleted, an edit may keep that connection's routing entry only if the entry is unchanged; an added or changed entry for it is refused. Needs only the read grant: nothing is saved.",
     security: "management",
     request: AppValidateRequestSchema,
     response: AppValidateResponseSchema,

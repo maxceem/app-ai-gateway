@@ -22,7 +22,7 @@ import { hasTokenPrice, type CustomerRates } from "../pricing/prices.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
-import { planCap } from "./plan-caps.ts";
+import { planCap, planCeiling } from "./plan-caps.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
@@ -202,6 +202,13 @@ export async function createApp(c: AdminContext): Promise<Response> {
   const body = await parseBody(c, AppCreateRequestSchema);
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
+  // The first key is not counted against the key ceiling, as v1, except when
+  // the plan allows no keys at all: such a plan allows only App Attest apps.
+  if (config.authentication.type === "api_key" && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {
+    throw new GatewayError(409, "billing_plan_limit_reached", "This plan allows at most 0 active keys per app", undefined, {
+      data: { limit: 0, used: 0 },
+    });
+  }
   const now = Date.now();
   const id = newAppId(body.name);
   const insert = c.env.DB.prepare(

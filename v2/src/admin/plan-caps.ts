@@ -64,18 +64,7 @@ const UNCAPPED: PlanCap = { condition: "1", binds: [], assertNotReached: () => P
  */
 export async function planCap(env: Env, db: D1Database, accountId: string, resource: CappedResource, scopeId: string = accountId): Promise<PlanCap> {
   const capped = CAPPED[resource];
-  const access = requireActiveBilling(await getBillingAccess(env, accountId));
-  let limit: number | undefined;
-  try {
-    limit = billingPlanLimits(access, [capped.limit])[capped.limit];
-  } catch (error) {
-    // A ceiling the plan data cannot give is a plan that cannot be read:
-    // refuse the write as temporary, never guess "no ceiling".
-    if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
-    throw new GatewayError(503, "billing_unavailable", "The plan's limits could not be read, so nothing was saved; retry shortly", {
-      "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
-    });
-  }
+  const limit = await planCeiling(env, accountId, resource);
   if (limit === undefined) return UNCAPPED;
   return {
     condition: `(${capped.count}) < ?`,
@@ -88,4 +77,23 @@ export async function planCap(env: Env, db: D1Database, accountId: string, resou
       });
     },
   };
+}
+
+/**
+ * The account's ceiling on one resource, or undefined for none. Throws 503
+ * when the plan cannot be read, and 402 with no plan.
+ */
+export async function planCeiling(env: Env, accountId: string, resource: CappedResource): Promise<number | undefined> {
+  const capped = CAPPED[resource];
+  const access = requireActiveBilling(await getBillingAccess(env, accountId));
+  try {
+    return billingPlanLimits(access, [capped.limit])[capped.limit];
+  } catch (error) {
+    // A ceiling the plan data cannot give is a plan that cannot be read:
+    // refuse the write as temporary, never guess "no ceiling".
+    if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
+    throw new GatewayError(503, "billing_unavailable", "The plan's limits could not be read, so nothing was saved; retry shortly", {
+      "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
+    });
+  }
 }

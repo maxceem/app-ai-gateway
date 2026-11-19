@@ -260,6 +260,44 @@ describe("plan ceilings on saved settings", () => {
     expect(refused.headers.get("retry-after")).toBe("5");
   });
 
+  it("refuses a capped create while only a stale plan is known, even a stale no-plan", async () => {
+    const key = await seedManagementKey();
+    let state: "plan" | "none" | "down" = "plan";
+    const flaky = {
+      ...env,
+      BILLING: {
+        getTenantAccess: async () => {
+          if (state === "down") throw new Error("billing down");
+          return { plan: state === "plan" ? { planKey: "p", planName: "P", isDefault: true, limits: {} } : null, subscription: null };
+        },
+      },
+    } as unknown as Env;
+    for (const known of ["plan", "none"] as const) {
+      clearCaches();
+      state = known;
+      await createApp(key, apiKeyConfig(), flaky);
+      // Past the 30 s cache, inside the hour the last reading is kept.
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 60_000 });
+      state = "down";
+      const refused = await createApp(key, apiKeyConfig(), flaky);
+      vi.useRealTimers();
+      expect(refused).toMatchObject({ status: 503, body: { error: { code: "billing_unavailable" } } });
+    }
+  });
+
+  it("refuses an app-key app when the plan allows no keys, but not an App Attest app", async () => {
+    const key = await seedManagementKey();
+    const plan = hosted({ maxActiveKeysPerApp: 0 });
+    expect(await createApp(key, apiKeyConfig(), plan)).toMatchObject({
+      status: 409,
+      body: { error: { code: "billing_plan_limit_reached", data: { limit: 0 } } },
+    });
+    const attest = {
+      authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app" } },
+    };
+    expect((await createApp(key, attest, plan)).status).toBe(201);
+  });
+
   it("never lets a bad ceiling value stop the allowance from being read", () => {
     const access = { state: "billed", plan: { planKey: "p", planName: "P", isDefault: true, limits: { maxRequestsPerMonth: 10, maxApps: -1 } }, subscription: null } as const;
     expect(billingPlanLimits(access)).toEqual({ maxRequestsPerMonth: 10 });
