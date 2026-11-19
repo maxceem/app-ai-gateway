@@ -1,0 +1,38 @@
+CREATE TABLE `session` (
+	`id` text PRIMARY KEY NOT NULL,
+	`account_id` text NOT NULL,
+	`app_id` text NOT NULL,
+	`end_user_id` text,
+	`install_id` text,
+	`apple_account_id` text,
+	`app_key_id` text,
+	`provider_type` text NOT NULL,
+	`provider_connection_id` text,
+	`operation` text NOT NULL,
+	`model` text,
+	`mode` text NOT NULL,
+	`slot` text NOT NULL,
+	`state` text NOT NULL,
+	`end_reason` text,
+	`provider_call_id` text,
+	`replaced_by` text,
+	`time_cap_ms` integer NOT NULL,
+	`started_at` integer NOT NULL,
+	`ended_at` integer,
+	`gaps` integer DEFAULT 0 NOT NULL,
+	`final_slice` integer,
+	`expects_session_total` integer DEFAULT false NOT NULL,
+	`settlement` text DEFAULT 'open' NOT NULL,
+	`session_total_nano` integer,
+	`settled_at` integer,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	CONSTRAINT "session_mode" CHECK("session"."mode" IN ('relayed', 'observed')),
+	CONSTRAINT "session_slot" CHECK("session"."slot" IN ('conversational', 'streaming')),
+	CONSTRAINT "session_state" CHECK("session"."state" IN ('starting', 'active', 'ended')),
+	CONSTRAINT "session_settlement" CHECK("session"."settlement" IN ('open', 'settled', 'estimate_kept')),
+	CONSTRAINT "session_total_integer" CHECK("session"."session_total_nano" IS NULL OR typeof("session"."session_total_nano") = 'integer')
+);
+--> statement-breakpoint
+CREATE INDEX `session_app_started` ON `session` (`app_id`,`started_at`);--> statement-breakpoint
+ALTER TABLE `open_work` ADD `gave_up_at` integer;

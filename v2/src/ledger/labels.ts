@@ -85,7 +85,10 @@ export const OPEN_WORK_KINDS = [
   "provider_lookup",
   /** An `unresolved` charge waiting for a price. */
   "unresolved",
-  /** A session or lease that may have ended without `close`. */
+  /**
+   * A session to settle: one that may have ended without `close`, or one that
+   * closed and waits for its final slice (the settlement barrier).
+   */
   "stale_session",
   /** A job to check, such as a fal job whose result must be read soon. */
   "job_check",
@@ -95,3 +98,48 @@ export type OpenWorkKind = (typeof OPEN_WORK_KINDS)[number];
 /** The end-user scopes that an app's dollar and minute budgets can count by. */
 export const BUDGET_SCOPES = ["app", "user", "install", "apple_account"] as const;
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
+
+/** A live session's state (plan section 4.3). An ended session never reopens. */
+export const SESSION_STATES = ["starting", "active", "ended"] as const;
+export type SessionState = (typeof SESSION_STATES)[number];
+
+/** How the gateway carries a live session (D4). */
+export const SESSION_MODES = ["relayed", "observed"] as const;
+export type SessionMode = (typeof SESSION_MODES)[number];
+
+/** Which slot a session takes (D15). */
+export const SESSION_SLOTS = ["conversational", "streaming"] as const;
+export type SessionSlot = (typeof SESSION_SLOTS)[number];
+
+/**
+ * Why a session ended, so the console can answer "why did my call end?"
+ * (plan section 4.3). This list may grow, so the schema does not CHECK it.
+ */
+export const SESSION_END_REASONS = [
+  "client_closed",
+  "provider_closed",
+  "time_cap",
+  "budget_stop",
+  "allowance_used_up",
+  "user_blocked",
+  "key_removed",
+  "heartbeat_timeout",
+  "client_too_slow",
+  "replaced",
+  "relay_deploy",
+  "error",
+] as const;
+export type SessionEndReason = (typeof SESSION_END_REASONS)[number];
+
+/**
+ * Where a session's settlement stands (plan section 4.2, the settlement barrier).
+ */
+export const SETTLEMENT_STATES = [
+  /** Still open, or closed and waiting for its final slice or its provider total. */
+  "open",
+  /** Settled: every slice is in, and the provider total, if any, is applied. */
+  "settled",
+  /** No provider total came after the set number of tries: the slices' estimate stays. */
+  "estimate_kept",
+] as const;
+export type SettlementState = (typeof SETTLEMENT_STATES)[number];

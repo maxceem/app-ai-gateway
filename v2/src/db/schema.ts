@@ -45,6 +45,15 @@ import {
   type OpenWorkKind,
   type OwnerType,
   type PriceSource,
+  type SessionEndReason,
+  type SessionMode,
+  type SessionSlot,
+  type SessionState,
+  type SettlementState,
+  SESSION_MODES,
+  SESSION_SLOTS,
+  SESSION_STATES,
+  SETTLEMENT_STATES,
 } from "../ledger/labels.ts";
 
 /** `col IN ('a', 'b')` for a CHECK, from one of the fixed lists. */
@@ -455,12 +464,76 @@ export const openWork = sqliteTable(
     tries: integer("tries").notNull().default(0),
     lastError: text("last_error"),
     createdAt: integer("created_at").notNull(),
+    /**
+     * Set when the sweep gave up after the set number of tries. The row stays,
+     * so the console can show the work that never finished.
+     */
+    gaveUpAt: integer("gave_up_at"),
   },
   (table) => [
     index("open_work_due").on(table.dueAt),
     index("open_work_owner").on(table.ownerType, table.ownerId),
     check("open_work_kind", oneOf(table.kind, OPEN_WORK_KINDS)),
     check("open_work_owner_type", oneOf(table.ownerType, OWNER_TYPES)),
+  ],
+);
+
+/**
+ * One row per live session (plan section 4.3), with its settlement (4.2).
+ *
+ * The ticket carries everything a session needs to start, so starting never
+ * waits on D1: this row is written after the reply, and if that write fails,
+ * the first checkpoint writes it. Slices are charges owned by the session
+ * (`owner_type = 'session'`, `seq` = slice number); this row never holds money
+ * of its own, except the provider's session-level total once it is known.
+ */
+export const session = sqliteTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    appId: text("app_id").notNull(),
+    endUserId: text("end_user_id"),
+    installId: text("install_id"),
+    appleAccountId: text("apple_account_id"),
+    appKeyId: text("app_key_id"),
+    providerType: text("provider_type").notNull(),
+    providerConnectionId: text("provider_connection_id"),
+    operation: text("operation").notNull(),
+    model: text("model"),
+    mode: text("mode").$type<SessionMode>().notNull(),
+    slot: text("slot").$type<SessionSlot>().notNull(),
+    state: text("state").$type<SessionState>().notNull(),
+    /** Why it ended. Null until then. */
+    endReason: text("end_reason").$type<SessionEndReason>(),
+    /** The provider's id for the call, once known. */
+    providerCallId: text("provider_call_id"),
+    /** The session that replaced this one, when it was replaced. */
+    replacedBy: text("replaced_by"),
+    /** The longest the session may run, in milliseconds. */
+    timeCapMs: integer("time_cap_ms").notNull(),
+    startedAt: integer("started_at").notNull(),
+    endedAt: integer("ended_at"),
+    /** Observer gaps: turns whose usage was missed (shown as "unknown cost"). */
+    gaps: integer("gaps").notNull().default(0),
+    /** The final slice's number, from `close`. Null until closed. */
+    finalSlice: integer("final_slice"),
+    /** Whether the provider reports a session-level dollar total after the call (ElevenLabs agents, Deepgram streaming). */
+    expectsSessionTotal: integer("expects_session_total", { mode: "boolean" }).notNull().default(false),
+    settlement: text("settlement").$type<SettlementState>().notNull().default("open"),
+    /** The provider's final session-level total, in nano-dollars, once applied. */
+    sessionTotalNano: integer("session_total_nano"),
+    settledAt: integer("settled_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("session_app_started").on(table.appId, table.startedAt),
+    check("session_mode", oneOf(table.mode, SESSION_MODES)),
+    check("session_slot", oneOf(table.slot, SESSION_SLOTS)),
+    check("session_state", oneOf(table.state, SESSION_STATES)),
+    check("session_settlement", oneOf(table.settlement, SETTLEMENT_STATES)),
+    check("session_total_integer", sql`${table.sessionTotalNano} IS NULL OR typeof(${table.sessionTotalNano}) = 'integer'`),
   ],
 );
 

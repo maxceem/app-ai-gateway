@@ -6,19 +6,27 @@
  * retries them in batches, with the same `ON CONFLICT(id) DO NOTHING` write,
  * until D1 takes them. Writing one twice is harmless.
  *
- * Limits: it holds at most `MAX_PENDING` entries and keeps one for at most
- * `RETENTION_MS` after it arrived. Past either, the oldest entries are written
- * to the logs in full (`usage_record_failed`) and dropped. Step 1c revisits
- * both numbers; the console will show the gap.
+ * Limits (set in step 1c): it holds at most `MAX_PENDING` entries and keeps
+ * one for at most `RETENTION_MS` after it arrived. Past either, the oldest
+ * entries are written to the logs in full (`usage_record_failed`) and
+ * dropped; the console shows the gap. Nothing is lost silently: a logged
+ * charge can still be written by hand.
  */
 import { DurableObject } from "cloudflare:workers";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { logLostEntry, writeToLedger, type LedgerEntry } from "../ledger/write.ts";
 
-/** How many entries one store holds before the oldest go to the logs. */
+/**
+ * How many entries one store holds before the oldest go to the logs. One
+ * entry is a few kilobytes, so this stays far below a Durable Object's storage
+ * limit, while covering a long D1 outage for a busy app.
+ */
 export const MAX_PENDING = 10_000;
-/** How long an entry is kept before it goes to the logs. */
+/**
+ * How long an entry is kept before it goes to the logs: longer than any D1
+ * outage we expect, short enough that a stuck entry is noticed within a week.
+ */
 export const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Entries written per alarm. */
 export const RETRY_BATCH = 50;

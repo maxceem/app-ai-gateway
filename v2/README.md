@@ -18,6 +18,9 @@ what is built so far.
 | `src/money.ts` | Money as whole nano-dollars (D20): the branded type and its helpers. Rounding happens once, when a charge is priced. |
 | `src/pricing/` | The price file (`models.json`, v1's, copied as it is), its integer rates, customer rates, and pricing token usage. |
 | `src/ledger/` | The ledger's fixed value lists, and writing charges: one D1 batch, `ON CONFLICT(id) DO NOTHING`, then the app's failed-write store, then the logs. |
+| `src/ledger/corrections.ts` | Settling a charge or a job from the provider's final figure (units at the stored rates, or dollars as reported), and pricing an `unresolved` charge. One correction per owner. |
+| `src/ledger/sessions.ts` | The session row, checkpoints (one D1 batch that writes the slice and answers continue or stop), `close`, and settlement with its barrier. |
+| `src/ledger/sweep.ts` | The minute sweep of open work: earliest due first, small batches, a time limit per item, retries, and giving up after a set number of tries. |
 | `src/proxy/` | The call path: matching, the app's routing policy, the OpenAI chat request policy, sending upstream, watching the answer, reading usage and writing one charge per attempt. |
 | `src/admin/` | The minimal management API: management keys, apps, app keys and provider connections. |
 | `src/providers/` | The provider description format, path handling and the matcher, the first provider descriptions, and provider connections as the request path reads them. |

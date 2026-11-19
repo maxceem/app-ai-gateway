@@ -16,7 +16,7 @@
     "traces": { "enabled": true, "head_sampling_rate": 0.01 }
   },
   // Hourly: settle expired App Attest challenges.
-  "triggers": { "crons": ["17 * * * *"] },
+  "triggers": { "crons": ["* * * * *", "17 * * * *"] },
   "durable_objects": {
     "bindings": [
       // The end user's limiter: for now, the App Attest replay counter of each install.
