@@ -148,6 +148,8 @@ function CodeEntry({ prefilled, onFound }: { prefilled: string; onFound: (found:
             maxLength={16}
             placeholder="ABCD-EFGH"
             className="font-mono tracking-widest uppercase"
+            // Locked while a lookup runs, so its answer is always for the code shown.
+            disabled={lookup.isPending}
             aria-invalid={invalid || undefined}
             onChange={(event) => {
               setInput(event.target.value);

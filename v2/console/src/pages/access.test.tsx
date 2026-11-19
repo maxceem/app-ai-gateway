@@ -139,6 +139,15 @@ describe("AccessPage", () => {
     });
   });
 
+  it("says a CLI login its client stopped renewing has expired, not that it is active", async () => {
+    stubKeys(undefined, [{ ...CLI_LOGIN, expiresAt: "2026-01-01T00:00:00.000Z" }]);
+    renderAuthenticated(<AccessPage />);
+
+    const row = (await screen.findByText("App AI Gateway CLI")).closest("tr")!;
+    expect(within(row).getByText(/expired/i)).toBeTruthy();
+    expect(within(row).queryByText("Active")).toBeNull();
+  });
+
   it("names each key's grant", async () => {
     stubKeys(undefined, [
       EXISTING,

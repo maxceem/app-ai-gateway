@@ -116,6 +116,24 @@ describe("DevicePage", () => {
     expect(await screen.findByRole("button", { name: /^allow$/i })).toBeTruthy();
   });
 
+  it("locks the code while its lookup runs, so the answer is for the code shown", async () => {
+    let answer: (response: Response) => void = () => {};
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === LOOKUP_URL) return new Promise<Response>((resolve) => (answer = resolve));
+      if (url.startsWith(GET_SESSION_URL)) return Promise.resolve(new Response(JSON.stringify(SIGNED_IN[GET_SESSION_URL].body)));
+      if (url.startsWith(SESSION_URL)) return Promise.resolve(new Response(JSON.stringify(SIGNED_IN[SESSION_URL].body)));
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderDevice();
+
+    await enterCode();
+    const input = screen.getByLabelText(/^code$/i) as HTMLInputElement;
+    await waitFor(() => expect(input.disabled).toBe(true));
+    answer(new Response(JSON.stringify({ id: ID, expiresAt: new Date(Date.now() + 600_000).toISOString() })));
+  });
+
   it("denies the sign-in", async () => {
     const fetchMock = stubDevice({ [DENY_URL]: { body: { state: "denied" } } });
     renderDevice();

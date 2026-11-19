@@ -38,12 +38,23 @@ type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 /** Where the console's pages live. */
 const CONSOLE_BASE = "/v2";
 
-/** A browser loading a page under `/v2`, not a script calling the API. */
+/**
+ * The console's pages, below `/v2`, each with any path under it. Only these
+ * get the console's document: any other unknown path, such as an API path
+ * called with the wrong method or a missing file, stays a JSON 404. Add a
+ * page here when the console gains one.
+ */
+const CONSOLE_PAGES = ["/login", "/signup", "/oauth/consent", "/device", "/access", "/settings"] as const;
+
+/** A browser loading one of the console's pages, not a script calling the API. */
 function isConsolePage(request: Request): boolean {
   if (request.method !== "GET" && request.method !== "HEAD") return false;
   const { pathname } = new URL(request.url);
-  if (!pathname.startsWith(`${CONSOLE_BASE}/`)) return false;
-  return (request.headers.get("accept") ?? "").includes("text/html");
+  const page = CONSOLE_PAGES.some((path) => {
+    const full = `${CONSOLE_BASE}${path}`;
+    return pathname === full || pathname.startsWith(`${full}/`);
+  });
+  return page && (request.headers.get("accept") ?? "").includes("text/html");
 }
 
 const app = new Hono<Env2>();

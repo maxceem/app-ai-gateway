@@ -33,6 +33,19 @@ describe("the v2 Worker", () => {
     },
   );
 
+  // Only the console's own pages: an API path called the wrong way, or a
+  // missing file, stays the API's JSON 404 even for a browser.
+  it.each(["/v2/apps/a/auth/challenge", "/v2/assets/missing.js", "/v2/nothing-here"])(
+    "answers a browser's %s with the API's JSON 404",
+    async (path) => {
+      const response = await exports.default.fetch(`https://gateway.test${path}`, {
+        headers: { accept: "text/html,application/xhtml+xml" },
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: { code: "not_found", message: expect.any(String) } });
+    },
+  );
+
   it("still answers a script calling a page's path with the API's JSON 404", async () => {
     const response = await exports.default.fetch("https://gateway.test/v2/oauth/consent", {
       headers: { accept: "application/json" },

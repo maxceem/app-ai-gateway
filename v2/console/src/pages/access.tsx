@@ -266,6 +266,11 @@ export function AccessPage() {
                         <span className="text-muted-foreground">
                           Revoked <RelativeTime value={key.revokedAt} />
                         </span>
+                      ) : key.expiresAt !== null && Date.parse(key.expiresAt) <= Date.now() ? (
+                        // A CLI login or MCP connection its client stopped renewing.
+                        <span className="text-muted-foreground">
+                          Expired <RelativeTime value={key.expiresAt} />
+                        </span>
                       ) : (
                         <span className="text-foreground">Active</span>
                       )}
