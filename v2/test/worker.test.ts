@@ -21,7 +21,7 @@ describe("the v2 Worker", () => {
   // own: the Worker hands it to the console's static files, which route it.
   // The test runs without a console build, so the files answer 404, but not
   // with the API's JSON.
-  it.each(["/v2/access", "/v2/oauth/consent?id=x", "/v2/device?user_code=ABCD-EFGH"])(
+  it.each(["/v2/access", "/v2/oauth/consent?id=x", "/v2/device?user_code=ABCD-EFGH", "/v2/settings/password"])(
     "hands a browser's %s to the console",
     async (path) => {
       const response = await exports.default.fetch(`https://gateway.test${path}`, {
@@ -35,7 +35,15 @@ describe("the v2 Worker", () => {
 
   // Only the console's own pages: an API path called the wrong way, or a
   // missing file, stays the API's JSON 404 even for a browser.
-  it.each(["/v2/apps/a/auth/challenge", "/v2/assets/missing.js", "/v2/nothing-here"])(
+  it.each([
+    "/v2/apps/a/auth/challenge",
+    "/v2/assets/missing.js",
+    "/v2/nothing-here",
+    "/v2/login/missing.js",
+    "/v2/login/extra",
+    "/v2/settings/account/extra",
+    "/v2/settings/v1.2",
+  ])(
     "answers a browser's %s with the API's JSON 404",
     async (path) => {
       const response = await exports.default.fetch(`https://gateway.test${path}`, {

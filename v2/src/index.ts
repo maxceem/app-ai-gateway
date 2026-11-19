@@ -39,22 +39,30 @@ type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 const CONSOLE_BASE = "/v2";
 
 /**
- * The console's pages, below `/v2`, each with any path under it. Only these
- * get the console's document: any other unknown path, such as an API path
- * called with the wrong method or a missing file, stays a JSON 404. Add a
- * page here when the console gains one.
+ * The console's routes, below `/v2`, exactly as its router declares them. A
+ * `:name` segment matches any one segment. Only these get the console's
+ * document: any other unknown path, such as an API path called the wrong way
+ * or a missing file, stays a JSON 404. Add a route here when the console
+ * gains one.
  */
-const CONSOLE_PAGES = ["/login", "/signup", "/oauth/consent", "/device", "/access", "/settings"] as const;
+const CONSOLE_ROUTES = ["/login", "/signup", "/oauth/consent", "/device", "/access", "/settings", "/settings/:section"] as const;
+
+const CONSOLE_ROUTE_SEGMENTS = CONSOLE_ROUTES.map((route) => route.slice(1).split("/"));
 
 /** A browser loading one of the console's pages, not a script calling the API. */
 function isConsolePage(request: Request): boolean {
   if (request.method !== "GET" && request.method !== "HEAD") return false;
+  if (!(request.headers.get("accept") ?? "").includes("text/html")) return false;
   const { pathname } = new URL(request.url);
-  const page = CONSOLE_PAGES.some((path) => {
-    const full = `${CONSOLE_BASE}${path}`;
-    return pathname === full || pathname.startsWith(`${full}/`);
-  });
-  return page && (request.headers.get("accept") ?? "").includes("text/html");
+  if (!pathname.startsWith(`${CONSOLE_BASE}/`)) return false;
+  const segments = pathname.slice(CONSOLE_BASE.length + 1).split("/");
+  // A file name is never a page, even under one.
+  if (segments.at(-1)?.includes(".")) return false;
+  return CONSOLE_ROUTE_SEGMENTS.some(
+    (route) =>
+      route.length === segments.length &&
+      route.every((part, index) => (part.startsWith(":") ? segments[index] !== "" : part === segments[index])),
+  );
 }
 
 const app = new Hono<Env2>();
