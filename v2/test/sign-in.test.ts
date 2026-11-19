@@ -161,6 +161,20 @@ describe("OAuth discovery", () => {
     ]);
   });
 
+  it("drops an OAUTH_CLIENTS entry that reuses the CLI's id, and keeps serving", async () => {
+    const clients = JSON.stringify([
+      { clientId: CLI_CLIENT_ID, name: "Impostor", redirectUris: ["https://a.test/cb"] },
+      { clientId: "other-client", name: "Other", redirectUris: ["https://b.test/cb"] },
+    ]);
+    const environment = { ...env, OAUTH_CLIENTS: clients } as Env;
+    const key = await seedManagementKey();
+    const session = await call("/v2/admin/session", { base: API, headers: { authorization: `Bearer ${key}` }, environment });
+    expect(session.status).toBe(200);
+    expect((await call(OAUTH_PATHS.authorizationServerMetadata, { environment })).status).toBe(200);
+    const identity = await createIdentity(environment, CONSOLE);
+    expect(identity.config.oauth?.clients.map((client) => client.clientId)).toContain("other-client");
+  });
+
   it("runs no OAuth without a console origin", async () => {
     const plain = { ...env, CONSOLE_ORIGIN: "" } as Env;
     expect((await call(OAUTH_PATHS.authorizationServerMetadata, { environment: plain })).status).toBe(404);
@@ -197,6 +211,15 @@ describe("console sign-in", () => {
     const bare = await call("/v2/admin/session", { headers: { cookie } });
     expect(bare.status).toBe(401);
     expect(bare.headers.get("www-authenticate")).toContain('realm="management"');
+  });
+
+  it("lets a console session through a non-Bearer Authorization header, such as a proxy's Basic", async () => {
+    const human = await seedHuman();
+    const proxied = await asConsole(human.cookie, "/v2/admin/session", { headers: { authorization: "Basic dXNlcjpwYXNz" } });
+    expect(proxied.status).toBe(200);
+    // A Bearer value that is not a key or a token is still refused.
+    const wrong = await asConsole(human.cookie, "/v2/admin/session", { headers: { authorization: "Bearer not-a-key" } });
+    expect(wrong.status).toBe(401);
   });
 
   it("lists the person's accounts and switches between them", async () => {

@@ -167,7 +167,7 @@ export async function createIdentity(
             enabled: true,
             issuer,
             tokenPrefix: { access: OAUTH_ACCESS_TOKEN_PREFIX, refresh: OAUTH_REFRESH_TOKEN_PREFIX },
-            clients: oauthClients(setting(env, "OAUTH_CLIENTS")).map((client) => ({ ...client, redirectUris: [...client.redirectUris] })),
+            clients: oauthClients(setting(env, "OAUTH_CLIENTS"), [CLI_CLIENT_ID]).map((client) => ({ ...client, redirectUris: [...client.redirectUris] })),
             cli: { clientId: CLI_CLIENT_ID, name: CLI_CLIENT_NAME },
             deviceFlow: { verificationUri: `${consoleAt}${DEVICE_PAGE_PATH}` },
             cimd: cimdEnabled(env) ? {} : (false as const),

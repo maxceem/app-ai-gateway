@@ -50,7 +50,11 @@ let parsedOAuthClients: { raw: string; clients: readonly OAuthClientRegistration
  * refuse — and with it every sign-in on the deployment — is dropped with a
  * warning naming its position and why, never its content.
  */
-export function oauthClients(raw: string | undefined): readonly OAuthClientRegistration[] {
+export function oauthClients(
+  raw: string | undefined,
+  /** Ids the deployment registers itself, such as the CLI's. An entry naming one is dropped. */
+  reserved: readonly string[] = [],
+): readonly OAuthClientRegistration[] {
   const value = raw?.trim() ?? "";
   if (value === "") return [];
   if (parsedOAuthClients?.raw === value) return parsedOAuthClients.clients;
@@ -73,6 +77,8 @@ export function oauthClients(raw: string | undefined): readonly OAuthClientRegis
         ? "clientId must be a non-empty string of at most 2048 characters with no surrounding spaces"
         : clients.some((client) => client.clientId === clientId)
           ? "clientId is declared twice"
+          : reserved.includes(clientId)
+            ? "clientId is one this deployment registers itself, such as the CLI's"
           : !name || name.length > 200
             ? "name must be a non-empty string of at most 200 characters"
             : redirectUris.length === 0 || !redirectUris.every(acceptableRedirectUri)

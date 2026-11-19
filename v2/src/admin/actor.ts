@@ -113,11 +113,13 @@ export const adminAuth: MiddlewareHandler<AdminEnv> = async (c, next) => {
       await next();
       return;
     }
-    if (authorization !== undefined && authorization.trim() !== "") {
-      if (token === undefined || !token.startsWith(MANAGEMENT_KEY_PREFIX)) throw unauthenticated(token !== undefined);
+    // Only a Bearer token is read as a credential. Another scheme, such as
+    // Basic from a self-hosted auth proxy, falls through to the console cookie (as v1).
+    if (token !== undefined) {
+      if (!token.startsWith(MANAGEMENT_KEY_PREFIX)) throw unauthenticated(true);
       // cf-auth reads the scheme as `Bearer ` exactly, so another spelling is
       // rewritten rather than read as nobody.
-      if (!authorization.trim().startsWith("Bearer ")) {
+      if (!authorization!.trim().startsWith("Bearer ")) {
         const headers = new Headers(c.req.raw.headers);
         headers.set("authorization", `Bearer ${token}`);
         c.req.raw = new Request(c.req.raw, { headers });
