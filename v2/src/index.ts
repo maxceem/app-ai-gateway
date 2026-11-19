@@ -55,7 +55,8 @@ function isConsolePage(request: Request): boolean {
   if (!(request.headers.get("accept") ?? "").includes("text/html")) return false;
   const { pathname } = new URL(request.url);
   if (!pathname.startsWith(`${CONSOLE_BASE}/`)) return false;
-  const segments = pathname.slice(CONSOLE_BASE.length + 1).split("/");
+  // One trailing slash is the same page, as the console's router reads it.
+  const segments = pathname.slice(CONSOLE_BASE.length + 1).replace(/\/$/u, "").split("/");
   // A file name is never a page, even under one.
   if (segments.at(-1)?.includes(".")) return false;
   return CONSOLE_ROUTE_SEGMENTS.some(
