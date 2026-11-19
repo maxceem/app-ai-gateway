@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ChoiceList, type Choice } from "@/components/choice-list";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
-import { call } from "@/lib/api";
+import { ApiError, call } from "@/lib/api";
 import { authErrorMessage } from "@/lib/auth-errors";
 import { loginUrlFor, signupUrlFor } from "@/lib/auth-redirect";
 import { ROLE_LABELS } from "@/lib/permissions";
@@ -164,7 +164,11 @@ function CodeEntry({ prefilled, onFound }: { prefilled: string; onFound: (found:
           </p>
         ) : lookup.isError ? (
           <Alert role="alert">
-            <AlertTitle>No sign-in matches that code</AlertTitle>
+            <AlertTitle>
+              {lookup.error instanceof ApiError && lookup.error.status === 404
+                ? "No sign-in matches that code"
+                : "Could not look up the code"}
+            </AlertTitle>
             <AlertDescription>
               {authErrorMessage(lookup.error, "Could not look up the code.")} If the command has finished
               or timed out, run it again for a new code.

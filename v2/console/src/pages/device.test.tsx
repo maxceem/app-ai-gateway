@@ -156,6 +156,20 @@ describe("DevicePage", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/no sign-in matches that code/i);
   });
 
+  it("does not blame the code when the lookup was refused for another reason", async () => {
+    stubApi({
+      ...SIGNED_IN,
+      [LOOKUP_URL]: { status: 429, body: { error: { code: "rate_limited", message: "Too many attempts. Try again in a minute." } } },
+    });
+    renderDevice();
+
+    await enterCode();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/could not look up the code/i);
+    expect(alert.textContent).toMatch(/too many attempts/i);
+    expect(alert.textContent).not.toMatch(/no sign-in matches/i);
+  });
+
   it("refuses a code of the wrong shape before asking the gateway", async () => {
     const fetchMock = stubDevice();
     renderDevice();

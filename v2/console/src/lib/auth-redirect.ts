@@ -58,7 +58,9 @@ export function returnPathFrom(search: string): string {
 /** A browser path as the router sees it: the console's `/v2` base taken off. */
 export function routerPath(pathname: string): string {
   if (pathname === CONSOLE_BASE) return "/";
-  return pathname.startsWith(`${CONSOLE_BASE}/`) ? pathname.slice(CONSOLE_BASE.length) : pathname;
+  const path = pathname.startsWith(`${CONSOLE_BASE}/`) ? pathname.slice(CONSOLE_BASE.length) : pathname;
+  // One trailing slash is the same page to the router: `/v2/login/` is the sign-in page.
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
 /** Where an operator belongs the moment they are authenticated. */

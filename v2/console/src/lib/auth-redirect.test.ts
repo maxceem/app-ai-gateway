@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
+  AUTH_PATHS,
   consoleUrl,
   isRetryableError,
   isSafeReturnPath,
   loginUrlFor,
   oauthErrorNotice,
   returnPathFrom,
+  routerPath,
 } from "./auth-redirect";
 
 describe("isRetryableError", () => {
@@ -115,5 +117,15 @@ describe("consoleUrl", () => {
   it("puts the console's /v2 base in front of a router path", () => {
     expect(consoleUrl("/access")).toBe("/v2/access");
     expect(consoleUrl("/login?from=%2Faccess")).toBe("/v2/login?from=%2Faccess");
+  });
+});
+
+describe("routerPath", () => {
+  it("takes off the console's /v2 base, and one trailing slash", () => {
+    expect(routerPath("/v2/access")).toBe("/access");
+    expect(routerPath("/v2")).toBe("/");
+    expect(routerPath("/v2/")).toBe("/");
+    // The sign-in page with a trailing slash is still an auth page, so a 401 there is not a redirect.
+    expect(AUTH_PATHS.has(routerPath("/v2/login/"))).toBe(true);
   });
 });
