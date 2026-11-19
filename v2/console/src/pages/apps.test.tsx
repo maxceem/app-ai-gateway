@@ -49,7 +49,8 @@ describe("AppsPage", () => {
     const { router } = renderAuthenticated(<AppsPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
-    await userEvent.type(screen.getByLabelText(/^name$/i), "Backend");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Backend");
     await userEvent.click(screen.getByRole("radio", { name: /server/i }));
     await userEvent.click(screen.getByRole("button", { name: /create app/i }));
 

@@ -53,8 +53,11 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
-    await userEvent.type(screen.getByLabelText(/^name$/i), "Main");
-    await userEvent.type(screen.getByLabelText(/api key/i), SECRET);
+    // Pasting, not typing key by key, keeps this test quick.
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Main");
+    await userEvent.click(screen.getByLabelText(/api key/i));
+    await userEvent.paste(SECRET);
     await userEvent.click(screen.getByRole("button", { name: /test key/i }));
     expect((await screen.findByRole("status")).textContent).toMatch(/accepted this key/i);
     expect(bodyOf(fetchMock, "/v2/admin/providers/test", "POST")).toEqual({ type: "elevenlabs", secret: SECRET });
