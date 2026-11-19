@@ -108,6 +108,7 @@ export interface SweepSummary {
   readonly gaveUp: number;
 }
 
+/** A row as an item. The detail is parsed inside the item's own try, so one broken row never stops a run. */
 function itemFromRow(row: Record<string, unknown>): OpenWorkItem {
   return {
     id: String(row.id),
@@ -117,10 +118,14 @@ function itemFromRow(row: Record<string, unknown>): OpenWorkItem {
     ownerType: String(row.owner_type),
     ownerId: String(row.owner_id),
     chargeId: row.charge_id === null ? null : String(row.charge_id),
-    detail: typeof row.detail_json === "string" ? (JSON.parse(row.detail_json) as Record<string, unknown>) : null,
+    detail: null,
     dueAt: Number(row.due_at),
     tries: Number(row.tries),
   };
+}
+
+function withDetail(item: OpenWorkItem, row: Record<string, unknown>): OpenWorkItem {
+  return typeof row.detail_json === "string" ? { ...item, detail: JSON.parse(row.detail_json) as Record<string, unknown> } : item;
 }
 
 /** The delay before try number `tries + 1`. */
@@ -165,7 +170,7 @@ export async function runSweep(
       const late = new Promise<typeof TIMED_OUT>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), itemLimit);
       });
-      const answer = await Promise.race([handlers[item.kind](env, item, { now, lastTry }), late]);
+      const answer = await Promise.race([handlers[item.kind](env, withDetail(item, row), { now, lastTry }), late]);
       result = answer === TIMED_OUT ? retry("timed out") : answer;
     } catch (error) {
       log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(error) });

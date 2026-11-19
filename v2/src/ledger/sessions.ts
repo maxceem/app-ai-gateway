@@ -21,6 +21,7 @@
  *   (S12).
  */
 import { errorFacts } from "../core/error-facts.ts";
+import { UNRESOLVED_FIRST_TRY_MS } from "../proxy/call-charge.ts";
 import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
@@ -107,10 +108,12 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         now,
       ),
     // The sweep settles a session that never closes, once its cap has passed.
+    // Never for a session that has ended: its work may be done and removed.
     db
       .prepare(
         `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
-         VALUES (?, 'stale_session', ?, ?, 'session', ?, NULL, NULL, ?, 0, ?)
+         SELECT ?, 'stale_session', ?, ?, 'session', ?, NULL, NULL, ?, 0, ?
+         WHERE NOT EXISTS (SELECT 1 FROM session WHERE id = ? AND state = 'ended')
          ON CONFLICT(id) DO NOTHING`,
       )
       .bind(
@@ -120,6 +123,7 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         session.id,
         session.startedAt + session.timeCapMs + STALE_SESSION_GRACE_MS,
         now,
+        session.id,
       ),
   ];
 }
@@ -193,6 +197,29 @@ export async function writeCheckpoint(
       [session.id, slice.costNano],
     ),
   ];
+  if (slice.priceSource === "unresolved") {
+    // An unpriced slice is queued for pricing in the same batch (S17), only
+    // when the insert just above really wrote it: `changes()` is 0 for a
+    // repeated checkpoint.
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
+           SELECT ?, 'unresolved', ?, ?, 'session', ?, ?, ?, ?, 0, ? WHERE changes() > 0
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .bind(
+          `unresolved:${slice.id}`,
+          session.accountId,
+          session.appId,
+          session.id,
+          slice.id,
+          JSON.stringify({ providerType: slice.providerType, model: slice.model }),
+          now + UNRESOLVED_FIRST_TRY_MS,
+          now,
+        ),
+    );
+  }
   const stateAt = statements.length;
   statements.push(db.prepare("SELECT state, replaced_by FROM session WHERE id = ?").bind(session.id));
   for (const budget of input.budgets) {
@@ -259,19 +286,28 @@ export async function writeCheckpoint(
 
 /**
  * Records a session's end: its final slice number and why it ended (S6).
- * Safe to repeat; the first close wins. The sweep then settles it soon after.
+ * Safe to repeat: the first close wins, and closing an ended session changes
+ * nothing. The sweep then settles it soon after.
+ *
+ * If the session row was never written (its write after the ticket reply
+ * failed, and no checkpoint has written it yet), close writes it, ended, in
+ * the same batch, from the ticket's data in `session`. A checkpoint that
+ * arrives later finds it ended and keeps it so, so the end reason, end time
+ * and final slice stay right and the barrier still waits for that slice.
  */
 export async function closeSession(
   db: D1Database,
   input: {
-    readonly sessionId: string;
+    readonly session: SessionRow;
     readonly finalSlice: number;
     readonly endReason: SessionEndReason;
     readonly endedAt: number;
     readonly now: number;
   },
 ): Promise<void> {
+  const sessionId = input.session.id;
   await db.batch([
+    ...insertSessionStatements(db, input.session, input.now),
     db
       .prepare(
         `UPDATE session SET state = 'ended',
@@ -279,12 +315,16 @@ export async function closeSession(
            ended_at = COALESCE(ended_at, ?),
            final_slice = COALESCE(final_slice, ?),
            updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND state != 'ended'`,
       )
-      .bind(input.endReason, input.endedAt, input.finalSlice, input.now, input.sessionId),
+      .bind(input.endReason, input.endedAt, input.finalSlice, input.now, sessionId),
+    // Only the close that ended the session moves the next try earlier.
+    // `changes()` is the rows the update just above changed, in this same
+    // batch: 0 for a repeated close, which must not pull the sweep's last try
+    // ahead of a provider total that is still on its way.
     db
-      .prepare("UPDATE open_work SET due_at = MIN(due_at, ?) WHERE id = ? AND gave_up_at IS NULL")
-      .bind(input.now + SETTLE_FIRST_TRY_MS, sessionWorkId(input.sessionId)),
+      .prepare("UPDATE open_work SET due_at = MIN(due_at, ?) WHERE id = ? AND gave_up_at IS NULL AND changes() > 0")
+      .bind(input.now + SETTLE_FIRST_TRY_MS, sessionWorkId(sessionId)),
   ]);
 }
 
@@ -318,6 +358,30 @@ interface StoredSession {
   readonly final_slice: number | null;
   readonly expects_session_total: number;
   readonly settlement: string;
+  readonly session_total_nano: number | null;
+  readonly mode: SessionMode;
+  readonly slot: SessionSlot;
+}
+
+function sessionFromStored(stored: StoredSession): SessionRow {
+  return {
+    id: stored.id,
+    accountId: stored.account_id,
+    appId: stored.app_id,
+    endUserId: stored.end_user_id,
+    installId: stored.install_id,
+    appleAccountId: stored.apple_account_id,
+    appKeyId: stored.app_key_id,
+    providerType: stored.provider_type,
+    providerConnectionId: stored.provider_connection_id,
+    operation: stored.operation,
+    model: stored.model,
+    mode: stored.mode,
+    slot: stored.slot,
+    timeCapMs: stored.time_cap_ms,
+    startedAt: stored.started_at,
+    expectsSessionTotal: Boolean(stored.expects_session_total),
+  };
 }
 
 /**
@@ -346,6 +410,20 @@ export async function settleSession(
   if (stored === null) return "missing";
   if (stored.settlement !== "open") return "already";
 
+  // The first final total stored wins, and it is stored as soon as it
+  // arrives, even before `close` is recorded: a later try (the sweep's, with
+  // no total of its own) still applies it, and a later, different total
+  // never replaces it.
+  if (stored.expects_session_total && input.providerTotal !== undefined && stored.session_total_nano === null) {
+    await db
+      .prepare("UPDATE session SET session_total_nano = ?, updated_at = ? WHERE id = ? AND settlement = 'open' AND session_total_nano IS NULL")
+      .bind(input.providerTotal, now, sessionId)
+      .run();
+    stored = await db.prepare("SELECT * FROM session WHERE id = ?").bind(sessionId).first<StoredSession>();
+    if (stored === null) return "missing";
+    if (stored.settlement !== "open") return "already";
+  }
+
   const lastSlice = async () =>
     Number(
       (
@@ -362,7 +440,7 @@ export async function settleSession(
     const capEnds = stored.started_at + stored.time_cap_ms;
     if (now < capEnds + STALE_SESSION_GRACE_MS) return "not_closed";
     // A lost close: the session held its slot until the cap, and ends there.
-    await closeSession(db, { sessionId, finalSlice: await lastSlice(), endReason: "time_cap", endedAt: capEnds, now });
+    await closeSession(db, { session: sessionFromStored(stored), finalSlice: await lastSlice(), endReason: "time_cap", endedAt: capEnds, now });
     stored = await db.prepare("SELECT * FROM session WHERE id = ?").bind(sessionId).first<StoredSession>();
     if (stored === null || stored.ended_at === null || stored.final_slice === null) return "missing";
   }
@@ -370,28 +448,39 @@ export async function settleSession(
   const endedAt = stored.ended_at!;
   const barrierMet = (await lastSlice()) >= stored.final_slice!;
   const waited = now - endedAt >= BARRIER_WAIT_MS;
-  const markSettled = (settlement: "settled" | "estimate_kept", total: NanoDollars | null) =>
+  // The stored provider total is never overwritten or cleared here: settling
+  // only fills it when it is still empty.
+  const markSettled = (settlement: "settled" | "estimate_kept") =>
     db
       .prepare(
-        "UPDATE session SET settlement = ?, session_total_nano = ?, settled_at = ?, updated_at = ? WHERE id = ? AND settlement = 'open'",
+        "UPDATE session SET settlement = ?, settled_at = ?, updated_at = ? WHERE id = ? AND settlement = 'open'" +
+          // The estimate is kept only while no provider total is stored.
+          (settlement === "estimate_kept" ? " AND session_total_nano IS NULL" : ""),
       )
-      .bind(settlement, total, now, now, sessionId);
+      .bind(settlement, now, now, sessionId);
 
   if (!stored.expects_session_total) {
     // Slices priced from the provider's own usage events are final already.
     // A missing slice still adds its cost when it arrives (S8).
     if (!barrierMet && !waited && input.lastTry !== true) return "waiting";
-    await markSettled("settled", null).run();
+    await markSettled("settled").run();
     return "settled";
   }
 
-  if (input.providerTotal === undefined) {
+  const providerTotal = stored.session_total_nano === null ? undefined : (stored.session_total_nano as NanoDollars);
+
+  if (providerTotal === undefined) {
     if (input.lastTry !== true) return "waiting";
+    const kept = await markSettled("estimate_kept").run();
+    if (kept.meta.changes === 0) {
+      // A provider total was stored after this try read the row: apply it now.
+      return settleSession(db, input);
+    }
     log("warn", "session_estimate_kept", { app: stored.app_id, session: sessionId });
-    await markSettled("estimate_kept", null).run();
     return "estimate_kept";
   }
-  if (!barrierMet && !waited) return "waiting";
+  // On the last try the bounded wait is over, whatever the clock says.
+  if (!barrierMet && !waited && input.lastTry !== true) return "waiting";
   if (!barrierMet) log("warn", "session_settled_without_slice", { app: stored.app_id, session: sessionId });
 
   const correction: ChargeRow = {
@@ -414,7 +503,7 @@ export async function settleSession(
     status: "ok",
     httpStatus: null,
     errorCode: null,
-    costNano: input.providerTotal,
+    costNano: providerTotal,
     measured: "complete",
     priceSource: "provider_usd",
     priceIsEstimate: false,
@@ -424,7 +513,7 @@ export async function settleSession(
     outputTokens: null,
     unit: null,
     units: null,
-    measures: { session_total_nano: input.providerTotal },
+    measures: { session_total_nano: providerTotal },
     rates: null,
     sessionMs: null,
     correctionKind: "dollars",
@@ -438,15 +527,21 @@ export async function settleSession(
     usageDay: utcDay(endedAt),
     writtenAt: now,
   };
-  // Worked out and written in one batch: the total minus every slice recorded (S9).
-  await db.batch([
+  // Worked out and written in one batch: the total minus every slice recorded
+  // (S9). Both the correction and the state change need the session still
+  // open, so a sweep that kept the estimate meanwhile wins, and neither happens.
+  const [inserted] = await db.batch([
     insertChargeWithCostStatement(
       db,
       correction,
-      `? - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE owner_type = 'session' AND owner_id = ? AND kind = 'slice'), 0)`,
-      [input.providerTotal, sessionId],
+      // Every charge the session owns but this correction: its slices and any
+      // pricing corrections of them.
+      `(SELECT session_total_nano FROM session WHERE id = ?)
+         - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE owner_type = 'session' AND owner_id = ? AND id != ?), 0)`,
+      [sessionId, sessionId, sessionSettlementId(sessionId)],
+      { sql: "(SELECT settlement FROM session WHERE id = ?) = 'open'", params: [sessionId] },
     ),
-    markSettled("settled", input.providerTotal),
+    markSettled("settled"),
   ]);
-  return "settled";
+  return (inserted?.meta.changes ?? 0) > 0 ? "settled" : "already";
 }

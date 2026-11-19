@@ -284,6 +284,8 @@ export function insertChargeWithCostStatement(
   charge: ChargeRow,
   cost: string,
   costParams: readonly unknown[],
+  /** A SQL condition the row is inserted under, with its parameters. */
+  where: { readonly sql: string; readonly params: readonly unknown[] } = { sql: "true", params: [] },
 ): D1PreparedStatement {
   const placeholders: string[] = [];
   const params: unknown[] = [];
@@ -296,12 +298,12 @@ export function insertChargeWithCostStatement(
       params.push(read(charge));
     }
   }
-  // `WHERE true` keeps SQLite from reading ON CONFLICT as part of the SELECT.
+  // A WHERE clause also keeps SQLite from reading ON CONFLICT as part of the SELECT.
   return db
     .prepare(
       `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => column).join(", ")})
-       SELECT ${placeholders.join(", ")} WHERE true
+       SELECT ${placeholders.join(", ")} WHERE ${where.sql}
        ON CONFLICT(id) DO NOTHING`,
     )
-    .bind(...params);
+    .bind(...params, ...where.params);
 }

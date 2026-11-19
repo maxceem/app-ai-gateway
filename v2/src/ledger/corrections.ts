@@ -17,12 +17,17 @@
  *   dollars only, never plan minutes, and never counts as a request (S13).
  * - A job settles only once its estimate is in the ledger, not while the
  *   estimate is still waiting in the failed-write store (S10).
+ * - A correction holds the final figure minus everything already booked for
+ *   that charge: the charge itself and its earlier corrections. The
+ *   difference is worked out inside the insert, so a pricing correction and
+ *   a final settlement of one charge never both add its full cost. Pricing
+ *   stops once a final settlement exists; the settlement already includes it.
  */
 import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
 import { resolvePrice, type CustomerRates } from "../pricing/prices.ts";
 import { priceTokens, totalTokens } from "../pricing/tokens.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
-import { chargeFromRow, insertChargeStatement, readCharge, type ChargeRow } from "./write.ts";
+import { chargeFromRow, insertChargeWithCostStatement, readCharge, type ChargeRow } from "./write.ts";
 
 /** The provider's final figure for a charge or a job. */
 export type FinalFigure =
@@ -112,10 +117,10 @@ function correctionFor(
   final: FinalFigure,
   id: string,
   now: number,
-): ChargeRow | { readonly noRate: string } {
+): { readonly correction: ChargeRow; readonly finalCost: NanoDollars } | { readonly noRate: string } {
   const before = original.costNano ?? 0;
   if (final.kind === "dollars") {
-    return correctionOf(original, {
+    const correction = correctionOf(original, {
       id,
       kind: "dollars",
       costNano: nano(final.costNano - before),
@@ -125,6 +130,7 @@ function correctionFor(
       measures: { final_cost_nano: final.costNano },
       now,
     });
+    return { correction, finalCost: final.costNano };
   }
   const parts: [number, ReturnType<typeof rate>][] = [];
   for (const [bucket, units] of Object.entries(final.buckets)) {
@@ -133,7 +139,7 @@ function correctionFor(
     parts.push([units, rate(stored)]);
   }
   const finalCost = priceUnitsSum(parts);
-  return correctionOf(original, {
+  const correction = correctionOf(original, {
     id,
     kind: "units",
     costNano: nano(finalCost - before),
@@ -143,13 +149,47 @@ function correctionFor(
     measures: { ...final.buckets },
     now,
   });
+  return { correction, finalCost };
 }
 
-async function writeCorrection(db: D1Database, correction: ChargeRow, doneWork: string | null): Promise<boolean> {
-  const statements = [insertChargeStatement(db, correction)];
+/**
+ * Writes a correction whose cost is `finalCost` minus what is already booked
+ * for the charge it corrects (the charge and its earlier corrections), worked
+ * out inside the insert. With `unlessSettled`, it is not written once any
+ * final settlement (a charge's or a job's) corrects the same charge. Returns
+ * the row as written, or null when it was not written.
+ */
+async function writeCorrection(
+  db: D1Database,
+  correction: ChargeRow,
+  finalCost: NanoDollars,
+  doneWork: string | null,
+  unlessSettled = false,
+): Promise<ChargeRow | null> {
+  const correctedId = correction.correctsChargeId!;
+  const statements = [
+    insertChargeWithCostStatement(
+      db,
+      correction,
+      `? - COALESCE((SELECT cost_nano FROM charge WHERE id = ?), 0)
+         - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE corrects_charge_id = ?), 0)`,
+      [finalCost, correctedId, correctedId],
+      unlessSettled
+        ? {
+            // No final settlement of this charge (its own, or its job's), and no
+            // session-level total that already covers it (the session it belongs
+            // to, settled with a provider total).
+            sql: `NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
+              AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`,
+            params: [correctedId, correction.ownerType, correction.ownerId],
+          }
+        : undefined,
+    ),
+  ];
   if (doneWork !== null) statements.push(db.prepare("DELETE FROM open_work WHERE id = ?").bind(doneWork));
   const [inserted] = await db.batch(statements);
-  return (inserted?.meta.changes ?? 0) > 0;
+  if ((inserted?.meta.changes ?? 0) === 0) return null;
+  return readCharge(db, correction.id);
 }
 
 /**
@@ -164,10 +204,10 @@ export async function settleCharge(
 ): Promise<SettleResult> {
   const original = await readCharge(db, input.chargeId);
   if (original === null) return { status: "charge_missing" };
-  const correction = correctionFor(original, input.final, chargeSettlementId(original.id), input.now);
-  if ("noRate" in correction) return { status: "no_rate", bucket: correction.noRate };
-  const written = await writeCorrection(db, correction, input.doneWork ?? null);
-  return written ? { status: "settled", correction } : { status: "already" };
+  const built = correctionFor(original, input.final, chargeSettlementId(original.id), input.now);
+  if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
+  const written = await writeCorrection(db, built.correction, built.finalCost, input.doneWork ?? null);
+  return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
 /**
@@ -186,10 +226,10 @@ export async function settleJob(
     .first<Record<string, unknown>>();
   if (row === null) return { status: "charge_missing" };
   const estimate = chargeFromRow(row);
-  const correction = correctionFor(estimate, input.final, jobSettlementId(input.jobId), input.now);
-  if ("noRate" in correction) return { status: "no_rate", bucket: correction.noRate };
-  const written = await writeCorrection(db, correction, input.doneWork ?? null);
-  return written ? { status: "settled", correction } : { status: "already" };
+  const built = correctionFor(estimate, input.final, jobSettlementId(input.jobId), input.now);
+  if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
+  const written = await writeCorrection(db, built.correction, built.finalCost, input.doneWork ?? null);
+  return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
 export type PricingResult =
@@ -212,6 +252,21 @@ export async function priceUnresolvedCharge(
   const original = await readCharge(db, input.chargeId);
   if (original === null) return { status: "charge_missing" };
   if (original.priceSource !== "unresolved" || original.model === null) return { status: "already" };
+  // A final settlement (the charge's own, or its job's) already holds its cost:
+  // nothing to price, even while the model still has no rate.
+  const settled = await db
+    .prepare("SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars') LIMIT 1")
+    .bind(original.id)
+    .first();
+  if (settled !== null) return { status: "already" };
+  // So does a session settled with a provider total, for each of its slices.
+  if (original.ownerType === "session") {
+    const session = await db
+      .prepare("SELECT 1 FROM session WHERE id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL")
+      .bind(original.ownerId)
+      .first();
+    if (session !== null) return { status: "already" };
+  }
   const connection =
     original.providerConnectionId === null
       ? null
@@ -245,6 +300,8 @@ export async function priceUnresolvedCharge(
     measures: { tokens: totalTokens(usage) },
     now: input.now,
   });
-  const written = await writeCorrection(db, correction, input.doneWork ?? null);
-  return written ? { status: "priced", correction } : { status: "already" };
+  // Never after a final settlement that already holds its cost: the charge's
+  // own, its job's, or its session's provider total.
+  const written = await writeCorrection(db, correction, priced.cost, input.doneWork ?? null, true);
+  return written !== null ? { status: "priced", correction: written } : { status: "already" };
 }
