@@ -5,14 +5,17 @@
  * hostnames, with a Worker route for `/v2` and `/v2/*` (plan section 9.1,
  * test T23). Anything it does not declare is answered with a JSON 404.
  *
- * Step 1a part 2 added app sign-in and `/me`; part 3 adds provider requests
+ * It serves app sign-in, `/me` and provider requests
  * (`/v2/apps/{app}/proxy/{provider}/...`, outside the catalog because they
- * follow the provider descriptions) and the minimal management API, which
- * step 1d completes.
+ * follow the provider descriptions) itself. The management API, people's
+ * sign-in, the OAuth server and the console's pages are loaded on first use
+ * (`./management/app.ts`). The two OAuth discovery documents live under
+ * `/.well-known/`, outside `/v2`.
  */
 import { Hono, type Context } from "hono";
 import { settleExpiredChallenges } from "./client-auth/auth-events.ts";
-import { CATALOG, type ErrorResponse, type OperationName, type OperationResponse } from "./contracts/catalog.ts";
+import { CLIENT_CATALOG, honoPath, type ClientOperationName, type ClientOperationResponse } from "./contracts/client-catalog.ts";
+import type { ErrorResponse } from "./contracts/operation.ts";
 import { errorFacts } from "./core/error-facts.ts";
 import { GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
@@ -22,24 +25,7 @@ import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
 import { meHandler } from "./routes/me.ts";
 import { proxyHandler } from "./proxy/serve.ts";
-import { adminAuth, type AdminVariables } from "./admin/actor.ts";
-import {
-  checkApp,
-  createApp,
-  createAppKey,
-  deleteApp,
-  getApp,
-  listAppKeys,
-  listApps,
-  patchApp,
-  revokeAppKey,
-  updateApp,
-  validateApp,
-  validateAppDraft,
-} from "./admin/apps.ts";
-import { listModelPrices } from "./admin/prices.ts";
-import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "./admin/providers.ts";
-import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "./admin/users.ts";
+import { lazyRoutes } from "./http/lazy.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
@@ -51,13 +37,13 @@ type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 
 const app = new Hono<Env2>();
 
-/** A catalog path in Hono's syntax: `{app}` becomes `:app`. */
-function routePath(name: OperationName): string {
-  return CATALOG[name].path.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, ":$1");
+/** A client operation's path in Hono's syntax. */
+function routePath(name: ClientOperationName): string {
+  return honoPath(CLIENT_CATALOG[name].path);
 }
 
 app.get(routePath("getHealth"), (c) =>
-  c.json({ ok: true, service: "app-ai-gateway", api: "v2" } satisfies OperationResponse<"getHealth">),
+  c.json({ ok: true, service: "app-ai-gateway", api: "v2" } satisfies ClientOperationResponse<"getHealth">),
 );
 
 app.post(routePath("appAuthChallenge"), clientCallDeadline(), appAuthFloodLimit("app_auth_challenge"), challengeHandler);
@@ -66,34 +52,13 @@ app.post(routePath("appAuthToken"), clientCallDeadline(), appAuthFloodLimit("app
 app.post(routePath("appAuthFailure"), clientCallDeadline(), appAuthFloodLimit("app_auth_failure"), failureHandler);
 app.get(routePath("getCurrentUser"), clientCallDeadline(), meHandler);
 
-// The management API: management keys only for now (cf-auth 1.0 adds console
-// sessions and OAuth in step 2).
-const admin = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
-admin.use("/v2/admin/*", adminAuth);
-admin.get(routePath("listApps"), listApps);
-admin.post(routePath("createApp"), createApp);
-admin.get(routePath("getApp"), getApp);
-admin.put(routePath("updateApp"), updateApp);
-admin.patch(routePath("patchApp"), patchApp);
-admin.delete(routePath("deleteApp"), deleteApp);
-admin.post(routePath("validateApp"), validateApp);
-admin.post(routePath("validateAppDraft"), validateAppDraft);
-admin.get(routePath("checkApp"), checkApp);
-admin.get(routePath("listAppKeys"), listAppKeys);
-admin.post(routePath("createAppKey"), createAppKey);
-admin.post(routePath("revokeAppKey"), revokeAppKey);
-admin.get(routePath("listAppUsers"), listAppUsers);
-admin.get(routePath("getAppUser"), getAppUser);
-admin.post(routePath("blockAppUser"), blockAppUser);
-admin.post(routePath("unblockAppUser"), unblockAppUser);
-admin.get(routePath("listModelPrices"), listModelPrices);
-admin.get(routePath("listProviders"), listProviders);
-admin.post(routePath("testProvider"), testProvider);
-admin.post(routePath("createProvider"), createProvider);
-admin.get(routePath("getProvider"), getProvider);
-admin.put(routePath("updateProvider"), updateProvider);
-admin.delete(routePath("deleteProvider"), deleteProvider);
-app.route("/", admin);
+// Everything else but provider requests: the management API, sign-in, the
+// OAuth server and the console's pages. Loaded on first use, so none of it is
+// on a provider request's cold start (see `./management/app.ts`).
+const management = lazyRoutes(() => import("./management/app.ts").then((module) => module.default));
+for (const pattern of ["/v2/admin/*", "/v2/auth/*", "/v2/oauth/*", "/v2/console/*", "/.well-known/oauth-authorization-server/v2", "/.well-known/oauth-protected-resource/v2", "/.well-known/oauth-protected-resource/v2/*"]) {
+  app.all(pattern, management);
+}
 
 // Provider requests. No deadline of their own: a provider may stream for minutes.
 app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);
@@ -152,7 +117,8 @@ export default {
   fetch: app.fetch,
   /**
    * Every minute: the sweep of open work. Hourly (any other cron): record
-   * expired, unused App Attest challenges as abandoned, and delete them.
+   * expired, unused App Attest challenges as abandoned, and delete them; and
+   * clean up expired OAuth approvals and ended OAuth connections' tokens.
    */
   async scheduled(controller, env, ctx) {
     if (controller.cron === SWEEP_CRON) {
@@ -164,6 +130,14 @@ export default {
         (settled) => log("info", "auth_challenges_settled", settled),
         (error: unknown) => log("warn", "auth_challenges_prune_failed", { error: errorFacts(error) }),
       ),
+    );
+    ctx.waitUntil(
+      import("./management/maintenance.ts")
+        .then(({ sweepSignIn }) => sweepSignIn(env))
+        .then(
+          (swept) => log("info", "sign_in_swept", swept),
+          (error: unknown) => log("warn", "sign_in_sweep_failed", { error: errorFacts(error) }),
+        ),
     );
   },
 } satisfies ExportedHandler<Env>;

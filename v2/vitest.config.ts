@@ -11,6 +11,9 @@ export default defineConfig({
         miniflare: {
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
+            BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-32-bytes",
+            // The console and the OAuth issuer (`https://console.gateway.test/v2`).
+            CONSOLE_ORIGIN: "https://console.gateway.test",
             // A test-only vault key: 32 zero bytes.
             SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             TEST_MIGRATIONS: migrations,

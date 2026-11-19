@@ -4,9 +4,11 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { clearCaches, seedManagementKey } from "./helpers.ts";
+import { clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement } from "./helpers.ts";
+
+beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 const ORIGIN = "https://gateway.test";
 

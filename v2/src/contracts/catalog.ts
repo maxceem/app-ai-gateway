@@ -14,17 +14,6 @@
  */
 import { z } from "zod";
 import {
-  ApiKeyTokenRequestSchema,
-  AppAttestChallengeResponseSchema,
-  AppAttestFailureReportResponseSchema,
-  AppAttestFailureReportSchema,
-  AppAttestRegisterRequestSchema,
-  AppAttestRegisterResponseSchema,
-  AppAttestTokenRequestSchema,
-  CurrentUserResponseSchema,
-  GatewayTokenResponseSchema,
-} from "./auth.ts";
-import {
   AppCreateRequestSchema,
   AppDeleteResponseSchema,
   AppKeyCreateRequestSchema,
@@ -54,58 +43,30 @@ import {
   ProviderTestResponseSchema,
   ProviderUpdateRequestSchema,
 } from "./admin.ts";
+import {
+  AccountListResponseSchema,
+  AccountSelectRequestSchema,
+  AdminSessionResponseSchema,
+  ConsentAllowRequestSchema,
+  ConsentDetailsResponseSchema,
+  ConsentProofSchema,
+  ConsentRedirectResponseSchema,
+  ConsoleCapabilitiesSchema,
+  CreatedManagementKeyResponseSchema,
+  CredentialListResponseSchema,
+  CredentialResponseSchema,
+  DeviceAnswerResponseSchema,
+  DeviceApproveRequestSchema,
+  DeviceCodeRequestSchema,
+  DeviceDetailsResponseSchema,
+  DeviceLookupRequestSchema,
+  DeviceLookupResponseSchema,
+  ManagementKeyCreateRequestSchema,
+} from "./access.ts";
+import { CLIENT_CATALOG } from "./client-catalog.ts";
+import type { OperationSpec } from "./operation.ts";
 
-export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-
-/**
- * Which credential reaches an operation. `gateway` is an app key or a gateway
- * token, plus `X-AppAttest-Proof` where the app signs every request. The
- * document's security schemes are in `./openapi.ts`.
- */
-export type SecurityKind = "public" | "gateway" | "management";
-
-export interface OperationSpec {
-  readonly method: HttpMethod;
-  /** OpenAPI template, such as `/v2/apps/{app}`. The only place a path is written. */
-  readonly path: `/v2/${string}`;
-  /** Docs for each `{name}` in `path`. Every one is a required string. */
-  readonly params?: Readonly<Record<string, { readonly description: string }>>;
-  readonly tags: readonly string[];
-  readonly summary: string;
-  readonly description?: string;
-  readonly security: SecurityKind;
-  readonly query?: z.ZodObject;
-  readonly request?: z.ZodType;
-  /** The success status, when it is not 200. */
-  readonly status?: 201;
-  readonly response: z.ZodType;
-  readonly responseDescription: string;
-  /** Error statuses this operation can answer with, and what each means. */
-  readonly errors?: Readonly<Record<number, string>>;
-}
-
-/** Every error has this body. `code` is stable; `message` is for people. */
-export const ErrorResponseSchema = z
-  .object({
-    error: z.object({
-      code: z.string(),
-      message: z.string(),
-      data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().meta({
-        description:
-          "Machine-readable facts about this refusal, present only where the code alone is not actionable. A rate_limited refusal carries scope, limit, windowSeconds, retryAfterSeconds and resetAt.",
-      }),
-    }),
-  })
-  .meta({ id: "ErrorResponse" });
-export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
-
-export const HealthResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    service: z.literal("app-ai-gateway"),
-    api: z.literal("v2"),
-  })
-  .meta({ id: "HealthResponse" });
+export { ErrorResponseSchema, HealthResponseSchema, type ErrorResponse, type HttpMethod, type OperationSpec, type SecurityKind } from "./operation.ts";
 
 const APP_PARAM = { app: { description: "The app id." } } as const;
 
@@ -123,110 +84,34 @@ const PLAN_CAP_ERRORS = {
 /** Errors every management route can answer with. */
 const ADMIN_ERRORS = {
   400: "The request is invalid.",
-  401: "A valid management key is required.",
-  403: "The key has only the read grant, or its owner is not an account owner or admin.",
+  401: "A valid management key, OAuth token or console sign-in is required.",
+  403: "The credential has only the read grant, or its owner is not an account owner or admin.",
   404: "The app, key or provider connection does not exist in this account.",
 } as const;
 
-/** Errors every app sign-in route can answer with. */
-const SIGN_IN_ERRORS = {
+/** Errors the operations only a person signed in to the console may call can answer with. */
+const SESSION_ONLY_ERRORS = {
   400: "The request is invalid.",
-  403: "The app is disabled, or does not support this sign-in method.",
-  404: "The app does not exist.",
-  413: "The request body is too large.",
-  429: "Too many sign-in calls to this app from this network address. Carries Retry-After.",
-  503: "The gateway could not finish the check in time, or a platform service is briefly unavailable. Retry shortly.",
+  401: "A valid console sign-in is required.",
+  403: "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+  404: "Not found.",
 } as const;
 
-const ISSUER_ERRORS = {
-  403: "The proof or the issuer token was rejected, the challenge is invalid or used, the user is blocked, or the app does not support this sign-in method.",
-  503: "The issuer's keys cannot be fetched, or the gateway could not finish the check in time. Retry shortly.",
+/** Errors the console's own pages can answer with. */
+const CONSOLE_PAGE_ERRORS = {
+  400: "The request is invalid.",
+  403: "The request did not come from the console's own page, or the proof or code is wrong.",
+  404: "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+  409: "Someone else already answered it, or it was denied.",
+  410: "It expired.",
+  429: "Too many attempts from this network address. Carries Retry-After.",
 } as const;
+
+const CONSENT_PARAM = { id: { description: "The authorization id from the consent link." } } as const;
+const DEVICE_PARAM = { id: { description: "The id the code lookup answered." } } as const;
 
 export const CATALOG = {
-  getHealth: {
-    method: "GET",
-    path: "/v2/healthz",
-    tags: ["Operations"],
-    summary: "Check gateway health",
-    security: "public",
-    response: HealthResponseSchema,
-    responseDescription: "The Worker is accepting requests.",
-  },
-
-  appAuthChallenge: {
-    method: "POST",
-    path: "/v2/apps/{app}/auth/challenge",
-    params: APP_PARAM,
-    tags: ["App sign-in"],
-    summary: "Create an App Attest challenge",
-    security: "public",
-    response: AppAttestChallengeResponseSchema,
-    responseDescription: "A five-minute, single-use challenge.",
-    errors: SIGN_IN_ERRORS,
-  },
-
-  appAuthRegister: {
-    method: "POST",
-    path: "/v2/apps/{app}/auth/register",
-    params: APP_PARAM,
-    tags: ["App sign-in"],
-    summary: "Register an App Attest key",
-    security: "public",
-    request: AppAttestRegisterRequestSchema,
-    response: AppAttestRegisterResponseSchema,
-    responseDescription: "The key was registered for the install, or for the issuer's user.",
-    errors: { ...SIGN_IN_ERRORS, ...ISSUER_ERRORS },
-  },
-
-  appAuthFailure: {
-    method: "POST",
-    path: "/v2/apps/{app}/auth/failure",
-    params: APP_PARAM,
-    tags: ["App sign-in"],
-    summary: "Report a failure on the device after a challenge",
-    description:
-      "Sent by the app when a step after the challenge failed on the device, so the app's auth events can say why. Diagnostic only. It must name a challenge this app issued that nothing has used yet, and uses it up, so one challenge carries at most one report.",
-    security: "public",
-    request: AppAttestFailureReportSchema,
-    response: AppAttestFailureReportResponseSchema,
-    responseDescription: "Whether a report was recorded for the challenge.",
-    errors: SIGN_IN_ERRORS,
-  },
-
-  appAuthToken: {
-    method: "POST",
-    path: "/v2/apps/{app}/auth/token",
-    params: APP_PARAM,
-    tags: ["App sign-in"],
-    summary: "Exchange a client proof for a gateway token",
-    description:
-      "App Attest clients send key_id, assertion and challenge; the answer's verify_on says whether requests sent with the token must also carry X-AppAttest-Proof. Server apps with an issuer send api_key and issuer_token. The verified issuer claim is always the user.",
-    security: "public",
-    request: z.union([AppAttestTokenRequestSchema, ApiKeyTokenRequestSchema]),
-    response: GatewayTokenResponseSchema,
-    responseDescription: "A gateway access token, valid for one hour.",
-    errors: { ...SIGN_IN_ERRORS, ...ISSUER_ERRORS },
-  },
-
-  getCurrentUser: {
-    method: "GET",
-    path: "/v2/apps/{app}/me",
-    params: APP_PARAM,
-    tags: ["Application"],
-    summary: "Get the current user",
-    description:
-      "Who the caller is. On App Attest apps, install_id names the install. Signed with X-AppAttest-Proof like every other request where the app signs every request.",
-    security: "gateway",
-    response: CurrentUserResponseSchema,
-    responseDescription: "The caller's user id and install id.",
-    errors: {
-      401: "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
-      403: "The App Attest proof was rejected or replayed, or the app is disabled.",
-      404: "The app does not exist, or identifies no end users.",
-      503: "The gateway could not finish the check in time. Retry shortly.",
-    },
-  },
+  ...CLIENT_CATALOG,
   listApps: {
     method: "GET",
     path: "/v2/admin/apps",
@@ -538,6 +423,182 @@ export const CATALOG = {
     response: ProviderDeleteResponseSchema,
     responseDescription: "The provider connection was deleted.",
     errors: ADMIN_ERRORS,
+  },
+  getAdminSession: {
+    method: "GET",
+    path: "/v2/admin/session",
+    tags: ["Admin access"],
+    summary: "Who is calling",
+    description: "The caller's sign-in, the account it acts in, its role and grant, and the accounts a console session may switch to.",
+    security: "management",
+    response: AdminSessionResponseSchema,
+    responseDescription: "The caller.",
+    errors: { 401: ADMIN_ERRORS[401] },
+  },
+
+  listAccounts: {
+    method: "GET",
+    path: "/v2/admin/accounts",
+    tags: ["Admin access"],
+    summary: "List your accounts",
+    description: "Every account the person signed in to the console belongs to.",
+    security: "session",
+    response: AccountListResponseSchema,
+    responseDescription: "The accounts, with the person's role in each.",
+    errors: SESSION_ONLY_ERRORS,
+  },
+
+  selectAccount: {
+    method: "POST",
+    path: "/v2/admin/accounts/select",
+    tags: ["Admin access"],
+    summary: "Switch the console to another account",
+    security: "session",
+    request: AccountSelectRequestSchema,
+    response: AdminSessionResponseSchema,
+    responseDescription: "The session, now acting in that account.",
+    errors: SESSION_ONLY_ERRORS,
+  },
+
+  listCredentials: {
+    method: "GET",
+    path: "/v2/admin/credentials",
+    tags: ["Admin access"],
+    summary: "List management keys, CLI logins and MCP connections",
+    description: "Every credential that acts for this account, revoked ones included, newest first.",
+    security: "session",
+    response: CredentialListResponseSchema,
+    responseDescription: "The credentials. Secrets are never shown.",
+    errors: SESSION_ONLY_ERRORS,
+  },
+
+  createManagementKey: {
+    method: "POST",
+    path: "/v2/admin/management-keys",
+    tags: ["Admin access"],
+    summary: "Create a management key",
+    description: "For scripts, CI and direct API calls. Needs an owner or admin. The key is shown once, in this answer.",
+    security: "session",
+    request: ManagementKeyCreateRequestSchema,
+    status: 201,
+    response: CreatedManagementKeyResponseSchema,
+    responseDescription: "The key, shown once.",
+    errors: SESSION_ONLY_ERRORS,
+  },
+
+  revokeCredential: {
+    method: "POST",
+    path: "/v2/admin/credentials/{id}/revoke",
+    params: { id: { description: "The credential id." } },
+    tags: ["Admin access"],
+    summary: "Revoke a management key, CLI login or MCP connection",
+    description: "It stops working at once. Needs an owner or admin.",
+    security: "session",
+    response: CredentialResponseSchema,
+    responseDescription: "The revoked credential.",
+    errors: SESSION_ONLY_ERRORS,
+  },
+
+  getConsoleCapabilities: {
+    method: "GET",
+    path: "/v2/console/capabilities",
+    tags: ["Console"],
+    summary: "What this deployment offers the console",
+    security: "public",
+    response: ConsoleCapabilitiesSchema,
+    responseDescription: "The deployment's sign-in options.",
+  },
+
+  getOauthConsent: {
+    method: "POST",
+    path: "/v2/console/oauth/consents/{id}",
+    params: CONSENT_PARAM,
+    tags: ["Console"],
+    summary: "Read an OAuth consent request",
+    description: "What the consent page shows. The proof comes from the consent link's fragment, so it is sent in the body, never in a URL.",
+    security: "public",
+    request: ConsentProofSchema,
+    response: ConsentDetailsResponseSchema,
+    responseDescription: "The client, the grant it asked for, and the accounts the signed-in person may pick.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  allowOauthConsent: {
+    method: "POST",
+    path: "/v2/console/oauth/consents/{id}/allow",
+    params: CONSENT_PARAM,
+    tags: ["Console"],
+    summary: "Allow an OAuth client into one of your accounts",
+    security: "session",
+    request: ConsentAllowRequestSchema,
+    response: ConsentRedirectResponseSchema,
+    responseDescription: "Where to send the browser: back to the client, with its code.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  denyOauthConsent: {
+    method: "POST",
+    path: "/v2/console/oauth/consents/{id}/deny",
+    params: CONSENT_PARAM,
+    tags: ["Console"],
+    summary: "Decline an OAuth client",
+    security: "public",
+    request: ConsentProofSchema,
+    response: ConsentRedirectResponseSchema,
+    responseDescription: "Where to send the browser: back to the client, with access_denied.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  lookupDeviceCode: {
+    method: "POST",
+    path: "/v2/console/device/lookup",
+    tags: ["Console"],
+    summary: "Find a CLI sign-in by the code it shows",
+    description: "Counted per network address, so codes cannot be guessed in bulk.",
+    security: "session",
+    request: DeviceLookupRequestSchema,
+    response: DeviceLookupResponseSchema,
+    responseDescription: "The pending sign-in. Send its id with the code from now on.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  getDeviceRequest: {
+    method: "POST",
+    path: "/v2/console/device/{id}",
+    params: DEVICE_PARAM,
+    tags: ["Console"],
+    summary: "Read a CLI sign-in request",
+    security: "session",
+    request: DeviceCodeRequestSchema,
+    response: DeviceDetailsResponseSchema,
+    responseDescription: "The client, the grant it asked for, the code to compare, and the accounts the person may pick.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  approveDeviceRequest: {
+    method: "POST",
+    path: "/v2/console/device/{id}/approve",
+    params: DEVICE_PARAM,
+    tags: ["Console"],
+    summary: "Allow a CLI sign-in into one of your accounts",
+    security: "session",
+    request: DeviceApproveRequestSchema,
+    response: DeviceAnswerResponseSchema,
+    responseDescription: "Approved. The CLI's next poll gets its tokens.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  denyDeviceRequest: {
+    method: "POST",
+    path: "/v2/console/device/{id}/deny",
+    params: DEVICE_PARAM,
+    tags: ["Console"],
+    summary: "Decline a CLI sign-in",
+    security: "public",
+    request: DeviceCodeRequestSchema,
+    response: DeviceAnswerResponseSchema,
+    responseDescription: "Declined. The CLI's next poll is told access_denied.",
+    errors: CONSOLE_PAGE_ERRORS,
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
 
