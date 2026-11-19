@@ -399,6 +399,10 @@ describe("expired challenges", () => {
   it("records each unused one as abandoned once, and deletes them all", async () => {
     const appId = await seedApp(attestAuthentication());
     const now = Date.now();
+    // Earlier tests in this file leave challenges behind, some made under a
+    // fake clock fixed on 2026-11-19. Once the real clock passes their expiry
+    // they would be counted here too, so start with none.
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
     await env.DB.batch([
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-unused', ?, ?, 0)").bind(appId, now - 1000),
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-tried', ?, ?, 1)").bind(appId, now - 1000),

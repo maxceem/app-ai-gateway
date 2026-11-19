@@ -6,7 +6,7 @@
  *
  * Ported from v1's `src/billing/gateway.ts`, request path only.
  */
-import { PlanLimitsInputSchema, type GatewayBillingAccess, type PlanLimits } from "../contracts/billing.ts";
+import { PlanLimitInputSchema, type GatewayBillingAccess, type PlanLimitKey, type PlanLimits } from "../contracts/billing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -152,25 +152,54 @@ export function admitAppTraffic(access: GatewayBillingAccess, accountId: string)
   }
 }
 
+/** The plan limits the request path spends. */
+const REQUEST_PATH_LIMITS: readonly PlanLimitKey[] = ["maxRequestsPerMonth", "maxSessionMinutesPerMonth"];
+
 /**
- * The plan limits from a plan's `limits`. A value plan data cannot be read as
- * is a misconfiguration this gateway cannot turn into a limit, so this throws.
- * The request path catches it and serves the request uncounted, logged as
- * `allowance_uncounted`; only settings-side callers refuse with it.
+ * The plan limits named by `keys`, from a plan's `limits`. Each key is read on
+ * its own, so a bad value under one key never spoils another: a broken
+ * `maxApps` does not stop the allowance from being counted.
+ *
+ * A value plan data cannot be read as is a misconfiguration this gateway
+ * cannot turn into a limit, so this throws. The request path catches it and
+ * serves the request uncounted, logged as `allowance_uncounted`; only
+ * settings-side callers refuse with it.
  */
-export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
+export function billingPlanLimits(access: GatewayBillingAccess, keys: readonly PlanLimitKey[] = REQUEST_PATH_LIMITS): PlanLimits {
   if (access.state !== "billed" || access.plan === null || access.plan.limits === undefined) return {};
-  const parsed = PlanLimitsInputSchema.safeParse(access.plan.limits);
-  if (parsed.success) {
-    const limits: PlanLimits = {};
-    if (parsed.data.maxRequestsPerMonth !== undefined) limits.maxRequestsPerMonth = parsed.data.maxRequestsPerMonth;
-    if (parsed.data.maxSessionMinutesPerMonth !== undefined) limits.maxSessionMinutesPerMonth = parsed.data.maxSessionMinutesPerMonth;
-    return limits;
+  const raw = access.plan.limits;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
   }
-  const key = parsed.error.issues[0]?.path[0];
-  throw new GatewayError(
-    502,
-    "billing_unavailable",
-    key === undefined ? "Billing plan limits are invalid" : `Billing plan limit ${String(key)} is invalid`,
-  );
+  const limits: PlanLimits = {};
+  for (const key of keys) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (value === undefined) continue;
+    const parsed = PlanLimitInputSchema.safeParse(value);
+    if (!parsed.success || parsed.data === undefined) {
+      throw new GatewayError(502, "billing_unavailable", `Billing plan limit ${key} is invalid`);
+    }
+    limits[key] = parsed.data;
+  }
+  return limits;
+}
+
+/**
+ * The plan, for a settings write that a plan can limit. Unlike app traffic, a
+ * write never guesses: billing that cannot be read answers 503 (worth
+ * retrying), also while only a stale last reading is kept, and an account
+ * with no plan at all answers 402, as v1.
+ */
+export function requireActiveBilling(access: GatewayBillingAccess): GatewayBillingAccess {
+  // A stale reading is the last answer kept through an outage, not a reading:
+  // a write refuses as for no answer at all, even when that answer was "no plan".
+  if (access.state === "unavailable" || (access.state === "billed" && access.stale === true)) {
+    throw new GatewayError(503, "billing_unavailable", "Billing could not be reached, so nothing was saved; retry shortly", {
+      "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
+    });
+  }
+  if (access.state === "billed" && access.plan === null) {
+    throw new GatewayError(402, "billing_payment_required", "No plan is available for this account");
+  }
+  return access;
 }

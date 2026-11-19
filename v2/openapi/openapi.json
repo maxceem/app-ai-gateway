@@ -1150,6 +1150,216 @@
         ],
         "additionalProperties": false
       },
+      "AppPatchRequest": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppPatchOperation"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "AppPatchOperation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "add"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "replace"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              },
+              "value": {}
+            },
+            "required": [
+              "op",
+              "path",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "remove"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/(?:name|status|config(?:\\/(?:[^~/]|~[01])*)*)$",
+                "example": "/config/limits/per_app/requests/per_minute"
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "AppValidateResponse": {
+        "type": "object",
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "app_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "valid",
+          "app_id"
+        ]
+      },
+      "AppValidateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {},
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "AppDraftValidateResponse": {
+        "type": "object",
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "valid"
+        ]
+      },
+      "AppCheckResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "disabled",
+                    "missing"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "slug",
+                "status"
+              ]
+            },
+            "description": "Every provider connection the app's routing names. A disabled one is listed as disabled, and one that was deleted as missing, with a null id."
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "Whether the app is active and at least one connection it names is active."
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this check did not exercise, one sentence each."
+          }
+        },
+        "required": [
+          "app_id",
+          "status",
+          "providers",
+          "ready",
+          "limitations"
+        ]
+      },
       "AppDeleteResponse": {
         "type": "object",
         "properties": {
@@ -1237,6 +1447,180 @@
         "required": [
           "app_id",
           "key"
+        ]
+      },
+      "EndUserListResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "month": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndUser"
+            }
+          }
+        },
+        "required": [
+          "app_id",
+          "month",
+          "total",
+          "limit",
+          "offset",
+          "users"
+        ]
+      },
+      "EndUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "blocked"
+            ]
+          },
+          "installs": {
+            "type": "integer",
+            "description": "How many App Attest keys the user holds: one per install. Always 0 on server apps."
+          },
+          "is_install": {
+            "type": "boolean",
+            "description": "Whether this id is itself an App Attest key, so the row is one install."
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_virtual": {
+            "type": "boolean",
+            "description": "True for a user id that only the app's usage or refusals name, such as a server app's end-user header. Such a user has no row, and cannot be blocked."
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "charges": {
+                "type": "integer",
+                "description": "Charges in the month, corrections not counted."
+              },
+              "failed": {
+                "type": "integer",
+                "description": "Of those, attempts that did not end with success."
+              },
+              "cost_nano": {
+                "type": "integer",
+                "description": "What the month cost, in nano-dollars, corrections included."
+              },
+              "input_tokens": {
+                "type": "integer"
+              },
+              "cached_input_tokens": {
+                "type": "integer"
+              },
+              "output_tokens": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges",
+              "failed",
+              "cost_nano",
+              "input_tokens",
+              "cached_input_tokens",
+              "output_tokens"
+            ],
+            "description": "The user's usage in `month`, from the ledger."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "installs",
+          "is_install",
+          "created_at",
+          "last_seen_at",
+          "is_virtual",
+          "usage"
+        ]
+      },
+      "EndUserResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "month": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/EndUser"
+          }
+        },
+        "required": [
+          "app_id",
+          "month",
+          "user"
+        ]
+      },
+      "EndUserBlockResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "blocked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "app_id",
+          "user_id",
+          "blocked"
+        ]
+      },
+      "PriceListResponse": {
+        "type": "object",
+        "properties": {
+          "prices": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "required": [
+          "prices"
         ]
       },
       "ProviderListResponse": {
@@ -1452,6 +1836,53 @@
         "required": [
           "type",
           "name",
+          "secret"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderTestResponse": {
+        "type": "object",
+        "properties": {
+          "validated": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_probe",
+              "unreachable",
+              "unexpected_status",
+              "rejected"
+            ],
+            "description": "Why the key was not confirmed. no_probe: this provider has no cheap call to test with. unreachable: no answer in time. unexpected_status: an answer that proves nothing either way. rejected: the provider refused the key with 401. Usually the key is wrong, but some providers answer 401 for a key restricted so it cannot list models."
+          },
+          "status": {
+            "type": "integer",
+            "description": "The provider's HTTP status, for unexpected_status and rejected."
+          }
+        },
+        "required": [
+          "validated"
+        ]
+      },
+      "ProviderTestRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "baseUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
           "secret"
         ],
         "additionalProperties": false
@@ -2195,6 +2626,16 @@
               }
             }
           },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
             "description": "The key has only the read grant, or its owner is not an account owner or admin.",
             "content": {
@@ -2207,6 +2648,26 @@
           },
           "404": {
             "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plan's ceiling on this resource is reached (`billing_plan_limit_reached`, with `limit` and `used`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2392,6 +2853,103 @@
           }
         }
       },
+      "patch": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "patchApp",
+        "summary": "Change part of an app",
+        "description": "Applies `operations` in order to the app as `getApp` answers it, then saves the result exactly as `PUT` would: the same checks, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Needs `revision`, as `PUT` does. An operation that cannot apply answers `400 invalid_request` naming its index.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The app after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app changed since it was read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "Admin applications"
@@ -2431,6 +2989,251 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AppDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/validate": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "validateApp",
+        "summary": "Check an edit of an app without saving it",
+        "description": "Judged as an update of this app would be. After a provider connection is deleted, an edit may keep that connection's routing entry only if the entry is unchanged; an added or changed entry for it is refused. Needs only the read grant: nothing is saved.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppValidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The edit would be accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppValidateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/app-drafts/validate": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "validateAppDraft",
+        "summary": "Check a new app's settings without saving them",
+        "description": "Judged as a create would be, against the account's current provider connections and prices. Needs only the read grant.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppValidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The settings would be accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDraftValidateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/check": {
+      "get": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "checkApp",
+        "summary": "Check whether an app is ready to serve requests",
+        "description": "Checks the stored config as an update would, lists every provider connection its routing names with its status (a disabled one as disabled, a deleted one as missing), and answers `ready` when the app is active and at least one of them is active. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the check found, and what it did not try.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppCheckResponse"
                 }
               }
             }
@@ -2630,6 +3433,16 @@
               }
             }
           },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
             "description": "The key has only the read grant, or its owner is not an account owner or admin.",
             "content": {
@@ -2642,6 +3455,26 @@
           },
           "404": {
             "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plan's ceiling on this resource is reached (`billing_plan_limit_reached`, with `limit` and `used`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2694,6 +3527,486 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AppKeyRevokeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/users": {
+      "get": {
+        "tags": [
+          "Admin end users"
+        ],
+        "operationId": "listAppUsers",
+        "summary": "List an app's end users",
+        "description": "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Part of the user id."
+            },
+            "required": false,
+            "description": "Part of the user id.",
+            "name": "query",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "blocked"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of end users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/users/{user}": {
+      "get": {
+        "tags": [
+          "Admin end users"
+        ],
+        "operationId": "getAppUser",
+        "summary": "Get an end user",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user id."
+            },
+            "required": true,
+            "description": "The end user id.",
+            "name": "user",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end user, with their usage in `month`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/users/{user}/block": {
+      "post": {
+        "tags": [
+          "Admin end users"
+        ],
+        "operationId": "blockAppUser",
+        "summary": "Block an end user",
+        "description": "Refuses the user's sign-in and requests, and stops their live sessions at the next checkpoint. Takes effect within ten seconds everywhere. A virtual user has no row and answers 404.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user id."
+            },
+            "required": true,
+            "description": "The end user id.",
+            "name": "user",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's new block state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserBlockResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/users/{user}/unblock": {
+      "post": {
+        "tags": [
+          "Admin end users"
+        ],
+        "operationId": "unblockAppUser",
+        "summary": "Unblock an end user",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user id."
+            },
+            "required": true,
+            "description": "The end user id.",
+            "name": "user",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's new block state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserBlockResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/prices": {
+      "get": {
+        "tags": [
+          "Admin models"
+        ],
+        "operationId": "listModelPrices",
+        "summary": "List model prices",
+        "description": "Our price list, in dollars per million units, by provider type and model. A model the provider no longer lists keeps its price, marked `unlisted_since`.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The price list this deployment bills with.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceListResponse"
                 }
               }
             }
@@ -2859,6 +4172,16 @@
               }
             }
           },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
             "description": "The key has only the read grant, or its owner is not an account owner or admin.",
             "content": {
@@ -2880,7 +4203,94 @@
             }
           },
           "409": {
-            "description": "The slug is already in use.",
+            "description": "The slug is already in use, or the plan's ceiling on provider connections is reached (`billing_plan_limit_reached`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/providers/test": {
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "testProvider",
+        "summary": "Test a provider key without saving it",
+        "description": "Sends the provider one free request that needs a valid key, to the same host live requests would use, and reports what it answered. Nothing is stored, and saving a connection never runs this test. Only `rejected` says the key is probably wrong: a key restricted so it cannot list models may also get it, because some providers answer 401 for a missing permission.",
+        "security": [
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What the test found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
             "content": {
               "application/json": {
                 "schema": {

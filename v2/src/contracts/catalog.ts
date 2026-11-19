@@ -33,12 +33,25 @@ import {
   AppListResponseSchema,
   AppResponseSchema,
   AppUpdateRequestSchema,
+  AppCheckResponseSchema,
+  AppDraftValidateResponseSchema,
+  AppPatchRequestSchema,
+  AppValidateRequestSchema,
+  AppValidateResponseSchema,
   CreatedAppKeySchema,
   CreatedAppResponseSchema,
+  EndUserBlockResponseSchema,
+  EndUserListQuerySchema,
+  EndUserListResponseSchema,
+  EndUserQuerySchema,
+  EndUserResponseSchema,
+  PriceListResponseSchema,
   ProviderCreateRequestSchema,
   ProviderDeleteResponseSchema,
   ProviderListResponseSchema,
   ProviderResponseSchema,
+  ProviderTestRequestSchema,
+  ProviderTestResponseSchema,
   ProviderUpdateRequestSchema,
 } from "./admin.ts";
 
@@ -97,6 +110,15 @@ export const HealthResponseSchema = z
 const APP_PARAM = { app: { description: "The app id." } } as const;
 
 const PROVIDER_PARAM = { id: { description: "The provider connection id." } } as const;
+
+const USER_PARAMS = { app: { description: "The app id." }, user: { description: "The end user id." } } as const;
+
+/** Errors a create can answer with when the account's plan sets a ceiling. */
+const PLAN_CAP_ERRORS = {
+  402: "No plan is available for this account.",
+  409: "The plan's ceiling on this resource is reached (`billing_plan_limit_reached`, with `limit` and `used`).",
+  503: "Billing could not be reached, so nothing was saved. Retry shortly.",
+} as const;
 
 /** Errors every management route can answer with. */
 const ADMIN_ERRORS = {
@@ -228,7 +250,7 @@ export const CATALOG = {
     status: 201,
     response: CreatedAppResponseSchema,
     responseDescription: "The app, and its first key for an app-key app.",
-    errors: ADMIN_ERRORS,
+    errors: { ...ADMIN_ERRORS, ...PLAN_CAP_ERRORS },
   },
 
   getApp: {
@@ -256,6 +278,63 @@ export const CATALOG = {
     response: AppResponseSchema,
     responseDescription: "The updated app.",
     errors: { ...ADMIN_ERRORS, 409: "The app changed since it was read." },
+  },
+
+  patchApp: {
+    method: "PATCH",
+    path: "/v2/admin/apps/{app}",
+    params: APP_PARAM,
+    tags: ["Admin applications"],
+    summary: "Change part of an app",
+    description:
+      "Applies `operations` in order to the app as `getApp` answers it, then saves the result exactly as `PUT` would: the same checks, the same errors, and nothing written unless every operation applies and the result is accepted. Each operation is RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`, `/status` or `/config`, for example `{\"op\": \"replace\", \"path\": \"/config/limits/per_app/requests/per_minute\", \"value\": 600}`. A value is written as given: `null` sets a limit to unlimited, and only `remove` deletes. Needs `revision`, as `PUT` does. An operation that cannot apply answers `400 invalid_request` naming its index.",
+    security: "management",
+    request: AppPatchRequestSchema,
+    response: AppResponseSchema,
+    responseDescription: "The app after the change.",
+    errors: { ...ADMIN_ERRORS, 409: "The app changed since it was read." },
+  },
+
+  validateApp: {
+    method: "POST",
+    path: "/v2/admin/apps/{app}/validate",
+    params: APP_PARAM,
+    tags: ["Admin applications"],
+    summary: "Check an edit of an app without saving it",
+    description:
+      "Judged as an update of this app would be. After a provider connection is deleted, an edit may keep that connection's routing entry only if the entry is unchanged; an added or changed entry for it is refused. Needs only the read grant: nothing is saved.",
+    security: "management",
+    request: AppValidateRequestSchema,
+    response: AppValidateResponseSchema,
+    responseDescription: "The edit would be accepted.",
+    errors: ADMIN_ERRORS,
+  },
+
+  validateAppDraft: {
+    method: "POST",
+    path: "/v2/admin/app-drafts/validate",
+    tags: ["Admin applications"],
+    summary: "Check a new app's settings without saving them",
+    description: "Judged as a create would be, against the account's current provider connections and prices. Needs only the read grant.",
+    security: "management",
+    request: AppValidateRequestSchema,
+    response: AppDraftValidateResponseSchema,
+    responseDescription: "The settings would be accepted.",
+    errors: ADMIN_ERRORS,
+  },
+
+  checkApp: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/check",
+    params: APP_PARAM,
+    tags: ["Admin applications"],
+    summary: "Check whether an app is ready to serve requests",
+    description:
+      "Checks the stored config as an update would, lists every provider connection its routing names with its status (a disabled one as disabled, a deleted one as missing), and answers `ready` when the app is active and at least one of them is active. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
+    security: "management",
+    response: AppCheckResponseSchema,
+    responseDescription: "What the check found, and what it did not try.",
+    errors: ADMIN_ERRORS,
   },
 
   deleteApp: {
@@ -295,7 +374,7 @@ export const CATALOG = {
     status: 201,
     response: CreatedAppKeySchema,
     responseDescription: "The new key, shown once.",
-    errors: ADMIN_ERRORS,
+    errors: { ...ADMIN_ERRORS, ...PLAN_CAP_ERRORS },
   },
 
   revokeAppKey: {
@@ -307,6 +386,73 @@ export const CATALOG = {
     security: "management",
     response: AppKeyRevokeResponseSchema,
     responseDescription: "The revoked key.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppUsers: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/users",
+    params: APP_PARAM,
+    tags: ["Admin end users"],
+    summary: "List an app's end users",
+    description:
+      "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`.",
+    security: "management",
+    query: EndUserListQuerySchema,
+    response: EndUserListResponseSchema,
+    responseDescription: "One page of end users.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUser: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/users/{user}",
+    params: USER_PARAMS,
+    tags: ["Admin end users"],
+    summary: "Get an end user",
+    security: "management",
+    query: EndUserQuerySchema,
+    response: EndUserResponseSchema,
+    responseDescription: "The end user, with their usage in `month`.",
+    errors: ADMIN_ERRORS,
+  },
+
+  blockAppUser: {
+    method: "POST",
+    path: "/v2/admin/apps/{app}/users/{user}/block",
+    params: USER_PARAMS,
+    tags: ["Admin end users"],
+    summary: "Block an end user",
+    description:
+      "Refuses the user's sign-in and requests, and stops their live sessions at the next checkpoint. Takes effect within ten seconds everywhere. A virtual user has no row and answers 404.",
+    security: "management",
+    response: EndUserBlockResponseSchema,
+    responseDescription: "The user's new block state.",
+    errors: ADMIN_ERRORS,
+  },
+
+  unblockAppUser: {
+    method: "POST",
+    path: "/v2/admin/apps/{app}/users/{user}/unblock",
+    params: USER_PARAMS,
+    tags: ["Admin end users"],
+    summary: "Unblock an end user",
+    security: "management",
+    response: EndUserBlockResponseSchema,
+    responseDescription: "The user's new block state.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listModelPrices: {
+    method: "GET",
+    path: "/v2/admin/prices",
+    tags: ["Admin models"],
+    summary: "List model prices",
+    description:
+      "Our price list, in dollars per million units, by provider type and model. A model the provider no longer lists keeps its price, marked `unlisted_since`.",
+    security: "management",
+    response: PriceListResponseSchema,
+    responseDescription: "The price list this deployment bills with.",
     errors: ADMIN_ERRORS,
   },
 
@@ -333,7 +479,25 @@ export const CATALOG = {
     status: 201,
     response: ProviderResponseSchema,
     responseDescription: "The provider connection.",
-    errors: { ...ADMIN_ERRORS, 409: "The slug is already in use." },
+    errors: {
+      ...ADMIN_ERRORS,
+      ...PLAN_CAP_ERRORS,
+      409: "The slug is already in use, or the plan's ceiling on provider connections is reached (`billing_plan_limit_reached`).",
+    },
+  },
+
+  testProvider: {
+    method: "POST",
+    path: "/v2/admin/providers/test",
+    tags: ["Admin providers"],
+    summary: "Test a provider key without saving it",
+    description:
+      "Sends the provider one free request that needs a valid key, to the same host live requests would use, and reports what it answered. Nothing is stored, and saving a connection never runs this test. Only `rejected` says the key is probably wrong: a key restricted so it cannot list models may also get it, because some providers answer 401 for a missing permission.",
+    security: "management",
+    request: ProviderTestRequestSchema,
+    response: ProviderTestResponseSchema,
+    responseDescription: "What the test found.",
+    errors: ADMIN_ERRORS,
   },
 
   getProvider: {
