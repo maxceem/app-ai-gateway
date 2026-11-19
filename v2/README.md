@@ -13,7 +13,7 @@ what is built so far.
 | Path | What it is |
 | --- | --- |
 | `src/index.ts` | The Worker: the health check, app sign-in and `/me`, the management API, and provider requests (`/v2/apps/{app}/proxy/{provider}/...`). Everything else is a JSON 404. An hourly cron settles expired App Attest challenges. Every refusal is logged once as `gateway_error`. |
-| `src/contracts/` | Every API operation, declared once (`catalog.ts`); the sign-in bodies (`auth.ts`), the management API's shapes (`admin.ts`) and the app settings, `authentication` and `routing` (`app-config.ts`). The OpenAPI document is generated from them. Provider requests are not in the catalog: they follow the provider descriptions. |
+| `src/contracts/` | Every API operation, declared once (`catalog.ts`); the sign-in bodies (`auth.ts`), the management API's shapes (`admin.ts`) and the app settings, `authentication`, `routing` and `limits` (`app-config.ts`); and the billing service's shapes and plan limits (`billing.ts`). The OpenAPI document is generated from them. Provider requests are not in the catalog: they follow the provider descriptions. |
 | `src/db/schema.ts` | The D1 schema. `migrations/` is generated from it; `0002_ledger.sql` also holds the hand-written rollup trigger. |
 | `src/money.ts` | Money as whole nano-dollars (D20): the branded type and its helpers. Rounding happens once, when a charge is priced. |
 | `src/pricing/` | The price file (`models.json`, v1's, copied as it is), its integer rates, customer rates, and pricing token usage. |
@@ -25,11 +25,13 @@ what is built so far.
 | `src/client-auth/` | Who is calling: app keys, issuer tokens, gateway tokens, App Attest keys, assertions and per-request proofs, AppTransaction, the replay check, blocked users and auth events. `authenticateRequest` is the request path's entry point. |
 | `src/diagnostics/` | Rejection events: sampled records of provider requests refused before the provider. |
 | `src/routes/` | The sign-in routes (`/v2/apps/{app}/auth/*`) and `/v2/apps/{app}/me`. |
-| `src/do/` | Durable Objects: the end user's limiter (the App Attest replay counter for now), the sign-in flood limiter, and the per-app store for ledger writes that failed. |
+| `src/do/` | Durable Objects: the three limiters (the end user's, with the App Attest replay counter and the user's limits; the app's; the account's plan allowance), the sign-in flood limiter, and the per-app store for ledger writes that failed. |
+| `src/limits/` | Admission: the three limiters one after another, the replay check's own deadline and the one deadline the other checks share, and budget totals from the rollups. |
+| `src/billing/` | The hosted billing service (the optional `BILLING` binding): reading an account's plan, plan periods from 00:00 UTC on the renewal day, and spending the plan allowance without ever failing a request. |
 | `src/http/` | Reading request bodies with the 20 MiB limit, and the 10-second deadline on sign-in calls. |
 | `src/core/`, `src/apps/` | Errors, logs, isolate caches with stale fallback, the origin guard, and loading an app. |
 | `test/` | Tests that run in the Workers runtime, and compile-time checks (`operation-types.ts`). |
-| `smoke/` | Checks against a live deployment, and `smoke/mock/`, a mock OpenAI-compatible provider to call them against. |
+| `smoke/` | Checks against a live deployment; `smoke/mock/`, a mock OpenAI-compatible provider to call them against; and `smoke/billing-mock/`, a mock of the hosted billing service for the test deployment. |
 
 ## Commands
 

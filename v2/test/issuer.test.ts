@@ -1,6 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jwksCache, verifyIssuerToken } from "../src/client-auth/issuer.ts";
+import { jwksCache, jwksFetch, verifyIssuerToken } from "../src/client-auth/issuer.ts";
 import type { IssuerAuthentication } from "../src/contracts/app-config.ts";
 
 const ISSUER = "https://issuer.test/";
@@ -257,15 +257,20 @@ describe("issuer JWT verification", () => {
       });
     });
 
-    const startedAt = Date.now();
-    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
-      status: 503,
-      code: "issuer_verification_unavailable",
-      reason: "jwks_unreachable",
-    });
-    // Answered by the deadline rather than by never returning at all.
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_000);
-  }, 15_000);
+    const saved = jwksFetch.timeoutMs;
+    jwksFetch.timeoutMs = 50;
+    try {
+      await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+        status: 503,
+        code: "issuer_verification_unavailable",
+        reason: "jwks_unreachable",
+      });
+    } finally {
+      jwksFetch.timeoutMs = saved;
+    }
+    // Answered by the deadline rather than by never returning at all: the
+    // fetch above never settles on its own.
+  });
 
   it("rejects HS256 even when the JWKS contains a matching oct key", async () => {
     const secret = new TextEncoder().encode("attacker-controlled-symmetric-secret");

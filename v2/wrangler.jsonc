@@ -24,12 +24,15 @@
       // Flood limits on the app sign-in routes, per app and network address.
       { "name": "FLOOD_LIMITER", "class_name": "FloodLimiter" },
       // One per app: ledger writes that failed, retried until D1 takes them.
-      { "name": "CHARGE_STORE", "class_name": "ChargeStore" }
+      { "name": "CHARGE_STORE", "class_name": "ChargeStore" },
+      { "name": "APP_LIMITER", "class_name": "AppLimiter" },
+      { "name": "ACCOUNT_LIMITER", "class_name": "AccountLimiter" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["EndUserLimiter", "FloodLimiter"] },
-    { "tag": "v2", "new_sqlite_classes": ["ChargeStore"] }
+    { "tag": "v2", "new_sqlite_classes": ["ChargeStore"] },
+    { "tag": "v3", "new_sqlite_classes": ["AppLimiter", "AccountLimiter"] }
   ],
   // The vault that seals provider keys. `local` keeps the key in the Worker's
   // secrets (SECRET_VAULT_LOCAL_KEK_V<n>); `kms` uses a separate cf-kms

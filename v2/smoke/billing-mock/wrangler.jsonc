@@ -1,0 +1,17 @@
+// A mock of the hosted billing service, for the v2 test deployment only.
+// Deploy: `pnpm exec wrangler deploy -c smoke/billing-mock/wrangler.jsonc`.
+// The test deployment binds it as BILLING (gitignored wrangler.test.jsonc).
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "agw-test-v2-billing",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    // Account id → plan limits. Every other account gets the default plan
+    // with no limits. `smoke-allowance` is the account the allowance smoke
+    // check uses: 3 requests per period, 30 session minutes.
+    "PLANS": "{\"smoke-allowance\":{\"maxRequestsPerMonth\":3,\"maxSessionMinutesPerMonth\":30}}"
+  }
+}

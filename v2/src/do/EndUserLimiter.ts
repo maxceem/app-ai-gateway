@@ -2,21 +2,22 @@
  * The end user's limiter object (plan section 4.2, admission step 1).
  *
  * One per end user: per install on an App Attest app
- * (`<app>:install:<key id>`), per `<app>:<user>` on a server app. For now it
- * holds only the App Attest assertion counter of an install. The user's
- * limits and the session lease come in step 1b.
+ * (`<app>:install:<key id>`), per `<app>:user:<user>` on a server app. It
+ * holds the App Attest assertion counter of an install, and the end user's
+ * request windows and monthly budget (shared with the app limiter, see
+ * `./request-limits.ts`). The session lease comes with live sessions.
  *
  * Each assertion counter is accepted once. Requests are signed in one order
  * and can arrive in another, so a counter up to COUNTER_WINDOW behind the
  * highest one seen is still accepted once; one further behind never is.
  */
-import { DurableObject } from "cloudflare:workers";
+import { RequestLimitObject } from "./request-limits.ts";
 
 export const COUNTER_WINDOW = 64;
 
 const MASK_64 = (1n << 64n) - 1n;
 
-export class EndUserLimiter extends DurableObject<Env> {
+export class EndUserLimiter extends RequestLimitObject {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {

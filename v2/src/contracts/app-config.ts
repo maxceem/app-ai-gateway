@@ -240,12 +240,116 @@ export const RoutingConfigSchema = z
 export type ProviderRouting = z.output<typeof ProviderRoutingSchema>;
 export type RoutingConfig = z.output<typeof RoutingConfigSchema>;
 
+/**
+ * Whose month a `limits.per_user` budget is measured over: one install's, one
+ * user's, or one Apple Account's (every install of that account, across
+ * devices and reinstalls). The budget totals keep each of these
+ * (`budget_day`).
+ */
+export const BUDGET_SCOPES = ["install", "user", "apple_account"] as const;
+export type BudgetScope = (typeof BUDGET_SCOPES)[number];
+
+/** A request-count limit, or null for none. Zero is refused as a likely typo: it would be a closed door. */
+const RequestLimitSchema = z.number().int().positive().nullable();
+
+/**
+ * A monthly budget in whole nano-dollars (plan D20), or null for none. Zero is
+ * allowed and means no spend. The management API takes and returns it as is;
+ * the console and the CLI show dollars (step 2).
+ */
+const BudgetNanoSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+
+const RequestLimitsSchema = z
+  .object({ per_minute: RequestLimitSchema.default(null), per_day: RequestLimitSchema.default(null) })
+  .strict();
+
+const LimitScopeSchema = z
+  .object({
+    requests: RequestLimitsSchema.prefault({}),
+    spending: z.object({ monthly_nano: BudgetNanoSchema.default(null) }).strict().prefault({}),
+  })
+  .strict();
+
+/**
+ * The limits on each of an app's callers. On an App Attest app, requests are
+ * counted per install, and the budget by default per Apple Account; a server
+ * app counts everything per user. As v1, with the budget in nano-dollars.
+ */
+const PerUserLimitScopeSchema = z
+  .object({
+    requests: RequestLimitsSchema.prefault({}),
+    spending: z
+      .object({ monthly_nano: BudgetNanoSchema.default(null), scope: z.enum(BUDGET_SCOPES).optional() })
+      .strict()
+      .prefault({}),
+  })
+  .strict();
+
+/**
+ * The customer's own limits on its app (`app_*`). Never read by, and never
+ * reading, the plan allowance (`billing_*`).
+ */
+export const LimitsConfigSchema = z
+  .object({ per_user: PerUserLimitScopeSchema.prefault({}), per_app: LimitScopeSchema.prefault({}) })
+  .strict();
+
+export type LimitScope = z.output<typeof LimitScopeSchema>;
+export type PerUserLimitScope = z.output<typeof PerUserLimitScopeSchema>;
+export type LimitsConfig = z.output<typeof LimitsConfigSchema>;
+
+/** Whether a scope sets any limit at all. */
+export function scopeHasLimits(scope: LimitScope | PerUserLimitScope): boolean {
+  return scope.requests.per_minute !== null || scope.requests.per_day !== null || scope.spending.monthly_nano !== null;
+}
+
+/** Whether an app names its end users at all. */
+export function identifiesEndUsers(authentication: AuthenticationConfig): boolean {
+  return authentication.end_user.source !== "none";
+}
+
+/**
+ * Whose month the per-user budget is measured over: the configured scope, or
+ * by default the Apple Account on an App Attest app and the user on a server
+ * app (v1).
+ */
+export function configuredBudgetScope(authentication: AuthenticationConfig, limits: LimitsConfig): BudgetScope {
+  return limits.per_user.spending.scope ?? (authentication.type === "apple_app_attest" ? "apple_account" : "user");
+}
+
 export const AppConfigSchema = z
   .object({
     authentication: AuthenticationConfigSchema,
     routing: RoutingConfigSchema.prefault({}),
+    limits: LimitsConfigSchema.prefault({}),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const { authentication, limits } = config;
+    // Per-user limits need somebody to apply to: an app that names no end
+    // users caps itself with `per_app` instead.
+    if (!identifiesEndUsers(authentication) && scopeHasLimits(limits.per_user)) {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user"],
+        message: "needs an authentication.end_user source other than none: this app names no end users, so use limits.per_app",
+      });
+    }
+    const scope = limits.per_user.spending.scope;
+    if (scope !== undefined && authentication.type === "api_key" && scope !== "user") {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message: `cannot be ${scope}: server apps have no install or Apple Account; the budget is per user`,
+      });
+    }
+    if (scope === "user" && authentication.type === "apple_app_attest" && authentication.end_user.source !== "issuer") {
+      context.addIssue({
+        code: "custom",
+        path: ["limits", "per_user", "spending", "scope"],
+        message: "cannot be user: this App Attest app has no signed-in user; use install or apple_account, or sign users in with an issuer",
+      });
+    }
+  });
 
 export type AppConfig = z.output<typeof AppConfigSchema>;
 

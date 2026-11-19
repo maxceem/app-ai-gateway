@@ -123,7 +123,7 @@ const median = (values) => {
 // What a test ran against, on the tests' side: its own file, plus the shared
 // helpers and setup of its area (but not the barrels, which only list files).
 // Another test file changing does not change it.
-const AREAS = ["test/", "console/src/", "cli/", "smoke/"];
+const AREAS = ["test/", "console/src/", "cli/", "smoke/", "v2/test/", "v2/smoke/"];
 const areaOf = (file) => AREAS.find((area) => file.startsWith(area)) ?? "";
 const isTestFile = (file) => /\.test\.[cm]?[jt]sx?$/.test(file);
 

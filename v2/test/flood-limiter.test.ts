@@ -200,9 +200,12 @@ describe("enforceEndpointRateLimit", () => {
     vi.useFakeTimers();
     vi.setSystemTime(ANCHOR);
     const scopeId = `app:${crypto.randomUUID()}`;
-    for (let i = 0; i < ENDPOINT_RATE_LIMITS.app_auth_challenge.limit; i += 1) {
-      await enforceEndpointRateLimit(env, "app_auth_challenge", scopeId);
-    }
+    // Sent together to stay fast; the limiter counts each one atomically.
+    await Promise.all(
+      Array.from({ length: ENDPOINT_RATE_LIMITS.app_auth_challenge.limit }, () =>
+        enforceEndpointRateLimit(env, "app_auth_challenge", scopeId),
+      ),
+    );
     const refusal = enforceEndpointRateLimit(env, "app_auth_challenge", scopeId);
     await expect(refusal).rejects.toMatchObject({
       status: 429,
