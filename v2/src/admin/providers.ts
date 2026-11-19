@@ -13,6 +13,7 @@
 import type { Context } from "hono";
 import {
   ProviderCreateRequestSchema,
+  ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   type ModelPricingSchema,
 } from "../contracts/admin.ts";
@@ -21,11 +22,13 @@ import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import type { CustomerRates, TokenRateField } from "../pricing/prices.ts";
-import { invalidateConnection } from "../providers/connections.ts";
+import { invalidateConnection, upstreamOrigin } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
+import { planCap } from "./plan-caps.ts";
+import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
@@ -153,12 +156,14 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const id = newConnectionId();
   const blob = await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, baseUrl ?? ""], body.secret);
+  const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
+  let written: D1Result;
   try {
-    await c.env.DB.prepare(
+    written = await c.env.DB.prepare(
       `INSERT INTO provider_connection
         (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ?)`,
+       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
     )
       .bind(
         id,
@@ -173,6 +178,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         actor.userId,
         now,
         now,
+        ...cap.binds,
       )
       .run();
   } catch (error) {
@@ -180,6 +186,10 @@ export async function createProvider(c: AdminContext): Promise<Response> {
       throw new GatewayError(409, "conflict", `A provider connection with slug ${slug} already exists`);
     }
     throw error;
+  }
+  if (written.meta.changes !== 1) {
+    await cap.assertNotReached();
+    throw new GatewayError(409, "conflict", "The provider connection could not be created; retry");
   }
   invalidateConnection(actor.accountId, slug);
   const row = await connectionRow(c.env.DB, actor.accountId, id);
@@ -250,4 +260,24 @@ export async function deleteProvider(c: AdminContext): Promise<Response> {
   await c.env.DB.prepare("DELETE FROM provider_connection WHERE id = ? AND account_id = ?").bind(current.id, actor.accountId).run();
   invalidateConnection(actor.accountId, current.slug);
   return c.json({ deleted: true, provider_id: current.id } satisfies OperationResponse<"deleteProvider">);
+}
+
+/**
+ * Tests a key with the provider, without storing anything. Needs the manage
+ * grant: it sends a key the caller supplies to a host the caller may name.
+ */
+export async function testProvider(c: AdminContext): Promise<Response> {
+  requireManage(c.get("actor"));
+  const body = await parseBody(c, ProviderTestRequestSchema);
+  const description = builtInProvider(body.type);
+  if (description === null) {
+    throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
+  }
+  const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
+  const origin = upstreamOrigin(
+    { id: "", accountId: "", type: body.type, slug: "", status: "active", baseUrl, secretBlob: null, rates: null },
+    description,
+    "main",
+  );
+  return c.json((await probeProviderKey(description, origin, body.secret)) satisfies OperationResponse<"testProvider">);
 }

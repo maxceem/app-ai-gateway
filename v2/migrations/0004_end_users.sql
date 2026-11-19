@@ -1,0 +1,1 @@
+CREATE INDEX `charge_app_user_used` ON `charge` (`app_id`,`end_user_id`,`used_at`);

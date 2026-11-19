@@ -46,7 +46,8 @@ export type ErrorCode =
   | "app_revision_required"
   | "app_revision_conflict"
   | "provider_not_found"
-  | "key_not_found";
+  | "key_not_found"
+  | "billing_plan_limit_reached";
 
 export type GatewayErrorData = Record<string, string | number | boolean>;
 

@@ -158,3 +158,180 @@ export const ProviderUpdateRequestSchema = z
 export const ProviderDeleteResponseSchema = z
   .object({ deleted: z.literal(true), provider_id: z.string() })
   .meta({ id: "ProviderDeleteResponse" });
+
+// ---------------------------------------------------------------------------
+// Step 1d: the rest of the management API
+
+/** The most operations one patch may carry, as v1. */
+export const APP_PATCH_MAX_OPERATIONS = 100;
+
+/**
+ * Where a patch operation applies, as a JSON Pointer (RFC 6901) into the app
+ * `getApp` answers with: `/name`, `/status`, or anything under `/config`. The
+ * id, revision and times are not the patch's to change. Without a regex flag,
+ * because it is published as an OpenAPI `pattern`.
+ */
+const AppPatchPathSchema = z
+  .string()
+  .regex(/^\/(?:name|status|config(?:\/(?:[^~/]|~[01])*)*)$/, {
+    error: "path must be /name, /status or a JSON Pointer under /config",
+  })
+  .meta({ example: "/config/limits/per_app/requests/per_minute" });
+
+/** What `add` and `replace` write. Required, even when it is `null`. */
+const AppPatchValueSchema = z.unknown().nonoptional({ error: "value is required; send null to write null" });
+
+/**
+ * One change, as RFC 6902 (JSON Patch) defines it, limited to the three
+ * operations that change a document. `null` is a value like any other: it
+ * sets a limit to unlimited, and only `remove` deletes.
+ */
+export const AppPatchOperationSchema = z
+  .discriminatedUnion(
+    "op",
+    [
+      z.object({ op: z.literal("add"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+      z.object({ op: z.literal("replace"), path: AppPatchPathSchema, value: AppPatchValueSchema }).strict(),
+      z.object({ op: z.literal("remove"), path: AppPatchPathSchema }).strict(),
+    ],
+    { error: "op must be add, replace or remove" },
+  )
+  .meta({ id: "AppPatchOperation" });
+export type AppPatchOperation = z.infer<typeof AppPatchOperationSchema>;
+
+export const AppPatchRequestSchema = z
+  .object({
+    /** The revision the app was read at, as for `PUT`. */
+    revision: z.number().int().positive().optional(),
+    operations: z
+      .array(AppPatchOperationSchema)
+      .min(1, { error: "operations must name at least one change" })
+      .max(APP_PATCH_MAX_OPERATIONS, { error: `operations can name at most ${APP_PATCH_MAX_OPERATIONS} changes` }),
+  })
+  .strict()
+  .meta({ id: "AppPatchRequest" });
+
+/** A whole app as `PUT` takes it, without the revision: what the validate routes judge. */
+export const AppValidateRequestSchema = z
+  .object({ name: AppNameSchema, config: z.unknown(), status: z.enum(APP_STATUSES).optional() })
+  .strict()
+  .meta({ id: "AppValidateRequest" });
+
+export const AppValidateResponseSchema = z
+  .object({ valid: z.literal(true), app_id: z.string() })
+  .meta({ id: "AppValidateResponse" });
+
+export const AppDraftValidateResponseSchema = z.object({ valid: z.literal(true) }).meta({ id: "AppDraftValidateResponse" });
+
+export const AppCheckResponseSchema = z
+  .object({
+    app_id: z.string(),
+    status: z.enum(APP_STATUSES),
+    providers: z
+      .array(
+        z.object({
+          id: z.string().nullable(),
+          slug: z.string(),
+          status: z.enum(["active", "disabled", "missing"]),
+        }),
+      )
+      .meta({
+        description:
+          "Every provider connection the app's routing names. A disabled one is listed as disabled, and one that was deleted as missing, with a null id.",
+      }),
+    ready: z.boolean().meta({ description: "Whether the app is active and at least one connection it names is active." }),
+    limitations: z.array(z.string()).meta({ description: "What this check did not exercise, one sentence each." }),
+  })
+  .meta({ id: "AppCheckResponse" });
+
+/** An app's end user, as the management API lists them (v1's shape). */
+export const EndUserSchema = z
+  .object({
+    id: z.string(),
+    status: z.enum(["active", "blocked"]),
+    installs: z.number().int().meta({
+      description: "How many App Attest keys the user holds: one per install. Always 0 on server apps.",
+    }),
+    is_install: z.boolean().meta({ description: "Whether this id is itself an App Attest key, so the row is one install." }),
+    created_at: z.string().nullable(),
+    last_seen_at: z.string().nullable(),
+    is_virtual: z.boolean().meta({
+      description:
+        "True for a user id that only the app's usage or refusals name, such as a server app's end-user header. Such a user has no row, and cannot be blocked.",
+    }),
+    usage: z
+      .object({
+        charges: z.number().int().meta({ description: "Charges in the month, corrections not counted." }),
+        failed: z.number().int().meta({ description: "Of those, attempts that did not end with success." }),
+        cost_nano: z.number().int().meta({ description: "What the month cost, in nano-dollars, corrections included." }),
+        input_tokens: z.number().int(),
+        cached_input_tokens: z.number().int(),
+        output_tokens: z.number().int(),
+      })
+      .meta({ description: "The user's usage in `month`, from the ledger." }),
+  })
+  .meta({ id: "EndUser" });
+
+/** A UTC month, `YYYY-MM`. */
+export const MonthSchema = z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/, { error: "month must be YYYY-MM" });
+
+export const EndUserListQuerySchema = z.object({
+  month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
+  query: z.string().max(200).optional().meta({ description: "Part of the user id." }),
+  status: z.enum(["active", "blocked"]).optional(),
+  limit: z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50),
+  offset: z.coerce.number().int().min(0, { error: "offset must be 0 or more" }).default(0),
+});
+
+export const EndUserQuerySchema = z.object({
+  month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
+});
+
+export const EndUserListResponseSchema = z
+  .object({
+    app_id: z.string(),
+    month: z.string(),
+    total: z.number().int(),
+    limit: z.number().int(),
+    offset: z.number().int(),
+    users: z.array(EndUserSchema),
+  })
+  .meta({ id: "EndUserListResponse" });
+
+export const EndUserResponseSchema = z
+  .object({ app_id: z.string(), month: z.string(), user: EndUserSchema })
+  .meta({ id: "EndUserResponse" });
+
+export const EndUserBlockResponseSchema = z
+  .object({ app_id: z.string(), user_id: z.string(), blocked: z.boolean() })
+  .meta({ id: "EndUserBlockResponse" });
+
+/** The price file as it is: dollars per million units, keyed by provider type and model. */
+export const PriceListResponseSchema = z
+  .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })
+  .meta({ id: "PriceListResponse" });
+
+export const ProviderTestRequestSchema = z
+  .object({
+    type: z.string().trim().min(1),
+    secret: SecretSchema,
+    baseUrl: z.string().optional(),
+  })
+  .strict()
+  .meta({ id: "ProviderTestRequest" });
+
+/**
+ * What a key test found. Only `rejected` says the key is wrong. Every other
+ * reason means "not proven", and must never stop someone from saving a key
+ * they know is right.
+ */
+export const ProviderTestResponseSchema = z
+  .object({
+    validated: z.boolean(),
+    reason: z.enum(["no_probe", "unreachable", "unexpected_status", "rejected"]).optional().meta({
+      description:
+        "Why the key was not confirmed. no_probe: this provider has no cheap call to test with. unreachable: no answer in time. unexpected_status: an answer that proves nothing either way. rejected: the provider refused the key.",
+    }),
+    status: z.number().int().optional().meta({ description: "The provider's HTTP status, for unexpected_status and rejected." }),
+  })
+  .meta({ id: "ProviderTestResponse" });

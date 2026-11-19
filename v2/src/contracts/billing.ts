@@ -90,9 +90,10 @@ export const GatewayBillingAccessSchema = z.discriminatedUnion("state", [
  * whole count and every one is optional: absent means unlimited.
  *
  * `maxRequestsPerMonth` and `maxSessionMinutesPerMonth` are spent on the
- * request path, per plan period. The ceilings on stored settings (v1's
- * `maxApps`, `maxProviders`, `maxActiveKeysPerApp`, …) are read and enforced
- * with the rest of the management API in step 1d.
+ * request path, per plan period. `maxApps`, `maxProviders` and
+ * `maxActiveKeysPerApp` are ceilings on stored settings, checked when an app,
+ * a provider connection or an app key is created (v1's keys, without
+ * `maxProviderGateways`: v2 has no gateway objects, D13).
  *
  * This is the plan allowance an account pays for. It never caps, and is never
  * read by, the limits an app sets on its own end users (`app_*`).
@@ -102,23 +103,33 @@ export const PlanLimitsSchema = z.object({
     .meta({ description: "Requests the account may send to providers per plan period." }),
   maxSessionMinutesPerMonth: z.number().int().optional()
     .meta({ description: "Live session minutes the account may use per plan period. Enforced once live sessions exist." }),
+  maxApps: z.number().int().optional().meta({ description: "Apps the account may have." }),
+  maxProviders: z.number().int().optional().meta({ description: "Provider connections the account may have, disabled ones included." }),
+  maxActiveKeysPerApp: z.number().int().optional().meta({ description: "Active app keys one app may have." }),
 });
+
+/** Every plan limit key this gateway reads. */
+export const PLAN_LIMIT_KEYS = [
+  "maxRequestsPerMonth",
+  "maxSessionMinutesPerMonth",
+  "maxApps",
+  "maxProviders",
+  "maxActiveKeysPerApp",
+] as const;
+export type PlanLimitKey = (typeof PLAN_LIMIT_KEYS)[number];
 
 /**
  * One plan limit as plan data may carry it. JSON has no integer type, so
  * `10000`, `10000.0` and `"10000"` mean the same; a fraction, a negative, a
  * boolean, `null`, an object or an empty string is not a count.
  */
-const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1)])
+export const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1)])
   .transform(Number)
   .pipe(z.number().int().nonnegative())
   .optional();
 
 /** Plan limits as plan data carries them. Keys this gateway does not read are ignored. */
-export const PlanLimitsInputSchema = z.object({
-  maxRequestsPerMonth: PlanLimitInputSchema,
-  maxSessionMinutesPerMonth: PlanLimitInputSchema,
-});
+
 
 export type BillingSubscriptionStatus = z.infer<typeof BillingSubscriptionStatusSchema>;
 export type EntitledPlan = z.infer<typeof EntitledPlanSchema>;

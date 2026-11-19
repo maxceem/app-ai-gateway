@@ -351,6 +351,8 @@ export const charge = sqliteTable(
   (table) => [
     index("charge_app_used").on(table.appId, table.usedAt),
     index("charge_account_used").on(table.accountId, table.usedAt),
+    // An app's end users and their usage in a month (the management API's user list).
+    index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),
     index("charge_owner").on(table.ownerType, table.ownerId),
     index("charge_corrects").on(table.correctsChargeId),
     check("charge_kind", oneOf(table.kind, CHARGE_KINDS)),

@@ -244,6 +244,11 @@ export interface ProviderDescription {
   readonly refused: readonly string[];
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
+  /**
+   * A cheap, free `GET` on the main host that needs a valid key, used to test
+   * a key before it is saved. Without one, a test answers `no_probe`.
+   */
+  readonly probe?: { readonly path: string };
 }
 
 // ---------------------------------------------------------------------------

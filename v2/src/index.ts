@@ -7,7 +7,8 @@
  *
  * Step 1a part 2 added app sign-in and `/me`; part 3 adds provider requests
  * (`/v2/apps/{app}/proxy/{provider}/...`, outside the catalog because they
- * follow the provider descriptions) and the minimal management API.
+ * follow the provider descriptions) and the minimal management API, which
+ * step 1d completes.
  */
 import { Hono, type Context } from "hono";
 import { settleExpiredChallenges } from "./client-auth/auth-events.ts";
@@ -22,8 +23,23 @@ import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, t
 import { meHandler } from "./routes/me.ts";
 import { proxyHandler } from "./proxy/serve.ts";
 import { adminAuth, type AdminVariables } from "./admin/actor.ts";
-import { createApp, createAppKey, deleteApp, getApp, listAppKeys, listApps, revokeAppKey, updateApp } from "./admin/apps.ts";
-import { createProvider, deleteProvider, getProvider, listProviders, updateProvider } from "./admin/providers.ts";
+import {
+  checkApp,
+  createApp,
+  createAppKey,
+  deleteApp,
+  getApp,
+  listAppKeys,
+  listApps,
+  patchApp,
+  revokeAppKey,
+  updateApp,
+  validateApp,
+  validateAppDraft,
+} from "./admin/apps.ts";
+import { listModelPrices } from "./admin/prices.ts";
+import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "./admin/providers.ts";
+import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "./admin/users.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
@@ -58,11 +74,21 @@ admin.get(routePath("listApps"), listApps);
 admin.post(routePath("createApp"), createApp);
 admin.get(routePath("getApp"), getApp);
 admin.put(routePath("updateApp"), updateApp);
+admin.patch(routePath("patchApp"), patchApp);
 admin.delete(routePath("deleteApp"), deleteApp);
+admin.post(routePath("validateApp"), validateApp);
+admin.post(routePath("validateAppDraft"), validateAppDraft);
+admin.get(routePath("checkApp"), checkApp);
 admin.get(routePath("listAppKeys"), listAppKeys);
 admin.post(routePath("createAppKey"), createAppKey);
 admin.post(routePath("revokeAppKey"), revokeAppKey);
+admin.get(routePath("listAppUsers"), listAppUsers);
+admin.get(routePath("getAppUser"), getAppUser);
+admin.post(routePath("blockAppUser"), blockAppUser);
+admin.post(routePath("unblockAppUser"), unblockAppUser);
+admin.get(routePath("listModelPrices"), listModelPrices);
 admin.get(routePath("listProviders"), listProviders);
+admin.post(routePath("testProvider"), testProvider);
 admin.post(routePath("createProvider"), createProvider);
 admin.get(routePath("getProvider"), getProvider);
 admin.put(routePath("updateProvider"), updateProvider);

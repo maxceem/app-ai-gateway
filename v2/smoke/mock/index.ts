@@ -14,6 +14,10 @@
  *
  * Every answer carries `x-mock-received-bytes`, the bytes it read. A body
  * that is not JSON is still counted and answered.
+ *
+ * `GET /v1/models` answers an empty model list, the call a key test sends.
+ * The key `sk-mock-rejected` is refused there with 401, so a smoke check can
+ * see a rejected key.
  */
 const MAX_DELAY_MS = 120_000;
 
@@ -51,6 +55,12 @@ export default {
     if (url.pathname === "/health") return Response.json({ ok: true });
     if (!(request.headers.get("authorization") ?? "").startsWith("Bearer ")) {
       return Response.json({ error: { message: "Missing key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/models") {
+      if (request.headers.get("authorization") === "Bearer sk-mock-rejected") {
+        return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
+      }
+      return Response.json({ object: "list", data: [] });
     }
     if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") {
       return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });

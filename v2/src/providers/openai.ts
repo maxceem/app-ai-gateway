@@ -14,6 +14,8 @@ export const openai = defineProvider({
   auth: { header: "authorization", format: "Bearer {key}" },
   // The admin API (keys, projects, users, usage and costs) lives under `v1/organization`.
   refused: ["v1/organization/*"],
+  // Listing models is free and needs a valid key.
+  probe: { path: "v1/models" },
   operations: [
     defineOperation({
       name: "openai.chat",
