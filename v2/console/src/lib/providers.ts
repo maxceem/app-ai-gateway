@@ -1,0 +1,32 @@
+import { BUILT_IN_PROVIDERS } from "@providers/index";
+
+/** What people call each built-in provider. A type not listed here shows as itself. */
+const LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  elevenlabs: "ElevenLabs",
+  fal: "fal",
+};
+
+export function providerLabel(type: string): string {
+  return LABELS[type] ?? type;
+}
+
+/** Every provider type a connection can be added for, by label. */
+export const PROVIDER_TYPES: { type: string; label: string }[] = Object.keys(BUILT_IN_PROVIDERS)
+  .map((type) => ({ type, label: providerLabel(type) }))
+  .sort((a, b) => a.label.localeCompare(b.label));
+
+export interface OperationChoice {
+  name: string;
+  /** A live session, which the relay serves in a later release. */
+  session: boolean;
+}
+
+/** The operations a provider type declares, in its own order. */
+export function operationsOf(type: string): OperationChoice[] {
+  const description = Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type] : undefined;
+  return (description?.operations ?? []).map((operation) => ({
+    name: operation.name,
+    session: operation.session !== undefined,
+  }));
+}

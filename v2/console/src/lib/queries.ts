@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OperationRequest } from "@contracts/catalog";
+import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { call } from "./api";
 import {
   changePassword,
@@ -16,6 +16,15 @@ export const keys = {
   session: ["session"] as const,
   accounts: ["accounts"] as const,
   credentials: ["credentials"] as const,
+  apps: ["apps"] as const,
+  app: (appId: string) => ["app", appId] as const,
+  appCheck: (appId: string) => ["app-check", appId] as const,
+  appKeys: (appId: string) => ["app-keys", appId] as const,
+  /** Every page of one app's users, for an invalidation that is about all of them. */
+  usersPrefix: (appId: string) => ["users", appId] as const,
+  users: (appId: string, query: unknown) => ["users", appId, query] as const,
+  providers: ["providers"] as const,
+  prices: ["prices"] as const,
 };
 
 /**
@@ -125,5 +134,156 @@ export function useRevokeCredential() {
   return useMutation({
     mutationFn: (id: string) => call("revokeCredential", { params: { id } }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.credentials }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Apps
+
+export function useApps() {
+  return useQuery({ queryKey: keys.apps, queryFn: () => call("listApps") });
+}
+
+export function useApp(appId: string) {
+  return useQuery({ queryKey: keys.app(appId), queryFn: () => call("getApp", { params: { app: appId } }) });
+}
+
+/** Whether the connections an app names are in place. */
+export function useAppCheck(appId: string) {
+  return useQuery({ queryKey: keys.appCheck(appId), queryFn: () => call("checkApp", { params: { app: appId } }) });
+}
+
+/** Refreshes everything one app's change can move. */
+function invalidateApp(client: ReturnType<typeof useQueryClient>, appId: string) {
+  void client.invalidateQueries({ queryKey: keys.apps });
+  void client.invalidateQueries({ queryKey: keys.app(appId) });
+  void client.invalidateQueries({ queryKey: keys.appCheck(appId) });
+}
+
+export function useCreateApp() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: OperationRequest<"createApp">) => call("createApp", { body }),
+    // An app-key app's first key is in the answer, shown once.
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.apps }),
+  });
+}
+
+/** Saves the whole app, at the revision it was read at: a stale one is refused with 409. */
+export function useUpdateApp(appId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: OperationRequest<"updateApp">) => call("updateApp", { params: { app: appId }, body }),
+    onSuccess: (result) => {
+      client.setQueryData(keys.app(appId), result);
+      invalidateApp(client, appId);
+    },
+  });
+}
+
+/** Checks a whole app as a save would, without saving it. */
+export function useValidateApp(appId: string) {
+  return useMutation({
+    mutationFn: (body: OperationRequest<"validateApp">) => call("validateApp", { params: { app: appId }, body }),
+  });
+}
+
+export function useDeleteApp() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (appId: string) => call("deleteApp", { params: { app: appId } }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.apps }),
+  });
+}
+
+export function useAppKeys(appId: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.appKeys(appId),
+    queryFn: () => call("listAppKeys", { params: { app: appId } }),
+    enabled,
+  });
+}
+
+export function useCreateAppKey(appId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => call("createAppKey", { params: { app: appId }, body: { name } }),
+    // The result holds the only copy of the key.
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.appKeys(appId) }),
+  });
+}
+
+export function useRevokeAppKey(appId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) => call("revokeAppKey", { params: { app: appId, key: keyId } }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.appKeys(appId) }),
+  });
+}
+
+export type UserQuery = OperationQuery<"listAppUsers">;
+
+export function useAppUsers(appId: string, query: UserQuery) {
+  return useQuery({
+    queryKey: keys.users(appId, query),
+    queryFn: () => call("listAppUsers", { params: { app: appId }, query }),
+  });
+}
+
+export function useUserAction(appId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, block }: { userId: string; block: boolean }) =>
+      call(block ? "blockAppUser" : "unblockAppUser", { params: { app: appId, user: userId } }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.usersPrefix(appId) }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Provider connections and prices
+
+export function useProviders() {
+  return useQuery({ queryKey: keys.providers, queryFn: () => call("listProviders") });
+}
+
+export function useCreateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: OperationRequest<"createProvider">) => call("createProvider", { body }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+export function useUpdateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: OperationRequest<"updateProvider"> }) =>
+      call("updateProvider", { params: { id }, body }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+export function useDeleteProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => call("deleteProvider", { params: { id } }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+/** Tests a key against its provider. Stores nothing. */
+export function useTestProvider() {
+  return useMutation({
+    mutationFn: (body: OperationRequest<"testProvider">) => call("testProvider", { body }),
+  });
+}
+
+export function usePrices() {
+  return useQuery({
+    queryKey: keys.prices,
+    queryFn: () => call("listModelPrices"),
+    staleTime: 5 * 60_000,
   });
 }

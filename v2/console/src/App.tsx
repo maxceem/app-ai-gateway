@@ -5,6 +5,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppShell } from "@/components/app-shell";
 import { AccessPage } from "@/pages/access";
+import { AppDetailPage, DEFAULT_APP_TAB } from "@/pages/app-detail";
+import { AppsPage } from "@/pages/apps";
+import { PricesPage } from "@/pages/prices";
+import { ProvidersPage } from "@/pages/providers";
 import { DevicePage } from "@/pages/device";
 import { LoginPage } from "@/pages/login";
 import { OAuthConsentPage } from "@/pages/oauth-consent";
@@ -60,6 +64,11 @@ function AuthenticatedConsole() {
       <AppShell>
         <Routes>
           <Route path="/" element={<Navigate to={DEFAULT_LANDING} replace />} />
+          <Route path="/apps" element={<AppsPage />} />
+          <Route path="/apps/:appId" element={<Navigate to={DEFAULT_APP_TAB} replace />} />
+          <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+          <Route path="/providers" element={<ProvidersPage />} />
+          <Route path="/prices" element={<PricesPage />} />
           <Route path="/access" element={<AccessPage />} />
           <Route
             path="/settings"

@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ChevronsUpDown, Eye, KeyRound, LayoutGrid, LogOut, Settings } from "lucide-react";
+import { ChevronsUpDown, Eye, KeyRound, LayoutGrid, LogOut, Plug, Settings, Tag } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -27,10 +27,13 @@ interface NavItem {
 
 /**
  * The console's places to be. Account administration lives in the user menu
- * at the foot of the sidebar rather than competing with them here. Apps and
- * providers come with the next part of the v2 console.
+ * at the foot of the sidebar rather than competing with them here.
  */
-const NAV_ITEMS: NavItem[] = [];
+const NAV_ITEMS: NavItem[] = [
+  { to: "/apps", label: "Apps", icon: LayoutGrid },
+  { to: "/providers", label: "Providers", icon: Plug },
+  { to: "/prices", label: "Prices", icon: Tag },
+];
 
 /** Read-only members see why the console looks restricted, once, above their account. */
 function ReadOnlyBadge() {

@@ -45,7 +45,20 @@ const CONSOLE_BASE = "/v2";
  * or a missing file, stays a JSON 404. Add a route here when the console
  * gains one.
  */
-const CONSOLE_ROUTES = ["/login", "/signup", "/oauth/consent", "/device", "/access", "/settings", "/settings/:section"] as const;
+const CONSOLE_ROUTES = [
+  "/login",
+  "/signup",
+  "/oauth/consent",
+  "/device",
+  "/access",
+  "/settings",
+  "/settings/:section",
+  "/apps",
+  "/apps/:app",
+  "/apps/:app/:tab",
+  "/providers",
+  "/prices",
+] as const;
 
 const CONSOLE_ROUTE_SEGMENTS = CONSOLE_ROUTES.map((route) => route.slice(1).split("/"));
 

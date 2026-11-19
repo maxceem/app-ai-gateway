@@ -1,5 +1,5 @@
 /**
- * The v2 console on a live deployment (step 2d): its pages load on the
+ * The v2 console on a live deployment (step 2d, parts 1 and 2): its pages load on the
  * console's host under `/v2`, with their script and styles, and are never
  * framed. A page with no file of its own, such as the sign-in page, gets the
  * console's document, which routes it in the browser.
@@ -40,8 +40,8 @@ test("the console loads on its host under /v2", { skip: noConsole }, async () =>
   assert.match(await bundle.text(), /Sign in/u);
 });
 
-test("the sign-in, consent and device pages get the console's document", { skip: noConsole }, async () => {
-  for (const path of ["/v2/login", "/v2/oauth/consent?id=x", "/v2/device"]) {
+test("the console's pages get its document", { skip: noConsole }, async () => {
+  for (const path of ["/v2/login", "/v2/oauth/consent?id=x", "/v2/device", "/v2/apps", "/v2/apps/some-app/limits", "/v2/providers", "/v2/prices"]) {
     await assertConsoleDocument(await page(path));
   }
 });
@@ -59,4 +59,10 @@ test("the price list is published beside the console, readable from anywhere", {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
   assert.ok(typeof (await response.json()) === "object");
+});
+
+test("a missing file under /v2 stays the API's JSON 404, even for a browser", { skip: noConsole }, async () => {
+  const response = await page("/v2/assets/missing.js");
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get("content-type") ?? "", /application\/json/u);
 });

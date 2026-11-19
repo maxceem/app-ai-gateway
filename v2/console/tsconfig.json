@@ -22,7 +22,8 @@
     // it composes: plain zod, with nothing server-side behind it.
     "paths": {
       "@/*": ["./src/*"],
-      "@contracts/*": ["../src/contracts/*"]
+      "@contracts/*": ["../src/contracts/*"],
+      "@providers/*": ["../src/providers/*"]
     }
   },
   "include": ["src", "vite.config.ts", "../src/contracts"]

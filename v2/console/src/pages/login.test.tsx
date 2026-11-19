@@ -161,6 +161,6 @@ describe("LoginPage deep links", () => {
     await userEvent.type(screen.getByLabelText(/password/i), "correct-horse-42");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    await waitFor(() => expect(router.location.pathname).toBe("/access"));
+    await waitFor(() => expect(router.location.pathname).toBe("/apps"));
   });
 });

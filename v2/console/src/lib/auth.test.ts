@@ -39,7 +39,7 @@ describe("startGoogleSignIn", () => {
 
     expect(socialBody(fetchMock)).toMatchObject({
       provider: "google",
-      callbackURL: "/v2/access",
+      callbackURL: "/v2/apps",
       errorCallbackURL: "/v2/login",
     });
   });
@@ -61,7 +61,7 @@ describe("startGoogleSignIn", () => {
 
     // The return path arrives from the URL, so it is sanitized, not trusted.
     expect(socialBody(fetchMock)).toMatchObject({
-      callbackURL: "/v2/access",
+      callbackURL: "/v2/apps",
       errorCallbackURL: "/v2/login",
     });
   });
@@ -70,7 +70,7 @@ describe("startGoogleSignIn", () => {
     const fetchMock = stubSocial();
     await startGoogleSignIn("//evil.example");
 
-    expect(socialBody(fetchMock)).toMatchObject({ callbackURL: "/v2/access" });
+    expect(socialBody(fetchMock)).toMatchObject({ callbackURL: "/v2/apps" });
   });
 
   it("navigates to the provider URL", async () => {
