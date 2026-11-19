@@ -88,14 +88,20 @@ export function FormDialog({
             {description ? (
               <DialogDescription className="text-pretty">{description}</DialogDescription>
             ) : null}
-            {children}
+            {/* Every field and action is locked while the form saves, so what
+                the dialog shows is always what was sent. */}
+            <fieldset disabled={pending} className="contents">
+              {children}
+            </fieldset>
           </DialogBody>
 
           <DialogFooter>
             {/* Anything the form offers besides finishing it — a dry run of the
                 credential, say. It opens the footer row, so the caller can hold
                 it away from Cancel, and it must never submit. */}
-            {secondaryAction}
+            <fieldset disabled={pending} className="contents">
+              {secondaryAction}
+            </fieldset>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

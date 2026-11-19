@@ -52,9 +52,9 @@ describe("returnPathFrom", () => {
   });
 
   it("falls back to the landing page for missing or unsafe values", () => {
-    expect(returnPathFrom("")).toBe("/access");
-    expect(returnPathFrom("?from=https%3A%2F%2Fevil.example")).toBe("/access");
-    expect(returnPathFrom("?from=%2F%2Fevil.example")).toBe("/access");
+    expect(returnPathFrom("")).toBe("/apps");
+    expect(returnPathFrom("?from=https%3A%2F%2Fevil.example")).toBe("/apps");
+    expect(returnPathFrom("?from=%2F%2Fevil.example")).toBe("/apps");
   });
 });
 
@@ -64,7 +64,7 @@ describe("loginUrlFor", () => {
   });
 
   it("stays bare for the landing page and unsafe input", () => {
-    expect(loginUrlFor("/access")).toBe("/login");
+    expect(loginUrlFor("/apps")).toBe("/login");
     expect(loginUrlFor("//evil.example")).toBe("/login");
     expect(loginUrlFor(null)).toBe("/login");
   });

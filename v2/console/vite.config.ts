@@ -38,6 +38,9 @@ export default defineConfig({
       // The v2 API's contracts: the operation catalog and its schemas. Plain
       // zod, with no Hono or Worker code behind it.
       "@contracts": path.resolve(import.meta.dirname, "../src/contracts"),
+      // The built-in provider descriptions, for their operation names. The
+      // contracts already import them, so the bundle gains nothing new.
+      "@providers": path.resolve(import.meta.dirname, "../src/providers"),
     },
   },
   server: {

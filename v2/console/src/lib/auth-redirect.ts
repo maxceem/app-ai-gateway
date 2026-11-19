@@ -8,8 +8,8 @@ export const CONSOLE_BASE = "/v2";
 
 export const LOGIN_PATH = "/login";
 export const SIGNUP_PATH = "/signup";
-/** Where a signed-in person lands. The apps pages come in the next part of the console. */
-export const DEFAULT_LANDING = "/access";
+/** Where a signed-in person lands. */
+export const DEFAULT_LANDING = "/apps";
 
 /** Screens that render without a session; a 401 there is a failed attempt, not an expiry. */
 export const AUTH_PATHS: ReadonlySet<string> = new Set([LOGIN_PATH, SIGNUP_PATH]);
