@@ -16,6 +16,7 @@
  *   sweep to price, so no open work.
  * - A failed attempt that cost nothing: empty cost, shown as "—".
  */
+import { storedAppVersion } from "../core/app-version.ts";
 import { log } from "../core/log.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
@@ -62,6 +63,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const { usage } = outcome;
   const priced = usage === null || attempt.price === null ? null : priceTokens(attempt.price.price, usage);
   const succeeded = outcome.status === "ok" || outcome.status === "client_aborted";
+  // The provider said yes (2xx), so an answer cut short may have been billed.
+  const answered = outcome.httpStatus !== null && outcome.httpStatus >= 200 && outcome.httpStatus < 300;
 
   let priceSource: PriceSource;
   let measured: Measured;
@@ -92,7 +95,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
         model: attempt.model,
       });
     }
-  } else if (succeeded) {
+  } else if (succeeded || (outcome.cut && answered)) {
+    // An answer that started and reported no usage, or broke off before it
+    // did: the provider may have billed for it, so the cost is unknown.
     priceSource = "unresolved";
     measured = outcome.cut ? "partial" : "estimated";
     log("error", "usage_unresolved_cost", {
@@ -101,7 +106,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       providerType: attempt.providerType,
       providerSlug: attempt.providerSlug,
       model: attempt.model,
-      reason: outcome.cut ? "client_aborted" : "no_usage_reported",
+      reason:
+        outcome.status === "client_aborted" ? "client_aborted" : outcome.cut ? "upstream_failed" : "no_usage_reported",
     });
   } else {
     // A failed attempt with no usage: nothing was billed.
@@ -153,7 +159,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     correctionKind: null,
     correctsChargeId: null,
     latencyMs: outcome.latencyMs,
-    appVersion: attempt.appVersion,
+    appVersion: storedAppVersion(attempt.appVersion),
     authMethod: attempt.identity.authMethod,
     clientTraceId: attempt.clientTraceId,
     usedAt: attempt.startedAt,

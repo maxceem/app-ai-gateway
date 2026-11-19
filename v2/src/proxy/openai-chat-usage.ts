@@ -33,18 +33,28 @@ export function openAiChatUsage(value: unknown): TokenUsage | null {
     (key) => typeof usage[key] === "number",
   );
   if (!counted) return null;
+  // A count that is not an exact whole number is not usage the gateway can
+  // price: it is left unpriced and logged, never stored rounded.
+  const details0 = asRecord(usage.prompt_tokens_details) ?? asRecord(usage.input_tokens_details);
+  const read: unknown[] = [
+    ...["prompt_tokens", "input_tokens", "cached_tokens", "prompt_cache_hit_tokens", "completion_tokens", "output_tokens"].map((key) => usage[key]),
+    details0?.cached_tokens,
+    details0?.cache_write_tokens,
+  ];
+  if (read.some((value) => typeof value === "number" && !Number.isSafeInteger(value))) return null;
   const prompt = count(usage, "prompt_tokens") || count(usage, "input_tokens");
-  const details = asRecord(usage.prompt_tokens_details) ?? asRecord(usage.input_tokens_details);
+  const details = details0;
   const cached =
     (details === null ? 0 : count(details, "cached_tokens")) ||
     count(usage, "cached_tokens") ||
     count(usage, "prompt_cache_hit_tokens");
   const cacheWrite = details === null ? 0 : count(details, "cache_write_tokens");
+  const output = count(usage, "completion_tokens") || count(usage, "output_tokens");
   return {
     inputTokens: Math.max(0, prompt - cached - cacheWrite),
     cachedInputTokens: Math.min(cached, prompt),
     cacheWriteTokens: Math.min(cacheWrite, Math.max(0, prompt - cached)),
-    outputTokens: count(usage, "completion_tokens") || count(usage, "output_tokens"),
+    outputTokens: output,
   };
 }
 
@@ -58,16 +68,26 @@ function sseData(block: string): string | null {
   return data === "" || data === "[DONE]" ? null : data;
 }
 
+/**
+ * The events of an SSE text, last first: the intact ones, then the cut ones
+ * (whose JSON does not close) as only the `usage` object they may still hold
+ * whole, as v1 reads a cut event. Intact events always come first.
+ */
 function* sseValuesBackwards(text: string): Iterable<unknown> {
   const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
+  const cut: string[] = [];
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const data = sseData(blocks[index]!);
     if (data === null) continue;
     try {
       yield JSON.parse(data) as unknown;
     } catch {
-      // A malformed or cut event is skipped; an earlier one may still be usable.
+      cut.push(data);
     }
+  }
+  for (const data of cut) {
+    const recovered = tailUsage(data);
+    if (recovered !== null) yield recovered;
   }
 }
 

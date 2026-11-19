@@ -122,3 +122,25 @@ describe("the price list", () => {
     expect(long).toMatchObject({ longContext: true, rates: { input: 5000, output: 6000 } });
   });
 });
+
+describe("reading chat usage", () => {
+  it("refuses a token count that is not a whole number, instead of rounding it", async () => {
+    const { openAiChatUsage } = await import("../src/proxy/openai-chat-usage.ts");
+    expect(openAiChatUsage({ usage: { prompt_tokens: 1.5, completion_tokens: 0 } })).toBeNull();
+    expect(openAiChatUsage({ usage: { prompt_tokens: 2, completion_tokens: 1 } })).toMatchObject({ inputTokens: 2, outputTokens: 1 });
+  });
+});
+
+describe("reading chat usage from a cut stream (S2)", () => {
+  it("recovers a whole usage object from an event whose JSON never closed", async () => {
+    const { readChatUsage } = await import("../src/proxy/openai-chat-usage.ts");
+    const intact = `data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`;
+    const cut = 'data: {"id":"x","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3},"extra":"never clo';
+    expect(readChatUsage({ head: intact + cut, tail: "", truncated: false }, "text/event-stream")).toEqual({
+      inputTokens: 12,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 3,
+    });
+  });
+});

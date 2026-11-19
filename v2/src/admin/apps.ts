@@ -13,7 +13,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import { hasTokenPrice, type CustomerRates } from "../pricing/prices.ts";
-import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
+import { builtInProvider } from "../providers/index.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
@@ -82,8 +82,8 @@ export async function checkAppConfig(db: D1Database, accountId: string, raw: unk
     if (connection === null) {
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
-    const description = BUILT_IN_PROVIDERS[connection.type];
-    if (description === undefined) {
+    const description = builtInProvider(connection.type);
+    if (description === null) {
       throw invalid(`config.routing.providers.${slug}: provider type ${connection.type} is not supported`, { slug });
     }
     for (const operation of routing.operations) {
@@ -120,6 +120,14 @@ function newAppId(name: string): string {
     .slice(0, 40) || "app";
   const random = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
   return `${base}-${random}`;
+}
+
+/** App keys belong to app-key apps only, as v1. */
+function requireApiKeyApp(row: AppRow): void {
+  const config = JSON.parse(row.config_json) as { authentication?: { type?: unknown } };
+  if (config.authentication?.type !== "api_key") {
+    throw new GatewayError(400, "invalid_request", "App keys can only be managed for api_key apps");
+  }
 }
 
 async function appRow(db: D1Database, accountId: string, appId: string): Promise<AppRow> {
@@ -232,7 +240,7 @@ const keyView = (row: KeyRow) => ({
 
 export async function listAppKeys(c: AdminContext): Promise<Response> {
   const appId = c.req.param("app")!;
-  await appRow(c.env.DB, c.get("actor").accountId, appId);
+  requireApiKeyApp(await appRow(c.env.DB, c.get("actor").accountId, appId));
   const { results } = await c.env.DB.prepare(
     "SELECT id, name, key_prefix, status, created_at, last_used_at FROM app_key WHERE app_id = ? ORDER BY created_at, id",
   )
@@ -246,7 +254,7 @@ export async function createAppKey(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const appId = c.req.param("app")!;
   const body = await parseBody(c, AppKeyCreateRequestSchema);
-  await appRow(c.env.DB, actor.accountId, appId);
+  requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
   const key = await createKey(c.env.DB, appId, body.name, Date.now());
   await key.statement.run();
   return c.json(key.created satisfies OperationResponse<"createAppKey">, 201);
@@ -257,7 +265,7 @@ export async function revokeAppKey(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const appId = c.req.param("app")!;
   const keyId = c.req.param("key")!;
-  await appRow(c.env.DB, actor.accountId, appId);
+  requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
   await c.env.DB.prepare("UPDATE app_key SET status = 'revoked' WHERE id = ? AND app_id = ?").bind(keyId, appId).run();
   const row = await c.env.DB.prepare(
     "SELECT id, name, key_prefix, status, created_at, last_used_at FROM app_key WHERE id = ? AND app_id = ?",

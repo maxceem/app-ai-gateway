@@ -83,34 +83,61 @@ export function bodyWindows(): { push(chunk: Uint8Array): void; read(): Observed
   };
 }
 
+/** Whether a kept stream ends with its `data: [DONE]` event: the provider had sent everything. */
+export function streamFinished(body: ObservedText): boolean {
+  const last = body.truncated ? body.tail : body.head;
+  return /(?:^|\n)data:\s*\[DONE\]\s*$/u.test(last);
+}
+
 /**
  * Passes `body` through unchanged, and settles `observed` when it ends: read
  * to the end, cancelled by the app, or broken by the provider.
+ *
+ * A plain pulling stream rather than a TransformStream: a TransformStream's
+ * cancel hook also runs when the provider's side fails, which would make a
+ * broken provider stream look like the app leaving. Here the two cannot be
+ * mixed up. Nothing is read from the provider before the app asks for it.
  */
 export function observeBody(body: ReadableStream<Uint8Array>): {
   stream: ReadableStream<Uint8Array>;
   observed: Promise<ObservedBody>;
 } {
   const windows = bodyWindows();
-  let clientAborted = false;
-  const transform = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      controller.enqueue(chunk);
-      windows.push(chunk);
+  const reader = body.getReader();
+  let settle!: (value: ObservedBody) => void;
+  const observed = new Promise<ObservedBody>((resolve) => (settle = resolve));
+  let settled = false;
+  const finish = (clientAborted: boolean, upstreamFailed: boolean) => {
+    if (settled) return;
+    settled = true;
+    settle({ ...windows.read(), clientAborted, upstreamFailed });
+  };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        let result: ReadableStreamReadResult<Uint8Array>;
+        try {
+          result = await reader.read();
+        } catch (error) {
+          finish(false, true);
+          controller.error(error);
+          return;
+        }
+        if (result.done) {
+          finish(false, false);
+          controller.close();
+          return;
+        }
+        windows.push(result.value);
+        controller.enqueue(result.value);
+      },
+      // The app went away: stop reading from the provider too.
+      async cancel(reason) {
+        finish(true, false);
+        await reader.cancel(reason).catch(() => undefined);
+      },
     },
-    cancel() {
-      clientAborted = true;
-    },
-  });
-  const settle = (upstreamFailed: boolean): ObservedBody => ({
-    ...windows.read(),
-    clientAborted,
-    upstreamFailed: upstreamFailed && !clientAborted,
-  });
-  // A cancel by the app cancels the provider's body too (pipeTo propagates it).
-  const observed = body.pipeTo(transform.writable).then(
-    () => settle(false),
-    () => settle(true),
+    { highWaterMark: 0 },
   );
-  return { stream: transform.readable, observed };
+  return { stream, observed };
 }

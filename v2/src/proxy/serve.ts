@@ -22,10 +22,11 @@
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
-import { authenticateRequest } from "../client-auth/client-auth.ts";
+import { markApiKeyUsed } from "../client-auth/api-keys.ts";
+import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
-import { PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
+import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -47,7 +48,7 @@ import type { OperationDescription, ProviderDescription } from "../providers/ope
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { applyChatOutputCap, requestStreamUsage } from "./chat-policy.ts";
 import { clientResponseHeaders, upstreamHeaders } from "./headers.ts";
-import { observeBody } from "./observe.ts";
+import { observeBody, streamFinished } from "./observe.ts";
 import { readChatUsage } from "./openai-chat-usage.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
@@ -75,7 +76,12 @@ function servedNow(operation: OperationDescription): boolean {
 function proxyTarget(url: URL): { slug: string; path: string } {
   const segments = url.pathname.split("/");
   // ["", "v2", "apps", app, "proxy", slug, ...rest]
-  const slug = decodeURIComponent(segments[5] ?? "");
+  let slug: string;
+  try {
+    slug = decodeURIComponent(segments[5] ?? "");
+  } catch {
+    slug = "";
+  }
   if (!PROVIDER_SLUG_PATTERN.test(slug)) throw new GatewayError(403, "path_not_allowed", "Provider slug is invalid");
   const path = segments.slice(6).join("/");
   if (path === "") throw new GatewayError(403, "path_not_allowed", "Provider path is required");
@@ -92,11 +98,15 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const target = proxyTarget(url);
   const app = await loadApp(c.env, appId);
   assertAppActive(app);
-  const connection = await loadConnection(c.env, app.accountId, target.slug);
+  // Only a slug the app lists is looked up: the caller is not verified yet, so
+  // an unlisted one costs no D1 read and leaves nothing in the cache. It is
+  // refused below, once the caller is known.
+  const routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
+  const connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
   const description = connection === null ? null : connectionDescription(connection);
   const readBody = bodyOnce(c.req.raw);
 
-  const { identity, assertionCounter } = await authenticateRequest({
+  const { identity, credential, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,
     request: c.req.raw,
@@ -107,14 +117,28 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   if (identity.credentialType === "gateway_token" && appVersion === null) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
-  if (assertionCounter !== null && identity.installId !== null) {
-    await useAssertionCounter(c.env, app.id, identity.installId, assertionCounter);
-  }
 
   // From here on the caller is known, so a refusal is recorded as a rejection event.
   let operationName: string | null = null;
   let model: string | null = null;
   try {
+    if (assertionCounter !== null && identity.installId !== null) {
+      try {
+        await useAssertionCounter(c.env, app.id, identity.installId, assertionCounter);
+      } catch (error) {
+        // A replayed proof is a refusal to record, as v1; a limiter that did not answer is not.
+        throw error instanceof GatewayError && error.code === "attest_failed" ? refusal(error, "blocked_replay", "install") : error;
+      }
+    }
+    // An app key's last use, at most hourly, as v1. Never part of the answer.
+    if (identity.apiKeyId !== undefined) {
+      const apiKeyId = identity.apiKeyId;
+      c.executionCtx.waitUntil(
+        markApiKeyUsed(c.env, apiKeyId).catch((error: unknown) =>
+          log("warn", "api_key_used_failed", { app: app.id, error: errorFacts(error) }),
+        ),
+      );
+    }
     if (identity.userId !== null && (await cachedAppUserBlocked(c.env.DB, app.id, identity.userId))) {
       throw refusal(new GatewayError(403, "auth_required", "User is blocked"), "blocked_user", "user");
     }
@@ -126,7 +150,6 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         "X-Client-Trace-Id must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
       );
     }
-    const routing = app.routing.providers[target.slug];
     if (connection === null || description === null || routing === undefined) {
       throw new GatewayError(
         502,
@@ -189,7 +212,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       description,
       hostKey: match.upstream.host,
       path: match.upstream.path,
-      query: url.search,
+      query: sanitizedQuery(url),
+      stripped: [credential.headerName, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER],
       body: sent,
       attempt,
     });
@@ -202,7 +226,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           reason: reason.reason,
           scope: reason.scope,
           providerSlug: target.slug,
-          model,
+          model: model === null ? null : model.slice(0, 200),
           operation: operationName,
           appVersion,
           latencyMs: Date.now() - startedAt,
@@ -255,13 +279,31 @@ function requestModel(operation: OperationDescription, body: Record<string, unkn
 
 /** A provider error's own code, from `error.code` or `error.type`, if its body names one. */
 function providerErrorCode(text: string): string | null {
+  let value: unknown;
   try {
-    const value = JSON.parse(text) as { error?: { code?: unknown; type?: unknown } };
-    const code = value.error?.code ?? value.error?.type;
-    return typeof code === "string" && /^[A-Za-z0-9_.:-]{1,100}$/u.test(code) ? code : null;
+    value = JSON.parse(text);
   } catch {
     return null;
   }
+  const root = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+  const error =
+    root !== null && typeof root.error === "object" && root.error !== null && !Array.isArray(root.error)
+      ? (root.error as Record<string, unknown>)
+      : null;
+  // The first usable one, in v1's order: a number in `code` must not hide a good `type`.
+  const candidates = error !== null ? [error.code, error.type, error.status] : [root?.code, root?.type];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && /^[A-Za-z0-9_.:-]{1,60}$/u.test(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** The client's query without a key an SDK may have put there, as v1: the gateway never forwards a client key. */
+function sanitizedQuery(url: URL): string {
+  const copy = new URL(url);
+  copy.searchParams.delete("key");
+  copy.searchParams.delete("api_key");
+  return copy.search;
 }
 
 async function sendUpstream(
@@ -273,6 +315,8 @@ async function sendUpstream(
     hostKey: string;
     path: string;
     query: string;
+    /** Client headers that must never reach the provider, even if allowlisted: the gateway's own credentials and end-user ids. */
+    stripped: readonly string[];
     body: Uint8Array;
     attempt: CallAttempt;
   },
@@ -280,7 +324,11 @@ async function sendUpstream(
   const { connection, description, attempt } = input;
   const secret = await connectionSecret(c.env, connection);
   const headers = upstreamHeaders(c.req.raw.headers);
-  headers.set(description.auth.header, description.auth.format.replace("{key}", secret));
+  for (const name of input.stripped) headers.delete(name);
+  // Every operation served now sends a JSON body, whatever type the client named, as v1.
+  headers.set("content-type", "application/json");
+  // A callback, so a key containing `$&` or `$1` is sent as it is.
+  headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
   const origin = upstreamOrigin(connection, description, input.hostKey);
   const url = `${origin}${input.path.replace(/^\//u, "")}${input.query}`;
 
@@ -340,13 +388,18 @@ async function sendUpstream(
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        const cut = body.clientAborted || body.upstreamFailed;
+        const usage = ok ? readChatUsage(body, contentType) : null;
+        // A stream closed right after its `[DONE]`, with its usage read, was
+        // whole: the end of stream simply had not arrived yet.
+        const finished = usage !== null && streamFinished(body);
+        const cut = !finished && (body.clientAborted || body.upstreamFailed);
         const outcome: AttemptOutcome = ok
           ? {
-              status: body.clientAborted ? "client_aborted" : "ok",
+              // A stream the provider broke is a failed attempt, not one the app left.
+              status: !cut ? "ok" : body.clientAborted ? "client_aborted" : "network_error",
               httpStatus: upstream.status,
               errorCode: null,
-              usage: readChatUsage(body, contentType),
+              usage,
               cut,
               latencyMs,
             }
@@ -358,7 +411,7 @@ async function sendUpstream(
               cut,
               latencyMs,
             };
-        return recordLedgerEntry(c.env, callCharge(attempt, outcome));
+        return recordLedgerEntry(c.env, safeCharge(attempt, outcome));
       },
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),
@@ -368,7 +421,26 @@ async function sendUpstream(
 
 /** Writes the charge of an attempt that ended with no body to read, after the response. */
 function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome): void {
-  c.executionCtx.waitUntil(recordLedgerEntry(c.env, callCharge(attempt, outcome)));
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, safeCharge(attempt, outcome)));
+}
+
+/**
+ * The attempt's charge. If pricing throws (a cost too large to store, say),
+ * the charge is still written, unpriced, and the failure is logged: a charge
+ * is never lost or silently miscounted.
+ */
+function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
+  try {
+    return callCharge(attempt, outcome);
+  } catch (error) {
+    log("error", "usage_pricing_failed", {
+      app: attempt.appId,
+      providerSlug: attempt.providerSlug,
+      model: attempt.model,
+      error: errorFacts(error),
+    });
+    return callCharge({ ...attempt, price: null }, outcome);
+  }
 }
 
 /** The identity of a request, for the type checker in tests. */

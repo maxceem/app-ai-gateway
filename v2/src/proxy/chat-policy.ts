@@ -25,7 +25,8 @@ export function applyChatOutputCap(body: Record<string, unknown>, cap: number | 
   if (cap === undefined) return false;
   let named = false;
   for (const field of ["max_tokens", "max_completion_tokens"]) {
-    if (!Object.hasOwn(body, field)) continue;
+    // `null` asks for no limit, so it counts as absent: the cap is written instead.
+    if (!Object.hasOwn(body, field) || body[field] === null) continue;
     named = true;
     const value = body[field];
     if (typeof value === "number" && value > cap) throw capExceeded(field, cap);

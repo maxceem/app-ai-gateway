@@ -196,6 +196,12 @@ export function parseAuthentication(config: unknown): AuthenticationConfig {
   throw new ConfigError(`${where}: ${issue?.message ?? "is invalid"}`);
 }
 
+/**
+ * The conventional end-user header. Never sent to a provider, whatever header
+ * an app names for its end users, as v1.
+ */
+export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+
 /** A provider connection's slug, as in request paths. */
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -250,4 +256,31 @@ export function parseAppConfig(config: unknown): AppConfig {
   const issue = parsed.error.issues[0];
   const where = issue === undefined ? "" : issue.path.join(".");
   throw new ConfigError(`${where}: ${issue?.message ?? "is invalid"}`);
+}
+
+/**
+ * A stored `config_json` as the request path reads it: forgiving where saving
+ * is strict (`AGENTS.md`). Keys this version does not know, such as ones a
+ * later version wrote before a rollback, are dropped and named in
+ * `ignoredKeys`; anything else wrong still throws `ConfigError`.
+ */
+export function parseServedAppConfig(config: unknown): { config: AppConfig; ignoredKeys: string[] } {
+  let value: unknown = structuredClone(config);
+  const ignoredKeys: string[] = [];
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const parsed = AppConfigSchema.safeParse(value);
+    if (parsed.success) return { config: parsed.data, ignoredKeys };
+    const issues = parsed.error.issues;
+    if (!issues.every((issue) => issue.code === "unrecognized_keys")) break;
+    for (const issue of issues) {
+      let target: unknown = value;
+      for (const part of issue.path) target = (target as Record<PropertyKey, unknown> | undefined)?.[part];
+      if (typeof target !== "object" || target === null) continue;
+      for (const key of (issue as { keys: string[] }).keys) {
+        delete (target as Record<string, unknown>)[key];
+        ignoredKeys.push([...issue.path.map(String), key].join("."));
+      }
+    }
+  }
+  return { config: parseAppConfig(value), ignoredKeys };
 }

@@ -19,10 +19,10 @@ import {
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
-import { NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
+import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import type { CustomerRates, TokenRateField } from "../pricing/prices.ts";
 import { invalidateConnection } from "../providers/connections.ts";
-import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
+import { builtInProvider } from "../providers/index.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -50,8 +50,13 @@ interface ConnectionRow {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/**
+ * The last four characters, so a person can tell keys apart. A key shorter
+ * than 12 characters gets no hint: four of them would give away too much of it,
+ * and a response must never contain a submitted secret.
+ */
 export function secretHint(secret: string): string {
-  return secret.length <= 4 ? secret.slice(-2) : secret.slice(-4);
+  return secret.length < 12 ? "" : secret.slice(-4);
 }
 
 /** Dollars per million to stored rates. */
@@ -60,8 +65,16 @@ export function ratesFromPricing(pricing: DollarPricing): CustomerRates {
   for (const [model, price] of Object.entries(pricing)) {
     const entry: Partial<Record<TokenRateField, number>> & { long_context_threshold?: number } = {};
     for (const [field, value] of Object.entries(price)) {
-      if (field === "long_context_threshold") entry.long_context_threshold = value;
-      else entry[field as TokenRateField] = rateFromDollarsPerMillion(value);
+      if (field === "long_context_threshold") {
+        entry.long_context_threshold = value;
+        continue;
+      }
+      try {
+        entry[field as TokenRateField] = rateFromDollarsPerMillion(value);
+      } catch (error) {
+        if (!(error instanceof MoneyError)) throw error;
+        throw new GatewayError(400, "invalid_request", `pricing.${model}.${field}: the price is too large`);
+      }
     }
     rates[model] = entry;
   }
@@ -133,7 +146,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, ProviderCreateRequestSchema);
-  if (BUILT_IN_PROVIDERS[body.type] === undefined) {
+  if (builtInProvider(body.type) === null) {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
   }
   const slug = body.slug ?? body.type;

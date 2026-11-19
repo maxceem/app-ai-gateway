@@ -68,6 +68,15 @@ describe("management sign-in", () => {
 });
 
 describe("provider connections", () => {
+  it("gives a key too short to hint at no hint, so no response contains it", async () => {
+    const key = await seedManagementKey();
+    const created = await createProvider(key, { secret: "ab" });
+    expect(created.status).toBe(201);
+    expect(created.body.provider.secretHint).toBe("");
+    const listed = await request(key, "GET", "/v2/admin/providers");
+    expect(JSON.stringify(listed.body)).not.toContain('"ab"');
+  });
+
   it("seals the key and returns only its hint", async () => {
     const key = await seedManagementKey();
     const created = await createProvider(key, { pricing: { "my-model": { input: 1, output: 2 } } });
@@ -192,5 +201,47 @@ describe("a call made with what the management API created", () => {
     expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe("Bearer sk-live-secret-abcd");
     const charge = await env.DB.prepare("SELECT status, price_source FROM charge WHERE app_id = ?").bind(app.body.app.id).first();
     expect(charge).toEqual({ status: "ok", price_source: "list_rate" });
+  });
+});
+
+describe("review fixes", () => {
+  it("refuses a provider type that is only an inherited name (S9)", async () => {
+    const key = await seedManagementKey();
+    for (const type of ["constructor", "toString", "__proto__"]) {
+      expect(await createProvider(key, { type })).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    }
+  });
+
+  it("manages app keys only for app-key apps (S10)", async () => {
+    const key = await seedManagementKey();
+    const created = await request(key, "POST", "/v2/admin/apps", {
+      name: "Attest",
+      config: {
+        authentication: {
+          type: "apple_app_attest",
+          end_user: { source: "app_install" },
+          app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.app" },
+        },
+      },
+    });
+    expect(created).toMatchObject({ status: 201, body: { api_key: null } });
+    const appId = created.body.app.id as string;
+    for (const [method, path, body] of [
+      ["POST", `/v2/admin/apps/${appId}/keys`, { name: "Nope" }],
+      ["GET", `/v2/admin/apps/${appId}/keys`, undefined],
+      ["POST", `/v2/admin/apps/${appId}/keys/key_x/revoke`, undefined],
+    ] as const) {
+      expect(await request(key, method, path, body)).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    }
+  });
+});
+
+describe("second review fixes", () => {
+  it("refuses a customer price too large to store, with 400 (F9)", async () => {
+    const key = await seedManagementKey();
+    expect(await createProvider(key, { pricing: { "my-model": { input: 1e300, output: 1 } } })).toMatchObject({
+      status: 400,
+      body: { error: { code: "invalid_request" } },
+    });
   });
 });

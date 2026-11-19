@@ -17,7 +17,7 @@ import { database } from "../db/index.ts";
 import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { openSecret } from "../vault/secrets.ts";
-import { BUILT_IN_PROVIDERS } from "./index.ts";
+import { builtInProvider } from "./index.ts";
 import type { ProviderDescription } from "./operation.ts";
 
 export interface ConnectionRecord {
@@ -80,7 +80,7 @@ export function invalidateConnection(accountId: string, slug: string): void {
 
 /** The built-in description for a connection's type, or null for a type this build does not know. */
 export function connectionDescription(connection: ConnectionRecord): ProviderDescription | null {
-  return BUILT_IN_PROVIDERS[connection.type] ?? null;
+  return builtInProvider(connection.type);
 }
 
 /** Opens a connection's key. A failure is a 502: the request cannot be sent without it. */

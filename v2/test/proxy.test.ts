@@ -7,19 +7,35 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import {
+  ACCOUNT_ID,
+  attestAuthentication,
+  clearCaches,
+  registerTestInstall,
+  seedAccount,
+  seedAppKey,
+  seedRoutedApp,
+  signedProof,
+  tokenForInstall,
+} from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-1234";
 
 async function seedConnection(
-  options: { slug?: string; baseUrl?: string | null; rates?: Record<string, unknown> | null; status?: "active" | "disabled" } = {},
+  options: {
+    slug?: string;
+    baseUrl?: string | null;
+    rates?: Record<string, unknown> | null;
+    status?: "active" | "disabled";
+    secret?: string;
+  } = {},
 ): Promise<{ id: string; slug: string }> {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = options.slug ?? `openai-${id.slice(0, 6)}`;
   const baseUrl = options.baseUrl ?? null;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? ""], options.secret ?? SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -252,6 +268,14 @@ describe("OpenAI chat through the proxy", () => {
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { code: "max_output_tokens_exceeded" } });
+    // `null` asks for no limit: the cap is written instead, so it cannot be skipped.
+    const unlimited = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+      chatRequest(key, { model: "gpt-4o-mini", max_completion_tokens: null }),
+    );
+    await unlimited.response.text();
+    await waitOnExecutionContext(unlimited.ctx);
+    expect(upstreamRequest(1).body).toMatchObject({ max_completion_tokens: 256 });
   });
 
   it("sends a connection with its own base URL there, and refuses a disabled connection", async () => {
@@ -331,5 +355,256 @@ describe("OpenAI chat through the proxy", () => {
     expect(response.status).toBe(401);
     const missing = await call(`/v2/apps/${appId}/proxy/no-such-slug/v1/chat/completions`, chatRequest("agw_wrong", { model: "x" }));
     expect(missing.response.status).toBe(401);
+  });
+});
+
+describe("review fixes", () => {
+  it("never sends the app's credential, end-user id or a query key to the provider (S1)", async () => {
+    const { id: _connection, slug } = await seedConnection();
+    void _connection;
+    const appId = await seedRoutedApp(
+      { type: "api_key", end_user: { source: "header", header: "x-stainless-user" } },
+      { providers: { [slug]: { operations: ["openai.chat"] } } },
+    );
+    const { key } = await seedAppKey(appId);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions?key=client-key&api_key=other&keep=1`,
+      chatRequest(key, { model: "gpt-4o-mini" }, { "x-stainless-user": "user-7", "x-stainless-lang": "js" }),
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const sent = upstreamRequest();
+    expect(sent.url).toBe("https://api.openai.com/v1/chat/completions?keep=1");
+    expect(sent.headers.get("x-stainless-user")).toBeNull();
+    expect(sent.headers.get("x-stainless-lang")).toBe("js");
+    expect(sent.headers.get("authorization")).toBe(`Bearer ${SECRET}`);
+  });
+
+  it("records a stream the provider broke as a failed attempt, not an ok one (S3)", async () => {
+    const { appId, slug, key } = await setup();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [] })}\n\n`));
+        controller.error(new Error("provider connection reset"));
+      },
+    });
+    fetchSpy.mockResolvedValue(new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+    const { response, ctx } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+      chatRequest(key, { model: "gpt-4o-mini", stream: true }),
+    );
+    await response.text().catch(() => undefined);
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([
+      { status: "network_error", measured: "partial", price_source: "unresolved", cost_nano: null },
+    ]);
+  });
+
+  it("writes the charge unpriced and logs it when pricing throws (S4)", async () => {
+    const { appId, slug, key } = await setup({}, { rates: { "gpt-4o-mini": { input: 9_000_000_000_000_000, output: 1 } } });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 2_000_000, completion_tokens: 1 } }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "unresolved", cost_nano: null, input_tokens: 2_000_000 }]);
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_pricing_failed"));
+  });
+
+  it("sends a provider key holding `$&` as it is (S5)", async () => {
+    const secret = "sk-$&-$1-key";
+    const { appId, slug, key } = await setup({}, { secret });
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(upstreamRequest().headers.get("authorization")).toBe(`Bearer ${secret}`);
+  });
+
+  it("marks the app key used (S6)", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const row = await env.DB.prepare("SELECT last_used_at FROM app_key WHERE app_id = ?").bind(appId).first<{ last_used_at: number | null }>();
+    expect(row?.last_used_at).toEqual(expect.any(Number));
+  });
+
+  it("records a replayed App Attest proof as a rejection event (S7)", async () => {
+    const { slug } = await seedConnection();
+    const appId = await seedRoutedApp(attestAuthentication(), { providers: { [slug]: { operations: ["openai.chat"] } } });
+    const install = await registerTestInstall(appId);
+    const token = await tokenForInstall(install);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const url = `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`;
+    const body = new TextEncoder().encode(JSON.stringify({ model: "gpt-4o-mini" }));
+    const proof = await signedProof({ install, token, method: "POST", url, body, counter: 1 });
+    const send = () =>
+      call(url.slice(ORIGIN.length), {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-app-version": "1.0", "x-appattest-proof": proof },
+        body,
+      });
+    const first = await send();
+    expect(first.response.status).toBe(200);
+    await first.response.text();
+    await waitOnExecutionContext(first.ctx);
+    const replay = await send();
+    expect(replay.response.status).toBe(403);
+    await waitOnExecutionContext(replay.ctx);
+    const event = await env.DB.prepare("SELECT reason, scope FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    expect(event).toEqual({ reason: "blocked_replay", scope: "install" });
+  });
+
+  it("keeps a provider's valid error.type when error.code is not a string (S8)", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ error: { code: 429, type: "rate_limit_error" } }, { status: 429 }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ error_code: "rate_limit_error" }]);
+  });
+
+  it("keeps a top-level error code when `error` is not an object", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ error: [], code: "rate_limit_error" }, { status: 429 }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ error_code: "rate_limit_error" }]);
+  });
+});
+
+describe("second review fixes", () => {
+  it("sends a chat body as JSON whatever type the client named (F1)", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+      chatRequest(key, { model: "gpt-4o-mini" }, { "content-type": "application/x-www-form-urlencoded" }),
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(upstreamRequest().headers.get("content-type")).toBe("application/json");
+  });
+
+  it("stores the app version cut to its limit (F2)", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+      chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": "9".repeat(100) }),
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ app_version: "9".repeat(64) }]);
+  });
+
+  it("stores a refused request's model cut to 200 characters (F3)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "m".repeat(300) }));
+    await waitOnExecutionContext(ctx);
+    const event = await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string }>();
+    expect(event?.model).toHaveLength(200);
+  });
+
+  it("refuses a provider slug that is not valid percent-encoding (F4)", async () => {
+    const { appId, key } = await setup();
+    const { response } = await call(`/v2/apps/${appId}/proxy/%E0/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "path_not_allowed" } });
+  });
+
+  it("keeps a provider error the app stopped reading as a failed attempt with no cost (F5)", async () => {
+    const { appId, slug, key } = await setup();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":{"type":"server_error",'));
+      },
+    });
+    fetchSpy.mockResolvedValue(new Response(stream, { status: 500, headers: { "content-type": "application/json" } }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    const reader = response.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([
+      { status: "provider_error", http_status: 500, measured: "complete", price_source: "list_rate", cost_nano: null },
+    ]);
+    expect(errors.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("usage_unresolved_cost"));
+  });
+
+  it("records a stream the app closed right after [DONE] as complete and priced (F6)", async () => {
+    const { appId, slug, key } = await setup();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(`data: ${JSON.stringify({ choices: [], usage: USAGE })}\n\ndata: [DONE]\n\n`),
+        );
+      },
+    });
+    fetchSpy.mockResolvedValue(new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+    const { response, ctx } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+      chatRequest(key, { model: "gpt-4o-mini", stream: true }),
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", measured: "complete", cost_nano: await expectedCost() }]);
+  });
+
+  it("serves an app whose stored settings hold keys this version does not know (F7)", async () => {
+    const { slug } = await seedConnection();
+    await seedAccount();
+    const appId = `app_future_${crypto.randomUUID().slice(0, 8)}`;
+    const config = {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], future_option: true } } },
+      presets: {},
+    };
+    await env.DB.prepare(
+      "INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?)",
+    )
+      .bind(appId, ACCOUNT_ID, appId, JSON.stringify(config), Date.now(), Date.now())
+      .run();
+    const { key } = await seedAppKey(appId);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("looks up no provider connection for a slug the app does not list (F10)", async () => {
+    const { appId, key } = await setup();
+    let lookups = 0;
+    const counting = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (query: string) => {
+            if (query.includes("provider_connection")) lookups += 1;
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    for (const slug of ["not-listed", "constructor"]) {
+      const { response } = await call(
+        `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+        chatRequest(key, { model: "gpt-4o-mini" }),
+        { ...env, DB: counting } as Env,
+      );
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: { code: "provider_not_configured" } });
+    }
+    expect(lookups).toBe(0);
   });
 });
