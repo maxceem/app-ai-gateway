@@ -59,10 +59,15 @@ const TABS: Tab[] = [
 
 export const DEFAULT_APP_TAB = "overview";
 
-/** What a save refusal means for the person, in words. */
-function saveError(error: unknown, fallback: string): string {
+/**
+ * What a save refusal means for the person, in words. Settings keeps what
+ * was typed through a conflict; the shorter forms reload and ask again.
+ */
+function saveError(error: unknown, fallback: string, keepsEdits: boolean): string {
   if (error instanceof ApiError && error.code === "app_revision_conflict") {
-    return "The app changed since you opened it. The latest version is loaded; make your change again.";
+    return keepsEdits
+      ? "The app changed since you opened it. Your edits are kept; save again to replace it."
+      : "The app changed since you opened it. The latest version is loaded; make your change again.";
   }
   return error instanceof Error ? error.message : fallback;
 }
@@ -71,7 +76,7 @@ function saveError(error: unknown, fallback: string): string {
  * Saves the app with one part of it changed, at the revision it was read at.
  * Returns the app as the gateway stored it, or null when the save failed.
  */
-function useSaveApp(app: App) {
+function useSaveApp(app: App, { keepsEdits = false }: { keepsEdits?: boolean } = {}) {
   const update = useUpdateApp(app.id);
   const save = async (change: { name?: string; status?: App["status"]; config?: AppConfig | unknown }, done: string) => {
     try {
@@ -86,7 +91,7 @@ function useSaveApp(app: App) {
       toast.success(done);
       return result.app;
     } catch (error) {
-      toast.error(saveError(error, "Could not save the app"));
+      toast.error(saveError(error, "Could not save the app", keepsEdits));
       return null;
     }
   };
@@ -278,6 +283,16 @@ function ProvidersTab({ app }: { app: App }) {
   };
 
   if (providers.isPending) return <Skeleton className="h-24 w-full" />;
+  // Without the list, every allowed connection would look removed.
+  if (providers.isError) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle />
+        <AlertTitle>Could not load your providers</AlertTitle>
+        <AlertDescription>{providers.error instanceof Error ? providers.error.message : "Try again in a moment."}</AlertDescription>
+      </Alert>
+    );
+  }
   if (connections.length === 0 && removed.length === 0) {
     return (
       <Alert>
@@ -305,6 +320,8 @@ function ProvidersTab({ app }: { app: App }) {
               <label className="flex items-center gap-2 text-sm font-medium">
                 <Checkbox
                   checked={draft.allowed}
+                  // Every field is locked while a save runs, so its answer never wipes a later edit.
+                  disabled={pending}
                   aria-label={`Allow ${connection.slug}`}
                   onCheckedChange={(checked) =>
                     change(connection.slug, {
@@ -327,6 +344,7 @@ function ProvidersTab({ app }: { app: App }) {
                         <label key={operation.name} className="flex items-center gap-1.5 text-sm">
                           <Checkbox
                             checked={draft.operations.includes(operation.name)}
+                            disabled={pending}
                             onCheckedChange={(checked) =>
                               change(connection.slug, {
                                 operations: checked === true
@@ -347,6 +365,7 @@ function ProvidersTab({ app }: { app: App }) {
                       <Input
                         id={`models-${connection.slug}`}
                         value={draft.models}
+                        disabled={pending}
                         autoComplete="off"
                         onChange={(event) => change(connection.slug, { models: event.target.value })}
                       />
@@ -356,6 +375,7 @@ function ProvidersTab({ app }: { app: App }) {
                         id={`max-${connection.slug}`}
                         inputMode="numeric"
                         value={draft.maxOutputTokens}
+                        disabled={pending}
                         autoComplete="off"
                         onChange={(event) => change(connection.slug, { maxOutputTokens: event.target.value })}
                       />
@@ -490,10 +510,10 @@ function LimitsTab({ app }: { app: App }) {
           {!namesUsers ? <CardDescription>This app names no end users, so it can only be limited as a whole.</CardDescription> : null}
         </CardHeader>
         <CardContent className="space-y-3">
-          <ScopeFields id="per-user" draft={perUser} disabled={!namesUsers} onChange={(next) => setPerUser({ ...perUser, ...next })} />
+          <ScopeFields id="per-user" draft={perUser} disabled={!namesUsers || pending} onChange={(next) => setPerUser({ ...perUser, ...next })} />
           {namesUsers ? (
             <Field label="Whose month the budget counts" htmlFor="budget-scope">
-              <Select value={budgetScope || "default"} onValueChange={(value) => setBudgetScope(value === "default" ? "" : value)}>
+              <Select value={budgetScope || "default"} disabled={pending} onValueChange={(value) => setBudgetScope(value === "default" ? "" : value)}>
                 <SelectTrigger id="budget-scope" className="w-64">
                   <SelectValue />
                 </SelectTrigger>
@@ -514,7 +534,7 @@ function LimitsTab({ app }: { app: App }) {
           <CardTitle className="text-sm">For the whole app</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ScopeFields id="per-app" draft={perApp} onChange={(next) => setPerApp({ ...perApp, ...next })} />
+          <ScopeFields id="per-app" draft={perApp} disabled={pending} onChange={(next) => setPerApp({ ...perApp, ...next })} />
           {whole === null ? <p className="text-sm text-destructive">Use whole numbers for requests, and an amount like 25 or 0.50 for the budget.</p> : null}
         </CardContent>
       </Card>
@@ -787,7 +807,7 @@ function sameJson(typed: string, stored: string): boolean {
 function SettingsTab({ app }: { app: App }) {
   const navigate = useNavigate();
   const { readOnly } = useConsoleSession();
-  const { save, pending } = useSaveApp(app);
+  const { save, pending } = useSaveApp(app, { keepsEdits: true });
   const validate = useValidateApp(app.id);
   const remove = useDeleteApp();
   const stored = JSON.stringify(app.config, null, 2);
@@ -826,7 +846,8 @@ function SettingsTab({ app }: { app: App }) {
     if (!saved) return;
     setName(saved.name);
     setNameBase(saved.name);
-    setChangedElsewhere(false);
+    // The conflict ends only once the configuration draft is saved or
+    // discarded too: the `draftsSaved` effect clears it then.
   };
   const saveConfig = async () => {
     const saved = await save({ config: parsed }, "Configuration saved");

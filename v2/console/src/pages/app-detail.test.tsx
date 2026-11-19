@@ -279,6 +279,78 @@ describe("AppDetailPage", () => {
     await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).disabled).toBe(false));
   });
 
+  it("locks the limits and providers forms while their save runs", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        if (url === APP_URL && init?.method === "PUT") return new Promise<Response>((resolve) => (answer = resolve));
+        return new Response(JSON.stringify({ app: testApp() }));
+      }),
+    );
+    const view = renderTab("limits");
+    await userEvent.type((await screen.findAllByLabelText(/requests per minute/i))[1]!, "600");
+    await userEvent.click(screen.getByRole("button", { name: /save limits/i }));
+    await waitFor(() => expect((screen.getAllByLabelText(/requests per minute/i)[1] as HTMLInputElement).disabled).toBe(true));
+    answer(new Response(JSON.stringify({ app: testApp({ revision: 3 }) })));
+    view.unmount();
+
+    renderTab("providers");
+    await userEvent.click(await screen.findByLabelText("Allow openai-eu"));
+    await userEvent.click(screen.getByRole("button", { name: /save providers/i }));
+    await waitFor(() => expect((screen.getByLabelText("Allow openai") as HTMLButtonElement).disabled).toBe(true));
+    answer(new Response(JSON.stringify({ app: testApp({ revision: 3 }) })));
+  });
+
+  it("keeps the conflict notice after a rename while the configuration draft is still unsaved", async () => {
+    const changed = testApp({ name: "Renamed", revision: 3, config: { ...testApp().config, routing: { providers: {} } } });
+    let current = testApp();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/v2/admin/providers") return new Response(JSON.stringify(PROVIDERS));
+        if (url === APP_URL && init?.method === "PUT") {
+          const body = JSON.parse(String(init.body));
+          current = current.revision === 2 ? changed : testApp({ ...current, name: body.name, revision: current.revision + 1 });
+        }
+        return new Response(JSON.stringify({ app: current }));
+      }),
+    );
+    renderTab("settings");
+    const editor = await screen.findByLabelText("Configuration");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, '{{"mine":true}');
+    const rename = screen.getByLabelText("Name");
+    await userEvent.clear(rename);
+    await userEvent.type(rename, "Renamed");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(await screen.findByText(/changed since you started editing/i)).toBeTruthy();
+
+    await userEvent.clear(screen.getByLabelText("Name"));
+    await userEvent.type(screen.getByLabelText("Name"), "Renamed again");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).disabled).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText(/changed since you started editing/i)).toBeTruthy();
+  });
+
+  it("says the providers could not load, rather than that every connection was removed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input) === "/v2/admin/providers"
+          ? new Response(JSON.stringify({ error: { code: "internal_error", message: "boom" } }), { status: 500 })
+          : new Response(JSON.stringify({ app: testApp() })),
+      ),
+    );
+    renderTab("providers");
+    expect(await screen.findByText(/could not load your providers/i)).toBeTruthy();
+    expect(screen.queryByText(/was removed/i)).toBeNull();
+  });
+
   it("saves the whole configuration as typed", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("settings");
