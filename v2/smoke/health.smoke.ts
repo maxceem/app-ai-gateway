@@ -16,7 +16,7 @@ test("the health check answers", async () => {
 });
 
 test("a path v2 does not declare is a JSON 404", async () => {
-  const response = await fetch(new URL("/v2/apps/none/proxy/openai/v1/organization/users", base));
+  const response = await fetch(new URL("/v2/nothing/served/here", base));
   assert.equal(response.status, 404);
   const body = (await response.json()) as { error?: { code?: string } };
   assert.equal(body.error?.code, "not_found");

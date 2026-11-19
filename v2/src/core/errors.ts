@@ -24,7 +24,24 @@ export type ErrorCode =
   | "app_disabled"
   | "not_found"
   | "service_unavailable"
-  | "internal_error";
+  | "internal_error"
+  // The provider request path (v1's codes).
+  | "provider_not_configured"
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "provider_error"
+  | "path_not_allowed"
+  | "model_not_allowed"
+  | "pricing_not_configured"
+  | "max_output_tokens_exceeded"
+  // The management API (v1's codes).
+  | "forbidden"
+  | "grant_insufficient"
+  | "conflict"
+  | "app_revision_required"
+  | "app_revision_conflict"
+  | "provider_not_found"
+  | "key_not_found";
 
 export type GatewayErrorData = Record<string, string | number | boolean>;
 

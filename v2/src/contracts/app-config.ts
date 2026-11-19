@@ -1,9 +1,11 @@
 /**
  * The app configuration, as stored in `app.config_json`.
  *
- * Step 1a part 2 defines only `authentication`, ported from v1 with the same
- * fields and rules. The rest of the configuration (providers, operations,
- * presets, limits) comes with the management API in part 3.
+ * `authentication` is ported from v1 with the same fields and rules.
+ * `routing` is v2's minimal shape from step 1a part 3: which provider
+ * connections an app may call, which of their declared operations, which
+ * models, and an output cap. Presets, fallback chains, model rewrites,
+ * conversation storage and limits come in later steps, as new optional keys.
  *
  * Plain `zod`, so the console and the CLI can import it.
  */
@@ -192,4 +194,93 @@ export function parseAuthentication(config: unknown): AuthenticationConfig {
   const issue = parsed.error.issues[0];
   const where = issue === undefined ? "" : ["authentication", ...issue.path].join(".");
   throw new ConfigError(`${where}: ${issue?.message ?? "is invalid"}`);
+}
+
+/**
+ * The conventional end-user header. Never sent to a provider, whatever header
+ * an app names for its end users, as v1.
+ */
+export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+
+/** A provider connection's slug, as in request paths. */
+export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+const ModelNameSchema = z.string().trim().min(1).max(200);
+
+/**
+ * What an app may call on one provider connection. Closed by default: only the
+ * operations named here, and, where `models` is set, only those models.
+ */
+export const ProviderRoutingSchema = z
+  .object({
+    /** Declared operation names, such as `openai.chat`. At least one. */
+    operations: z
+      .array(z.string().trim().min(1).max(100))
+      .min(1, { error: "operations must name at least one operation" })
+      .refine((values) => new Set(values).size === values.length, { error: "operations cannot repeat a value" }),
+    /** Allowed models. Without it, any model with a price. */
+    models: z
+      .array(ModelNameSchema)
+      .min(1, { error: "models must name at least one model, or be left out" })
+      .refine((values) => new Set(values).size === values.length, { error: "models cannot repeat a value" })
+      .optional(),
+    /** The most output tokens a request may ask for. Written into the request when it asks for none. */
+    max_output_tokens: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const RoutingConfigSchema = z
+  .object({
+    providers: z
+      .record(z.string().regex(PROVIDER_SLUG_PATTERN, { error: "must be a provider connection slug" }), ProviderRoutingSchema)
+      .default({}),
+  })
+  .strict();
+
+export type ProviderRouting = z.output<typeof ProviderRoutingSchema>;
+export type RoutingConfig = z.output<typeof RoutingConfigSchema>;
+
+export const AppConfigSchema = z
+  .object({
+    authentication: AuthenticationConfigSchema,
+    routing: RoutingConfigSchema.prefault({}),
+  })
+  .strict();
+
+export type AppConfig = z.output<typeof AppConfigSchema>;
+
+/** A whole stored `config_json`. Throws `ConfigError` with the first problem. */
+export function parseAppConfig(config: unknown): AppConfig {
+  const parsed = AppConfigSchema.safeParse(config);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const where = issue === undefined ? "" : issue.path.join(".");
+  throw new ConfigError(`${where}: ${issue?.message ?? "is invalid"}`);
+}
+
+/**
+ * A stored `config_json` as the request path reads it: forgiving where saving
+ * is strict (`AGENTS.md`). Keys this version does not know, such as ones a
+ * later version wrote before a rollback, are dropped and named in
+ * `ignoredKeys`; anything else wrong still throws `ConfigError`.
+ */
+export function parseServedAppConfig(config: unknown): { config: AppConfig; ignoredKeys: string[] } {
+  let value: unknown = structuredClone(config);
+  const ignoredKeys: string[] = [];
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const parsed = AppConfigSchema.safeParse(value);
+    if (parsed.success) return { config: parsed.data, ignoredKeys };
+    const issues = parsed.error.issues;
+    if (!issues.every((issue) => issue.code === "unrecognized_keys")) break;
+    for (const issue of issues) {
+      let target: unknown = value;
+      for (const part of issue.path) target = (target as Record<PropertyKey, unknown> | undefined)?.[part];
+      if (typeof target !== "object" || target === null) continue;
+      for (const key of (issue as { keys: string[] }).keys) {
+        delete (target as Record<string, unknown>)[key];
+        ignoredKeys.push([...issue.path.map(String), key].join("."));
+      }
+    }
+  }
+  return { config: parseAppConfig(value), ignoredKeys };
 }

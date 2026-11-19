@@ -22,10 +22,22 @@
       // The end user's limiter: for now, the App Attest replay counter of each install.
       { "name": "END_USER_LIMITER", "class_name": "EndUserLimiter" },
       // Flood limits on the app sign-in routes, per app and network address.
-      { "name": "FLOOD_LIMITER", "class_name": "FloodLimiter" }
+      { "name": "FLOOD_LIMITER", "class_name": "FloodLimiter" },
+      // One per app: ledger writes that failed, retried until D1 takes them.
+      { "name": "CHARGE_STORE", "class_name": "ChargeStore" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EndUserLimiter", "FloodLimiter"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["EndUserLimiter", "FloodLimiter"] },
+    { "tag": "v2", "new_sqlite_classes": ["ChargeStore"] }
+  ],
+  // The vault that seals provider keys. `local` keeps the key in the Worker's
+  // secrets (SECRET_VAULT_LOCAL_KEK_V<n>); `kms` uses a separate cf-kms
+  // deployment (SECRET_VAULT_KMS_URL and SECRET_VAULT_KMS_TOKEN).
+  "vars": {
+    "SECRET_VAULT_MODE": "local",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+  },
   "d1_databases": [
     {
       "binding": "DB",

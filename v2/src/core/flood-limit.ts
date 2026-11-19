@@ -183,3 +183,18 @@ export async function enforceEndpointRateLimit(
     },
   );
 }
+
+/**
+ * Whether this is the first sample of `scopeId` in its window, for diagnostics
+ * that are sampled rather than written for every event (v1's rejection events).
+ */
+export async function claimDiagnosticSample(
+  env: Env,
+  category: string,
+  scopeId: string,
+  windowMs: number,
+): Promise<boolean> {
+  const objectName = `diagnostic-${category}:${await subjectDigest(`${category}:${scopeId}`)}`;
+  const result = await env.FLOOD_LIMITER.getByName(objectName).check({ limit: 1, windowMs });
+  return result.allowed;
+}

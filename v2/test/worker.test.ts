@@ -8,7 +8,7 @@ describe("the v2 Worker", () => {
     expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2" });
   });
 
-  it.each(["/v2", "/v2/", "/v2/apps/a/proxy/openai/v1/chat/completions", "/v1/healthz", "/"])(
+  it.each(["/v2", "/v2/", "/v2/apps/a/nothing", "/v1/healthz", "/"])(
     "answers %s with a JSON 404",
     async (path) => {
       const response = await exports.default.fetch(`https://gateway.test${path}`);

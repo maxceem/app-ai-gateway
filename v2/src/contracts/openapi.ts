@@ -23,6 +23,7 @@ function routeConfig(name: OperationName): RouteConfig {
     summary: entry.summary,
     ...(entry.description === undefined ? {} : { description: entry.description }),
     ...(entry.security === "gateway" ? { security: [{ GatewayBearer: [] }] } : {}),
+    ...(entry.security === "management" ? { security: [{ ManagementBearer: [] }] } : {}),
     request: {
       ...(entry.params === undefined
         ? {}
@@ -36,12 +37,13 @@ function routeConfig(name: OperationName): RouteConfig {
               ),
             ),
           }),
+      ...(entry.query === undefined ? {} : { query: entry.query }),
       ...(entry.request === undefined
         ? {}
         : { body: { required: true, content: { "application/json": { schema: entry.request } } } }),
     },
     responses: {
-      200: json(entry.responseDescription, entry.response),
+      [entry.status ?? 200]: json(entry.responseDescription, entry.response),
       ...Object.fromEntries(
         Object.entries(entry.errors ?? {}).map(([status, text]) => [status, json(text, ErrorResponseSchema)]),
       ),
@@ -56,6 +58,13 @@ export function createOpenAPIDocument() {
     scheme: "bearer",
     description:
       "A gateway access token from POST /v2/apps/{app}/auth/token, or an app key for a server app that signs no users in. On App Attest apps that sign every request, the request also carries X-AppAttest-Proof.",
+  });
+  registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
+    type: "http",
+    scheme: "bearer",
+    bearerFormat: "agw_mgmt_…",
+    description:
+      "A management key. It acts for one account, with the read or manage grant it was issued with. Writes need the manage grant and an owner or admin role.",
   });
   for (const name of Object.keys(CATALOG) as OperationName[]) {
     registry.openAPIRegistry.registerPath(routeConfig(name));
@@ -75,6 +84,9 @@ export function createOpenAPIDocument() {
       { name: "Operations", description: "Unauthenticated service health." },
       { name: "App sign-in", description: "App Attest challenges and keys, and exchanging a client proof for a gateway token." },
       { name: "Application", description: "The signed-in caller's own state." },
+      { name: "Admin applications", description: "Apps and their settings." },
+      { name: "Admin providers", description: "Provider connections and their keys. A key is write-only: only its hint is ever returned." },
+      { name: "Admin app keys", description: "Keys for server apps." },
     ],
   });
 }

@@ -172,3 +172,49 @@ export async function authEvents(appId: string): Promise<Record<string, unknown>
   const { results } = await env.DB.prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();
   return results;
 }
+
+/** An app with sign-in and routing settings. Returns its id. */
+export async function seedRoutedApp(
+  authentication: Record<string, unknown>,
+  routing: Record<string, unknown>,
+): Promise<string> {
+  await seedAccount();
+  appCounter += 1;
+  const id = `app_test_${appCounter}_${crypto.randomUUID().slice(0, 8)}`;
+  const now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?)",
+  )
+    .bind(id, ACCOUNT_ID, id, JSON.stringify({ authentication, routing }), now, now)
+    .run();
+  return id;
+}
+
+/**
+ * A management key for the test account. The user is made a member with
+ * `role`. Returns the key's plain value.
+ */
+export async function seedManagementKey(
+  options: { grant?: "read" | "manage"; role?: "owner" | "admin" | "member"; userId?: string } = {},
+): Promise<string> {
+  await seedAccount();
+  const userId = options.userId ?? `usr_${crypto.randomUUID().slice(0, 8)}`;
+  const now = Date.now();
+  const key = `agw_mgmt_${crypto.randomUUID().replaceAll("-", "")}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO mgmt_user(id, name, email, kind, email_verified, created_at, updated_at) VALUES (?, 'Key owner', NULL, 'service', 0, ?, ?)",
+    ).bind(userId, now, now),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at)
+       VALUES (?, ?, ?, ?, 'active', ?)`,
+    ).bind(`mem_${userId}`, ACCOUNT_ID, userId, options.role ?? "owner", new Date(now).toISOString()),
+    env.DB.prepare(
+      `INSERT INTO mgmt_api_key(id, user_id, organization_id, name, token_hash, token_hint, enabled, created_at, source, "grant", credential_type)
+       VALUES (?, ?, ?, 'test', ?, ?, 1, ?, 'console', ?, 'apiKey')`,
+    ).bind(`mk_${crypto.randomUUID().slice(0, 8)}`, userId, ACCOUNT_ID, hash, key.slice(-4), now, options.grant ?? "manage"),
+  ]);
+  return key;
+}

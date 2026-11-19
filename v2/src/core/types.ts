@@ -1,4 +1,4 @@
-import type { AuthenticationConfig } from "../contracts/app-config.ts";
+import type { AuthenticationConfig, RoutingConfig } from "../contracts/app-config.ts";
 
 /** How the client first proved itself. A gateway token carries this over from its exchange. */
 export type AuthMethod = "attest" | "api_key";
@@ -11,6 +11,7 @@ export interface AppRecord {
   status: "active" | "disabled";
   revision: number;
   authentication: AuthenticationConfig;
+  routing: RoutingConfig;
 }
 
 interface GatewayIdentityFields {
