@@ -4,7 +4,7 @@
  * logged), as in v1.
  */
 import { eq } from "drizzle-orm";
-import { ConfigError, parseAuthentication } from "../contracts/app-config.ts";
+import { ConfigError, parseAppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
@@ -34,9 +34,9 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     appCache.delete(appId);
     throw new GatewayError(404, "app_not_found", "App is not registered");
   }
-  let authentication;
+  let config;
   try {
-    authentication = parseAuthentication(row.config);
+    config = parseAppConfig(row.config);
   } catch (error) {
     // The app's sign-in settings cannot be read, so who is calling cannot be
     // checked, and the request is refused.
@@ -50,7 +50,8 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     name: row.name,
     status: row.status,
     revision: row.revision,
-    authentication,
+    authentication: config.authentication,
+    routing: config.routing,
   };
   if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
   return value;

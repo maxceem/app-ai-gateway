@@ -1,0 +1,10 @@
+// A mock OpenAI-compatible provider for the v2 smoke checks and load tests.
+// Deployed next to the v2 test deployment: `pnpm exec wrangler deploy -c smoke/mock/wrangler.jsonc`.
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "agw-test-v2-mock",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": true,
+  "preview_urls": false
+}

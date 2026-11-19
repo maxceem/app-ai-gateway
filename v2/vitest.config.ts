@@ -11,6 +11,8 @@ export default defineConfig({
         miniflare: {
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
+            // A test-only vault key: 32 zero bytes.
+            SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             TEST_MIGRATIONS: migrations,
           },
         },

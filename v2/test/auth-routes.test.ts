@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
 import { settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
@@ -77,6 +77,12 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
   });
 
   it("limits each app to 60 calls a minute per network address, and records nothing for a refused call", async () => {
+    // The window follows the clock: pin it just after a minute starts, so the
+    // 61 calls never straddle two windows on a slow run.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 10, 19, 10, 0, 1) });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const appId = await seedApp(attestAuthentication());
     const address = "203.0.113.77";
     for (let i = 0; i < 60; i += 1) {

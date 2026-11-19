@@ -522,3 +522,37 @@ export const appAuthEvent = sqliteTable(
     index("app_auth_event_created").on(table.createdAt),
   ],
 );
+
+/**
+ * A provider request refused before it reached the provider, such as a model
+ * the app does not allow. Sampled: at most one per minute per user and reason
+ * for a settings refusal, and one per minute per user for the rest, as v1
+ * does. Kept 90 days.
+ */
+export const appRejectionEvent = sqliteTable(
+  "app_rejection_event",
+  {
+    id: text("id").primaryKey(),
+    appId: text("app_id").notNull(),
+    userId: text("user_id"),
+    installId: text("install_id"),
+    appKeyId: text("app_key_id"),
+    /** Why, such as `model_not_allowed`. A list that grows, so not checked. */
+    reason: text("reason").notNull(),
+    /** Whose limit refused it, where a limit did: `user`, `install`, `apple_account`, `app` or `account`. */
+    scope: text("scope"),
+    providerSlug: text("provider_slug"),
+    model: text("model"),
+    /** The declared operation, where the path matched one. */
+    operation: text("operation"),
+    appVersion: text("app_version"),
+    authMethod: text("auth_method"),
+    latencyMs: integer("latency_ms"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("app_rejection_event_app_created").on(table.appId, table.createdAt),
+    index("app_rejection_event_app_user_created").on(table.appId, table.userId, table.createdAt),
+    index("app_rejection_event_created").on(table.createdAt),
+  ],
+);
