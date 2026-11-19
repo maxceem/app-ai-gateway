@@ -57,6 +57,10 @@ export const ErrorResponseSchema = z
     error: z.object({
       code: z.string(),
       message: z.string(),
+      data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().meta({
+        description:
+          "Machine-readable facts about this refusal, present only where the code alone is not actionable. A rate_limited refusal carries scope, limit, windowSeconds, retryAfterSeconds and resetAt.",
+      }),
     }),
   })
   .meta({ id: "ErrorResponse" });

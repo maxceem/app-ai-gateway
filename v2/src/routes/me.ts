@@ -44,6 +44,6 @@ export async function meHandler(c: Context<{ Bindings: Env; Variables: DeadlineV
   return c.json({
     user_id: identity.userId,
     install_id: identity.installId,
-    blocked,
+    limits: { blocked },
   } satisfies OperationResponse<"getCurrentUser">);
 }

@@ -92,6 +92,23 @@
               },
               "message": {
                 "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "description": "Machine-readable facts about this refusal, present only where the code alone is not actionable. A rate_limited refusal carries scope, limit, windowSeconds, retryAfterSeconds and resetAt."
               }
             },
             "required": [
@@ -307,15 +324,23 @@
             ],
             "description": "The App Attest key id of the install making the request, on App Attest apps. Null on server apps."
           },
-          "blocked": {
-            "type": "boolean",
-            "description": "Whether this user has been blocked in the console."
+          "limits": {
+            "type": "object",
+            "properties": {
+              "blocked": {
+                "type": "boolean",
+                "description": "Whether this user has been blocked in the console."
+              }
+            },
+            "required": [
+              "blocked"
+            ]
           }
         },
         "required": [
           "user_id",
           "install_id",
-          "blocked"
+          "limits"
         ]
       }
     },

@@ -106,8 +106,8 @@ export const GatewayTokenResponseSchema = z
   .meta({ id: "GatewayTokenResponse" });
 
 /**
- * Who the caller is. Step 1b adds the limits that apply to them and where
- * they stand, as a new field.
+ * Who the caller is, and the limits that apply to them. `limits.blocked` is
+ * where v1 has it. Step 1b adds the rest of v1's `limits` fields beside it.
  */
 export const CurrentUserResponseSchema = z
   .object({
@@ -115,6 +115,8 @@ export const CurrentUserResponseSchema = z
     install_id: z.string().nullable().meta({
       description: "The App Attest key id of the install making the request, on App Attest apps. Null on server apps.",
     }),
-    blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
+    limits: z.object({
+      blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
+    }),
   })
   .meta({ id: "CurrentUserResponse" });

@@ -85,7 +85,18 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
     const refused = await call(`/v2/apps/${appId}/auth/challenge`, { method: "POST", address });
     expect(refused.status).toBe(429);
     expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);
-    expect(await refused.json()).toMatchObject({ error: { code: "rate_limited" } });
+    expect(await refused.json()).toMatchObject({
+      error: {
+        code: "rate_limited",
+        data: {
+          scope: "app_auth_challenge",
+          limit: 60,
+          windowSeconds: 60,
+          retryAfterSeconds: expect.any(Number),
+          resetAt: expect.any(String),
+        },
+      },
+    });
     // Another address is counted on its own.
     expect((await call(`/v2/apps/${appId}/auth/challenge`, { method: "POST", address: "203.0.113.78" })).status).toBe(200);
   });
@@ -245,7 +256,7 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
     const { access_token: token, verify_on } = (await response.json()) as { access_token: string; verify_on?: string };
     expect(verify_on).toBeUndefined();
     const me = await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${token}` } });
-    expect(await me.json()).toEqual({ user_id: "person-1", install_id: null, blocked: false });
+    expect(await me.json()).toEqual({ user_id: "person-1", install_id: null, limits: { blocked: false } });
     await env.DB.prepare("UPDATE app_key SET status = 'revoked' WHERE id = ?").bind(key.id).run();
     clearCaches();
     expect((await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
@@ -284,12 +295,12 @@ describe("GET /v2/apps/{app}/me", () => {
     expect(await (await call(`/v2/apps/${appId}/me`, { headers })).json()).toEqual({
       user_id: "user-7",
       install_id: null,
-      blocked: false,
+      limits: { blocked: false },
     });
     await env.DB.prepare("INSERT INTO app_end_user(app_id, id, status, created_at) VALUES (?, 'user-7', 'blocked', ?)")
       .bind(appId, Date.now())
       .run();
-    expect(await (await call(`/v2/apps/${appId}/me`, { headers })).json()).toMatchObject({ blocked: true });
+    expect(await (await call(`/v2/apps/${appId}/me`, { headers })).json()).toMatchObject({ limits: { blocked: true } });
     expect((await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${key.key}` } })).status).toBe(400);
     expect((await call(`/v2/apps/${appId}/me`, { headers: { ...headers, authorization: "Bearer agw_wrong" } })).status).toBe(401);
   });
@@ -313,7 +324,7 @@ describe("GET /v2/apps/{app}/me", () => {
 
     const proof = await signedProof({ install, token, method: "GET", url, counter: 1 });
     const signed = await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${token}`, [PROOF_HEADER]: proof } });
-    expect(await signed.json()).toEqual({ user_id: install.keyId, install_id: install.keyId, blocked: false });
+    expect(await signed.json()).toEqual({ user_id: install.keyId, install_id: install.keyId, limits: { blocked: false } });
 
     const replayed = await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${token}`, [PROOF_HEADER]: proof } });
     expect(replayed.status).toBe(403);

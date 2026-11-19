@@ -74,7 +74,9 @@ export function base64url(bytes: Uint8Array): string {
 }
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer));
+  // The view itself, not a copy: a signed body can be 20 MiB. Bodies are read
+  // into ordinary ArrayBuffers, never shared ones.
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
 }
 
 /**
