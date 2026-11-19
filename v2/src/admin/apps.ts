@@ -74,17 +74,18 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
  * Checks a whole configuration against the account: the shape, then each
  * provider connection it names, each operation, and each listed model's price.
  *
- * `storedSlugs` are the connections the app's stored configuration already
- * names. When one of them has since been deleted, an update may keep naming
- * it, as v1: otherwise deleting a connection would make every app that used
+ * `storedRouting` is the app's stored routing, by slug. When a connection it
+ * names has since been deleted, an update may keep that entry exactly as it
+ * is, as v1: otherwise deleting a connection would make every app that used
  * it impossible to save, even to rename. Its requests are refused with
- * `provider_not_configured` until it is back.
+ * `provider_not_configured` until it is back. An added or changed entry for
+ * that slug needs the connection, because nothing could check it.
  */
 export async function checkAppConfig(
   db: D1Database,
   accountId: string,
   raw: unknown,
-  storedSlugs: ReadonlySet<string> = new Set(),
+  storedRouting: Readonly<Record<string, unknown>> = {},
 ): Promise<AppConfig> {
   const parsed = AppConfigSchema.safeParse(raw);
   if (!parsed.success) {
@@ -99,7 +100,7 @@ export async function checkAppConfig(
       .bind(accountId, slug)
       .first<{ type: string; rates_json: string | null }>();
     if (connection === null) {
-      if (storedSlugs.has(slug)) continue;
+      if (Object.hasOwn(storedRouting, slug) && sameJson(storedRouting[slug], routing)) continue;
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
     const description = builtInProvider(connection.type);
@@ -218,10 +219,26 @@ export async function createApp(c: AdminContext): Promise<Response> {
   return c.json({ app: appView(row), api_key: key?.created ?? null } satisfies OperationResponse<"createApp">, 201);
 }
 
-/** The slugs a stored configuration names, read loosely: it was valid when saved. */
-function storedSlugs(row: AppRow): Set<string> {
+/** The routing a stored configuration has, by slug, read loosely: it was valid when saved. */
+function storedRouting(row: AppRow): Record<string, unknown> {
   const config = JSON.parse(row.config_json) as { routing?: { providers?: Record<string, unknown> } };
-  return new Set(Object.keys(config.routing?.providers ?? {}));
+  return config.routing?.providers ?? {};
+}
+
+/** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return canonicalJson(a) === canonicalJson(b);
 }
 
 /**
@@ -239,7 +256,7 @@ async function saveApp(
   if (revision === undefined) {
     throw new GatewayError(400, "app_revision_required", "Send the revision the app was read at");
   }
-  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, storedSlugs(current));
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, storedRouting(current));
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
@@ -272,6 +289,13 @@ export async function patchApp(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, AppPatchRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
+  // A stale patch is a conflict, even when the edit it missed removed the path it names.
+  if (body.revision === undefined) {
+    throw new GatewayError(400, "app_revision_required", "Send the revision the app was read at");
+  }
+  if (body.revision !== current.revision) {
+    throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
+  }
   const view = appView(current);
   const patched = applyAppPatch({ name: view.name, status: view.status, config: view.config }, body.operations);
   const parsed = AppValidateRequestSchema.safeParse(patched);
@@ -288,7 +312,7 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const body = await parseBody(c, AppValidateRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config, storedSlugs(current));
+  await checkAppConfig(c.env.DB, actor.accountId, body.config, storedRouting(current));
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 
@@ -320,7 +344,7 @@ export async function checkApp(c: AdminContext): Promise<Response> {
   } catch {
     throw invalid("The stored config is not JSON");
   }
-  const config = await checkAppConfig(c.env.DB, actor.accountId, stored, storedSlugs(row));
+  const config = await checkAppConfig(c.env.DB, actor.accountId, stored, storedRouting(row));
   const slugs = Object.keys(config.routing.providers);
   const providers: { id: string | null; slug: string; status: "active" | "disabled" | "missing" }[] = [];
   for (const slug of slugs) {

@@ -12,7 +12,12 @@
  * (503, or 402 with no plan) instead of guessing "no ceiling": rows created
  * over a ceiling are never removed later.
  */
-import { getBillingAccess, billingPlanLimits, requireActiveBilling } from "../billing/access.ts";
+import {
+  BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  billingPlanLimits,
+  getBillingAccess,
+  requireActiveBilling,
+} from "../billing/access.ts";
 import type { PlanLimitKey } from "../contracts/billing.ts";
 import { GatewayError } from "../core/errors.ts";
 
@@ -60,7 +65,17 @@ const UNCAPPED: PlanCap = { condition: "1", binds: [], assertNotReached: () => P
 export async function planCap(env: Env, db: D1Database, accountId: string, resource: CappedResource, scopeId: string = accountId): Promise<PlanCap> {
   const capped = CAPPED[resource];
   const access = requireActiveBilling(await getBillingAccess(env, accountId));
-  const limit = billingPlanLimits(access, [capped.limit])[capped.limit];
+  let limit: number | undefined;
+  try {
+    limit = billingPlanLimits(access, [capped.limit])[capped.limit];
+  } catch (error) {
+    // A ceiling the plan data cannot give is a plan that cannot be read:
+    // refuse the write as temporary, never guess "no ceiling".
+    if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
+    throw new GatewayError(503, "billing_unavailable", "The plan's limits could not be read, so nothing was saved; retry shortly", {
+      "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
+    });
+  }
   if (limit === undefined) return UNCAPPED;
   return {
     condition: `(${capped.count}) < ?`,

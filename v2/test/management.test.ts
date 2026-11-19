@@ -22,7 +22,7 @@ async function request(key: string | null, method: string, path: string, body?: 
     ctx,
   );
   await waitOnExecutionContext(ctx);
-  return { status: response.status, body: (await response.json()) as Record<string, any> };
+  return { status: response.status, headers: response.headers, body: (await response.json()) as Record<string, any> };
 }
 
 const apiKeyConfig = (routing: Record<string, unknown> = {}, endUser: Record<string, unknown> = { source: "none" }) => ({
@@ -119,6 +119,20 @@ describe("app PATCH", () => {
       body: { error: { code: "app_revision_conflict" } },
     });
   });
+
+  it("answers a stale patch with a conflict even when the path it names is gone", async () => {
+    const key = await seedManagementKey();
+    const config = { ...apiKeyConfig({}, { source: "header", header: "x-end-user-id" }), limits: { per_user: { spending: { scope: "user" } } } };
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}`;
+    // `scope` has no default, so once removed it is really gone.
+    const scope = "/config/limits/per_user/spending/scope";
+    expect((await request(key, "PATCH", path, { revision: 1, operations: [{ op: "remove", path: scope }] })).status).toBe(200);
+    expect(await request(key, "PATCH", path, { revision: 1, operations: [{ op: "replace", path: scope, value: "user" }] })).toMatchObject({
+      status: 409,
+      body: { error: { code: "app_revision_conflict" } },
+    });
+  });
 });
 
 describe("validate and check", () => {
@@ -150,6 +164,10 @@ describe("validate and check", () => {
       status: 200,
       body: { app: { name: "Kept" } },
     });
+    // Under the deleted connection's slug, only the unchanged entry is kept: a changed one cannot be checked.
+    const changed = apiKeyConfig({ [slug]: { operations: ["openai.chat", "openai.nothing"] } });
+    expect((await request(key, "PUT", `/v2/admin/apps/${appId}`, { name: "Kept", config: changed, revision: 2 })).status).toBe(400);
+    expect((await request(reader, "POST", `/v2/admin/apps/${appId}/validate`, { name: "Kept", config: changed })).status).toBe(400);
     // A slug the stored config never named is still checked.
     const other = apiKeyConfig({ [slug]: { operations: ["openai.chat"] }, "never-there": { operations: ["openai.chat"] } });
     expect((await request(key, "PUT", `/v2/admin/apps/${appId}`, { name: "Kept", config: other, revision: 2 })).status).toBe(400);
@@ -233,6 +251,13 @@ describe("plan ceilings on saved settings", () => {
     clearCaches();
     expect((await createApp(key, apiKeyConfig(), hosted({}))).status).toBe(201);
     expect((await createApp(key)).status).toBe(201);
+  });
+
+  it("answers 503 with Retry-After when a ceiling in the plan data cannot be read", async () => {
+    const key = await seedManagementKey();
+    const refused = await request(key, "POST", "/v2/admin/apps", { name: "Mgmt", config: apiKeyConfig() }, hosted({ maxApps: -1 }));
+    expect(refused).toMatchObject({ status: 503, body: { error: { code: "billing_unavailable" } } });
+    expect(refused.headers.get("retry-after")).toBe("5");
   });
 
   it("never lets a bad ceiling value stop the allowance from being read", () => {
