@@ -48,7 +48,9 @@ the account, the person, their role and the grant.
 - \`patch_app\` changes a few settings of an app. \`update_app\` replaces its whole
   document. Both need the revision \`get_app\` returned: a change made by someone
   else since is refused, never overwritten. Check a document with
-  \`validate_app\` before you send it.
+  \`validate_app\` before you send it. Build it from the app \`get_app\`
+  returns by copying \`name\`, \`config\` and \`status\`, and add \`revision\`
+  for \`update_app\`: \`id\`, \`created_at\` and \`updated_at\` are refused.
 - \`update_provider\` renames a provider connection, changes its pricing, or
   disables it. Disabling pauses it and keeps its key.
 - \`remove_app\` and \`remove_provider\` delete for good. Use them only when the

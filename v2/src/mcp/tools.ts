@@ -23,6 +23,7 @@ import { z } from "zod";
 import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
 import type { CliToolHint } from "../contracts/cli.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
+import { isSecretFieldName } from "./secret-fields.ts";
 
 /** The operations a tool may run that need only the read grant. */
 export const MCP_READ_OPERATIONS = [
@@ -213,6 +214,30 @@ function confirmed(field: string, noun: string) {
   };
 }
 
+/**
+ * Refuses a patch that writes a setting named like a credential (v1's check).
+ * The shared scan of the arguments reads only each operation's own fields, so
+ * the name a value is written under is read here: the last segment of each
+ * `add` or `replace` pointer, decoded. The refusal names the operation, never
+ * the value.
+ */
+function refuseCredentialTargets(input: Record<string, unknown>): void {
+  if (!Array.isArray(input.operations)) return;
+  for (const [index, operation] of input.operations.entries()) {
+    if (operation === null || typeof operation !== "object") continue;
+    const { op, path } = operation as { op?: unknown; path?: unknown };
+    if ((op !== "add" && op !== "replace") || typeof path !== "string") continue;
+    const key = path.split("/").at(-1)!.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (isSecretFieldName(key)) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        `operations.${index}.path: an app document holds no credentials, so a tool never writes a setting named like one`,
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Summaries
 
@@ -362,7 +387,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "validate_app",
     title: "Validate an app configuration",
     description:
-      "Checks an app document without saving anything: the {name, config, status?} body creating or updating an app takes. With `app`, it is judged as an update of that app; without, as a new app. A refusal is the reason it would be refused, in the gateway's own words, as a tool error. Use it before any change to an app. To change an existing app, start from the document get_app returns, without id and revision.",
+      "Checks an app document without saving anything: the {name, config, status?} body creating or updating an app takes. With `app`, it is judged as an update of that app; without, as a new app. A refusal is the reason it would be refused, in the gateway's own words, as a tool error. Use it before any change to an app. To change an existing app, copy name, config and status from the app get_app returns, and nothing else: id, revision, created_at and updated_at are refused here.",
     operations: ["validateApp", "validateAppDraft"],
     input: z.object({
       app: z.string().min(1).optional().meta({ description: "The id of the app this would update. Omit it to judge the document as a new app." }),
@@ -474,11 +499,11 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "update_app",
     title: "Update an app",
     description:
-      "Replaces an app's whole document {name, config, status?, revision} with the one given: start from get_app's document, change it, check it with validate_app, then send it. To change a few settings, patch_app is shorter and cannot touch anything else. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app.",
+      "Replaces an app's whole document {name, config, status?, revision} with the one given: copy name, config and status from the app get_app returns, change them, check them with validate_app, then send them with the revision get_app returned. id, created_at and updated_at are refused. To change a few settings, patch_app is shorter and cannot touch anything else. A document read before someone else changed the app is refused with app_revision_conflict rather than overwriting their change. Setting status to \"disabled\" pauses an app.",
     operations: ["updateApp"],
     input: z.object({
       app: PATH_ARGUMENTS.app!,
-      config: APP_UPDATE.meta({ description: "The whole app document {name, config, status?, revision}, as get_app returns it without its id." }),
+      config: APP_UPDATE.meta({ description: "The whole app document {name, config, status?, revision}: name, config and status as get_app returns them, plus its revision. Not id, created_at or updated_at." }),
     }),
     annotations: writes({ destructive: false, idempotent: true }),
     cli: { command: "app replace", summary: "Replace an app's whole document", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
@@ -504,6 +529,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     }),
     annotations: writes({ destructive: false, idempotent: false }),
     cli: { command: "app update", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
+    check: refuseCredentialTargets,
     next: {
       app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
       app_revision_required: "Send the revision get_app returned.",

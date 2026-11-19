@@ -241,6 +241,23 @@ describe("tools", () => {
     expect(unknown.structuredContent.message).toContain("filter");
   });
 
+  it("refuse a patch that writes a setting named like a credential, without echoing the value", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    for (const operation of [
+      { op: "add", path: "/config/routing/apiKey", value: "sk-patched-in" },
+      { op: "replace", path: "/config/routing/api_key", value: "sk-patched-in" },
+      { op: "add", path: "/config/routing/Access-Token", value: "sk-patched-in" },
+    ]) {
+      const refused = await callTool(key, "patch_app", { app: app.id, revision: app.revision, operations: [operation] });
+      expect(refused.structuredContent.error, operation.path).toBe("invalid_request");
+      expect(refused.structuredContent.message).toContain("operations.0.path");
+      expect(refused.structuredContent.message).toContain("credentials");
+      expect(JSON.stringify(refused)).not.toContain("sk-patched-in");
+    }
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app.revision).toBe(app.revision);
+  });
+
   it("never return a key, and find a provider connection by slug", async () => {
     const key = await seedManagementKey();
     const { provider } = await populated(key);
