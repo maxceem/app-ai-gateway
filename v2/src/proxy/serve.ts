@@ -5,26 +5,25 @@
  * In order:
  *
  * 1. Load the app and the provider connection the path names.
- * 2. Check who is calling (`authenticateRequest`), the App Attest replay
- *    counter, and whether the end user is blocked.
+ * 2. Check who is calling (`authenticateRequest`) and whether the end user
+ *    is blocked.
  * 3. Match the path to a declared operation, closed by default, and check the
  *    app allows that connection, operation and model.
- * 4. Read the body once (20 MiB at most) and apply the operation's request
- *    policy.
+ * 4. Read the body once (20 MiB at most), then admit the request: the App
+ *    Attest replay check, the app's own limits, and the plan allowance, in
+ *    that order (`../limits/admission.ts`). Then apply the request policy.
  * 5. Send it with the connection's key, and pipe the answer back unchanged,
  *    provider errors included.
  * 6. After the answer is sent, read its usage, price it and write one charge.
  *    Counting never fails or delays the request (`AGENTS.md`).
  *
- * Only calls measured by the OpenAI chat usage reader are served in this step.
- * App limits, the plan allowance, fallback chains, presets and conversation
- * storage come in later steps.
+ * Only calls measured by the OpenAI chat usage reader are served for now.
+ * Fallback chains, presets and conversation storage come in later steps.
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
-import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
 import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -34,6 +33,7 @@ import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
+import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
 import { resolvePrice } from "../pricing/prices.ts";
 import {
@@ -122,14 +122,6 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   let operationName: string | null = null;
   let model: string | null = null;
   try {
-    if (assertionCounter !== null && identity.installId !== null) {
-      try {
-        await useAssertionCounter(c.env, app.id, identity.installId, assertionCounter);
-      } catch (error) {
-        // A replayed proof is a refusal to record, as v1; a limiter that did not answer is not.
-        throw error instanceof GatewayError && error.code === "attest_failed" ? refusal(error, "blocked_replay", "install") : error;
-      }
-    }
     // An app key's last use, at most hourly, as v1. Never part of the answer.
     if (identity.apiKeyId !== undefined) {
       const apiKeyId = identity.apiKeyId;
@@ -185,6 +177,17 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // Never served: a model with no price is refused, and nothing is listed by name.
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
     }
+
+    // Admission comes last, once the request is known to be one that can be
+    // served: the replay check, the app's own limits, then the plan allowance.
+    await admitRequest({
+      env: c.env,
+      app,
+      identity,
+      assertionCounter: identity.installId === null ? null : assertionCounter,
+      waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+      refuse: refusal,
+    });
 
     const capped = applyChatOutputCap(body, routing.max_output_tokens);
     const metered = requestStreamUsage(body);

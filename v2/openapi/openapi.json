@@ -345,12 +345,67 @@
           "limits": {
             "type": "object",
             "properties": {
+              "requests_today": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Requests made so far in the current UTC day: by this install on an App Attest app, by this user on a server app. Null when the app sets no per-user limit, in which case requests are not counted."
+              },
+              "requests_remaining": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "What is left of requests_per_day. Null when no daily limit is set."
+              },
+              "requests_per_minute": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "The per-minute limit on each install (App Attest) or user (server). Null means unlimited."
+              },
+              "requests_per_day": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "The per-day limit on each install (App Attest) or user (server). Null means unlimited."
+              },
+              "monthly_cost_usd": {
+                "type": "number",
+                "description": "Spent so far in the current UTC month against the budget below, by whoever budget_scope names."
+              },
+              "monthly_budget_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "The monthly budget on each Apple Account, install or user. Null means unlimited."
+              },
+              "budget_scope": {
+                "type": "string",
+                "enum": [
+                  "install",
+                  "user",
+                  "apple_account"
+                ],
+                "description": "Whose month monthly_cost_usd is: apple_account, install or user."
+              },
               "blocked": {
                 "type": "boolean",
                 "description": "Whether this user has been blocked in the console."
               }
             },
             "required": [
+              "requests_today",
+              "requests_remaining",
+              "requests_per_minute",
+              "requests_per_day",
+              "monthly_cost_usd",
+              "monthly_budget_usd",
+              "budget_scope",
               "blocked"
             ]
           }
@@ -849,6 +904,113 @@
                       "additionalProperties": false
                     },
                     "default": {}
+                  }
+                },
+                "default": {},
+                "additionalProperties": false
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "per_user": {
+                    "type": "object",
+                    "properties": {
+                      "requests": {
+                        "type": "object",
+                        "properties": {
+                          "per_minute": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "exclusiveMinimum": 0,
+                            "default": null
+                          },
+                          "per_day": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "exclusiveMinimum": 0,
+                            "default": null
+                          }
+                        },
+                        "default": {},
+                        "additionalProperties": false
+                      },
+                      "spending": {
+                        "type": "object",
+                        "properties": {
+                          "monthly_nano": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "default": null
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "install",
+                              "user",
+                              "apple_account"
+                            ]
+                          }
+                        },
+                        "default": {},
+                        "additionalProperties": false
+                      }
+                    },
+                    "default": {},
+                    "additionalProperties": false
+                  },
+                  "per_app": {
+                    "type": "object",
+                    "properties": {
+                      "requests": {
+                        "type": "object",
+                        "properties": {
+                          "per_minute": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "exclusiveMinimum": 0,
+                            "default": null
+                          },
+                          "per_day": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "exclusiveMinimum": 0,
+                            "default": null
+                          }
+                        },
+                        "default": {},
+                        "additionalProperties": false
+                      },
+                      "spending": {
+                        "type": "object",
+                        "properties": {
+                          "monthly_nano": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "default": null
+                          }
+                        },
+                        "default": {},
+                        "additionalProperties": false
+                      }
+                    },
+                    "default": {},
+                    "additionalProperties": false
                   }
                 },
                 "default": {},

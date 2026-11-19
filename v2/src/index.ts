@@ -27,6 +27,8 @@ import { createProvider, deleteProvider, getProvider, listProviders, updateProvi
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
 export { ChargeStore } from "./do/ChargeStore.ts";
+export { AppLimiter } from "./do/AppLimiter.ts";
+export { AccountLimiter } from "./do/AccountLimiter.ts";
 
 type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 

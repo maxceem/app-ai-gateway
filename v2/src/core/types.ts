@@ -1,4 +1,4 @@
-import type { AuthenticationConfig, RoutingConfig } from "../contracts/app-config.ts";
+import type { AuthenticationConfig, LimitsConfig, RoutingConfig } from "../contracts/app-config.ts";
 
 /** How the client first proved itself. A gateway token carries this over from its exchange. */
 export type AuthMethod = "attest" | "api_key";
@@ -12,6 +12,8 @@ export interface AppRecord {
   revision: number;
   authentication: AuthenticationConfig;
   routing: RoutingConfig;
+  /** The limits the customer set on the app and its end users. */
+  limits: LimitsConfig;
 }
 
 interface GatewayIdentityFields {

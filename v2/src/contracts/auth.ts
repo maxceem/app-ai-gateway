@@ -4,7 +4,7 @@
  * changes its path prefix.
  */
 import { z } from "zod";
-import { APP_ATTEST_VERIFY_ON } from "./app-config.ts";
+import { APP_ATTEST_VERIFY_ON, BUDGET_SCOPES } from "./app-config.ts";
 
 /** The longest App Store AppTransaction JWS the token exchange reads. */
 export const MAX_APP_TRANSACTION_LENGTH = 16_384;
@@ -106,8 +106,11 @@ export const GatewayTokenResponseSchema = z
   .meta({ id: "GatewayTokenResponse" });
 
 /**
- * Who the caller is, and the limits that apply to them. `limits.blocked` is
- * where v1 has it. Step 1b adds the rest of v1's `limits` fields beside it.
+ * Who the caller is, the limits the app sets on them, and where they stand,
+ * with v1's field names. Money is in dollars here, as v1 sends it, because
+ * apps and the Swift SDK read these fields; it is converted from nano-dollars
+ * at this edge. The plan allowance is not reported: it is the account's
+ * business, reported on the refusal that spends it.
  */
 export const CurrentUserResponseSchema = z
   .object({
@@ -116,6 +119,15 @@ export const CurrentUserResponseSchema = z
       description: "The App Attest key id of the install making the request, on App Attest apps. Null on server apps.",
     }),
     limits: z.object({
+      requests_today: z.number().int().nullable().meta({
+        description: "Requests made so far in the current UTC day: by this install on an App Attest app, by this user on a server app. Null when the app sets no per-user limit, in which case requests are not counted.",
+      }),
+      requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
+      requests_per_minute: z.number().nullable().meta({ description: "The per-minute limit on each install (App Attest) or user (server). Null means unlimited." }),
+      requests_per_day: z.number().nullable().meta({ description: "The per-day limit on each install (App Attest) or user (server). Null means unlimited." }),
+      monthly_cost_usd: z.number().meta({ description: "Spent so far in the current UTC month against the budget below, by whoever budget_scope names." }),
+      monthly_budget_usd: z.number().nullable().meta({ description: "The monthly budget on each Apple Account, install or user. Null means unlimited." }),
+      budget_scope: z.enum(BUDGET_SCOPES).meta({ description: "Whose month monthly_cost_usd is: apple_account, install or user." }),
       blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
     }),
   })
