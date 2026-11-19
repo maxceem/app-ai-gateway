@@ -218,3 +218,41 @@ export async function seedManagementKey(
   ]);
   return key;
 }
+
+/**
+ * Loads the management code and the sign-in library once, before a file's
+ * first test. The Worker loads them on first use, which takes a few seconds
+ * in the test runtime, longer than one test may take while files run side by
+ * side.
+ */
+export async function loadManagement(): Promise<void> {
+  const { default: management } = await import("../src/management/app.ts");
+  // The sign-in library does more of its loading on its first request.
+  await management.fetch(new Request("https://console.gateway.test/v2/auth/get-session"), env);
+  await management.fetch(new Request("https://console.gateway.test/.well-known/oauth-authorization-server/v2"), env);
+}
+
+/** How long {@link loadManagement} may take. */
+export const LOAD_MANAGEMENT_TIMEOUT_MS = 60_000;
+
+export interface SeededHuman {
+  userId: string;
+  accountId: string;
+  /** For a request's `Cookie:` header. */
+  cookie: string;
+  email: string;
+}
+
+/**
+ * A person with an account of their own and a console session, without
+ * signing up: a password hash costs about two and a half seconds. Tests
+ * whose subject is signing up still sign up.
+ */
+export async function seedHuman(email?: string): Promise<SeededHuman> {
+  const { createIdentity } = await import("../src/auth/identity.ts");
+  const { createTestSessions } = await import("@maxceem/cf-auth/testing");
+  // As a deployment that admits anyone: a self-hosted one admits only listed emails.
+  const sessions = createTestSessions(await createIdentity({ ...env, ALLOWED_REGISTRATION_EMAILS: "*" } as Env, "https://console.gateway.test"));
+  const human = await sessions.human(email === undefined ? {} : { email });
+  return { userId: human.userId, accountId: human.organizationId, cookie: human.cookie, email: human.user.email! };
+}

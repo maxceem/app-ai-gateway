@@ -55,6 +55,54 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "report a sign-in failure to this app",
     sharedBy: "everyone sharing your network address",
   },
+  // Password sign-in is counted twice: the address counter stops one client
+  // hammering the endpoint, and the email counter stops a spread of addresses
+  // grinding through one account's passwords (v1's limits).
+  sign_in_address: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "try to sign in",
+    sharedBy: "everyone sharing your network address",
+  },
+  sign_in_email: {
+    limit: 10,
+    windowMs: 600_000,
+    action: "try to sign in to one account",
+    sharedBy: "everyone signing in to that email address",
+  },
+  // A sign-up answers whether its email is taken, so an unbounded one tests
+  // addresses in bulk, and on a hosted deployment it makes throwaway accounts.
+  sign_up_address: {
+    limit: 10,
+    windowMs: 3_600_000,
+    action: "create a sign-in",
+    sharedBy: "everyone sharing your network address",
+  },
+  // An OAuth authorization request is public, and one naming a client's
+  // metadata document makes the gateway fetch it, so it is counted first.
+  oauth_authorize: {
+    limit: 30,
+    windowMs: 600_000,
+    action: "start an OAuth connection",
+    sharedBy: "everyone sharing your network address",
+  },
+  // A CLI sign-in without a browser. Each one waits for a person, and one
+  // declined at once frees its slot, so the engine's cap on waiting ones does
+  // not bound how many are asked for.
+  device_authorization: {
+    limit: 20,
+    windowMs: 3_600_000,
+    action: "start a CLI sign-in",
+    sharedBy: "everyone sharing your network address",
+  },
+  // A CLI sign-in code is eight characters, short enough to guess in bulk,
+  // and looking one up is the only way a guess can be tried.
+  user_code: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "look up a sign-in code",
+    sharedBy: "everyone sharing your network address",
+  },
 } as const satisfies Record<string, EndpointRateLimit>;
 
 export type EndpointRateLimitName = keyof typeof ENDPOINT_RATE_LIMITS;

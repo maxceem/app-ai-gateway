@@ -23,7 +23,8 @@ function routeConfig(name: OperationName): RouteConfig {
     summary: entry.summary,
     ...(entry.description === undefined ? {} : { description: entry.description }),
     ...(entry.security === "gateway" ? { security: [{ GatewayBearer: [] }] } : {}),
-    ...(entry.security === "management" ? { security: [{ ManagementBearer: [] }] } : {}),
+    ...(entry.security === "management" ? { security: [{ ManagementBearer: [] }, { ConsoleSession: [] }] } : {}),
+    ...(entry.security === "session" ? { security: [{ ConsoleSession: [] }] } : {}),
     request: {
       ...(entry.params === undefined
         ? {}
@@ -62,9 +63,16 @@ export function createOpenAPIDocument() {
   registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
     type: "http",
     scheme: "bearer",
-    bearerFormat: "agw_mgmt_…",
+    bearerFormat: "agw_mgmt_… or agw_oat_…",
     description:
-      "A management key. It acts for one account, with the read or manage grant it was issued with. Writes need the manage grant and an owner or admin role.",
+      "A management key, or an OAuth access token from the CLI's or an MCP client's sign-in. It acts for one account, with the read or manage grant it was issued with. Writes need the manage grant and an owner or admin role.",
+  });
+  registry.openAPIRegistry.registerComponent("securitySchemes", "ConsoleSession", {
+    type: "apiKey",
+    in: "cookie",
+    name: "agw2_identity_auth.session_token",
+    description:
+      "The console's sign-in. Management calls with it must also send x-console-request: 1. Console page calls must come from the console's own origin.",
   });
   for (const name of Object.keys(CATALOG) as OperationName[]) {
     registry.openAPIRegistry.registerPath(routeConfig(name));
@@ -87,6 +95,8 @@ export function createOpenAPIDocument() {
       { name: "Admin applications", description: "Apps and their settings." },
       { name: "Admin providers", description: "Provider connections and their keys. A key is write-only: only its hint is ever returned." },
       { name: "Admin app keys", description: "Keys for server apps." },
+      { name: "Admin access", description: "Who is calling, your accounts, management keys, and CLI and MCP sign-ins." },
+      { name: "Console", description: "The console's own pages: OAuth consent and entering a CLI sign-in code. Called only from the console's origin." },
     ],
   });
 }

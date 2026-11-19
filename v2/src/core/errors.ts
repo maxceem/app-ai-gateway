@@ -47,7 +47,16 @@ export type ErrorCode =
   | "app_revision_conflict"
   | "provider_not_found"
   | "key_not_found"
-  | "billing_plan_limit_reached";
+  | "billing_plan_limit_reached"
+  // Sign-in and accounts (v1's codes).
+  | "session_required"
+  | "not_a_member"
+  | "last_owner"
+  | "operation_expired"
+  | "operation_denied"
+  | "already_completed"
+  | "no_eligible_organization"
+  | "registration_disabled";
 
 export type GatewayErrorData = Record<string, string | number | boolean>;
 

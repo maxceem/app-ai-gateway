@@ -35,6 +35,14 @@
     {
       "name": "Admin app keys",
       "description": "Keys for server apps."
+    },
+    {
+      "name": "Admin access",
+      "description": "Who is calling, your accounts, management keys, and CLI and MCP sign-ins."
+    },
+    {
+      "name": "Console",
+      "description": "The console's own pages: OAuth consent and entering a CLI sign-in code. Called only from the console's origin."
     }
   ],
   "components": {
@@ -47,8 +55,14 @@
       "ManagementBearer": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "agw_mgmt_…",
-        "description": "A management key. It acts for one account, with the read or manage grant it was issued with. Writes need the manage grant and an owner or admin role."
+        "bearerFormat": "agw_mgmt_… or agw_oat_…",
+        "description": "A management key, or an OAuth access token from the CLI's or an MCP client's sign-in. It acts for one account, with the read or manage grant it was issued with. Writes need the manage grant and an owner or admin role."
+      },
+      "ConsoleSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "agw2_identity_auth.session_token",
+        "description": "The console's sign-in. Management calls with it must also send x-console-request: 1. Console page calls must come from the console's own origin."
       }
     },
     "schemas": {
@@ -1992,6 +2006,642 @@
           "deleted",
           "provider_id"
         ]
+      },
+      "AdminSessionResponse": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/AdminSession"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "AdminSession": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "emailVerified": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "email",
+              "emailVerified"
+            ]
+          },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          },
+          "credentialType": {
+            "type": "string",
+            "enum": [
+              "session",
+              "apiKey",
+              "oauth"
+            ]
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountMembership"
+            }
+          }
+        },
+        "required": [
+          "user",
+          "account",
+          "role",
+          "grant",
+          "credentialType",
+          "accounts"
+        ]
+      },
+      "AccountMembership": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role"
+        ]
+      },
+      "AccountListResponse": {
+        "type": "object",
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountMembership"
+            }
+          }
+        },
+        "required": [
+          "accounts"
+        ]
+      },
+      "AccountSelectRequest": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false
+      },
+      "CredentialListResponse": {
+        "type": "object",
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Credential"
+            }
+          }
+        },
+        "required": [
+          "credentials"
+        ]
+      },
+      "Credential": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "management_key",
+              "cli",
+              "mcp"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clientId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "userId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "grant",
+          "hint",
+          "clientId",
+          "userId",
+          "createdAt",
+          "expiresAt",
+          "revokedAt"
+        ]
+      },
+      "CreatedManagementKeyResponse": {
+        "type": "object",
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/Credential"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "credential",
+          "key"
+        ]
+      },
+      "ManagementKeyCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ],
+            "default": "manage"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "CredentialResponse": {
+        "type": "object",
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/Credential"
+          }
+        },
+        "required": [
+          "credential"
+        ]
+      },
+      "ConsoleCapabilities": {
+        "type": "object",
+        "properties": {
+          "billing": {
+            "type": "boolean"
+          },
+          "registrationOpen": {
+            "type": "boolean"
+          },
+          "googleAuth": {
+            "type": "boolean"
+          },
+          "oauth": {
+            "type": "boolean"
+          },
+          "termsOfServiceUrl": {
+            "type": "string"
+          },
+          "privacyPolicyUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "billing",
+          "registrationOpen",
+          "googleAuth",
+          "oauth"
+        ]
+      },
+      "ConsentDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "denied",
+              "expired",
+              "retired"
+            ]
+          },
+          "client": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "cimd",
+                  "registered"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "domain",
+              "source"
+            ]
+          },
+          "redirectHost": {
+            "type": "string"
+          },
+          "requestedGrant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "viewer": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountMembership"
+            }
+          },
+          "blockedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "sign_in_required",
+              "no_account",
+              null
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "client",
+          "redirectHost",
+          "requestedGrant",
+          "expiresAt",
+          "viewer",
+          "accounts",
+          "blockedBy"
+        ]
+      },
+      "ConsentProof": {
+        "type": "object",
+        "properties": {
+          "proof": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "proof"
+        ],
+        "additionalProperties": false
+      },
+      "ConsentRedirectResponse": {
+        "type": "object",
+        "properties": {
+          "redirect": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "redirect"
+        ]
+      },
+      "ConsentAllowRequest": {
+        "type": "object",
+        "properties": {
+          "proof": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "accountId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          }
+        },
+        "required": [
+          "proof",
+          "accountId",
+          "grant"
+        ],
+        "additionalProperties": false
+      },
+      "DeviceLookupResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "expiresAt"
+        ]
+      },
+      "DeviceLookupRequest": {
+        "type": "object",
+        "properties": {
+          "userCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "userCode"
+        ],
+        "additionalProperties": false
+      },
+      "DeviceDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "denied",
+              "expired",
+              "retired"
+            ]
+          },
+          "client": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "cimd",
+                  "registered"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "domain",
+              "source"
+            ]
+          },
+          "requestedGrant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          },
+          "userCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountMembership"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "client",
+          "requestedGrant",
+          "userCode",
+          "expiresAt",
+          "accounts"
+        ]
+      },
+      "DeviceCodeRequest": {
+        "type": "object",
+        "properties": {
+          "userCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "userCode"
+        ],
+        "additionalProperties": false
+      },
+      "DeviceAnswerResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "denied"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "DeviceApproveRequest": {
+        "type": "object",
+        "properties": {
+          "userCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "accountId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ]
+          }
+        },
+        "required": [
+          "userCode",
+          "accountId",
+          "grant"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -2518,6 +3168,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -2542,7 +3195,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2552,7 +3205,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2583,6 +3236,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -2617,7 +3273,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2637,7 +3293,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2689,6 +3345,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -2725,7 +3384,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2735,7 +3394,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2766,6 +3425,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -2812,7 +3474,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2822,7 +3484,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2863,6 +3525,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -2909,7 +3574,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2919,7 +3584,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2960,6 +3625,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3004,7 +3672,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3014,7 +3682,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3047,6 +3715,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3093,7 +3764,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3103,7 +3774,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3136,6 +3807,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -3170,7 +3844,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3180,7 +3854,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3213,6 +3887,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3249,7 +3926,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3259,7 +3936,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3291,6 +3968,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3327,7 +4007,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3337,7 +4017,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3367,6 +4047,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3424,7 +4107,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3444,7 +4127,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3496,6 +4179,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3542,7 +4228,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3552,7 +4238,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3585,6 +4271,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3679,7 +4368,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3689,7 +4378,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3721,6 +4410,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3778,7 +4470,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3788,7 +4480,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3821,6 +4513,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3867,7 +4562,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3877,7 +4572,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3909,6 +4604,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -3955,7 +4653,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3965,7 +4663,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3998,6 +4696,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -4022,7 +4723,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4032,7 +4733,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4064,6 +4765,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -4088,7 +4792,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4098,7 +4802,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4129,6 +4833,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -4163,7 +4870,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4183,7 +4890,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4236,6 +4943,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -4270,7 +4980,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4280,7 +4990,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4312,6 +5022,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -4348,7 +5061,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4358,7 +5071,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4389,6 +5102,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -4435,7 +5151,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4445,7 +5161,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4486,6 +5202,9 @@
         "security": [
           {
             "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -4522,7 +5241,7 @@
             }
           },
           "401": {
-            "description": "A valid management key is required.",
+            "description": "A valid management key, OAuth token or console sign-in is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4532,7 +5251,7 @@
             }
           },
           "403": {
-            "description": "The key has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4543,6 +5262,1164 @@
           },
           "404": {
             "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/session": {
+      "get": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "getAdminSession",
+        "summary": "Who is calling",
+        "description": "The caller's sign-in, the account it acts in, its role and grant, and the accounts a console session may switch to.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/accounts": {
+      "get": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "listAccounts",
+        "summary": "List your accounts",
+        "description": "Every account the person signed in to the console belongs to.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The accounts, with the person's role in each.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/accounts/select": {
+      "post": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "selectAccount",
+        "summary": "Switch the console to another account",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountSelectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session, now acting in that account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/credentials": {
+      "get": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "listCredentials",
+        "summary": "List management keys, CLI logins and MCP connections",
+        "description": "Every credential that acts for this account, revoked ones included, newest first.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The credentials. Secrets are never shown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/management-keys": {
+      "post": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "createManagementKey",
+        "summary": "Create a management key",
+        "description": "For scripts, CI and direct API calls. Needs an owner or admin. The key is shown once, in this answer.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagementKeyCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The key, shown once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedManagementKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/credentials/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Admin access"
+        ],
+        "operationId": "revokeCredential",
+        "summary": "Revoke a management key, CLI login or MCP connection",
+        "description": "It stops working at once. Needs an owner or admin.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The credential id."
+            },
+            "required": true,
+            "description": "The credential id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The revoked credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/capabilities": {
+      "get": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "getConsoleCapabilities",
+        "summary": "What this deployment offers the console",
+        "responses": {
+          "200": {
+            "description": "The deployment's sign-in options.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsoleCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/oauth/consents/{id}": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "getOauthConsent",
+        "summary": "Read an OAuth consent request",
+        "description": "What the consent page shows. The proof comes from the consent link's fragment, so it is sent in the body, never in a URL.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The authorization id from the consent link."
+            },
+            "required": true,
+            "description": "The authorization id from the consent link.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentProof"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The client, the grant it asked for, and the accounts the signed-in person may pick.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/oauth/consents/{id}/allow": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "allowOauthConsent",
+        "summary": "Allow an OAuth client into one of your accounts",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The authorization id from the consent link."
+            },
+            "required": true,
+            "description": "The authorization id from the consent link.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentAllowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser: back to the client, with its code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRedirectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/oauth/consents/{id}/deny": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "denyOauthConsent",
+        "summary": "Decline an OAuth client",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The authorization id from the consent link."
+            },
+            "required": true,
+            "description": "The authorization id from the consent link.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentProof"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser: back to the client, with access_denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRedirectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/device/lookup": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "lookupDeviceCode",
+        "summary": "Find a CLI sign-in by the code it shows",
+        "description": "Counted per network address, so codes cannot be guessed in bulk.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceLookupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The pending sign-in. Send its id with the code from now on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLookupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/device/{id}": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "getDeviceRequest",
+        "summary": "Read a CLI sign-in request",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id the code lookup answered."
+            },
+            "required": true,
+            "description": "The id the code lookup answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The client, the grant it asked for, the code to compare, and the accounts the person may pick.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/device/{id}/approve": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "approveDeviceRequest",
+        "summary": "Allow a CLI sign-in into one of your accounts",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id the code lookup answered."
+            },
+            "required": true,
+            "description": "The id the code lookup answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceApproveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approved. The CLI's next poll gets its tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAnswerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/device/{id}/deny": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "denyDeviceRequest",
+        "summary": "Decline a CLI sign-in",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id the code lookup answered."
+            },
+            "required": true,
+            "description": "The id the code lookup answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Declined. The CLI's next poll is told access_denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAnswerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
             "content": {
               "application/json": {
                 "schema": {

@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@hono/zod-openapi": "^1.5.1",
-    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.11.1/maxceem-cf-auth-0.11.1.tgz",
+    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v1.0.0/maxceem-cf-auth-1.0.0.tgz",
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "asn1js": "^3.0.7",
     "cbor-x": "^1.6.0",
