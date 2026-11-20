@@ -929,8 +929,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 200
-                    },
-                    "default": {}
+                    }
                   }
                 },
                 "default": {},
@@ -1104,8 +1103,7 @@
                     "model"
                   ],
                   "additionalProperties": false
-                },
-                "default": {}
+                }
               }
             },
             "required": [

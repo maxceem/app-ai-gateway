@@ -68,7 +68,7 @@ function app(limits: Record<string, unknown> = {}, authentication: Record<string
     authentication: config.authentication,
     routing: config.routing,
     limits: config.limits,
-    presets: config.presets,
+    presets: config.presets ?? {},
   };
 }
 

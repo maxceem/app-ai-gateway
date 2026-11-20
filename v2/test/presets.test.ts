@@ -183,7 +183,8 @@ describe("presets", () => {
     expect(rows[0]).toMatchObject({ seq: 1, status: "provider_error", http_status: 503, error_code: "server_overloaded", cost_nano: null });
     expect(rows[1]).toMatchObject({ seq: 2, status: "ok", model: "claude-haiku-4-5", operation: "anthropic.chat" });
     expect(rows[1]!.cost_nano).toBeGreaterThan(0);
-    expect(rows[0]!.request_id).toBe(rows[1]!.request_id);
+    expect(rows[0]!.owner_id).toBe(rows[1]!.owner_id);
+    expect(rows.map((row) => row.preset)).toEqual(["chat", "chat"]);
   });
 
   it("falls back when the provider cannot be reached, and on a 429", async () => {
@@ -261,23 +262,112 @@ describe("presets", () => {
     expect((await charges(appId))[0]).toMatchObject({ seq: 4, status: "ok" });
   });
 
-  it("refuses an unknown preset, a disabled one with no fallback, and an unpriced first target, spending nothing", async () => {
+  it("refuses an unknown preset and a disabled one with no fallback, spending nothing", async () => {
     const paused = await connection("openai", "disabled");
-    const live = await connection("openai");
-    const { appId, key } = await appWith({
-      presets: {
-        paused: { provider: paused, operation: "openai.chat", model: "gpt-4o-mini" },
-        unpriced: { provider: live, operation: "openai.chat", model: "no-such-model-zz" },
-      },
-    });
+    const { appId, key } = await appWith({ presets: { paused: { provider: paused, operation: "openai.chat", model: "gpt-4o-mini" } } });
     expect((await post(`/v2/apps/${appId}/presets/nope`, key, {})).response.status).toBe(404);
     const disabled = await post(`/v2/apps/${appId}/presets/paused`, key, { messages: [] });
     expect(disabled.response.status).toBe(502);
     expect(JSON.parse(disabled.text).error.code).toBe("provider_disabled");
-    const priceless = await post(`/v2/apps/${appId}/presets/unpriced`, key, { messages: [] });
-    expect(JSON.parse(priceless.text).error.code).toBe("pricing_not_configured");
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(await charges(appId)).toHaveLength(0);
+  });
+
+  it("serves a first target whose price has gone since the preset was saved, priced later", async () => {
+    const live = await connection("openai");
+    const { appId, key } = await appWith({ presets: { gone: { provider: live, operation: "openai.chat", model: "no-such-model-zz" } } });
+    fetchSpy.mockImplementation(async () => CHAT_OK());
+    expect((await post(`/v2/apps/${appId}/presets/gone`, key, { messages: [] })).response.status).toBe(200);
+    expect((await charges(appId))[0]).toMatchObject({ status: "ok", price_source: "unresolved", cost_nano: null, preset: "gone" });
+  });
+
+  it("refuses a first target whose key cannot be opened, and leaves out a fallback's, so the last usable answer passes through", async () => {
+    const first = await connection("openai");
+    const broken = await connection("openai");
+    await env.DB.prepare("UPDATE provider_connection SET secret_blob = 'not-a-sealed-secret' WHERE slug = ?").bind(broken).run();
+    const { appId, key } = await appWith({
+      presets: {
+        primary: { provider: broken, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: first, model: "gpt-4o-mini" }] },
+        fallback: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: broken, model: "gpt-4o-mini" }] },
+      },
+    });
+    const refused = await post(`/v2/apps/${appId}/presets/primary`, key, { messages: [] });
+    expect(refused.response.status).toBe(502);
+    expect(JSON.parse(refused.text).error.code).toBe("provider_unavailable");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
+    const passed = await post(`/v2/apps/${appId}/presets/fallback`, key, { messages: [] });
+    expect(passed.response.status).toBe(503);
+    expect(JSON.parse(passed.text)).toEqual({ error: { code: "busy" } });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends nothing more once the app went away", async () => {
+    const first = await connection("openai");
+    const second = await connection("openai");
+    const { appId, key } = await appWith({
+      presets: { chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "gpt-4o-mini" }] } },
+    });
+    const app = new AbortController();
+    fetchSpy.mockImplementation(async (_input, init) => {
+      // The provider is never handed the app's own signal.
+      expect(init?.signal).not.toBe(app.signal);
+      app.abort();
+      return Response.json({ error: { code: "busy" } }, { status: 503 });
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/presets/chat`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
+        body: JSON.stringify({ messages: [] }),
+        signal: app.signal,
+      }),
+      env,
+      ctx,
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(await charges(appId)).toHaveLength(1);
+  });
+
+  it("gives a fallback only what is left of the first-byte budget", async () => {
+    const first = await connection("openai");
+    const second = await connection("openai");
+    const { appId, key } = await appWith({
+      presets: { chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "gpt-4o-mini" }] } },
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      fetchSpy.mockImplementation(async () => {
+        vi.setSystemTime(Date.now() + 121_000);
+        return new Response("busy", { status: 503 });
+      });
+      const { response } = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [] });
+      expect(response.status).toBe(504);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes a failed attempt's charge even when cancelling the rest of its body never settles", async () => {
+    const first = await connection("openai");
+    const second = await connection("openai");
+    const { appId, key } = await appWith({
+      presets: { chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "gpt-4o-mini" }] } },
+    });
+    const stuck = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`{"error":{"code":"busy","pad":"${"x".repeat(9000)}"}}`));
+      },
+      cancel: () => new Promise<void>(() => undefined),
+    });
+    fetchSpy.mockImplementationOnce(async () => new Response(stuck, { status: 503 })).mockImplementationOnce(async () => CHAT_OK());
+    expect((await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [] })).response.status).toBe(200);
+    expect((await charges(appId)).map((row) => row.status)).toEqual(["provider_error", "ok"]);
   });
 
   it("streams a Gemini preset called with alt=sse through its streaming method", async () => {
@@ -294,6 +384,14 @@ describe("presets", () => {
     expect(sent().url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse");
     expect(sent().body).not.toHaveProperty("model");
     expect((await charges(appId))[0]).toMatchObject({ operation: "gemini.stream.v1beta", status: "ok" });
+  });
+
+  it("sends alt=sse to a preset that names Gemini's streaming method itself", async () => {
+    const slug = await connection("gemini");
+    const { appId, key } = await appWith({ presets: { gem: { provider: slug, operation: "gemini.stream.v1beta", model: "gemini-2.5-flash" } } });
+    fetchSpy.mockImplementation(async () => new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }));
+    await post(`/v2/apps/${appId}/presets/gem?alt=sse`, key, { contents: [] });
+    expect(sent().url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse");
   });
 
   it("adds the API version Anthropic needs when the client sends none", async () => {
@@ -327,6 +425,30 @@ describe("presets", () => {
 });
 
 describe("saving rewrites and presets", () => {
+  it("does not store or return empty rewrites and presets", async () => {
+    const key = await seedManagementKey();
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Empty",
+          config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { model_rewrites: {} }, presets: {} },
+        }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const created = (await response.json()) as { app: { id: string; config: Record<string, any> } };
+    expect(created.app.config).not.toHaveProperty("presets");
+    expect(created.app.config.routing).not.toHaveProperty("model_rewrites");
+    const stored = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(created.app.id).first<{ config_json: string }>();
+    expect(stored!.config_json).not.toContain("presets");
+    expect(stored!.config_json).not.toContain("model_rewrites");
+  });
+
   async function save(config: Record<string, unknown>) {
     const key = await seedManagementKey();
     const ctx = createExecutionContext();
@@ -366,6 +488,8 @@ describe("saving rewrites and presets", () => {
       [{ ...ok, params: { service_tier: "warp" } }, "has no service mode"],
       [{ provider: openai, operation: "openai.transcription", model: "whisper-1", params: { language: "en" } }, "params apply only to JSON"],
       [{ provider: openai, operation: "openai.embeddings", model: "text-embedding-3-small", max_output_tokens: 5 }, "has no output to cap"],
+      [{ ...ok, max_output_tokens: 100, params: { max_completion_tokens: 200 } }, "exceeds the configured max_output_tokens"],
+      [{ provider: openai, operation: "openai.responses", model: "gpt-4o-mini", params: { background: true } }, "Background"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });

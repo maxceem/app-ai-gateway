@@ -11,11 +11,13 @@
  * 1. The caller is checked as on the proxy (`serveCaller`).
  * 2. The body is read once. A JSON body gets the preset's `params` merged in,
  *    winning over the app's values. A transcription is a multipart upload.
- * 3. Each target of the chain becomes an attempt. The first must work: a
- *    missing connection, an operation it cannot serve or a model with no
- *    price is refused, before anything is spent. A fallback that cannot work
- *    is left out of the chain. A disabled first connection is a pause: the
- *    chain goes on to its fallbacks, and only with none left is it refused.
+ * 3. Each target of the chain becomes an attempt, its key opened now. The
+ *    first must work: a missing connection, an operation it cannot serve or
+ *    a key that cannot be opened is refused, before anything is spent; a
+ *    model whose price has gone since the preset was saved is served and
+ *    priced later. A fallback that cannot work is left out of the chain. A
+ *    disabled first connection is a pause: the chain goes on to its
+ *    fallbacks, and only with none left is it refused.
  * 4. The request is admitted once, for the whole chain.
  * 5. The attempts are sent in order (`sendAttempts`): a target that gets no
  *    answer, a 429 or a 5xx is followed by the next. Every attempt is one
@@ -32,9 +34,9 @@ import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
-import { connectionDescription, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
+import { connectionDescription, connectionSecret, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
@@ -114,15 +116,19 @@ class TargetProblem extends Error {
 }
 
 interface TargetInput {
-  readonly c: ProxyContext;
+  readonly slug: string;
   readonly caller: Caller;
   readonly preset: Preset;
   readonly style: ApiStyle;
   readonly body: PresetBody;
+  /** The caller asked for Gemini's stream with `?alt=sse`. */
   readonly streaming: boolean;
   readonly connection: ConnectionRecord;
   readonly description: ProviderDescription;
+  readonly secret: string;
   readonly target: Pick<PresetFallback, "operation" | "model">;
+  /** The chain's first target, which is served even when its price has gone since the preset was saved. */
+  readonly primary: boolean;
   readonly requestId: string;
   readonly seq: number;
   readonly startedAt: number;
@@ -141,7 +147,10 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
   const model = target.model;
   const resolved = resolvePrice(connection.type, model, connection.rates);
   const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
-  if (price === null && !reportsCost(operation)) {
+  // Saving checked every target's price. A first target whose price has gone
+  // since is still served, and priced later (`unresolved`), as a listed model
+  // on the proxy is. A fallback with none is left out.
+  if (price === null && !reportsCost(operation) && !input.primary) {
     throw new TargetProblem(
       new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
         data: { model, operation: operation.name },
@@ -153,29 +162,42 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     throw new TargetProblem(new GatewayError(400, "invalid_request", `Model ${model} cannot be sent in ${operation.name}'s path`));
   }
   const location = operation.model;
-  let sent: OutgoingBody;
+  let build: () => OutgoingBody;
   let fields: Record<string, unknown>;
   if (input.body.kind === "json") {
-    const body = structuredClone(input.body.body);
-    if (location.in === "body") body[location.field] = model;
-    // The path names the model; the body names none, as v1.
-    else delete body.model;
-    refuseBackground(operation, body);
-    applyOutputCap(operation, body, preset.max_output_tokens);
-    requestStreamUsage(operation, body);
-    sent = { bytes: new TextEncoder().encode(JSON.stringify(body)), contentType: "application/json" };
-    fields = body;
+    const merged = input.body.body;
+    const shaped = (): Record<string, unknown> => {
+      const body = attemptCopy(merged);
+      if (location.in === "body") body[location.field] = model;
+      // The path names the model; the body names none, as v1.
+      else delete body.model;
+      return body;
+    };
+    // Judged now, on a copy, so a refusal comes before admission. The body is built again when sent.
+    const judged = shaped();
+    refuseBackground(operation, judged);
+    applyOutputCap(operation, judged, preset.max_output_tokens);
+    fields = judged;
+    build = () => {
+      const body = shaped();
+      applyOutputCap(operation, body, preset.max_output_tokens);
+      requestStreamUsage(operation, body);
+      return { bytes: new TextEncoder().encode(JSON.stringify(body)), contentType: "application/json" };
+    };
   } else {
-    const form = copyForm(input.body.form);
-    if (location.in === "form" || location.in === "body") form.set(location.field, model);
+    const upload = input.body.form;
     const format = meteredTranscriptionFormat(
       operation,
       description,
-      new Map([["response_format", form.getAll("response_format").map((value) => (typeof value === "string" ? value : null))]]),
+      new Map([["response_format", upload.getAll("response_format").map((value) => (typeof value === "string" ? value : null))]]),
     );
-    if (format !== null) form.set("response_format", format);
-    sent = { form, contentType: null };
-    fields = formText(form);
+    fields = { ...formText(upload), ...(location.in === "form" || location.in === "body" ? { [location.field]: model } : {}) };
+    build = () => {
+      const form = copyForm(upload);
+      if (location.in === "form" || location.in === "body") form.set(location.field, model);
+      if (format !== null) form.set("response_format", format);
+      return { form, contentType: null };
+    };
   }
   const mode = requestedServiceMode(description, connection.baseUrl, fields);
   const attempt: CallAttempt = {
@@ -189,6 +211,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     providerSlug: connection.slug,
     operation: operation.name,
     model,
+    preset: input.slug,
     price,
     reportsCost: reportsCost(operation),
     requestedMode: mode.mode,
@@ -204,8 +227,10 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     operation,
     hostKey: upstream.host,
     path: upstream.path,
-    query: input.streaming && operation !== chosen ? "?alt=sse" : "",
-    body: sent,
+    // Gemini's streaming method takes `alt=sse`, whenever the caller asked for it.
+    query: input.streaming && operation.match.path.endsWith(":streamGenerateContent") ? "?alt=sse" : "",
+    secret: input.secret,
+    body: build,
     attempt,
     ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
   };
@@ -270,9 +295,12 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
             if (primary) paused = error;
             continue;
           }
+          // Opened before admission: a target whose key cannot be opened is
+          // refused when it is the first, as v1, and left out when a fallback.
+          const secret = await connectionSecret(c.env, connection);
           attempts.push(
             targetAttempt({
-              c,
+              slug,
               caller,
               preset,
               style,
@@ -280,7 +308,9 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
               streaming,
               connection,
               description,
+              secret,
               target,
+              primary,
               requestId,
               seq: index + 1,
               startedAt,

@@ -205,7 +205,7 @@ export async function serveCaller(
 /** The model a request is sent and billed as: the app's rewrite of it, if any (v1). A fixed model is never rewritten. */
 export function rewrittenModel(app: AppRecord, operation: OperationDescription, model: string): string {
   if (operation.model.in === "fixed") return model;
-  const rewrites = app.routing.model_rewrites;
+  const rewrites = app.routing.model_rewrites ?? {};
   return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
 }
 
@@ -331,6 +331,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges), contentType: null }
             : { bytes, contentType };
 
+      // The key is opened before admission: a request that cannot be sent must not spend anything.
+      const secret = await connectionSecret(c.env, connection);
+
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
       await admitRequest({
@@ -368,7 +371,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           hostKey: upstream.host,
           path: upstream.path,
           query: sanitizedQuery(url),
-          body: sent,
+          secret,
+          body: () => sent,
           attempt,
         },
       ]);
@@ -614,7 +618,10 @@ export interface PreparedAttempt {
   readonly hostKey: string;
   readonly path: string;
   readonly query: string;
-  readonly body: OutgoingBody;
+  /** The connection's key, opened before admission: an attempt is only planned with a key that works. */
+  readonly secret: string;
+  /** Built only when this attempt is sent, so a long chain never holds every target's body at once. */
+  readonly body: () => OutgoingBody;
   readonly attempt: CallAttempt;
   /** Headers set when the client sent none, such as the API version a preset's provider needs. */
   readonly defaultHeaders?: Readonly<Record<string, string>>;
@@ -658,7 +665,8 @@ async function failedBodyHead(body: ReadableStream<Uint8Array>): Promise<string>
     // A body that breaks off has nothing more to say; what was read stands.
   } finally {
     clearTimeout(timer);
-    if (!finished) await reader.cancel().catch(() => undefined);
+    // Not awaited: a cancel that never settles must not hold back the attempt's charge.
+    if (!finished) void reader.cancel().catch(() => undefined);
   }
   const kept = new Uint8Array(Math.min(bytes, FAILED_BODY_MAX_BYTES));
   let at = 0;
@@ -688,7 +696,9 @@ function clientGone(c: ProxyContext): boolean {
  * - All attempts share one budget for the provider's first byte, the
  *   proxy's own 120 s: a fallback gets what is left of it.
  * - Every attempt sends the whole body again: it was read whole before the
- *   first one. Nothing is tried after the app went away.
+ *   first one, and each attempt's own body is built only when it is sent.
+ * - Every key was opened before admission (`secret`).
+ * - Nothing is sent after the app went away.
  */
 export async function sendAttempts(
   c: ProxyContext,
@@ -699,18 +709,15 @@ export async function sendAttempts(
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
-    if (index > 0 && clientGone(c)) {
-      throw new GatewayError(502, "provider_error", "Provider request failed");
+    // The budget is checked before anything is built for a fallback.
+    if (deadline !== undefined && deadline - Date.now() <= 0) {
+      log("warn", "provider_ttfb_budget_exhausted", {
+        app: attempt.appId,
+        skipped: attempts.slice(index).map((next) => next.connection.slug),
+      });
+      throw new GatewayError(504, "provider_error", "Provider did not respond in time");
     }
-    let secret: string;
-    try {
-      secret = await connectionSecret(c.env, connection);
-    } catch (error) {
-      // No provider was contacted, so there is no attempt to charge. A
-      // fallback whose key cannot be opened is skipped.
-      if (!last) continue;
-      throw error;
-    }
+    const body = prepared.body();
     const headers = upstreamHeaders(c.req.raw.headers);
     for (const name of stripped) headers.delete(name);
     for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
@@ -719,13 +726,19 @@ export async function sendAttempts(
     // A JSON body is sent as JSON whatever type the client named, as v1. An
     // untouched form keeps the client's type and boundary; a changed one gets
     // the type fetch writes for it.
-    if (prepared.body.contentType === null) headers.delete("content-type");
-    else headers.set("content-type", prepared.body.contentType);
+    if (body.contentType === null) headers.delete("content-type");
+    else headers.set("content-type", body.contentType);
     // A callback, so a key containing `$&` or `$1` is sent as it is.
-    headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
+    headers.set(description.auth.header, description.auth.format.replace("{key}", () => prepared.secret));
     const origin = upstreamOrigin(connection, description, prepared.hostKey);
     const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
 
+    // Checked just before each fetch: nothing is sent for an app that went
+    // away. The app's own signal is never passed to the provider, so an
+    // answer already on its way is read to the end and charged.
+    if (clientGone(c)) {
+      throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
+    }
     const providerStart = Date.now();
     deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
     const remainingMs = deadline - providerStart;
@@ -743,7 +756,7 @@ export async function sendAttempts(
       upstream = await fetch(url, {
         method: c.req.method,
         headers,
-        body: prepared.body.form ?? (prepared.body.bytes as Uint8Array<ArrayBuffer>),
+        body: body.form ?? (body.bytes as Uint8Array<ArrayBuffer>),
         // Never follow a redirect: it could take the key to another host.
         redirect: "manual",
         signal: controller.signal,
@@ -798,7 +811,7 @@ export async function sendAttempts(
     }
     return answer(c, prepared, upstream, latencyMs);
   }
-  // Every attempt was a fallback whose key could not be opened; the loop throws on the last.
+  // The last attempt always answers or throws above.
   throw new GatewayError(502, "provider_error", "Provider request failed");
 }
 

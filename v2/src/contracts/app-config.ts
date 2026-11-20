@@ -267,9 +267,10 @@ export const RoutingConfigSchema = z
      * every proxy call of the app (v1). The app's model list is judged on the
      * model the request names; the price on the model it becomes. One step
      * only: a rewrite's target is never rewritten again. Presets name their
-     * models themselves and are not rewritten.
+     * models themselves and are not rewritten. Written only when it has
+     * one: an empty list is the default (`AGENTS.md`).
      */
-    model_rewrites: z.record(ModelKeySchema, ModelNameSchema).default({}),
+    model_rewrites: z.record(ModelKeySchema, ModelNameSchema).optional(),
   })
   .strict();
 
@@ -404,7 +405,7 @@ export const AppConfigSchema = z
     authentication: AuthenticationConfigSchema,
     routing: RoutingConfigSchema.prefault({}),
     limits: LimitsConfigSchema.prefault({}),
-    presets: PresetsConfigSchema.default({}),
+    presets: PresetsConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, context) => {

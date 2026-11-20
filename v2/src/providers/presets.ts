@@ -90,3 +90,16 @@ export function presetUpstream(
   const location = operation.model;
   return matcherOf(description).upstreamFor(operation.name, location.in === "path" ? { [location.part]: model } : {});
 }
+
+/**
+ * A copy of a request body an attempt can change: the top level, and Gemini's
+ * `generationConfig`, which the output cap writes into. Everything below them
+ * is shared, never copied, so a long chain never holds many copies of a
+ * large request.
+ */
+export function attemptCopy(body: Record<string, unknown>): Record<string, unknown> {
+  const copy: Record<string, unknown> = { ...body };
+  const config = body.generationConfig;
+  if (typeof config === "object" && config !== null && !Array.isArray(config)) copy.generationConfig = { ...config };
+  return copy;
+}

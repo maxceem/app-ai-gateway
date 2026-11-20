@@ -21,8 +21,9 @@ import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
 import { listPrice, priceInMode, pricesOperation, reportsCost, resolvePrice, type CustomerRates } from "../pricing/prices.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
-import { declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
+import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { isStandardMode, serviceModeName } from "../usage/service-modes.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
@@ -99,7 +100,13 @@ export function parseAppConfig(raw: unknown): AppConfig {
   }
   const header = providerKeyHeaderProblem(parsed.data);
   if (header !== null) throw invalid(`config.${header}`);
-  return parsed.data;
+  // A field is written only when it differs from its default (`AGENTS.md`).
+  const config = parsed.data;
+  if (config.routing.model_rewrites !== undefined && Object.keys(config.routing.model_rewrites).length === 0) {
+    delete config.routing.model_rewrites;
+  }
+  if (config.presets !== undefined && Object.keys(config.presets).length === 0) delete config.presets;
+  return config;
 }
 
 /** An app's stored routing entries and presets, by slug, read loosely: they were valid when saved. */
@@ -136,7 +143,7 @@ export async function checkAppConfig(
     }
     return rows.get(slug) ?? null;
   };
-  const rewrites = config.routing.model_rewrites;
+  const rewrites = config.routing.model_rewrites ?? {};
   await checkRewrites(db, accountId, rewrites);
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
     const connection = await connectionRow(slug);
@@ -185,7 +192,7 @@ export async function checkAppConfig(
       }
     }
   }
-  for (const [slug, preset] of Object.entries(config.presets)) {
+  for (const [slug, preset] of Object.entries(config.presets ?? {})) {
     // Unchanged, it may keep a connection that was deleted since, as routing does.
     if (Object.hasOwn(stored.presets, slug) && sameJson(stored.presets[slug], preset)) continue;
     await checkPreset(slug, preset, connectionRow);
@@ -282,6 +289,19 @@ async function checkPreset(
         undefined,
         { data: { slug, model: target.model, operation: operation.name } },
       );
+    }
+    // The parameters are sent to every target, so each judges them as a
+    // request would be judged: a background option, or an output field over
+    // the preset's own cap, is refused now rather than on every call.
+    if (preset.params !== undefined && declared.model.in !== "form") {
+      const judged = attemptCopy(preset.params);
+      try {
+        refuseBackground(operation, judged);
+        applyOutputCap(operation, judged, preset.max_output_tokens);
+      } catch (error) {
+        if (!(error instanceof GatewayError)) throw error;
+        throw invalid(`${where}.params: ${error.message}${index === 0 ? "" : ` (for ${target.label})`}`, { slug });
+      }
     }
     // Naming a service mode in the parameters chooses it for every target, so
     // each must know it and be able to bill it.
