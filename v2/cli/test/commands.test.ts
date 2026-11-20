@@ -264,3 +264,86 @@ test("deployment status at a v1 gateway with AGW_MANAGEMENT_KEY gets the agw 1.x
   assert.equal(code, 3);
   assert.equal(JSON.parse(out.out.text).error.code, "gateway_v1");
 });
+
+/** One `main` run with the store, transport and environment given. */
+async function runWith(argv: string[], options: { store: ReturnType<typeof memoryStore>; handler: (path: string) => unknown; env?: Record<string, string>; openBrowser?: () => Promise<boolean> }) {
+  const out = sinks();
+  const transport = fakeTransport(async (path) => ({ data: await options.handler(path) }));
+  const code = await main(argv, {
+    store: options.store,
+    transport,
+    stdout: out.stdout,
+    stderr: out.stderr,
+    io: { env: options.env ?? {}, clock: fakeClock(), openBrowser: options.openBrowser ?? (async () => true) },
+    catalogCache: new MemoryCatalogCache(),
+  });
+  return { code, out: out.out.text, err: out.err.text };
+}
+
+const SESSION = {
+  session: {
+    user: { id: "u1", name: null, email: "ops@example.com", emailVerified: true },
+    account: { id: "org_1", name: "Acme" },
+    role: "owner",
+    grant: "manage",
+    credentialType: "apiKey",
+    accounts: [{ id: "org_1", name: "Acme", role: "owner" }],
+  },
+};
+
+test("connect with AGW_MANAGEMENT_KEY keeps a sign-in already stored for the same gateway, and names the hosted one when no URL is given", async () => {
+  const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+  const same = await runWith(["deployment", "connect", "--url", URL_, "--json"], { store, handler: () => SESSION, env: { AGW_MANAGEMENT_KEY: "agw_mgmt_env" } });
+  assert.equal(same.code, 0, same.err);
+  assert.equal(store.held.active?.login?.accessToken, "agw_oat_1");
+  const hosted = await runWith(["deployment", "connect", "--json"], { store: memoryStore(), handler: () => SESSION, env: { AGW_MANAGEMENT_KEY: "agw_mgmt_env" } });
+  assert.equal(hosted.code, 0, hosted.err);
+  assert.match(hosted.err, /hosted gateway, https:\/\/console\.appaigateway\.com/);
+});
+
+test("deployment status checks the gateway with no credential, and a refused AGW_MANAGEMENT_KEY is an error", async () => {
+  const notV2 = (path: string) => {
+    if (path === "/v1/cli/capabilities") return { serverVersion: "0.22.1" };
+    throw new CliError("not_found", "no", "", 3, { status: 404 });
+  };
+  const bare = await runWith(["deployment", "status", "--json"], { store: memoryStore({ schemaVersion: 1, active: { url: URL_ } }), handler: notV2 });
+  assert.equal(JSON.parse(bare.out).error.code, "gateway_v1");
+  const refused = await runWith(["deployment", "status", "--json"], {
+    store: memoryStore({ schemaVersion: 1, active: { url: URL_ } }),
+    handler: () => {
+      throw new CliError("auth_required", "no", "", 3, { status: 401 });
+    },
+    env: { AGW_MANAGEMENT_KEY: "agw_mgmt_bad" },
+  });
+  assert.equal(refused.code, 3);
+  assert.equal(JSON.parse(refused.out).error.code, "auth_required");
+});
+
+test("the hand-off link file is removed once the command stops waiting, and a notice is cleaned of control characters", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+    const real = new StateStore(dir);
+    let written = "";
+    store.handoffFile = async (id: string, url: string) => (written = await real.handoffFile(id, url));
+    let reads = 0;
+    const result = await runWith(["provider", "add", "--type", "openai", "--browser"], {
+      store,
+      openBrowser: async () => false,
+      handler: (path) => {
+        if (path === "/v2/admin/provider-handoffs")
+          return { id: "op_5", kind: "provider.add", url: `${URL_}/v2/approve/op_5#proof`, expiresAt: "2026-11-20T10:15:00.000Z", notice: "same\u001b[31m request" };
+        reads++;
+        return reads < 2
+          ? { id: "op_5", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" }
+          : { id: "op_5", kind: "provider.add.browser", state: "completed", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z", result: { provider: PROVIDER } };
+      },
+    });
+    assert.equal(result.code, 0, result.err);
+    assert.ok(written);
+    await assert.rejects(stat(written));
+    assert.doesNotMatch(result.err, /\u001b/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

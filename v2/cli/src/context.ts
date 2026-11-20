@@ -282,6 +282,19 @@ export class Context {
   }
 
   /**
+   * Checks the selected gateway answers as a v2 one, with a public request:
+   * a v1 gateway gets the agw 1.x message.
+   */
+  async checkGateway(): Promise<void> {
+    try {
+      await this.publicCall("getConsoleCapabilities");
+    } catch (error) {
+      if (error instanceof CliError && error.details?.status === 404) await refuseOlderGateway(this.transport, this.url);
+      throw error;
+    }
+  }
+
+  /**
    * Who a credential is, as the gateway's session endpoint says: the given
    * key at the given gateway, or this command's own credential. A gateway with
    * no v2 management API may be a v1 one, which agw 2 cannot manage, so a 404
@@ -403,7 +416,10 @@ export class Context {
     if (!this.environmentKey) return this.login(target);
     const who = await this.whoAmI(target, this.environmentKey);
     const { state } = await this.store.update((disk) => {
-      disk.active = { url: target, account: who.account };
+      // A sign-in already stored for this gateway is kept: the environment's
+      // key only wins while it is set.
+      const kept = disk.active?.url === target ? disk.active.login : undefined;
+      disk.active = { url: target, account: who.account, ...(kept ? { login: kept } : {}) };
     });
     this.state = state;
     this.say(`${MANAGEMENT_KEY_ENV} is set, so it stays the credential for every command; nothing was stored.`);

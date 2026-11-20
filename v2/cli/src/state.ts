@@ -80,7 +80,8 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : undefined;
 }
 
-const LOCK_TIMEOUT_MS = 10_000;
+/** Longer than a token request may take (30 s), since a renewal holds the lock across one. */
+const LOCK_TIMEOUT_MS = 45_000;
 /** A lock older than this was left by a command that died; no write takes that long. */
 const LOCK_STALE_MS = 60_000;
 

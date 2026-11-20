@@ -4,7 +4,7 @@
  * new app key goes to a private file. Every other change is a gateway command,
  * built from its tool list.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { APP_STATUSES } from "../../src/contracts/admin.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { CliError, fail } from "./common.ts";
@@ -99,21 +99,27 @@ async function browserStep(
   opened: OperationResponse<"openProviderHandoff">,
 ): Promise<ProviderResult | OperationStatus> {
   assertOwnPage(ctx, opened.url);
-  if (opened.notice) ctx.say(`Note: ${opened.notice}`);
+  if (opened.notice) ctx.say(`Note: ${opened.notice.replace(/[\p{Cc}\p{Cf}]/gu, " ")}`);
   // The link carries the page's proof, so it is never printed: a browser
   // opened here gets it, and otherwise it goes to a private file.
   const shown = !ctx.flags["no-open"] && (await ctx.io.openBrowser(opened.url));
+  let file: string | undefined;
   if (shown) ctx.say(`Enter the key in the browser window that opened.\nOperation: ${opened.id}`);
   else {
-    const file = await ctx.store.handoffFile(opened.id, opened.url);
-    ctx.say(`Open the link saved in ${file} (readable only by you) to enter the key, then delete the file.\nOperation: ${opened.id}`);
+    file = await ctx.store.handoffFile(opened.id, opened.url);
+    ctx.say(`Open the link saved in ${file} (readable only by you) to enter the key.\nOperation: ${opened.id}`);
   }
   if (ctx.flags.json || ctx.flags["no-input"]) {
     const { data } = await ctx.call("getOperation", { params: { id: opened.id } });
     return data;
   }
-  const done = await waitFor(ctx, opened.id, 900);
-  return done.result?.provider ? { provider: done.result.provider } : done;
+  try {
+    const done = await waitFor(ctx, opened.id, 900);
+    return done.result?.provider ? { provider: done.result.provider } : done;
+  } finally {
+    // Once this command stops waiting, the link has done its work here.
+    if (file) await unlink(file).catch(() => {});
+  }
 }
 
 /** Polls an operation until it completes, or fails once it lapses or is declined. */

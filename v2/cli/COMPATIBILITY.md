@@ -33,9 +33,11 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
 
 ## What `agw` does with what it does not know
 
-- **Unknown fields in an answer** are kept exactly as sent and sent back when
-  `agw` saves, and `agw` says once per run that the gateway is newer
-  (`newer_gateway` notice). A command edits only what its flags name.
+- **Unknown settings in an app's configuration** are kept exactly as sent
+  and sent back when `agw` saves, and `agw` says once per run that the
+  gateway is newer (`newer_gateway` notice). A command edits only what its
+  flags name. Other unknown fields in an answer are left out of what `agw`
+  prints, and a gateway command's result is printed as the gateway sent it.
 - **A tool the gateway changed** is caught before it runs: every call sends
   the tool's guard, and a tool that has become destructive or needs more of
   `agw` is refused with `tool_changed`. `agw` then reads the gateway's current

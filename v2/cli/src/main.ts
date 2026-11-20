@@ -79,11 +79,16 @@ const first = (args: readonly string[]): string => args[0] ?? "";
 async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   const credential = ctx.environmentKey ? "environment" : ctx.active?.login ? "oauth" : null;
   const base: DeploymentStatusResult = { url: ctx.url, connected: true, credential, signedIn: false };
-  if (!credential) return base;
+  if (!credential) {
+    await ctx.checkGateway();
+    return base;
+  }
   try {
     return { ...base, signedIn: true, ...(await ctx.session()) };
   } catch (error) {
-    if (error instanceof CliError && (error.code === "login_required" || error.details?.status === 401)) return base;
+    // A sign-in that ended is "not signed in"; a refused AGW_MANAGEMENT_KEY is an error to fix.
+    const ended = error instanceof CliError && (error.code === "login_required" || error.details?.status === 401);
+    if (credential === "oauth" && ended) return base;
     throw error;
   }
 }
@@ -92,6 +97,7 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
   const { command, flags, args } = parsed;
   switch (command) {
     case "deployment connect":
+      if (!flags.cloud && flags.url === undefined) ctx.say(`Connecting to the hosted gateway, ${CLOUD}. Use --url for your own.`);
       return ctx.connect(flags.cloud ? CLOUD : origin(flags.url ?? CLOUD));
     case "deployment status":
       return deploymentStatus(ctx);
