@@ -11,8 +11,8 @@
  * 1. The caller is checked as on the proxy (`serveCaller`).
  * 2. The body is read once. A JSON body gets the preset's `params` merged in,
  *    winning over the app's values. A transcription is a multipart upload,
- *    and so may be another API's request, such as an image edit; an upload
- *    is parsed whole once, and each attempt sets its own model in it.
+ *    and so may an image edit be; an upload is parsed whole once, and each
+ *    attempt sets its own model in it. Every other API takes JSON only.
  * 3. Each target of the chain becomes an attempt. The first must work: a
  *    missing connection, an operation it cannot serve or a key that cannot
  *    be opened is refused, before anything is spent (a fallback's key is
@@ -81,7 +81,12 @@ export function deepMerge(base: Record<string, unknown>, overlay: Record<string,
 /** The request as read once: a JSON body with the preset's parameters in, or an upload. */
 type PresetBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
 
-async function presetBody(caller: Caller, contentType: string, preset: Preset, style: ApiStyle): Promise<PresetBody> {
+/** Whether an operation's API takes an upload besides JSON: an image edit. Only these accept a form (transcription always takes one). */
+function takesUpload(operation: OperationDescription): boolean {
+  return operation.style === "openai-images" && operation.match.path.endsWith("images/edits");
+}
+
+async function presetBody(caller: Caller, contentType: string, preset: Preset, style: ApiStyle, operation: OperationDescription): Promise<PresetBody> {
   const bytes = await caller.readBody();
   if (style === "openai-transcription") {
     if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
@@ -92,9 +97,10 @@ async function presetBody(caller: Caller, contentType: string, preset: Preset, s
     if (!form.has("file")) throw new GatewayError(400, "invalid_request", "A file field is required");
     return { kind: "form", form };
   }
-  // An upload to another API, such as an image edit, is sent as a form too,
-  // each attempt setting its own model in it. `params` merge into JSON only.
-  if (contentType.toLowerCase().startsWith("multipart/form-data")) {
+  // An image edit may be an upload too, sent as a form, each attempt setting
+  // its own model in it; `params` merge into JSON only. Any other API is
+  // JSON, so its output cap and background checks always apply.
+  if (takesUpload(operation) && contentType.toLowerCase().startsWith("multipart/form-data")) {
     return { kind: "form", form: await parseForm(bytes, contentType) };
   }
   return { kind: "json", body: deepMerge(jsonBody(bytes), preset.params ?? {}) };
@@ -268,11 +274,12 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       if (preset === undefined) throw new GatewayError(404, "preset_not_found", `This app has no preset ${slug}`);
       caller.facts.operation = preset.operation;
       caller.facts.model = preset.model;
-      const style = declaredOperation(preset.operation)?.style;
-      if (style === undefined) {
+      const declared = declaredOperation(preset.operation);
+      const style = declared?.style;
+      if (declared === null || style === undefined) {
         throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
       }
-      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style);
+      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, declared);
       const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
       const requestId = timeOrderedId(startedAt);
 

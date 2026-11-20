@@ -604,6 +604,24 @@ describe("presets", () => {
     expect((await charges(appId))[0]).toMatchObject({ model: "gpt-image-2", status: "ok" });
   });
 
+  it("refuses a form for a preset whose API takes JSON, so its output cap always applies", async () => {
+    const slug = await connection("openai");
+    const { appId, key } = await appWith({ presets: { chat: { provider: slug, operation: "openai.chat", model: "gpt-4o-mini", max_output_tokens: 64 } } });
+    const form = new FormData();
+    form.append("max_tokens", "1000");
+    form.append("messages", "[]");
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/presets/chat`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-end-user-id": "u" }, body: form }),
+      env,
+      ctx,
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("sends a transcription preset's upload with its model set", async () => {
     const slug = await connection("openai");
     const { appId, key } = await appWith({ presets: { stt: { provider: slug, operation: "openai.transcription", model: "whisper-1" } } });
