@@ -464,8 +464,9 @@ export class Skimmer {
         } catch {
           return this.fail();
         }
-        // Counted against every list it is kept in.
-        for (const frame of this.frames) {
+        // Counted against every list it is kept in. An aggregate's value is
+        // folded in and dropped, so it counts toward no cap anywhere.
+        if (!this.leafAggregated) for (const frame of this.frames) {
           const list = frame.list;
           if (list === undefined || list.over || list.aggregate !== null) continue;
           list.bytes += this.captureLength;

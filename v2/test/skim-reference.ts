@@ -107,7 +107,8 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
           continue;
         }
         out[key] = JSON.parse(text.slice(member.start, member.end)) as unknown;
-        for (const list of lists) {
+        // An aggregate's value is folded in and dropped: it counts toward no cap.
+        if (!(aggregated && declared === "max")) for (const list of lists) {
           if (list.over) continue;
           list.bytes += length;
           if (list.bytes > SKIM_VALUE_CAP) over(list);

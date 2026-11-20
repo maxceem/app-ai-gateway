@@ -253,6 +253,14 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
       expect(skimWith(withModel, big, randomPieces(big, nextBig))).toEqual({ documents: [{ model: "m", results: { utterances: { end: 12.5 } } }], overflow: false, complete: true });
     }
     expect(pickText(big, withModel)).toEqual({ documents: [{ model: "m", results: { utterances: { end: 12.5 } } }], overflow: false });
+    // Nor does it count toward an enclosing list's cap: a value just under the
+    // cap that the aggregate skips leaves the list it is in whole.
+    const nested: PathTree = { items: { model: true, utterances: { end: "max" } } };
+    const atCap = `"${"a".repeat(SKIM_VALUE_CAP - 2)}"`;
+    const inList = `{"items":[{"model":"m","utterances":[{"end":${atCap}},{"end":12}]}]}`;
+    const wantNested = { documents: [{ items: [{ model: "m", utterances: { end: 12 } }] }], overflow: false };
+    for (let trial = 0; trial < 10; trial += 1) expect(skimWith(nested, inList, randomPieces(inList, nextBig))).toEqual({ ...wantNested, complete: true });
+    expect(pickText(inList, nested)).toEqual(wantNested);
     // Outside an array, `max` keeps the value as a leaf does.
     expect(skimWith(tree, '{"results":{"utterances":{"end":3}}}').documents).toEqual([{ results: { utterances: { end: 3 } } }]);
   });
