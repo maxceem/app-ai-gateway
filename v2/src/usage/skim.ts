@@ -26,6 +26,10 @@
  *   `SKIM_VALUE_CAP` characters of kept leaves, counted as they are kept,
  *   nested lists' too: past either, the list is left out, nothing more of it
  *   is kept, and `overflow` is set;
+ * - a tree whose members are all `"max"` keeps, for an array, one object
+ *   instead of a list: for each member, the largest number any element has
+ *   there (Deepgram's last utterance `end`). It holds the same however long
+ *   the array is, and never overflows. Elsewhere `"max"` is a leaf;
  * - a key named twice keeps its last value, as `JSON.parse` does.
  *
  * A root object is one document. With `arrayDocuments`, a root array's
@@ -38,8 +42,18 @@
  */
 import { keep } from "./keep.ts";
 
-/** Declared paths: `true` keeps a member's whole value; a tree keeps an object member's declared members, or each object element's of an array member. */
-export type PathTree = { readonly [key: string]: PathTree | true };
+/**
+ * Declared paths: `true` keeps a member's whole value; a tree keeps an object
+ * member's declared members, or each object element's of an array member;
+ * `"max"` keeps the largest number across an array's elements.
+ */
+export type PathTree = { readonly [key: string]: PathTree | true | "max" };
+
+/** Whether a tree keeps only the largest numbers across an array (`"max"`), not its elements. */
+function aggregates(tree: PathTree): boolean {
+  const values = Object.values(tree);
+  return values.length > 0 && values.every((value) => value === "max");
+}
 
 /** The largest value kept, in characters of JSON text. A usage report is a few hundred. */
 export const SKIM_VALUE_CAP = 64 * 1024;
@@ -60,13 +74,13 @@ const MAX_KEY = 256;
 type Holder = Record<string, unknown>;
 
 /** A tree's keys by length, so a key in the text is matched without being copied out. */
-type Compiled = ReadonlyMap<number, readonly (readonly [string, PathTree | true])[]>;
+type Compiled = ReadonlyMap<number, readonly (readonly [string, PathTree | true | "max"])[]>;
 const COMPILED = new WeakMap<PathTree, Compiled>();
 
 function compiled(tree: PathTree): Compiled {
   let found = COMPILED.get(tree);
   if (found === undefined) {
-    const byLength = new Map<number, (readonly [string, PathTree | true])[]>();
+    const byLength = new Map<number, (readonly [string, PathTree | true | "max"])[]>();
     for (const [key, value] of Object.entries(tree)) {
       const list = byLength.get(key.length) ?? [];
       list.push([key, value]);
@@ -110,6 +124,8 @@ interface Frame {
 /** A kept array while it is read: its elements, what they hold so far, and where it is kept. */
 interface KeptList {
   readonly elements: unknown[];
+  /** For a tree of `"max"` members: the largest number of each, kept instead of the elements. */
+  readonly aggregate: Holder | null;
   readonly tree: PathTree;
   readonly holder: Holder;
   readonly key: string;
@@ -211,7 +227,7 @@ export class Skimmer {
   private keyTooLong = false;
   /** The key read last, when the frame's tree declares it, and what it declares. */
   private lastKey = "";
-  private lastDeclared: PathTree | true | undefined = undefined;
+  private lastDeclared: PathTree | true | "max" | undefined = undefined;
   /** The innermost open document, if one is open. */
   private document: Holder | null = null;
   /** A value was too large to keep. */
@@ -325,7 +341,8 @@ export class Skimmer {
         tree = this.tree;
       } else if (target === Target.Element) {
         const list = this.frames[this.frames.length - 1]!.list!;
-        list.elements.push(value);
+        // An aggregate's element is read, folded in when it closes, and dropped.
+        if (list.aggregate === null) list.elements.push(value);
         this.frames.push({ tree: list.tree, keys: compiled(list.tree), value, document, inList: list });
         this.mode = Mode.KeyOrClose;
         return index + 1;
@@ -338,8 +355,10 @@ export class Skimmer {
       return index + 1;
     }
     if (character === 91 /* [ */ && target === Target.Inner) {
-      const list: KeptList = { elements: [], tree: this.targetTree!, holder: this.targetHolder!, key: this.targetKey, bytes: 0, count: 0, over: false };
-      this.targetHolder![this.targetKey] = list.elements;
+      const tree = this.targetTree!;
+      const aggregate = aggregates(tree) ? {} : null;
+      const list: KeptList = { elements: [], aggregate, tree, holder: this.targetHolder!, key: this.targetKey, bytes: 0, count: 0, over: false };
+      this.targetHolder![this.targetKey] = aggregate ?? list.elements;
       this.frames.push({ tree: null, keys: null, value: null, document: false, list });
       this.mode = Mode.ValueOrClose;
       return index + 1;
@@ -442,7 +461,7 @@ export class Skimmer {
         // Counted against every list it is kept in.
         for (const frame of this.frames) {
           const list = frame.list;
-          if (list === undefined || list.over) continue;
+          if (list === undefined || list.over || list.aggregate !== null) continue;
           list.bytes += this.captureLength;
           if (list.bytes > SKIM_VALUE_CAP) this.overList(list);
         }
@@ -553,7 +572,7 @@ export class Skimmer {
     else {
       this.targetHolder = this.frames[this.frames.length - 1]!.value;
       this.targetKey = this.lastKey;
-      if (declared === true) this.target = Target.Leaf;
+      if (declared === true || declared === "max") this.target = Target.Leaf;
       else {
         this.target = Target.Inner;
         this.targetTree = declared;
@@ -611,7 +630,12 @@ export class Skimmer {
       this.options.onDocument?.(frame.value!);
     }
     const list = frame.inList;
-    if (list !== undefined && !list.over) {
+    if (list !== undefined && list.aggregate !== null) {
+      const aggregate = list.aggregate;
+      for (const [key, value] of Object.entries(frame.value!)) {
+        if (typeof value === "number" && Number.isFinite(value) && !(typeof aggregate[key] === "number" && aggregate[key] >= value)) aggregate[key] = value;
+      }
+    } else if (list !== undefined && !list.over) {
       // An element with nothing declared is taken out; one kept counts toward the list's cap.
       if (Object.keys(frame.value!).length === 0) list.elements.pop();
       else if (++list.count > MAX_LIST_ELEMENTS) this.overList(list);

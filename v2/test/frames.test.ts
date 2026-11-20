@@ -133,7 +133,9 @@ function prefixRead(text: string): { closed: Record<string, unknown> | null; ope
       at += 1;
       space();
       if (at >= text.length) return false;
-      const declared = key !== null && Object.hasOwn(tree, key) ? tree[key] : undefined;
+      const found = key !== null && Object.hasOwn(tree, key) ? tree[key] : undefined;
+      // This reader's trees are objects and leaves; `"max"` is a leaf outside an array.
+      const declared = found === "max" ? true : found;
       if (declared !== undefined && declared !== true && text[at] === "{") {
         const inner: Record<string, unknown> = {};
         into[key!] = inner;

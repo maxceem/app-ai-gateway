@@ -271,11 +271,14 @@ export function deepgramListenUsage(value: unknown): UsageObservation | null {
   let duration = nonNegativeNumber(metadata?.duration);
   let workedOut = false;
   if (duration === null) {
-    // A loop, not Math.max(...): a long recording has many utterances.
-    for (const utterance of Array.isArray(results?.utterances) ? results.utterances : []) {
-      const end = nonNegativeNumber(asRecord(utterance)?.end);
-      if (end !== null && (duration === null || end > duration)) duration = end;
-    }
+    // The skimmer keeps only the largest `end` (`"max"` in `READ_PATHS`); a whole answer has the list.
+    const utterances = results?.utterances;
+    duration = Array.isArray(utterances)
+      ? utterances.reduce<number | null>((latest, utterance) => {
+          const end = nonNegativeNumber(asRecord(utterance)?.end);
+          return end !== null && (latest === null || end > latest) ? end : latest;
+        }, null)
+      : nonNegativeNumber(asRecord(utterances)?.end);
     if (duration === null) return null;
     workedOut = true;
   }
@@ -459,7 +462,8 @@ export const READ_PATHS: PathTree = {
   audio_duration_secs: true,
   metadata: { duration: true, channels: true, model_info: true },
   // Deepgram: the language each channel detected, and the utterances' ends.
-  results: { channels: { detected_language: true }, utterances: { end: true } },
+  // Of the utterances, only the latest end: it holds the same however long the audio is.
+  results: { channels: { detected_language: true }, utterances: { end: "max" } },
   type: true,
   response: { usage: true, model: true, service_tier: true, response_service_tier: true },
   message: { usage: true, model: true },

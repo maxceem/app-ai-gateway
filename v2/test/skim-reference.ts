@@ -98,7 +98,7 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
     for (const [key, member] of node.members) {
       if (!Object.hasOwn(declaredTree, key)) continue;
       const declared = declaredTree[key]!;
-      if (declared === true) {
+      if (declared === true || declared === "max") {
         const length = member.end - member.start;
         if (length > SKIM_VALUE_CAP) {
           delete out[key];
@@ -113,6 +113,16 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
         }
       } else if (member.kind === "object") {
         out[key] = object(member, declared);
+      } else if (member.kind === "array" && Object.values(declared).length > 0 && Object.values(declared).every((one) => one === "max")) {
+        // The largest number of each member across the elements, never the elements.
+        const aggregate: Record<string, unknown> = {};
+        out[key] = aggregate;
+        for (const item of member.items) {
+          if (item.kind !== "object") continue;
+          for (const [name, value] of Object.entries(object(item, declared))) {
+            if (typeof value === "number" && Number.isFinite(value) && !(typeof aggregate[name] === "number" && aggregate[name] >= value)) aggregate[name] = value;
+          }
+        }
       } else if (member.kind === "array") {
         const list: List = { elements: [], holder: out, key, bytes: 0, count: 0, over: false };
         out[key] = list.elements;

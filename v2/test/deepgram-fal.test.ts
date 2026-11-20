@@ -314,6 +314,23 @@ describe("Deepgram through the proxy", () => {
     expect(warned.some((line) => line.includes("served_model_unexpected"))).toBe(true);
   });
 
+  it("bills a long answer by its duration exactly, however many utterances it has, and by the latest utterance only without one", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    const utterances = Array.from({ length: 10_000 }, (_, index) => ({ start: index * 0.5, end: index * 0.5 + 0.4, transcript: "word ".repeat(8) }));
+    fetchSpy
+      .mockResolvedValueOnce(Response.json({ metadata: { duration: 5_000, channels: 1 }, results: { channels: [], utterances } }))
+      .mockResolvedValueOnce(Response.json({ metadata: { channels: 1 }, results: { channels: [], utterances } }));
+    const path = `/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&utterances=true`;
+    await send(path, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    await send(path, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect((await chargesOf(appId)).map((charge) => [charge.cost_nano, charge.price_is_estimate])).toEqual([
+      // 5,000 seconds at $0.0043 a minute, exact.
+      [358_333_334, 0],
+      // No duration: the latest utterance end, 4,999.9 seconds, as an estimate.
+      [358_326_167, 1],
+    ]);
+  });
+
   it("refuses a request naming its model twice in the query, so the provider never runs a model nobody priced", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
     const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&model=base`, key, new Uint8Array([1]), { "content-type": "audio/wav" });

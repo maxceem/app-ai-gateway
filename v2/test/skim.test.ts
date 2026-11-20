@@ -13,6 +13,7 @@ const TREE: PathTree = {
   type: true,
   response: { usage: true, model: true },
   message: { usage: true },
+  peak: { usage: "max" },
 };
 
 /** A small seeded random source, so a failure can be replayed. */
@@ -27,7 +28,7 @@ function random(seed: number): () => number {
   };
 }
 
-const KEYS = ["usage", "model", "type", "response", "message", "data", "x", "us\\u0061ge", "usage ", "Usage", "a\\\"b", "\\\\"];
+const KEYS = ["usage", "model", "type", "response", "message", "peak", "data", "x", "us\\u0061ge", "usage ", "Usage", "a\\\"b", "\\\\"];
 /** JSON string texts, quotes included: escapes of every kind, and text that looks like JSON. */
 const STRINGS = [
   ...["", "plain", 'with "quote"', "back\\slash", "brace } and ] and {", "line\nbreak", "ünïcødé ✓", "\\", '"', '\\"usage\\":1}', "ends with \\"].map(
@@ -54,7 +55,7 @@ function document(next: () => number, depth = 0): string {
     return `[${items.join(",")}]`;
   }
   const members = Array.from({ length: Math.floor(next() * 6) }, () => {
-    const key = next() < 0.7 ? pickOne(KEYS.slice(0, 5)) : pickOne(KEYS);
+    const key = next() < 0.7 ? pickOne(KEYS.slice(0, 6)) : pickOne(KEYS);
     return `${space()}"${key}"${space()}:${space()}${document(next, depth + 1)}${space()}`;
   });
   return `{${members.join(",")}}`;
@@ -172,6 +173,16 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
     const bytes = `{"results":{"utterances":[${Array.from({ length: Math.ceil(SKIM_VALUE_CAP / long.length) + 1 }, () => `{"end":${long}}`).join(",")}]}}`;
     expect(skimWith(UTTERANCES, bytes)).toMatchObject({ documents: [{ results: {} }], overflow: true });
     expect(pickText(bytes, UTTERANCES)).toMatchObject({ documents: [{ results: {} }], overflow: true });
+  });
+
+  it("keeps only the largest number across a long array declared `max`, holding the same however long it is", () => {
+    const tree: PathTree = { results: { utterances: { end: "max" } } };
+    const ends = Array.from({ length: 100_000 }, (_, index) => (index === 4_321 ? 9_999.5 : index % 1_000));
+    const text = `{"results":{"utterances":[${ends.map((end) => `{"start":0,"end":${end},"words":[{"w":"x"}]}`).join(",")},{"end":"x"},7]}}`;
+    expect(skimWith(tree, text)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false, complete: true });
+    expect(pickText(text, tree)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false });
+    // Outside an array, `max` keeps the value as a leaf does.
+    expect(skimWith(tree, '{"results":{"utterances":{"end":3}}}').documents).toEqual([{ results: { utterances: { end: 3 } } }]);
   });
 
   it("caps a leaf by its text as written, as the reference does", () => {
