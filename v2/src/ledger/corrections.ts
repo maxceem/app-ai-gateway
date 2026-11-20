@@ -261,7 +261,7 @@ function tokenColumns(charge: ChargeRow): ReturnType<typeof usageFromMeasures> {
       outputTokens: charge.outputTokens,
     },
     mode: STANDARD_MODE,
-    modeUnknown: false,
+    doubt: false,
   };
 }
 
@@ -307,7 +307,7 @@ export async function priceUnresolvedCharge(
   const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
   if (stored === null) return { status: "no_price" };
   const { usage } = stored;
-  const priced = priceInServedMode(resolved.price, usage, stored.mode, stored.modeUnknown);
+  const priced = priceInServedMode(resolved.price, usage, stored.mode, stored.doubt);
   if (priced === null) return { status: "no_price" };
   // The unit and count the price billed, from the pricing result itself.
   const billed = { unit: priced.unit, units: priced.units };

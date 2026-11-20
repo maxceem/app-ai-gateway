@@ -173,6 +173,13 @@ export type Meter =
        * instead: a transcription's `audio_seconds`, an image API's `images`.
        */
       readonly units?: readonly Unit[];
+      /**
+       * A flag that has the provider bill the audio once per channel
+       * (Deepgram's `multichannel`): then the reported length is multiplied
+       * by the channels the answer names (`audioChannels`). Otherwise it is
+       * billed once.
+       */
+      readonly perChannelWhen?: FieldRef;
     }
   /**
    * A response header with the billed amount, such as ElevenLabs'
@@ -323,11 +330,19 @@ export type ModelLocation<Part extends string = string> =
   /**
    * In the query. `answeredWhen` names a flag that lets the provider serve
    * another model than the one asked for (Deepgram's `detect_language` falls
-   * back to an older model for a language the asked one lacks): the answer
-   * must then name the billed model (the reader's `reportedModels`), or the
-   * charge is an estimate, logged.
+   * back to an older model for a language the asked one lacks). `servedAs`
+   * then says which priced models each name the answer reports (the reader's
+   * `reportedModels`) stands for. An answer that names none of the billed
+   * model's, or a name `servedAs` does not list, is a fallback: the charge is
+   * an estimate, logged.
    */
-  | { readonly in: "query"; readonly name: string; readonly default?: string; readonly answeredWhen?: FieldRef }
+  | {
+      readonly in: "query";
+      readonly name: string;
+      readonly default?: string;
+      readonly answeredWhen?: FieldRef;
+      readonly servedAs?: Readonly<Record<string, readonly string[]>>;
+    }
   | { readonly in: "path"; readonly part: Part }
   /** The operation has one model, or none the request names. */
   | { readonly in: "fixed"; readonly model: string };

@@ -247,8 +247,9 @@ export function resolvePrice(
 export function chargeCandidates(
   price: ModelPrice,
   values?: Readonly<Record<string, string>>,
+  choices?: Readonly<Record<string, readonly string[]>>,
 ): { readonly keyed: readonly ModelPrice[]; readonly estimated: boolean; readonly fallback: ModelPrice } {
-  const { candidates, estimated } = keyCandidates(price, values);
+  const { candidates, estimated } = keyCandidates(price, values, choices);
   return { keyed: candidates.map((candidate) => candidate.price), estimated, fallback: priceInMode(price, STANDARD_MODE) ?? price };
 }
 
@@ -292,8 +293,17 @@ export interface KeyCandidate {
  * candidate per value listed for that key, each applied on its own, never
  * merged. `estimated` says a key's value was unknown. Without `values`, every
  * value of every key: every price the model can bill at, which saving checks.
+ *
+ * `choices` gives a key several values for one request (the languages of each
+ * channel): one candidate per value, so the dearest bills, and an estimate
+ * unless every value prices the same. One the table does not list, by name
+ * or `*`, makes the key unknown.
  */
-export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string, string>>): { candidates: KeyCandidate[]; estimated: boolean } {
+export function keyCandidates(
+  price: ModelPrice,
+  values?: Readonly<Record<string, string>>,
+  choices?: Readonly<Record<string, readonly string[]>>,
+): { candidates: KeyCandidate[]; estimated: boolean } {
   if (price.keyed === undefined) return { candidates: [{ values: {}, price }], estimated: false };
   type Candidate = { values: Record<string, string>; rates: RateSet; added: RateSet };
   let candidates: Candidate[] = [{ values: {}, rates: price.rates, added: {} }];
@@ -304,6 +314,23 @@ export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string
     added: plusRates(candidate.added, price.keyedAdditions?.[key]?.[name]),
   });
   for (const [key, table] of Object.entries(price.keyed)) {
+    const options = choices !== undefined && Object.hasOwn(choices, key) ? choices[key]! : undefined;
+    if (options !== undefined && options.length > 0) {
+      const names = [...new Set(options.map((option) => (Object.hasOwn(table, option) ? option : Object.hasOwn(table, OTHER_VALUES) ? OTHER_VALUES : null)))];
+      if (!names.includes(null)) {
+        const listed = names as string[];
+        // The same rates under every name: one known price.
+        const same = listed.every(
+          (name) =>
+            JSON.stringify(table[name]) === JSON.stringify(table[listed[0]!]) &&
+            JSON.stringify(price.keyedAdditions?.[key]?.[name]) === JSON.stringify(price.keyedAdditions?.[key]?.[listed[0]!]),
+        );
+        const used = same ? [listed[0]!] : listed;
+        if (!same) estimated = true;
+        candidates = candidates.flatMap((candidate) => used.map((name) => applied(candidate, key, name, table[name]!)));
+        continue;
+      }
+    }
     const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
     if (value !== undefined && Object.hasOwn(table, value)) {
       candidates = candidates.map((candidate) => applied(candidate, key, value, table[value]!));

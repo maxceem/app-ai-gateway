@@ -36,7 +36,7 @@ import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../l
 import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
-import { usageMeasures } from "../usage/measures.ts";
+import { usageMeasures, type EstimateReason } from "../usage/measures.ts";
 import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { Alternatives } from "./alternatives.ts";
@@ -83,8 +83,10 @@ export interface CallAttempt {
   readonly unpricedOptions?: readonly string[];
   /** Price keys the provider chooses for this request (`answeredWhen`): the answer's values are billed (`./meter.ts`). */
   readonly answeredKeys?: readonly string[];
-  /** The provider may serve another model than the one asked for (`answeredWhen` on the model): the answer must name it. */
-  readonly modelAnswered?: true;
+  /** The provider may serve another model (`answeredWhen` on the model): the priced models each name the answer reports stands for. */
+  readonly servedModels?: Readonly<Record<string, readonly string[]>>;
+  /** The audio is billed once per channel (`perChannelWhen`, `./meter.ts`). */
+  readonly perChannel?: true;
 }
 
 export interface AttemptOutcome {
@@ -142,20 +144,22 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   // - an option billed on top at a price the gateway does not have;
   // - a stream whose final event was cut, its usage read from an earlier event;
   // - a measure the reader worked out, not one the answer reported.
-  const reasons = [
-    attempt.requestedModeUnknown !== undefined,
-    outcome.servedModeUnknown !== undefined,
-    attempt.servedModelUnknown === true,
-    (attempt.unpricedOptions?.length ?? 0) > 0,
-    usage?.finalEventUnread === true,
-    usage?.measureWorkedOut === true,
-    usage !== null && servedModelInDoubt(attempt, usage, facts),
+  const judged: [EstimateReason, boolean][] = [
+    ["service_mode", attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined],
+    ["served_model", attempt.servedModelUnknown === true],
+    ["unpriced_option", (attempt.unpricedOptions?.length ?? 0) > 0],
+    ["final_event_unread", usage?.finalEventUnread === true],
+    ["measure_worked_out", usage?.measureWorkedOut === true],
+    ["served_model", usage !== null && servedModelInDoubt(attempt, usage, facts)],
   ];
-  const modeUnknown = reasons.includes(true);
+  const reasons = [...new Set(judged.filter(([, applies]) => applies).map(([reason]) => reason))];
+  const modeUnknown = reasons.length > 0;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
   // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).
-  const unanswered = (attempt.answeredKeys ?? []).filter((key) => usage !== null && usage.priceKeys?.[key] === undefined);
+  const unanswered = (attempt.answeredKeys ?? []).filter(
+    (key) => usage !== null && usage.priceKeys?.[key] === undefined && usage.priceKeyChoices?.[key] === undefined,
+  );
   if (unanswered.length > 0) log("warn", "price_key_unanswered", { ...facts, keys: unanswered.join(",") });
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
   let priced = usage === null || attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, servedMode, modeUnknown);
@@ -277,7 +281,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     outputTokens: usage?.outputTokens ?? null,
     unit: billed === null ? null : billed.unit,
     units: billed === null ? null : billed.units,
-    measures: usage === null ? {} : usageMeasures(usage, servedMode, modeUnknown),
+    measures: usage === null ? {} : usageMeasures(usage, servedMode, reasons),
     rates: costed.rates,
     sessionMs: null,
     correctionKind: null,
@@ -320,15 +324,16 @@ function logModes(
 
 /**
  * Whether the model that served an answer is in doubt: the provider may
- * serve another model for this request (`modelAnswered`), and the answer
- * names none, or none that is the billed one. A reported name matches the
- * billed model when it is the same, or the billed model is a variant of it
- * (`nova-3-general` of `nova-3`). Logged; the charge is then an estimate.
+ * serve another model for this request (`servedModels`), and no name the
+ * answer reports stands for the billed model by the operation's own
+ * declaration (`servedAs`). A name it does not declare is a fallback.
+ * Logged; the charge is then an estimate.
  */
 function servedModelInDoubt(attempt: CallAttempt, usage: UsageObservation, facts: Readonly<Record<string, unknown>>): boolean {
-  if (attempt.modelAnswered !== true) return false;
+  const servedAs = attempt.servedModels;
+  if (servedAs === undefined) return false;
   const reported = usage.reportedModels ?? [];
-  if (reported.some((name) => name === attempt.model || attempt.model.startsWith(`${name}-`))) return false;
+  if (reported.some((name) => Object.hasOwn(servedAs, name) && servedAs[name]!.includes(attempt.model))) return false;
   log("warn", reported.length === 0 ? "served_model_unknown" : "served_model_unexpected", facts);
   return true;
 }

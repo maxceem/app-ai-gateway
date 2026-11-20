@@ -55,6 +55,15 @@ const PER_MINUTE_EXTRAS = ["redact", "detect_entities", "keyterm"] as const;
 /** Language detection: Deepgram picks the language, and may fall back to an older model for it. */
 const DETECT_LANGUAGE = { in: "query", field: "detect_language" } as const;
 
+/**
+ * The priced models each model architecture Deepgram reports
+ * (`metadata.model_info[].arch`) stands for. Any other, such as Nova-1's
+ * `nova` or Nova-2's `nova-2`, is a fallback the gateway has no price for:
+ * billed at the asked model's rate as an estimate, logged. Whisper's is not
+ * known yet, so Whisper with language detection is an estimate too.
+ */
+const SERVED_AS = { "nova-3": ["nova-3", "nova-3-general"] } as const;
+
 export const deepgram = defineProvider({
   type: "deepgram",
   label: "Deepgram",
@@ -72,7 +81,7 @@ export const deepgram = defineProvider({
       match: { method: "POST", path: "v1/listen" },
       lifecycle: "call",
       transport: "http",
-      model: { in: "query", name: "model", default: "base-general", answeredWhen: DETECT_LANGUAGE },
+      model: { in: "query", name: "model", default: "base-general", answeredWhen: DETECT_LANGUAGE, servedAs: SERVED_AS },
       modelKinds: ["transcription"],
       rawBody: true,
       priceKeys: [
@@ -91,7 +100,8 @@ export const deepgram = defineProvider({
         // A JSON body names the audio Deepgram fetches.
         fetchKept: [{ in: "body", field: "url" }],
       },
-      meter: { kind: "response_json", style: "deepgram-listen", units: ["audio_seconds"] },
+      // Billed once per channel only with `multichannel=true`; without it Deepgram mixes the channels down.
+      meter: { kind: "response_json", style: "deepgram-listen", units: ["audio_seconds"], perChannelWhen: { in: "query", field: "multichannel" } },
     }),
   ],
 });

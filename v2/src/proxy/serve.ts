@@ -59,15 +59,7 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
-import {
-  answeredPriceKeys,
-  modelAnswered,
-  priceKeyValues,
-  removeOutbound,
-  requestFormFields,
-  requestUsage,
-  unpricedOptionsNamed,
-} from "./request-fields.ts";
+import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
@@ -311,12 +303,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const mode = requestedServiceMode(description, connection.baseUrl, body, model);
       // What the meter takes from the request, and the values its rates depend on.
       const fields = { body, query: url.searchParams };
-      const measured = requestUsage(operation, fields);
-      const priceKeys = priceKeyValues(operation, fields);
-      const answeredKeys = answeredPriceKeys(operation, fields);
-      // Options the provider bills on top at a price the gateway does not have: served, billed as an estimate.
-      const unpriced = unpricedOptionsNamed(operation, fields, price?.price ?? null);
-      if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...caller.facts, options: unpriced.join(",") });
+      const facts = requestFacts(operation, fields, price?.price ?? null, caller.facts);
       // Webhook fields, and fetch fields the operation does not need, never reach the provider.
       const outbound = removeOutbound(operation, parsed.kind === "json" ? body : null, sentQuery);
 
@@ -350,7 +337,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
             }
           : parsed.kind === "form" && (Object.keys(formChanges).length > 0 || formRemoved.length > 0)
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges, formRemoved), contentType: null }
-            : { bytes, contentType };
+            : // A raw body the client named no type for is sent with none, never an empty one.
+              { bytes, contentType: contentType === "" ? null : contentType };
 
       // The credentials are opened before admission: a request that cannot be sent must not spend anything.
       const credentials = await connectionCredentials(c.env, connection);
@@ -384,11 +372,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         appVersion: caller.appVersion,
         clientTraceId: caller.clientTraceId,
         ...(alternatives.size > 0 ? { alternatives } : {}),
-        ...(measured !== null ? { requestUsage: measured } : {}),
-        ...(priceKeys !== undefined ? { priceKeys } : {}),
-        ...(unpriced.length > 0 ? { unpricedOptions: unpriced } : {}),
-        ...(answeredKeys.length > 0 ? { answeredKeys } : {}),
-        ...(modelAnswered(operation, fields) ? { modelAnswered: true as const } : {}),
+        ...facts,
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
@@ -438,7 +422,7 @@ export type ParsedBody =
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
 export type OutgoingBody =
-  | { readonly bytes: Uint8Array; readonly contentType: string; readonly form?: undefined }
+  | { readonly bytes: Uint8Array; readonly contentType: string | null; readonly form?: undefined }
   | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
 
 function isJson(contentType: string): boolean {

@@ -434,7 +434,7 @@ export function priceInServedMode(
   doubt = false,
 ): ChargePricing | null {
   // The one candidate list, which eligibility judges too (`chargeCandidates`).
-  const keyed = chargeCandidates(price, usage.priceKeys);
+  const keyed = chargeCandidates(price, usage.priceKeys, usage.priceKeyChoices);
   const priced: (Candidate & { readonly estimated: boolean })[] = [];
   for (const candidate of keyed.keyed) {
     const one = isolated(() => priceIn(candidate, usage, served), { candidate: "key" });

@@ -371,6 +371,7 @@ export function attemptUsage(
     readonly requestUsage?: UsageObservation | null;
     readonly priceKeys?: Readonly<Record<string, string>>;
     readonly answeredKeys?: readonly string[];
+    readonly perChannel?: true;
   },
   reading: UsageObservation | null,
   headers: Headers,
@@ -402,12 +403,29 @@ export function attemptUsage(
       usage = reading;
   }
   if (usage === null) return null;
-  // A key the provider chose for this request takes the value its answer reports (`answeredWhen`).
+  // Audio billed once per channel only when the request asks for it (`perChannelWhen`).
+  if (attempt.perChannel === true && usage.audioSeconds !== undefined && (usage.audioChannels ?? 1) > 1) {
+    usage = { ...usage, audioSeconds: usage.audioSeconds * usage.audioChannels! };
+  }
+  // A key the provider chose for this request takes the values its answer
+  // reports (`answeredWhen`): one value, or several to bill the dearest of.
+  // One the answer did not name leaves it unknown: a null, no report, or
+  // fewer values than the channels it answers for (one per channel with
+  // `perChannel`, else one), since an element naming nothing is not kept.
   const answered: Record<string, string> = {};
+  const choices: Record<string, readonly string[]> = {};
+  const answers = attempt.perChannel === true ? (usage.audioChannels ?? 1) : 1;
   for (const key of attempt.answeredKeys ?? []) {
-    const value = usage.reportedPriceKeys?.[key];
-    if (value !== undefined) answered[key] = value;
+    const values = usage.reportedPriceKeys?.[key];
+    if (values === undefined || values.length < answers || values.includes(null)) continue;
+    const distinct = [...new Set(values as readonly string[])];
+    if (distinct.length === 1) answered[key] = distinct[0]!;
+    else choices[key] = distinct;
   }
   const priceKeys = attempt.priceKeys === undefined && Object.keys(answered).length === 0 ? undefined : { ...attempt.priceKeys, ...answered };
-  return priceKeys === undefined ? usage : { ...usage, priceKeys };
+  return {
+    ...usage,
+    ...(priceKeys !== undefined ? { priceKeys } : {}),
+    ...(Object.keys(choices).length > 0 ? { priceKeyChoices: choices } : {}),
+  };
 }

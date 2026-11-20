@@ -15,6 +15,7 @@
  * took from it (`requestFormFields` names them). A query from the URL.
  */
 import { requestMeasuresOf, type FieldRef, type OperationDescription, type RequestMeasure, type SwitchKind, type Unit } from "../providers/operation.ts";
+import { log } from "../core/log.ts";
 import type { ModelPrice } from "../pricing/prices.ts";
 import { scaledCount } from "../pricing/units.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -173,6 +174,8 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
       values[key.name] = String(switchedOn(fields, key.from, key.kind));
       continue;
     }
+    // A plain key named twice in the query is unknown: its dearest value bills, as an estimate.
+    if (key.from.in === "query" && fields.query.getAll(key.from.field).length > 1) continue;
     const value = fieldValue(fields, key.from);
     const text =
       typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) ? String(value) : undefined;
@@ -188,10 +191,60 @@ export function answeredPriceKeys(operation: OperationDescription, fields: Reque
   return (operation.priceKeys ?? []).filter((key) => key.answeredWhen !== undefined && switchedOn(fields, key.answeredWhen, "flag")).map((key) => key.name);
 }
 
-/** Whether the provider may serve this request with another model than the one asked for (`answeredWhen` on the model). */
-export function modelAnswered(operation: OperationDescription, fields: RequestFields): boolean {
+/**
+ * When the provider may serve this request with another model than the one
+ * asked for (`answeredWhen` on the model): the priced models each name its
+ * answer may report stands for (`servedAs`). Null otherwise.
+ */
+function servedModels(operation: OperationDescription, fields: RequestFields): Readonly<Record<string, readonly string[]>> | null {
   const location = operation.model;
-  return location.in === "query" && location.answeredWhen !== undefined && switchedOn(fields, location.answeredWhen, "flag");
+  if (location.in !== "query" || location.answeredWhen === undefined || !switchedOn(fields, location.answeredWhen, "flag")) return null;
+  return location.servedAs ?? {};
+}
+
+/** What a request says about how it is billed, kept on its attempt (`CallAttempt`). */
+export interface RequestFacts {
+  /** What the meter measured from the request (`requestUsage`). */
+  readonly requestUsage?: UsageObservation;
+  /** The price key values (`priceKeyValues`). */
+  readonly priceKeys?: Readonly<Record<string, string>>;
+  /** Options billed on top at a price the gateway does not have: the charge is an estimate. */
+  readonly unpricedOptions?: readonly string[];
+  /** Price keys the provider chooses for this request: the answer's values are billed. */
+  readonly answeredKeys?: readonly string[];
+  /** The provider may serve another model: the priced models each reported name stands for. */
+  readonly servedModels?: Readonly<Record<string, readonly string[]>>;
+  /** The audio is billed once per channel (`perChannelWhen`). */
+  readonly perChannel?: true;
+}
+
+/**
+ * The one place a request's billing facts are worked out from its operation,
+ * its fields (body and query) and its price, for the proxy and presets alike.
+ * An option billed on top at a price the gateway lacks is logged here.
+ */
+export function requestFacts(
+  operation: OperationDescription,
+  fields: RequestFields,
+  price: ModelPrice | null,
+  logFacts: Readonly<Record<string, unknown>>,
+): RequestFacts {
+  const measured = requestUsage(operation, fields);
+  const priceKeys = priceKeyValues(operation, fields);
+  const unpriced = unpricedOptionsNamed(operation, fields, price);
+  if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...logFacts, options: unpriced.join(",") });
+  const answered = answeredPriceKeys(operation, fields);
+  const served = servedModels(operation, fields);
+  const { meter } = operation;
+  const perChannel = meter.kind === "response_json" && meter.perChannelWhen !== undefined && switchedOn(fields, meter.perChannelWhen, "flag");
+  return {
+    ...(measured !== null ? { requestUsage: measured } : {}),
+    ...(priceKeys !== undefined ? { priceKeys } : {}),
+    ...(unpriced.length > 0 ? { unpricedOptions: unpriced } : {}),
+    ...(answered.length > 0 ? { answeredKeys: answered } : {}),
+    ...(served !== null ? { servedModels: served } : {}),
+    ...(perChannel ? { perChannel: true as const } : {}),
+  };
 }
 
 /**

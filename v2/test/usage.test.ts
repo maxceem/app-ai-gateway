@@ -348,8 +348,15 @@ describe("token variants", () => {
     };
     const measures = usageMeasures(usage, { tier: "flex", region: "global" });
     expect(measures.service_mode).toBe("flex");
-    expect(usageFromMeasures(measures)).toEqual({ usage, mode: { tier: "flex", region: "global" }, modeUnknown: false });
-    expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE, true))?.modeUnknown).toBe(true);
+    expect(usageFromMeasures(measures)).toEqual({ usage, mode: { tier: "flex", region: "global" }, doubt: false });
+    expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE, ["service_mode"]))).toMatchObject({ doubt: true });
+    // Every estimate reason is kept apart from the mode's own marker, and read back as an estimate.
+    const served = usageMeasures(usage, STANDARD_MODE, ["served_model", "measure_worked_out"]);
+    expect(served).toMatchObject({ estimate_reasons: "served_model,measure_worked_out" });
+    expect(served.service_mode_unknown).toBeUndefined();
+    expect(usageFromMeasures(served)).toMatchObject({ doubt: true });
+    // A row from before the reasons were kept still reads its mode's marker.
+    expect(usageFromMeasures({ ...measures, service_mode_unknown: 1 })).toMatchObject({ doubt: true });
     const seed = listed("bytedance", "seed-2-0-lite-260428");
     expect(priceTokens(seed, usageFromMeasures(measures)!.usage)?.cost).toBe(priceTokens(seed, usage)?.cost);
   });

@@ -89,6 +89,12 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly priceKeys?: Readonly<Record<string, string>>;
   /**
+   * Price keys with several values for one request, such as the languages
+   * Deepgram detected on each channel: billed at the dearest of them, and an
+   * estimate unless they all price the same (`keyCandidates`).
+   */
+  readonly priceKeyChoices?: Readonly<Record<string, readonly string[]>>;
+  /**
    * The answer did not end whole: its last document was cut, the stream did
    * not close, or a value was too large to keep. What was read may be short,
    * an earlier event's count, say. Billed as an estimate, never as exact.
@@ -102,9 +108,16 @@ export interface UsageObservation extends TokenCounts {
   readonly measureWorkedOut?: true;
   /**
    * Price key values the answer reports, for a key the provider may choose
-   * itself (`answeredWhen`): the language Deepgram detected.
+   * itself (`answeredWhen`): the language Deepgram detected, one per channel.
+   * A null is a channel that named none.
    */
-  readonly reportedPriceKeys?: Readonly<Record<string, string>>;
+  readonly reportedPriceKeys?: Readonly<Record<string, readonly (string | null)[]>>;
+  /**
+   * The audio's channels, for a meter that bills audio once per channel only
+   * when the request asks for it (Deepgram's `multichannel`): `audioSeconds`
+   * is one channel's length until then.
+   */
+  readonly audioChannels?: number;
   /** The models the answer says served it, for a model the provider may change (`answeredWhen`). */
   readonly reportedModels?: readonly string[];
 }

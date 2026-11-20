@@ -19,11 +19,26 @@ const SIDES = ["input", "output"] as const;
 const COUNTED = ["image", "audio", "video", "unknown"] as const;
 
 /**
- * `modeUnknown`: the request or the response named a mode value the gateway
- * does not know, so any price of it is an estimate. Kept, so a later pricing
- * is marked the same way.
+ * Why a charge is an estimate, besides its usage itself (a header's missing
+ * report, units worked out from the request):
+ *
+ * - `service_mode`: the request or the response named a mode value the
+ *   gateway does not know;
+ * - `served_model`: the answer did not name the model that served it, or
+ *   named one the billed model is not;
+ * - `unpriced_option`: an option billed on top at a price the gateway lacks;
+ * - `final_event_unread`: the answer was cut, its usage read early;
+ * - `measure_worked_out`: the reader worked its measure out.
  */
-export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUnknown = false): Record<string, number | string> {
+export const ESTIMATE_REASONS = ["service_mode", "served_model", "unpriced_option", "final_event_unread", "measure_worked_out"] as const;
+export type EstimateReason = (typeof ESTIMATE_REASONS)[number];
+
+/**
+ * `reasons`: why any price of it is an estimate (`ESTIMATE_REASONS`). Kept as
+ * `estimate_reasons`, so a later pricing is marked the same way; a mode the
+ * gateway does not know is kept as `service_mode_unknown` too.
+ */
+export function usageMeasures(usage: UsageObservation, mode: ServiceMode, reasons: readonly EstimateReason[] = []): Record<string, number | string> {
   const measures: Record<string, number | string> = {
     input_tokens: usage.inputTokens,
     cached_input_tokens: usage.cachedInputTokens,
@@ -57,8 +72,10 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUn
   if (usage.secondaryUnits !== undefined && usage.secondaryUnits.length > 0) measures.secondary_units = usage.secondaryUnits.join(",");
   if (usage.reportMissing === true) measures.report_missing = 1;
   for (const [key, value] of Object.entries(usage.priceKeys ?? {})) measures[`key_${key}`] = value;
+  for (const [key, values] of Object.entries(usage.priceKeyChoices ?? {})) measures[`choices_${key}`] = JSON.stringify(values);
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
-  if (modeUnknown) measures.service_mode_unknown = 1;
+  if (reasons.includes("service_mode")) measures.service_mode_unknown = 1;
+  if (reasons.length > 0) measures.estimate_reasons = [...new Set(reasons)].join(",");
   return measures;
 }
 
@@ -70,7 +87,7 @@ function count(measures: Readonly<Record<string, number | string>>, key: string)
 /** The usage and service mode a charge's measures hold, or null when it has no token counts. */
 export function usageFromMeasures(
   measures: Readonly<Record<string, number | string>>,
-): { usage: UsageObservation; mode: ServiceMode; modeUnknown: boolean } | null {
+): { usage: UsageObservation; mode: ServiceMode; doubt: boolean } | null {
   const input = count(measures, "input_tokens");
   const output = count(measures, "output_tokens");
   if (input === undefined || output === undefined) return null;
@@ -98,8 +115,13 @@ export function usageFromMeasures(
     if (value !== undefined) units[unit] = value;
   }
   const priceKeys: Record<string, string> = {};
+  const priceKeyChoices: Record<string, string[]> = {};
   for (const [name, value] of Object.entries(measures)) {
     if (name.startsWith("key_") && typeof value === "string") priceKeys[name.slice("key_".length)] = value;
+    if (name.startsWith("choices_") && typeof value === "string") {
+      const list = JSON.parse(value) as unknown;
+      if (Array.isArray(list) && list.every((one) => typeof one === "string")) priceKeyChoices[name.slice("choices_".length)] = list;
+    }
   }
   const audioMs = count(measures, "audio_ms");
   const images = count(measures, "images");
@@ -122,10 +144,12 @@ export function usageFromMeasures(
       : {}),
     ...(count(measures, "report_missing") !== undefined ? { reportMissing: true as const } : {}),
     ...(Object.keys(priceKeys).length > 0 ? { priceKeys } : {}),
+    ...(Object.keys(priceKeyChoices).length > 0 ? { priceKeyChoices } : {}),
   };
   return {
     usage,
     mode: (typeof modeName === "string" ? parseServiceModeName(modeName) : null) ?? STANDARD_MODE,
-    modeUnknown: count(measures, "service_mode_unknown") !== undefined,
+    // Any reason a charge was an estimate prices it as one again; rows from before `estimate_reasons` kept the mode's alone.
+    doubt: typeof measures.estimate_reasons === "string" || count(measures, "service_mode_unknown") !== undefined,
   };
 }

@@ -11,6 +11,7 @@ import { keyCandidates, listPrice } from "../src/pricing/prices.ts";
 import { deepgram } from "../src/providers/deepgram.ts";
 import { fal } from "../src/providers/fal.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
+import { requestFacts } from "../src/proxy/request-fields.ts";
 import { deepgramListenUsage } from "../src/usage/readers.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -122,11 +123,36 @@ describe("Deepgram operations and prices", () => {
     expect(Math.min(...all)).toBe(4_300_000);
   });
 
-  it("reads the audio's length times its channels, as Deepgram bills multichannel audio", () => {
-    expect(deepgramListenUsage({ metadata: { duration: 25.9, channels: 1 } })).toMatchObject({ audioSeconds: 25.9 });
-    expect(deepgramListenUsage({ metadata: { duration: 600, channels: 2 } })).toMatchObject({ audioSeconds: 1200 });
+  it("reads the audio's length and its channels apart: the meter multiplies them only for multichannel", () => {
+    expect(deepgramListenUsage({ metadata: { duration: 25.9, channels: 1 } })).toMatchObject({ audioSeconds: 25.9, audioChannels: 1 });
+    expect(deepgramListenUsage({ metadata: { duration: 600, channels: 2 } })).toMatchObject({ audioSeconds: 600, audioChannels: 2 });
     expect(deepgramListenUsage({ metadata: { duration: 10 } })).toMatchObject({ audioSeconds: 10 });
     expect(deepgramListenUsage({ results: {} })).toBeNull();
+    // Every channel's language, and null for one that names none.
+    expect(deepgramListenUsage({ metadata: { duration: 1 }, results: { channels: [{ detected_language: "fr" }, {}] } })).toMatchObject({
+      reportedPriceKeys: { language: ["fr", null] },
+    });
+  });
+
+  it("bills the dearest of several values for one key, exact only when they all price the same", () => {
+    const nova = listPrice("deepgram", "nova-3")!;
+    const off = { redact: "false", detect_entities: "false", keyterm: "false" };
+    expect(keyCandidates(nova, off, { language: ["fr", "de"] })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 4_300_000 } } }] });
+    const mixed = keyCandidates(nova, off, { language: ["en", "multi"] });
+    expect(mixed.estimated).toBe(true);
+    expect(mixed.candidates.map((candidate) => candidate.price.rates.per_minute).sort()).toEqual([4_300_000, 5_200_000]);
+  });
+
+  it("works a request's billing facts out in one place, for the proxy and presets alike", () => {
+    const op = deepgram.operations[0]!;
+    const query = new URLSearchParams("model=nova-3&detect_language=true&multichannel=true&summarize=v2&keyterm=x");
+    expect(requestFacts(op, { body: {}, query }, listPrice("deepgram", "nova-3"), {})).toEqual({
+      priceKeys: { redact: "false", detect_entities: "false", keyterm: "true" },
+      unpricedOptions: ["summarize"],
+      answeredKeys: ["language"],
+      servedModels: { "nova-3": ["nova-3", "nova-3-general"] },
+      perChannel: true,
+    });
   });
 
   it("needs a price of ours or the customer's: Deepgram's default model has none", () => {
@@ -338,6 +364,72 @@ describe("Deepgram through the proxy", () => {
     );
     await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&utterances=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
     expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 0, cost_nano: 4_300_000 }]);
+  });
+
+  it("bills stereo audio once without multichannel, and once per channel with it", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockImplementation(async () => transcript(60, 2));
+    const base = `/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3`;
+    await send(base, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    await send(`${base}&multichannel=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect((await chargesOf(appId)).map((charge) => charge.cost_nano)).toEqual([4_300_000, 8_600_000]);
+  });
+
+  it("bills a plain price key named twice in the query at its dearest value, as an estimate", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(transcript(60));
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&language=en&language=multi`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 1, cost_nano: 5_200_000 }]);
+  });
+
+  it("bills every channel's detected language: the dearest, exact when they price the same, unknown for a channel with none", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    const answer = (languages: (string | null)[]) =>
+      Response.json({
+        metadata: { duration: 60, channels: languages.length, model_info: { m: { arch: "nova-3", name: "general-nova-3" } } },
+        results: { channels: languages.map((language) => (language === null ? {} : { detected_language: language })) },
+      });
+    fetchSpy.mockResolvedValueOnce(answer(["fr", "de"])).mockResolvedValueOnce(answer(["fr", null]));
+    const path = `/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&detect_language=true&multichannel=true`;
+    await send(path, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    await send(path, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    const charges = await chargesOf(appId);
+    // A minute on each of two channels.
+    expect(charges.map((charge) => [charge.cost_nano, charge.price_is_estimate])).toEqual([
+      [8_600_000, 0],
+      [10_400_000, 1],
+    ]);
+    expect(JSON.parse(String(charges[0]!.measures_json))).toMatchObject({ choices_language: '["fr","de"]' });
+  });
+
+  it("treats a model the operation does not declare as a fallback: Nova-1 is not Nova-3", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    const served = (arch: string, name: string) =>
+      Response.json({ metadata: { duration: 60, channels: 1, model_info: { m: { arch, name } } }, results: { channels: [{ detected_language: "fr" }] } });
+    fetchSpy.mockResolvedValueOnce(served("nova", "general-nova")).mockResolvedValueOnce(served("nova-3", "general-nova-3"));
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&detect_language=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3-general&detect_language=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    const charges = await chargesOf(appId);
+    expect(charges.map((charge) => charge.price_is_estimate)).toEqual([1, 0]);
+    expect(warnings.mock.calls.some((call) => String(call[0]).includes("served_model_unexpected"))).toBe(true);
+  });
+
+  it("keeps the estimate's reason apart from the service mode's marker", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(transcript(60));
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&summarize=v2`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    const measures = JSON.parse(String((await chargesOf(appId))[0]!.measures_json)) as Record<string, unknown>;
+    expect(measures.estimate_reasons).toBe("unpriced_option");
+    expect(measures.service_mode_unknown).toBeUndefined();
+  });
+
+  it("sends a raw body the client named no type for with no content type, never an empty one", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(transcript(60));
+    const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3`, key, new Uint8Array([1, 2, 3]), {});
+    expect(response.status).toBe(200);
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(new Headers(init?.headers).has("content-type")).toBe(false);
   });
 
   it("refuses a request naming its model twice in the query, so the provider never runs a model nobody priced", async () => {

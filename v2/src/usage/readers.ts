@@ -250,15 +250,16 @@ const REPORTED_NAME = /^[A-Za-z0-9_.-]{1,64}$/u;
 
 /**
  * Deepgram's prerecorded speech to text: the audio's length
- * (`metadata.duration`) times its channels (`metadata.channels`, 1 when not
- * named). Deepgram bills multichannel audio by the total processed across
- * channels: a ten-minute stereo file bills as twenty minutes.
+ * (`metadata.duration`), and its channels (`metadata.channels`), which the
+ * meter multiplies it by only when the request asks for `multichannel`
+ * (`perChannelWhen`): Deepgram bills multichannel audio by the total
+ * processed across channels, a ten-minute stereo file as twenty minutes.
  *
  * - With no duration, the latest utterance end (`results.utterances[].end`,
- *   with `utterances=true`) stands for it, times the channels: worked out,
- *   so billed as an estimate (`measureWorkedOut`).
- * - The language it detected (`results.channels[].detected_language`, with
- *   `detect_language`), when every channel names the same one.
+ *   with `utterances=true`) stands for it: worked out, so billed as an
+ *   estimate (`measureWorkedOut`).
+ * - The language each channel detected (`results.channels[].detected_language`,
+ *   with `detect_language`), null for one that names none.
  * - The models that served it (`metadata.model_info`: each one's `arch` and
  *   `name`), so a fallback to another model is seen.
  */
@@ -267,7 +268,7 @@ export function deepgramListenUsage(value: unknown): UsageObservation | null {
   const metadata = asRecord(root?.metadata);
   const results = asRecord(root?.results);
   const reported = metadata?.channels;
-  const channels = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 1 ? reported : 1;
+  const channels = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 1 ? reported : null;
   let duration = nonNegativeNumber(metadata?.duration);
   let workedOut = false;
   if (duration === null) {
@@ -282,23 +283,22 @@ export function deepgramListenUsage(value: unknown): UsageObservation | null {
     if (duration === null) return null;
     workedOut = true;
   }
-  const languages = new Set(
-    (Array.isArray(results?.channels) ? results.channels : []).map((channel) => {
-      const language = asRecord(channel)?.detected_language;
-      return typeof language === "string" && REPORTED_NAME.test(language) ? language : null;
-    }),
-  );
-  const language = languages.size === 1 ? [...languages][0]! : null;
+  // Each channel's language; a channel that names none is null, an unknown.
+  const languages = (Array.isArray(results?.channels) ? results.channels : []).map((channel) => {
+    const language = asRecord(channel)?.detected_language;
+    return typeof language === "string" && REPORTED_NAME.test(language) ? language : null;
+  });
   const models = Object.values(asRecord(metadata?.model_info) ?? {}).flatMap((info) => {
     const record = asRecord(info);
     return [record?.arch, record?.name].filter((name): name is string => typeof name === "string" && REPORTED_NAME.test(name));
   });
   return {
     ...EMPTY_USAGE,
-    audioSeconds: duration * channels,
+    audioSeconds: duration,
     noTokens: true,
+    ...(channels !== null ? { audioChannels: channels } : {}),
     ...(workedOut ? { measureWorkedOut: true as const } : {}),
-    ...(language !== null ? { reportedPriceKeys: { language } } : {}),
+    ...(languages.length > 0 ? { reportedPriceKeys: { language: languages } } : {}),
     ...(models.length > 0 ? { reportedModels: models } : {}),
   };
 }
