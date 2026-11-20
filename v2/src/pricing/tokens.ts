@@ -282,12 +282,21 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | 
 }
 
 /**
+ * A usage priced on one given unit only, reported or worked out from the
+ * request as the usage says, or null when the price has no rate for it or the
+ * usage does not report it. Throws `MoneyError` when its cost cannot be stored.
+ */
+function onUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Candidate | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : tokenCandidate(price, usage);
+  const estimated = usage.estimatedUnits?.includes(unit) === true;
+  return preferred(unitOptions(price, usage, (one) => one === unit, estimated));
+}
+
+/**
  * The dearest charge a price can make for a usage: across every measure the
  * provider reported (each reported unit, and its tokens), or, only when it
- * can bill none of them, across the units worked out from the request. The
- * floor of an estimate, as an unknown key bills the dearest: one rule, which
- * depends neither on rounding nor on which candidate won. Throws `MoneyError`
- * when a cost it must compare cannot be stored.
+ * can bill none of them, across the units worked out from the request.
+ * Throws `MoneyError` when a cost it must compare cannot be stored.
  */
 function dearestCharge(price: ModelPrice, usage: UsageObservation): Candidate | null {
   const tokens = usage.noTokens === true ? null : tokenCandidate(price, usage);
@@ -372,10 +381,10 @@ export type ChargePricing = Pricing & {
  * 3. An estimate (a mode or key value with no price, a missing report, or
  *    `doubt`: a mode value the gateway does not know, a served model it
  *    cannot tell, ...) is floored at the model's own standard price, before
- *    any key value or mode: the dearest charge that price can make for this
- *    usage, across every measure the provider reported (the request's
- *    estimate only when none can be billed), as an unknown key bills the
- *    dearest (`AGENTS.md`, `dearestCharge`).
+ *    any key value or mode: the dearer of that price on the unit the
+ *    estimate billed, and the dearest charge that price can make across every
+ *    measure the provider reported (the request's estimate only when none can
+ *    be billed). An estimate bills more than either, never less (`AGENTS.md`).
  *
  * A candidate whose cost cannot be stored is skipped and logged; a floor that
  * cannot be stored leaves the usage unpriced, never billed below it.
@@ -406,12 +415,14 @@ export function priceInServedMode(
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
   if (!estimated) return withCost({ ...chosen, estimated: false, measured });
-  // The one floor: at least the dearest charge the model's own standard price can make for this usage
-  // (`dearestCharge`), so an estimate never bills less than base. A floor that cannot be stored is never
-  // dropped for the lower estimate: the charge is left unresolved.
+  // The one floor, both parts applied: the dearer of (a) the model's own standard price on the unit the
+  // estimate billed, so it never bills below the standard rate for its own unit, and (b) the dearest charge
+  // the standard price can make for this usage (`dearestCharge`), so it never bills below base whichever
+  // unit won. A floor that cannot be stored is never dropped for the lower estimate: the charge is left
+  // unresolved.
   let floor: Candidate | null;
   try {
-    floor = dearestCharge(standardPrice, usage);
+    floor = preferredAny([onUnit(standardPrice, usage, chosen.unit), dearestCharge(standardPrice, usage)]);
   } catch (error) {
     if (!(error instanceof MoneyError)) throw error;
     log("error", "price_floor_too_large", { error: error.message });

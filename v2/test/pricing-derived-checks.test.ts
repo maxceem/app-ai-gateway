@@ -310,15 +310,23 @@ describe("Fable's second round on the derived checks", () => {
     expect(priceInServedMode(price, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", rates: { per_credit: 5 }, cost: 5 });
   });
 
-  it("floors an estimate at the standard price's charge on what the provider reported, not on the request's estimate", () => {
-    // An unknown voice a has no credit rate, so it bills the estimated characters at 10 nano. The standard price can
-    // charge the reported credit (1 nano), so its estimated characters are not its floor: the estimate bills its 10.
+  it("never bills an estimate below the standard price on the unit it billed, even where the standard price's own choice is cheaper", () => {
+    // An unknown voice a bills the estimated characters cheaply; the standard price prefers the reported credit at 1 nano,
+    // but its own character rate, on the unit a billed, is a dollar per million.
     const price = customerPrice({ m: { per_credit: 1, per_million_characters: 1_000_000_000, by: { voice: { a: { per_million_characters: 10 } } } } }, "m")!;
     const estimateOnly: UsageObservation = { ...usage, units: { credits: 1_000, characters: 1_000_000 } };
-    expect(priceInServedMode(price, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 10, estimated: true });
-    // Where the standard price can charge nothing reported, its estimate is the floor: a dollar per million characters.
-    const noCredit = customerPrice({ m: { per_million_characters: 1_000_000_000, by: { voice: { a: { per_million_characters: 10 } } } } }, "m")!;
-    expect(priceInServedMode(noCredit, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 1_000_000_000, estimated: true });
+    // a has no credit rate, so it bills characters (10 nano); base on characters is 1,000,000,000 nano, its own choice 1 nano.
+    expect(priceInServedMode(price, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 1_000_000_000, estimated: true });
+  });
+
+  it("bills Fable's F9 case at the standard price's tokens: 4,000,150,000", () => {
+    // No quality named: a bills the tokens at its own lower rates; the floor is the standard price on tokens.
+    const price = customerPrice(
+      { m: { input: 4e9, output: 3e9, per_minute: 95, by: { quality: { a: { input: 1e9, output: 1e8, per_image: 0 } } } } },
+      "m",
+    )!;
+    const reported: UsageObservation = { inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 50, units: { session_seconds: 60_000 } };
+    expect(priceInServedMode(price, reported, STANDARD_MODE)).toMatchObject({ unit: "tokens", cost: 4_000_150_000, estimated: true });
   });
 });
 
