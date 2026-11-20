@@ -306,8 +306,15 @@ describe("request measures and headers", () => {
     expect(lines.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
       expect.objectContaining({ level: "info", message: "header_cross_check_differs", header_amount: 7, request: { characters: 33 } }),
     );
-    // A price with both rates bills the characters, exactly.
-    expect(priceInServedMode(priced({ per_credit: 1, per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "characters", units: 33, estimated: false });
+    // A price with both rates bills the characters, exactly, by rank: here the
+    // 7 credits would cost 7,000,000 nano-dollars and the 33 characters 33, so
+    // the dearer measure loses.
+    expect(priceInServedMode(priced({ per_credit: 1_000_000, per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({
+      unit: "characters",
+      units: 33,
+      cost: 33,
+      estimated: false,
+    });
     // A price with only a rate per credit still bills the credits.
     expect(priceInServedMode(priced({ per_credit: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits", units: 7_000, estimated: false });
     // No header: the characters bill alone, still exact, and nothing is missing.

@@ -391,6 +391,12 @@ describe("service modes", () => {
     expect(requestedServiceMode(anthropic, null, { speed: "fast", inference_geo: "us" })).toEqual({ mode: { tier: "fast", region: "us" } });
     // A request that asked for no region: real answers report "not_available" (T27).
     expect(servedServiceMode(anthropic, STANDARD_MODE, { reportedModes: { speed: "standard", service_tier: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({ mode: STANDARD_MODE });
+    // A request that asked for the US: the answer does not say where it was served, so the US rate stands, flagged.
+    const us = { tier: "standard", region: "us" } as const;
+    expect(servedServiceMode(anthropic, us, { reportedModes: { speed: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({
+      mode: us,
+      unknown: { field: "inference_geo", value: "not_available" },
+    });
     expect(requestedServiceMode(gemini, null, { serviceTier: "flex" })).toEqual({ mode: { tier: "flex", region: "global" } });
     expect(requestedServiceMode(mistral, "https://api.eu.mistral.ai/", {})).toEqual({ mode: { tier: "standard", region: "eu" } });
     // A value the table does not know leaves the tier at standard, and is reported.

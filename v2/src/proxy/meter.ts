@@ -109,7 +109,7 @@ export function servedServiceMode(
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
-  const { named, unknown } = readServiceMode(fields, read);
+  const { named, unknown, unstated } = readServiceMode(fields, read);
   let tier = named.tier ?? requested.tier;
   // A tier the response names in a value the table does not know, or in two
   // sources that disagree, says nothing the gateway can price: it may be
@@ -118,7 +118,11 @@ export function servedServiceMode(
   const doubt = doubtfulTier(fields, read);
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
-  const flagged = unknown ?? doubt;
+  // An answer that names no region where the request asked for one: billed
+  // at the asked region's rate, as an estimate, since it may have been served
+  // elsewhere. With no region asked, global is what it was served at.
+  const unsure = unstated !== undefined && named.region === undefined && requested.region !== "global" ? unstated : undefined;
+  const flagged = unknown ?? doubt ?? unsure;
   return flagged ? { mode, unknown: flagged } : { mode };
 }
 
