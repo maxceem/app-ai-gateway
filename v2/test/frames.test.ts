@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { framer, MAX_EVENT_NAME, MAX_FIELD, type BodyDocument, type SseFrame } from "../src/usage/frames.ts";
-import { pick, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
+import { SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
+import { pickText } from "./skim-reference.ts";
 
 const TREE: PathTree = { usage: true, type: true, model: true, usageMetadata: true };
 
@@ -35,15 +36,10 @@ function stream(contentType: string, pieces: readonly Uint8Array[], maxEvents?: 
   return { documents, frames, cut: reader.cut, overflow: reader.overflow, stopped: reader.stopped };
 }
 
-/** Whether `pick` leaves out a declared value of `value` for being larger than the cap. */
-function overflowIn(value: unknown, tree: PathTree): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  return Object.keys(tree).some((key) => {
-    if (!Object.hasOwn(value, key)) return false;
-    const declared = tree[key]!;
-    const member = (value as Record<string, unknown>)[key];
-    return declared === true ? JSON.stringify(member).length > SKIM_VALUE_CAP : overflowIn(member, declared);
-  });
+/** What the skimmer keeps from one whole JSON document's text, and whether it set `overflow` (`./skim-reference.ts`). */
+function pick(text: string): { value: Record<string, unknown> | null; overflow: boolean } {
+  const { documents, overflow } = pickText(text, TREE);
+  return { value: documents[0] ?? null, overflow };
 }
 
 /**
@@ -137,7 +133,9 @@ function prefixRead(text: string): { closed: Record<string, unknown> | null; ope
       at += 1;
       space();
       if (at >= text.length) return false;
-      const declared = key !== null && Object.hasOwn(tree, key) ? tree[key] : undefined;
+      const found = key !== null && Object.hasOwn(tree, key) ? tree[key] : undefined;
+      // This reader's trees are objects and leaves; `"max"` is a leaf outside an array.
+      const declared = found === "max" ? true : found;
       if (declared !== undefined && declared !== true && text[at] === "{") {
         const inner: Record<string, unknown> = {};
         into[key!] = inner;
@@ -224,8 +222,9 @@ function eventData(
   let document: Record<string, unknown> | null = null;
   let open: Record<string, unknown> | null = null;
   if (isJson(data)) {
-    document = pick(JSON.parse(data), TREE);
-    if (overflowIn(JSON.parse(data), TREE)) out.overflow = true;
+    const kept = pick(data);
+    document = kept.value;
+    if (kept.overflow) out.overflow = true;
   } else if (dataLines > 0 && data !== "") {
     // Not JSON: what of its root object was whole, by the independent reader.
     const read = prefixRead(data);
@@ -311,9 +310,9 @@ function referenceJson(elements: readonly string[], array: boolean, separator: s
     if (start >= cut) break;
     if (index + 1 > maxEvents) return { text: text.slice(0, cut), want: { documents, frames: [], cut: false, overflow, stopped: true } };
     if (end <= cut) {
-      const kept = pick(JSON.parse(element), TREE);
-      if (overflowIn(JSON.parse(element), TREE)) overflow = true;
-      if (kept !== null) documents.push({ value: kept, whole: true });
+      const kept = pick(element);
+      if (kept.overflow) overflow = true;
+      if (kept.value !== null) documents.push({ value: kept.value, whole: true });
     } else {
       const kept = partial(element.slice(0, cut - start));
       if (kept.overflow) overflow = true;

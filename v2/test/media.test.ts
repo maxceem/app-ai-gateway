@@ -111,7 +111,8 @@ afterEach(() => vi.restoreAllMocks());
 describe("paths v1 served", () => {
   it("declares transcription at v1's three paths on every provider but OpenRouter and Vercel", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
-      if (description.type === "elevenlabs" || description.type === "fal") continue;
+      // v1 never served these providers, so they have no v1 paths.
+      if (description.type === "elevenlabs" || description.type === "deepgram" || description.type === "fal") continue;
       const matcher = new ProviderMatcher(description);
       for (const path of ["v1/audio/transcriptions", "openai/v1/audio/transcriptions", "v1/stt"]) {
         const match = matcher.match("POST", path);

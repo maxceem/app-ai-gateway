@@ -67,6 +67,9 @@ export type Transport =
  * - `gemini-embed`: Gemini's own `embedContent`, usage in `usageMetadata`.
  * - `elevenlabs-transcription`: ElevenLabs' speech to text, whose answer
  *   names the audio's length in `audio_duration_secs`.
+ * - `deepgram-listen`: Deepgram's prerecorded speech to text, whose answer
+ *   names the audio's length (`metadata.duration`) and its channels
+ *   (`metadata.channels`). Deepgram bills the total across channels.
  * - `openai-speech`: text to speech. Usage in the OpenAI shape when the answer
  *   is a stream of events. A plain audio answer reports none, so its cost is
  *   unknown, as in v1, until step 4 measures the request.
@@ -83,6 +86,7 @@ export const API_STYLES = [
   "gemini-embed",
   "openai-speech",
   "elevenlabs-transcription",
+  "deepgram-listen",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
 
@@ -130,7 +134,21 @@ export type RequestMeasure =
   /** A length the request asks for, in seconds. */
   | { readonly measure: "requested_seconds"; readonly field: string; readonly default?: number }
   /** How many images the request asks for. */
-  | { readonly measure: "image_count"; readonly field: string; readonly default?: number };
+  | { readonly measure: "image_count"; readonly field: string; readonly default?: number }
+  /**
+   * The megapixels of the images the request asks for, as fal bills them:
+   * per image, width × height in units of 1024 × 1024 pixels, rounded up,
+   * times the count in `field`. `size` names the size field, either
+   * `{ width, height }` or a name listed in `sizes`. With no size, or a name
+   * not listed, each image counts as one.
+   */
+  | {
+      readonly measure: "image_megapixels";
+      readonly field: string;
+      readonly default?: number;
+      readonly size: string;
+      readonly sizes?: Readonly<Record<string, readonly [width: number, height: number]>>;
+    };
 
 /**
  * How an operation is measured. One of a short list of kinds, each
@@ -155,11 +173,20 @@ export type Meter =
        * instead: a transcription's `audio_seconds`, an image API's `images`.
        */
       readonly units?: readonly Unit[];
+      /**
+       * A flag that has the provider bill the audio once per channel
+       * (Deepgram's `multichannel`): then the reported length is multiplied
+       * by the channels the answer names (`audioChannels`). Otherwise it is
+       * billed once.
+       */
+      readonly perChannelWhen?: FieldRef;
     }
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
-   * before the answer and when the header is missing. `providerCost` names a
+   * before the answer and when the header is missing: one measure, or
+   * several in different units (fal's megapixels beside its image count), so
+   * a price in any of them can bill. `providerCost` names a
    * header with the provider's own cost in dollars (ElevenLabs' speech to text
    * sends `fiat-cost-before-overages`), which wins over our price as a JSON
    * report does.
@@ -168,7 +195,7 @@ export type Meter =
       readonly kind: "response_header";
       readonly header: string;
       readonly unit: Unit;
-      readonly estimate?: RequestMeasure & { readonly unit: Unit };
+      readonly estimate?: (RequestMeasure & { readonly unit: Unit }) | readonly (RequestMeasure & { readonly unit: Unit })[];
       readonly providerCost?: HeaderCostReport;
       /**
        * A reader of the answer's body, whose measures are kept beside the
@@ -260,22 +287,62 @@ export interface BackgroundOption {
 }
 
 /**
+ * How a request field that turns on a charge is read. Each is reduced to one
+ * decision, on or off, before it is priced or stored:
+ *
+ * - `flag`: a switch. On when present, unless its value is false (`false`,
+ *   `"false"`, null or empty). `redact=pii` is on; `redact=false` is off.
+ * - `text`: free text that may repeat, such as Deepgram's `keyterm`. On when
+ *   present with any value, even the text `false`. Its text is never stored.
+ */
+export type SwitchKind = "flag" | "text";
+
+/** A request field that turns on a charge, and how it is read. */
+export type SwitchRef = FieldRef & { readonly kind: SwitchKind };
+
+/**
  * A rate that depends on a request field, such as image size or video
  * resolution. The price names its rates per value under `by.<name>`
  * (`src/pricing/prices.ts`). `default` is the value the provider uses when
  * the request names none.
+ *
+ * With `kind`, the field is a switch (`SwitchKind`), and its value is `true`
+ * or `false`, never the request's own text: an add-on the price adds on top
+ * (`by.redact.true.add`).
+ *
+ * `answeredWhen` names a flag that lets the provider choose the value itself
+ * (Deepgram's `detect_language`). Then the value the answer reports is billed
+ * (the reader's `reportedPriceKeys`), or, when it reports none, the dearest
+ * value as an estimate, logged.
  */
 export interface PriceKey {
   readonly name: string;
   readonly from: FieldRef;
   readonly default?: string;
+  readonly kind?: SwitchKind;
+  readonly answeredWhen?: FieldRef;
 }
 
 /** Where the model is in the request. `Part` is a part name of the match template. */
 export type ModelLocation<Part extends string = string> =
   | { readonly in: "body"; readonly field: string; readonly default?: string }
   | { readonly in: "form"; readonly field: string; readonly default?: string }
-  | { readonly in: "query"; readonly name: string; readonly default?: string }
+  /**
+   * In the query. `answeredWhen` names a flag that lets the provider serve
+   * another model than the one asked for (Deepgram's `detect_language` falls
+   * back to an older model for a language the asked one lacks). `servedAs`
+   * then says which priced models each name the answer reports (the reader's
+   * `reportedModels`) stands for. An answer that names none of the billed
+   * model's, or a name `servedAs` does not list, is a fallback: the charge is
+   * an estimate, logged.
+   */
+  | {
+      readonly in: "query";
+      readonly name: string;
+      readonly default?: string;
+      readonly answeredWhen?: FieldRef;
+      readonly servedAs?: Readonly<Record<string, readonly string[]>>;
+    }
   | { readonly in: "path"; readonly part: Part }
   /** The operation has one model, or none the request names. */
   | { readonly in: "fixed"; readonly model: string };
@@ -347,6 +414,27 @@ export interface OperationDescription {
    * by its price alone.
    */
   readonly modelKinds?: readonly string[];
+  /**
+   * The request body may be raw bytes, such as audio, sent as they are with
+   * their own content type, never read or copied. A JSON body is still read
+   * (Deepgram takes either audio or `{ "url": ... }`). Without it, a body
+   * is JSON or a multipart form.
+   */
+  readonly rawBody?: true;
+  /**
+   * Request options the provider bills on top, at a price of their own that
+   * the gateway does not have yet, such as Deepgram's redaction. A request
+   * naming one is served, billed at the model's price as an estimate and
+   * logged (AGENTS.md: estimate, never bill as free).
+   */
+  readonly unpricedOptions?: readonly SwitchRef[];
+  /**
+   * How long the provider may take to send its response headers, in
+   * milliseconds, for an operation whose provider works longer before it
+   * answers (Deepgram's prerecorded transcription). The proxy's 120 s when
+   * left out. A fallback chain shares its first target's.
+   */
+  readonly responseDeadlineMs?: number;
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }
@@ -543,4 +631,16 @@ export function defineOperation<const P extends string, const U extends string =
 /** Declares a provider. */
 export function defineProvider<const D extends ProviderDescription>(provider: D): D {
   return provider;
+}
+
+/** The request measures a meter takes: none, one, or several in different units (a header meter's `estimate`). */
+export function requestMeasuresOf(meter: Meter): readonly (RequestMeasure & { readonly unit: Unit })[] {
+  if (meter.kind === "request_measure") return [meter];
+  if (meter.kind === "response_header") {
+    const { estimate } = meter;
+    if (estimate === undefined) return [];
+    return Array.isArray(estimate) ? (estimate as readonly (RequestMeasure & { readonly unit: Unit })[]) : [estimate as RequestMeasure & { readonly unit: Unit }];
+  }
+  if (meter.kind === "response_json") return meter.requestMeasure === undefined ? [] : [meter.requestMeasure];
+  return [];
 }

@@ -13,7 +13,7 @@
  * (`costOfRates` in `./tokens.ts`, over `priceUnitsMixed`).
  */
 import { MILLI_SCALE } from "../money.ts";
-import type { OperationDescription, Unit } from "../providers/operation.ts";
+import { requestMeasuresOf, type OperationDescription, type Unit } from "../providers/operation.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 
 /** Units stored at `MILLI_SCALE`; every other unit is a plain count. */
@@ -72,9 +72,10 @@ const NO_TOKENS = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, o
 const SOME_TOKENS = { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 } as const;
 
 /** `usage` with the request's own measure beside it, as every meter keeps it (`src/proxy/meter.ts`). */
-function withEstimate(usage: UsageObservation, estimate: Unit | undefined): UsageObservation {
-  if (estimate === undefined || usage.units?.[estimate] !== undefined) return usage;
-  return { ...usage, units: { ...usage.units, [estimate]: sample(estimate) }, estimatedUnits: [estimate] };
+function withEstimate(usage: UsageObservation, estimate: Unit | readonly Unit[] | undefined): UsageObservation {
+  const added = (estimate === undefined ? [] : typeof estimate === "string" ? [estimate] : estimate).filter((unit) => usage.units?.[unit] === undefined);
+  if (added.length === 0) return usage;
+  return { ...usage, units: { ...usage.units, ...Object.fromEntries(added.map((unit) => [unit, sample(unit)])) }, estimatedUnits: added };
 }
 
 /**
@@ -116,7 +117,8 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
       return ways;
     }
     case "response_header": {
-      const estimate = meter.estimate?.unit;
+      const measures = requestMeasuresOf(meter);
+      const estimate = measures.length === 0 ? undefined : measures.map((measure) => measure.unit);
       const body = Object.fromEntries((meter.body?.units ?? []).map((unit) => [unit, sample(unit)]));
       const header = { [meter.unit]: sample(meter.unit) };
       const secondary = meter.body === undefined ? {} : { secondaryUnits: meter.body.units };

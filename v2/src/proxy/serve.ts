@@ -59,11 +59,16 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
-import { priceKeyValues, removeOutbound, requestFormFields, requestUsage } from "./request-fields.ts";
+import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
-/** How long a provider may take to send its response headers (v1's default). */
+/** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
+
+/** How long an operation's provider may take to send its response headers (`responseDeadlineMs`). */
+function responseDeadlineMs(operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
+}
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
@@ -263,9 +268,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const bytes = await caller.readBody();
       const contentType = c.req.header("content-type") ?? "";
       const parsed = await requestBody(bytes, contentType, operation, description);
-      const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
+      const body = parsed.kind === "json" ? parsed.body : parsed.kind === "form" ? formFields(parsed.fields) : {};
       if (parsed.kind === "json") refuseBackground(operation, body);
-      const requested = requestModel(operation, body, match.parts);
+      const requested = requestModel(operation, body, match.parts, url.searchParams);
       caller.facts.model = requested;
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
@@ -283,6 +288,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // or the body or form field.
       let upstream = match.upstream;
       let bodyModelChanged = false;
+      const sentQuery = new URLSearchParams(sanitizedQuery(url));
+      let queryModelChanged = false;
       if (model !== requested) {
         const location = operation.model;
         if (location.in === "path") {
@@ -292,16 +299,18 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         } else if (location.in === "body" || location.in === "form") {
           body[location.field] = model;
           bodyModelChanged = true;
+        } else if (location.in === "query") {
+          sentQuery.set(location.name, model);
+          queryModelChanged = true;
         }
       }
       // Read, never judged: a service mode is never refused (`./meter.ts`).
       const mode = requestedServiceMode(description, connection.baseUrl, body, model);
       // What the meter takes from the request, and the values its rates depend on.
       const fields = { body, query: url.searchParams };
-      const measured = requestUsage(operation, fields);
-      const priceKeys = priceKeyValues(operation, fields);
+      const facts = requestFacts(operation, fields, price?.price ?? null, caller.facts);
       // Webhook fields, and fetch fields the operation does not need, never reach the provider.
-      const outbound = removeOutbound(operation, parsed.kind === "json" ? body : null, new URLSearchParams(sanitizedQuery(url)));
+      const outbound = removeOutbound(operation, parsed.kind === "json" ? body : null, sentQuery);
 
       // The output cap refuses on its own, so it runs before admission: a request
       // it refuses must not spend a request limit or the plan allowance. Only a
@@ -318,6 +327,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         formChanges[location.field] = model;
       }
       const formRemoved = parsed.kind === "form" ? outbound.formFields.filter((name) => parsed.fields.has(name)) : [];
+      // A raw body (audio) is sent as the client's own bytes; nothing in it is read.
 
       // An untouched body is sent as the client's own bytes, with its own content
       // type. A changed form is sent as a new form, so fetch writes a fresh
@@ -330,9 +340,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
                 capped || metered || pinned || bodyModelChanged || outbound.bodyChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
               contentType: "application/json",
             }
-          : Object.keys(formChanges).length > 0 || formRemoved.length > 0
+          : parsed.kind === "form" && (Object.keys(formChanges).length > 0 || formRemoved.length > 0)
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges, formRemoved), contentType: null }
-            : { bytes, contentType };
+            : // A raw body the client named no type for is sent with none, never an empty one.
+              { bytes, contentType: contentType === "" ? null : contentType };
 
       // The credentials are opened before admission: a request that cannot be sent must not spend anything.
       const credentials = await connectionCredentials(c.env, connection);
@@ -366,10 +377,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         appVersion: caller.appVersion,
         clientTraceId: caller.clientTraceId,
         ...(alternatives.size > 0 ? { alternatives } : {}),
-        ...(measured !== null ? { requestUsage: measured } : {}),
-        ...(priceKeys !== undefined ? { priceKeys } : {}),
+        ...facts,
       };
-      const kept = outbound.query?.toString();
+      const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
       return await sendAttempts(c, strippedHeaders(app, caller), [
         {
@@ -406,6 +416,8 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
 
 export type ParsedBody =
   | { readonly kind: "json"; readonly body: Record<string, unknown> }
+  /** Raw bytes, such as audio, for an operation that takes them (`rawBody`): never read. */
+  | { readonly kind: "raw" }
   | {
       readonly kind: "form";
       readonly fields: ReadonlyMap<string, readonly FieldValue[]>;
@@ -415,8 +427,13 @@ export type ParsedBody =
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
 export type OutgoingBody =
-  | { readonly bytes: Uint8Array; readonly contentType: string; readonly form?: undefined }
+  | { readonly bytes: Uint8Array; readonly contentType: string | null; readonly form?: undefined }
   | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
+
+function isJson(contentType: string): boolean {
+  const type = contentType.split(";")[0]!.trim().toLowerCase();
+  return type === "application/json" || type.endsWith("+json");
+}
 
 function isMultipart(contentType: string): boolean {
   return contentType.toLowerCase().startsWith("multipart/form-data");
@@ -469,6 +486,8 @@ export async function requestBody(
     }
     return { kind: "form", ...parsed };
   }
+  // An operation that takes raw bytes (audio) reads a body only when it says it is JSON.
+  if (operation.rawBody === true && !isJson(contentType)) return { kind: "raw" };
   if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
     throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
   }
@@ -570,7 +589,12 @@ export function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export function requestModel(operation: OperationDescription, body: Record<string, unknown>, parts: Parts): string {
+export function requestModel(
+  operation: OperationDescription,
+  body: Record<string, unknown>,
+  parts: Parts,
+  query: URLSearchParams = new URLSearchParams(),
+): string {
   const location = operation.model;
   if (location.in === "fixed") return location.model;
   if (location.in === "path") {
@@ -578,7 +602,13 @@ export function requestModel(operation: OperationDescription, body: Record<strin
     if (value === undefined || value.trim() === "") throw new GatewayError(400, "invalid_request", "Request path must name a model");
     return value;
   }
-  if (location.in === "query") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
+  if (location.in === "query") {
+    const named = query.getAll(location.name);
+    if (named.length > 1) throw new GatewayError(400, "invalid_request", `The query names its model in ${location.name} more than once`);
+    const value = named[0] ?? location.default;
+    if (value === undefined || value.trim() === "") throw new GatewayError(400, "invalid_request", `The query must name a model in ${location.name}`);
+    return value;
+  }
   // A body field and a form field are read the same way: the request's
   // content type, not the operation, says which the body is.
   const value = (Object.hasOwn(body, location.field) ? body[location.field] : undefined) ?? location.default;
@@ -710,7 +740,8 @@ function clientGone(c: ProxyContext): boolean {
  * - Every attempt is one charge, with its own `seq`. A failed one costs
  *   nothing: its cost is empty, not $0.
  * - All attempts share one budget for the provider's first byte, the
- *   proxy's own 120 s: a fallback gets what is left of it.
+ *   proxy's own 120 s, or the first operation's own (`responseDeadlineMs`):
+ *   a fallback gets what is left of it.
  * - Every attempt sends the whole body again: it was read whole before the
  *   first one, and each attempt's own body is built only when it is sent.
  * - A fallback's key is opened only when the chain reaches it, within what
@@ -751,7 +782,7 @@ export async function sendAttempts(
     }
     let credentials: UpstreamCredentials;
     try {
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? responseDeadlineMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -803,7 +834,7 @@ export async function sendAttempts(
         throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
       }
       providerStart = Date.now();
-      deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
+      deadline ??= providerStart + responseDeadlineMs(prepared.operation);
       const remainingMs = deadline - providerStart;
       if (remainingMs <= 0) throw budgetExhausted(index);
       controller = new AbortController();

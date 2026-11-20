@@ -22,6 +22,11 @@
  *   input tokens only. `POST /v1beta/models/{model}:embedContent`: Gemini's.
  * - `POST /v1/audio/speech`: audio bytes, or, with `stream_format: "sse"`,
  *   events ending with usage.
+ * - `POST /v1/listen`: Deepgram's transcript of 30 seconds of audio, on two
+ *   channels with `multichannel=true` in the query, served by the model the
+ *   query names, and in French with `detect_language=true`.
+ * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
+ *   `x-fal-billable-units`, or none with `mock_no_units: true`.
  *
  * Each reads the whole body, counting its bytes, and answers JSON, or a
  * stream when the body has `"stream": true` (Gemini: the streaming path). A
@@ -31,7 +36,7 @@
  * gateway passes through as it passes any body field:
  *
  * - `mock_delay_ms`: wait this long before answering (at most 120 s), for a
- *   slow provider.
+ *   slow provider. A raw body (Deepgram's audio) names it in the query.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
@@ -108,7 +113,7 @@ function events(list: readonly unknown[], done = false): string {
   return list.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + (done ? "data: [DONE]\n\n" : "");
 }
 
-type Answer = (input: { body: Record<string, unknown>; bytes: number; model: string; stream: boolean; path: string }) => Response;
+type Answer = (input: { body: Record<string, unknown>; bytes: number; model: string; stream: boolean; path: string; query: URLSearchParams }) => Response;
 
 const SSE = { "content-type": "text/event-stream" };
 
@@ -255,10 +260,42 @@ const elevenStt: Answer = ({ body }) =>
     },
   );
 
+/**
+ * Deepgram prerecorded speech to text: 30 seconds of audio, on two channels
+ * when the query asks for `multichannel=true`. The answer says whether a
+ * callback reached it, for the smoke checks to see.
+ */
+const deepgramListen: Answer = ({ query }) => {
+  const channels = query.get("multichannel") === "true" ? 2 : 1;
+  const model = query.get("model") ?? "base";
+  // With `detect_language=true`, every channel says it heard French.
+  const detected = query.get("detect_language") === "true" ? { detected_language: "fr" } : {};
+  return Response.json(
+    {
+      metadata: { request_id: "dg-mock", duration: 30, channels, models: ["mock"], model_info: { mock: { arch: model, name: `general-${model}`, version: "1" } } },
+      results: { channels: Array.from({ length: channels }, () => ({ ...detected, alternatives: [{ transcript: "hello", confidence: 0.99 }] })) },
+    },
+    { headers: { "x-mock-callback-received": String(query.has("callback")), "x-mock-model": query.get("model") ?? "" } },
+  );
+};
+
+/**
+ * fal's `fal.run`: an image per `num_images`, each one megapixel, reported in
+ * `x-fal-billable-units` (T15). `mock_no_units` leaves the header out.
+ */
+const falRun: Answer = ({ body }) => {
+  const count = typeof body.num_images === "number" && Number.isSafeInteger(body.num_images) && body.num_images > 0 ? body.num_images : 1;
+  const headers: Record<string, string> = { "x-fal-request-id": "fal-mock" };
+  if (body.mock_no_units !== true) headers["x-fal-billable-units"] = String(count);
+  return Response.json({ images: Array.from({ length: count }, (_, index) => ({ url: `https://fal.media/mock-${index}.png`, width: 1024, height: 1024 })) }, { headers });
+};
+
 /** Which answer a path gets. */
 function answerFor(path: string): Answer | null {
   if (/^\/v1\/text-to-speech\/[^/]+(?:\/stream)?(?:\/with-timestamps)?$/u.test(path)) return elevenTts;
   if (path === "/v1/speech-to-text") return elevenStt;
+  if (path === "/v1/listen") return deepgramListen;
+  if (/^\/fal-ai\/[^/]+(?:\/[^/]+)*$/u.test(path)) return falRun;
   if (path === "/v1/chat/completions") return chat;
   if (path === "/v1/responses") return responses;
   if (path === "/v1/messages") return messages;
@@ -275,6 +312,8 @@ function answerFor(path: string): Answer | null {
 function keyOf(request: Request): string | null {
   const bearer = request.headers.get("authorization");
   if (bearer !== null && bearer.startsWith("Bearer ")) return bearer.slice("Bearer ".length);
+  if (bearer !== null && bearer.startsWith("Token ")) return bearer.slice("Token ".length);
+  if (bearer !== null && bearer.startsWith("Key ")) return bearer.slice("Key ".length);
   return request.headers.get("x-api-key") ?? request.headers.get("x-goog-api-key") ?? request.headers.get("xi-api-key");
 }
 
@@ -336,13 +375,15 @@ const mock = {
       // Counted and answered all the same.
     }
     const headers = { "x-mock-received-bytes": String(bytes) };
-    const delay = typeof body.mock_delay_ms === "number" ? Math.min(MAX_DELAY_MS, Math.max(0, body.mock_delay_ms)) : 0;
+    // A raw body (audio) has no fields, so it asks for the delay in the query.
+    const asked = typeof body.mock_delay_ms === "number" ? body.mock_delay_ms : Number(url.searchParams.get("mock_delay_ms") ?? 0);
+    const delay = Number.isFinite(asked) ? Math.min(MAX_DELAY_MS, Math.max(0, asked)) : 0;
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     if (typeof body.mock_status === "number" && body.mock_status >= 400 && body.mock_status < 600) {
       return Response.json({ error: { message: "Mock error", type: "mock_error", code: "mock_error" } }, { status: body.mock_status, headers });
     }
     const model = typeof body.model === "string" ? body.model : "mock-model";
-    const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname });
+    const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
     for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
     // Vercel AI Gateway's spend attribution, for the smoke checks to see.
     const tags = request.headers.get("ai-reporting-tags");

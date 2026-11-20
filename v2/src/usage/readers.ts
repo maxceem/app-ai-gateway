@@ -245,6 +245,65 @@ export function elevenLabsTranscriptionUsage(value: unknown): UsageObservation |
   return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
 }
 
+/** A short name an answer reports (a language, a model): kept only when it looks like one, so no answer text is stored. */
+const REPORTED_NAME = /^[A-Za-z0-9_.-]{1,64}$/u;
+
+/**
+ * Deepgram's prerecorded speech to text: the audio's length
+ * (`metadata.duration`), and its channels (`metadata.channels`), which the
+ * meter multiplies it by only when the request asks for `multichannel`
+ * (`perChannelWhen`): Deepgram bills multichannel audio by the total
+ * processed across channels, a ten-minute stereo file as twenty minutes.
+ *
+ * - With no duration, the latest utterance end (`results.utterances[].end`,
+ *   with `utterances=true`) stands for it: worked out, so billed as an
+ *   estimate (`measureWorkedOut`).
+ * - The language each channel detected (`results.channels[].detected_language`,
+ *   with `detect_language`), null for one that names none.
+ * - The models that served it (`metadata.model_info`: each one's `arch` and
+ *   `name`), so a fallback to another model is seen.
+ */
+export function deepgramListenUsage(value: unknown): UsageObservation | null {
+  const root = asRecord(value);
+  const metadata = asRecord(root?.metadata);
+  const results = asRecord(root?.results);
+  const reported = metadata?.channels;
+  const channels = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 1 ? reported : null;
+  let duration = nonNegativeNumber(metadata?.duration);
+  let workedOut = false;
+  if (duration === null) {
+    // The skimmer keeps only the largest `end` (`"max"` in `READ_PATHS`); a whole answer has the list.
+    const utterances = results?.utterances;
+    duration = Array.isArray(utterances)
+      ? utterances.reduce<number | null>((latest, utterance) => {
+          const end = nonNegativeNumber(asRecord(utterance)?.end);
+          return end !== null && (latest === null || end > latest) ? end : latest;
+        }, null)
+      : nonNegativeNumber(asRecord(utterances)?.end);
+    if (duration === null) return null;
+    workedOut = true;
+  }
+  // Each channel's language; a channel that names none is null, an unknown.
+  const languages = (Array.isArray(results?.channels) ? results.channels : []).map((channel) => {
+    const language = asRecord(channel)?.detected_language;
+    return typeof language === "string" && REPORTED_NAME.test(language) ? language : null;
+  });
+  // Every model it names, each with its own names; one with none it can read is kept, empty, as unknown.
+  const models = Object.values(asRecord(metadata?.model_info) ?? {}).map((info) => {
+    const record = asRecord(info);
+    return [record?.arch, record?.name].filter((name): name is string => typeof name === "string" && REPORTED_NAME.test(name));
+  });
+  return {
+    ...EMPTY_USAGE,
+    audioSeconds: duration,
+    noTokens: true,
+    ...(channels !== null ? { audioChannels: channels } : {}),
+    ...(workedOut ? { measureWorkedOut: true as const } : {}),
+    ...(languages.length > 0 ? { reportedPriceKeys: { language: languages } } : {}),
+    ...(models.length > 0 ? { reportedModels: models } : {}),
+  };
+}
+
 /**
  * An image API's usage: the OpenAI shape, with image tokens apart, plus the
  * images BytePlus Seedream bills per image and counts as `generated_images`
@@ -402,6 +461,10 @@ export const READ_PATHS: PathTree = {
   response_service_tier: true,
   duration: true,
   audio_duration_secs: true,
+  metadata: { duration: true, channels: true, model_info: true },
+  // Deepgram: the language each channel detected, and the utterances' ends.
+  // Of the utterances, only the latest end: it holds the same however long the audio is.
+  results: { channels: { detected_language: true }, utterances: { end: "max" } },
   type: true,
   response: { usage: true, model: true, service_tier: true, response_service_tier: true },
   message: { usage: true, model: true },
@@ -538,6 +601,8 @@ export function usageReducer(style: ApiStyle, counted: readonly Modality[] = NOT
       return lastRead((value) => audioUsage(value, counted));
     case "elevenlabs-transcription":
       return lastRead(elevenLabsTranscriptionUsage);
+    case "deepgram-listen":
+      return lastRead(deepgramListenUsage);
     case "openai-images":
       return lastRead((value) => imagesUsage(value, counted));
     case "openai-embeddings":
@@ -579,6 +644,7 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
   "gemini-embed": null,
   "openai-speech": null,
   "elevenlabs-transcription": null,
+  "deepgram-listen": null,
 };
 
 /**

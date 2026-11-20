@@ -36,7 +36,7 @@ import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../l
 import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
-import { usageMeasures } from "../usage/measures.ts";
+import { usageMeasures, type EstimateReason } from "../usage/measures.ts";
 import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { Alternatives } from "./alternatives.ts";
@@ -79,6 +79,14 @@ export interface CallAttempt {
   readonly requestUsage?: UsageObservation | null;
   /** The request's price key values (`./request-fields.ts`), kept on its usage so it is priced, and priced later, with them. */
   readonly priceKeys?: Readonly<Record<string, string>>;
+  /** Options the request named that the provider bills on top at a price the gateway does not have: the charge is an estimate. */
+  readonly unpricedOptions?: readonly string[];
+  /** Price keys the provider chooses for this request (`answeredWhen`): the answer's values are billed (`./meter.ts`). */
+  readonly answeredKeys?: readonly string[];
+  /** The provider may serve another model (`answeredWhen` on the model): the priced models each name the answer reports stands for. */
+  readonly servedModels?: Readonly<Record<string, readonly string[]>>;
+  /** The audio is billed once per channel (`perChannelWhen`, `./meter.ts`). */
+  readonly perChannel?: true;
 }
 
 export interface AttemptOutcome {
@@ -128,15 +136,31 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const facts = { app: attempt.appId, charge: id, providerType: attempt.providerType, providerSlug: attempt.providerSlug, model: attempt.model };
 
   const reported = outcome.providerCostUsd ?? null;
-  // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
-  // So is a call whose answer did not say which of the request's models served it.
-  // So is one whose stream's final event was cut, its usage read from an earlier event.
-  const modeUnknown =
-    attempt.requestedModeUnknown !== undefined ||
-    outcome.servedModeUnknown !== undefined ||
-    attempt.servedModelUnknown === true ||
-    usage?.finalEventUnread === true;
+  // Every reason a charge is an estimate, each judged and logged on its own,
+  // never skipped because an earlier one already applies:
+  // - a mode value the gateway does not know, in the request or the response;
+  // - an answer that did not say which of the request's models served it,
+  //   or, where the provider may change the model, did not name the billed one;
+  // - an option billed on top at a price the gateway does not have;
+  // - a stream whose final event was cut, its usage read from an earlier event;
+  // - a measure the reader worked out, not one the answer reported.
+  const judged: [EstimateReason, boolean][] = [
+    ["service_mode", attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined],
+    ["served_model", attempt.servedModelUnknown === true],
+    ["unpriced_option", (attempt.unpricedOptions?.length ?? 0) > 0],
+    ["final_event_unread", usage?.finalEventUnread === true],
+    ["measure_worked_out", usage?.measureWorkedOut === true],
+    ["served_model", usage !== null && servedModelInDoubt(attempt, usage, facts)],
+  ];
+  const reasons = [...new Set(judged.filter(([, applies]) => applies).map(([reason]) => reason))];
+  const modeUnknown = reasons.length > 0;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
+  if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
+  // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).
+  const unanswered = (attempt.answeredKeys ?? []).filter(
+    (key) => usage !== null && usage.priceKeys?.[key] === undefined && usage.priceKeyChoices?.[key] === undefined,
+  );
+  if (unanswered.length > 0) log("warn", "price_key_unanswered", { ...facts, keys: unanswered.join(",") });
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
   let priced = usage === null || attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, servedMode, modeUnknown);
   if (priced === null && attempt.price !== null && usage !== null && reported === null && usage.reportMissing !== true) {
@@ -257,7 +281,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     outputTokens: usage?.outputTokens ?? null,
     unit: billed === null ? null : billed.unit,
     units: billed === null ? null : billed.units,
-    measures: usage === null ? {} : usageMeasures(usage, servedMode, modeUnknown),
+    measures: usage === null ? {} : usageMeasures(usage, servedMode, reasons),
     rates: costed.rates,
     sessionMs: null,
     correctionKind: null,
@@ -296,4 +320,23 @@ function logModes(
   if (!estimated || isStandardMode(served)) return;
   const asked = serviceModeName(served) === serviceModeName(attempt.requestedMode);
   log("warn", asked ? "service_mode_unpriced" : "served_mode_unpriced", { ...facts, serviceMode: serviceModeName(served) });
+}
+
+/**
+ * Whether the model that served an answer is in doubt: the provider may
+ * serve another model for this request (`servedModels`), and the answer
+ * names none, or names one that is not the billed model. Each model it names
+ * must be the billed one by one of its own names: the billed model itself,
+ * exactly, or a name the operation declares stands for it (`servedAs`). One
+ * that is not, on any channel, is a fallback. Logged; the charge is then an
+ * estimate, at least at the model's standard price.
+ */
+function servedModelInDoubt(attempt: CallAttempt, usage: UsageObservation, facts: Readonly<Record<string, unknown>>): boolean {
+  const servedAs = attempt.servedModels;
+  if (servedAs === undefined) return false;
+  const reported = usage.reportedModels ?? [];
+  const isBilled = (name: string) => name === attempt.model || (Object.hasOwn(servedAs, name) && servedAs[name]!.includes(attempt.model));
+  if (reported.length > 0 && reported.every((names) => names.some(isBilled))) return false;
+  log("warn", reported.length === 0 ? "served_model_unknown" : "served_model_unexpected", facts);
+  return true;
 }

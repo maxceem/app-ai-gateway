@@ -14,7 +14,9 @@
  * A JSON body is read by dot path. A form is read from the fields the scanner
  * took from it (`requestFormFields` names them). A query from the URL.
  */
-import type { FieldRef, Meter, OperationDescription, RequestMeasure, Unit } from "../providers/operation.ts";
+import { requestMeasuresOf, type FieldRef, type OperationDescription, type RequestMeasure, type SwitchKind, type Unit } from "../providers/operation.ts";
+import { log } from "../core/log.ts";
+import type { ModelPrice } from "../pricing/prices.ts";
 import { scaledCount } from "../pricing/units.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 
@@ -48,19 +50,14 @@ export function fieldValue(fields: RequestFields, ref: FieldRef): unknown {
 
 /** The form fields an operation reads, besides its model and service mode: measures, price keys and outbound fields. */
 export function requestFormFields(operation: OperationDescription): string[] {
-  const refs: FieldRef[] = [...(operation.priceKeys ?? []).map((key) => key.from)];
-  const measure = requestMeasureOf(operation.meter);
-  if (measure !== null) refs.push({ in: "form", field: measure.field });
+  const refs: FieldRef[] = (operation.priceKeys ?? []).flatMap((key) => (key.answeredWhen === undefined ? [key.from] : [key.from, key.answeredWhen]));
+  for (const ref of operation.unpricedOptions ?? []) refs.push(ref);
+  for (const measure of requestMeasuresOf(operation.meter)) {
+    refs.push({ in: "form", field: measure.field });
+    if (measure.measure === "image_megapixels") refs.push({ in: "form", field: measure.size });
+  }
   for (const ref of outboundRemoved(operation)) refs.push(ref);
   return refs.filter((ref) => ref.in !== "query").map((ref) => ref.field);
-}
-
-/** The request measure a meter takes, if any. */
-function requestMeasureOf(meter: Meter): (RequestMeasure & { readonly unit: Unit }) | null {
-  if (meter.kind === "request_measure") return meter;
-  if (meter.kind === "response_header") return meter.estimate ?? null;
-  if (meter.kind === "response_json") return meter.requestMeasure ?? null;
-  return null;
 }
 
 /** A measure's raw amount from the request, before scaling, or null when the request does not give it. */
@@ -74,11 +71,39 @@ function measuredAmount(measure: RequestMeasure, fields: RequestFields): number 
       const seconds = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (measure.default ?? null);
       return seconds !== null && Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
     }
-    case "image_count": {
-      const count = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (measure.default ?? null);
-      return count !== null && Number.isSafeInteger(count) && count >= 0 ? count : null;
+    case "image_count":
+      return imageCount(value, measure.default);
+    case "image_megapixels": {
+      const count = imageCount(value, measure.default);
+      if (count === null) return null;
+      return count * (megapixelsOf(fieldValue(fields, { in: "body", field: measure.size }), measure.sizes) ?? 1);
     }
   }
+}
+
+/** A count of images as the request writes it, or the default. */
+function imageCount(value: unknown, fallback: number | undefined): number | null {
+  const count = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (fallback ?? null);
+  return count !== null && Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+/** Pixels in one megapixel, as fal counts it. */
+const MEGAPIXEL = 1024 * 1024;
+
+/** The side fal uses for a width or height a size object leaves out (its `ImageSize` default). */
+const DEFAULT_SIDE = 512;
+
+/** One image's megapixels, rounded up: from `{ width, height }` or a listed size name. Null when the size is not known. */
+function megapixelsOf(size: unknown, named: Readonly<Record<string, readonly [number, number]>> | undefined): number | null {
+  let width: unknown;
+  let height: unknown;
+  if (typeof size === "string" && named !== undefined && Object.hasOwn(named, size)) [width, height] = named[size]!;
+  else if (typeof size === "object" && size !== null && !Array.isArray(size)) {
+    ({ width = DEFAULT_SIDE, height = DEFAULT_SIDE } = size as { width?: unknown; height?: unknown });
+  }
+  if (typeof width !== "number" || typeof height !== "number" || !(width > 0) || !(height > 0)) return null;
+  const megapixels = Math.ceil((width * height) / MEGAPIXEL);
+  return Number.isSafeInteger(megapixels) ? megapixels : null;
 }
 
 /**
@@ -86,15 +111,15 @@ function measuredAmount(measure: RequestMeasure, fields: RequestFields): number 
  * measure (characters, a requested length) is an estimate of what the
  * provider bills; a request count is exact.
  */
-function requestUsageOf(unit: Unit, count: number, estimated: boolean): UsageObservation {
+function requestUsageOf(counts: Readonly<Partial<Record<Unit, number>>>, estimated: boolean): UsageObservation {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
     outputTokens: 0,
     noTokens: true,
-    units: { [unit]: count },
-    ...(estimated ? { estimatedUnits: [unit] } : {}),
+    units: counts,
+    ...(estimated ? { estimatedUnits: Object.keys(counts) as Unit[] } : {}),
   };
 }
 
@@ -104,29 +129,53 @@ function requestUsageOf(unit: Unit, count: number, estimated: boolean): UsageObs
  * A request count is always one request.
  */
 export function requestUsage(operation: OperationDescription, fields: RequestFields): UsageObservation | null {
-  if (operation.meter.kind === "request_count") return requestUsageOf("requests", 1, false);
-  const measure = requestMeasureOf(operation.meter);
-  if (measure === null) return null;
-  const amount = measuredAmount(measure, fields);
-  if (amount === null) return null;
-  const count = scaledCount(measure.unit, amount);
-  return Number.isSafeInteger(count) ? requestUsageOf(measure.unit, count, true) : null;
+  if (operation.meter.kind === "request_count") return requestUsageOf({ requests: 1 }, false);
+  // Every measure the request gives, each in its own unit; one it does not give is left out.
+  const counts: Partial<Record<Unit, number>> = {};
+  for (const measure of requestMeasuresOf(operation.meter)) {
+    const amount = measuredAmount(measure, fields);
+    if (amount === null) continue;
+    const count = scaledCount(measure.unit, amount);
+    if (Number.isSafeInteger(count)) counts[measure.unit] = count;
+  }
+  return Object.keys(counts).length === 0 ? null : requestUsageOf(counts, true);
 }
 
 /** A price key value longer than this is treated as unknown, and never stored. */
 const MAX_PRICE_KEY_VALUE = 100;
 
 /**
+ * Whether a switch field is on (`SwitchKind`): a `text` field when present
+ * with any value, a `flag` when present with a value that is not false. A
+ * repeated query field is on when any of its values is.
+ */
+export function switchedOn(fields: RequestFields, ref: FieldRef, kind: SwitchKind): boolean {
+  const values = ref.in === "query" ? fields.query.getAll(ref.field) : [fieldValue(fields, ref)].filter((value) => value !== undefined);
+  if (kind === "text") return values.length > 0;
+  return values.some((value) => !(value === null || value === false || value === "false" || value === ""));
+}
+
+/**
  * The values of an operation's price keys in the request, as text (a boolean
  * as `true` or `false`, as fal's `generate_audio`), with each key's default
- * where the request names none. Any other value, or one longer than 100
- * characters, is left out: the price bills it as an unknown value.
+ * where the request names none. A switch key (`kind`) is `true` or `false`,
+ * never the request's own text. Any other value, or one longer than 100
+ * characters, is left out: the price bills it as an unknown value. So is a
+ * key the provider chooses for this request (`answeredWhen`): the answer's
+ * value fills it (`answeredPriceKeys`).
  */
 export function priceKeyValues(operation: OperationDescription, fields: RequestFields): Record<string, string> | undefined {
   const keys = operation.priceKeys;
   if (keys === undefined || keys.length === 0) return undefined;
   const values: Record<string, string> = {};
   for (const key of keys) {
+    if (key.answeredWhen !== undefined && switchedOn(fields, key.answeredWhen, "flag")) continue;
+    if (key.kind !== undefined) {
+      values[key.name] = String(switchedOn(fields, key.from, key.kind));
+      continue;
+    }
+    // A plain key named twice in the query is unknown: its dearest value bills, as an estimate.
+    if (key.from.in === "query" && fields.query.getAll(key.from.field).length > 1) continue;
     const value = fieldValue(fields, key.from);
     const text =
       typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) ? String(value) : undefined;
@@ -135,6 +184,85 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
     } else if (value === undefined && key.default !== undefined) values[key.name] = key.default;
   }
   return values;
+}
+
+/** The price keys the provider chooses for this request (`answeredWhen` on): the answer reports their values. */
+export function answeredPriceKeys(operation: OperationDescription, fields: RequestFields): string[] {
+  return (operation.priceKeys ?? []).filter((key) => key.answeredWhen !== undefined && switchedOn(fields, key.answeredWhen, "flag")).map((key) => key.name);
+}
+
+/**
+ * When the provider may serve this request with another model than the one
+ * asked for (`answeredWhen` on the model): the priced models each name its
+ * answer may report stands for (`servedAs`). Null otherwise.
+ */
+function servedModels(operation: OperationDescription, fields: RequestFields): Readonly<Record<string, readonly string[]>> | null {
+  const location = operation.model;
+  if (location.in !== "query" || location.answeredWhen === undefined || !switchedOn(fields, location.answeredWhen, "flag")) return null;
+  return location.servedAs ?? {};
+}
+
+/** What a request says about how it is billed, kept on its attempt (`CallAttempt`). */
+export interface RequestFacts {
+  /** What the meter measured from the request (`requestUsage`). */
+  readonly requestUsage?: UsageObservation;
+  /** The price key values (`priceKeyValues`). */
+  readonly priceKeys?: Readonly<Record<string, string>>;
+  /** Options billed on top at a price the gateway does not have: the charge is an estimate. */
+  readonly unpricedOptions?: readonly string[];
+  /** Price keys the provider chooses for this request: the answer's values are billed. */
+  readonly answeredKeys?: readonly string[];
+  /** The provider may serve another model: the priced models each reported name stands for. */
+  readonly servedModels?: Readonly<Record<string, readonly string[]>>;
+  /** The audio is billed once per channel (`perChannelWhen`). */
+  readonly perChannel?: true;
+}
+
+/**
+ * The one place a request's billing facts are worked out from its operation,
+ * its fields (body and query) and its price, for the proxy and presets alike.
+ * An option billed on top at a price the gateway lacks is logged here.
+ */
+export function requestFacts(
+  operation: OperationDescription,
+  fields: RequestFields,
+  price: ModelPrice | null,
+  logFacts: Readonly<Record<string, unknown>>,
+): RequestFacts {
+  const measured = requestUsage(operation, fields);
+  const priceKeys = priceKeyValues(operation, fields);
+  const unpriced = unpricedOptionsNamed(operation, fields, price);
+  if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...logFacts, options: unpriced.join(",") });
+  const answered = answeredPriceKeys(operation, fields);
+  const served = servedModels(operation, fields);
+  const { meter } = operation;
+  const perChannel = meter.kind === "response_json" && meter.perChannelWhen !== undefined && switchedOn(fields, meter.perChannelWhen, "flag");
+  return {
+    ...(measured !== null ? { requestUsage: measured } : {}),
+    ...(priceKeys !== undefined ? { priceKeys } : {}),
+    ...(unpriced.length > 0 ? { unpricedOptions: unpriced } : {}),
+    ...(answered.length > 0 ? { answeredKeys: answered } : {}),
+    ...(served !== null ? { servedModels: served } : {}),
+    ...(perChannel ? { perChannel: true as const } : {}),
+  };
+}
+
+/**
+ * The options a request turns on that the provider bills on top at a price
+ * the gateway does not have (`unpricedOptions`), each read as its kind says
+ * (`switchedOn`). An option a price key reads is priced when the price has
+ * rates for that key (`by`), as our list has for Deepgram's redaction; a
+ * customer's own rate without them leaves it unpriced.
+ */
+export function unpricedOptionsNamed(operation: OperationDescription, fields: RequestFields, price: ModelPrice | null): string[] {
+  const named: string[] = [];
+  for (const ref of operation.unpricedOptions ?? []) {
+    if (!switchedOn(fields, ref, ref.kind)) continue;
+    const key = operation.priceKeys?.find((one) => one.from.in === ref.in && one.from.field === ref.field);
+    if (key !== undefined && price?.keyed?.[key.name] !== undefined) continue;
+    named.push(ref.field);
+  }
+  return named;
 }
 
 /** Deletes a dot path from a JSON body. True if it was there. */

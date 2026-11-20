@@ -129,7 +129,8 @@ describe("paths v1 served", () => {
     const chatPaths = ["v1/chat/completions", "chat/completions", "openai/v1/chat/completions", "inference/v1/chat/completions", "v1beta/openai/chat/completions"];
     const otherPaths = ["v1/responses", "openai/v1/responses", "v1/messages"];
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
-      if (description.type === "elevenlabs" || description.type === "fal") continue;
+      // v1 never served these providers, so they have no v1 text paths.
+      if (description.type === "elevenlabs" || description.type === "deepgram" || description.type === "fal") continue;
       const matcher = new ProviderMatcher(description);
       // OpenRouter served Chat Completions only.
       const served = description.type === "openrouter" ? chatPaths : [...chatPaths, ...otherPaths];

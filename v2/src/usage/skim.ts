@@ -11,14 +11,28 @@
  * base64 image or number array is not walked in JavaScript character by
  * character.
  *
- * What it keeps, for a document `doc` and a path tree `tree`, is exactly
- * `pick(JSON.parse(doc), tree)`:
+ * What it keeps, for a document `doc` and a path tree `tree` (the tests hold
+ * a reference written apart from it, `test/skim-reference.ts`):
  *
  * - a leaf (`true`) keeps the member's whole value, decoded with `JSON.parse`
- *   once it closes, up to `SKIM_VALUE_CAP` characters of JSON text; a larger
- *   one is left out and `overflow` is set;
+ *   once it closes, up to `SKIM_VALUE_CAP` characters of its JSON text as
+ *   written; a larger one is left out and `overflow` is set;
  * - an inner tree keeps the member as an object holding only its declared
- *   members, and only when the member is an object;
+ *   members, when the member is an object; when it is an array, it keeps a
+ *   list of its object elements that have at least one declared member, each
+ *   with only those (other elements are left out), so a value inside a list
+ *   of objects, such as Deepgram's `results.channels[].detected_language`,
+ *   can be declared. One list holds at most `MAX_LIST_ELEMENTS` elements and
+ *   `SKIM_VALUE_CAP` characters of kept leaves, counted as they are kept,
+ *   nested lists' too: past either, the list is left out, nothing more of it
+ *   is kept, and `overflow` is set;
+ * - a tree whose members are all `"max"` keeps, for an array, one object
+ *   instead of a list: for each member, the largest number any element has
+ *   there (Deepgram's last utterance `end`). It holds the same however long
+ *   the array is, and never overflows: a value past `SKIM_VALUE_CAP`, or one
+ *   that is not a number, is skipped for that aggregate only, and an
+ *   aggregate no element gave a number stays empty. Elsewhere `"max"` is a
+ *   leaf;
  * - a key named twice keeps its last value, as `JSON.parse` does.
  *
  * A root object is one document. With `arrayDocuments`, a root array's
@@ -31,8 +45,18 @@
  */
 import { keep } from "./keep.ts";
 
-/** Declared paths: `true` keeps a member's whole value; a tree keeps an object member's declared members. */
-export type PathTree = { readonly [key: string]: PathTree | true };
+/**
+ * Declared paths: `true` keeps a member's whole value; a tree keeps an object
+ * member's declared members, or each object element's of an array member;
+ * `"max"` keeps the largest number across an array's elements.
+ */
+export type PathTree = { readonly [key: string]: PathTree | true | "max" };
+
+/** Whether a tree keeps only the largest numbers across an array (`"max"`), not its elements. */
+function aggregates(tree: PathTree): boolean {
+  const values = Object.values(tree);
+  return values.length > 0 && values.every((value) => value === "max");
+}
 
 /** The largest value kept, in characters of JSON text. A usage report is a few hundred. */
 export const SKIM_VALUE_CAP = 64 * 1024;
@@ -44,19 +68,22 @@ export const SKIM_VALUE_CAP = 64 * 1024;
  */
 export const MAX_SKIP_DEPTH = 1024;
 
+/** The most elements one kept list holds (`SKIM_VALUE_CAP` caps its kept leaves' text). */
+export const MAX_LIST_ELEMENTS = 8192;
+
 /** A key longer than this, in characters of JSON text, cannot be a declared one. */
 const MAX_KEY = 256;
 
 type Holder = Record<string, unknown>;
 
 /** A tree's keys by length, so a key in the text is matched without being copied out. */
-type Compiled = ReadonlyMap<number, readonly (readonly [string, PathTree | true])[]>;
+type Compiled = ReadonlyMap<number, readonly (readonly [string, PathTree | true | "max"])[]>;
 const COMPILED = new WeakMap<PathTree, Compiled>();
 
 function compiled(tree: PathTree): Compiled {
   let found = COMPILED.get(tree);
   if (found === undefined) {
-    const byLength = new Map<number, (readonly [string, PathTree | true])[]>();
+    const byLength = new Map<number, (readonly [string, PathTree | true | "max"])[]>();
     for (const [key, value] of Object.entries(tree)) {
       const list = byLength.get(key.length) ?? [];
       list.push([key, value]);
@@ -79,16 +106,36 @@ const Target = {
   Document: 3,
   /** The root value. */
   Root: 4,
+  /** An element of a kept array: kept with the array's tree when it is an object. */
+  Element: 5,
 } as const;
 type Target = (typeof Target)[keyof typeof Target];
 
 interface Frame {
-  /** An object kept with its declared members, or null for a root array of documents. */
+  /** An object kept with its declared members, or null for an array (a root array of documents, or a kept array). */
   readonly tree: PathTree | null;
   readonly keys: Compiled | null;
   readonly value: Holder | null;
   /** A document's own object. */
   readonly document: boolean;
+  /** A kept array: its object elements, as they are kept, and what they hold. */
+  readonly list?: KeptList;
+  /** An element of a kept array: the list it is in, so an element with nothing declared is taken out again. */
+  readonly inList?: KeptList;
+}
+
+/** A kept array while it is read: its elements, what they hold so far, and where it is kept. */
+interface KeptList {
+  readonly elements: unknown[];
+  /** For a tree of `"max"` members: the largest number of each, kept instead of the elements. */
+  readonly aggregate: Holder | null;
+  readonly tree: PathTree;
+  readonly holder: Holder;
+  readonly key: string;
+  bytes: number;
+  count: number;
+  /** Past its cap: left out, and nothing more of it is kept. */
+  over: boolean;
 }
 
 const Mode = {
@@ -183,7 +230,9 @@ export class Skimmer {
   private keyTooLong = false;
   /** The key read last, when the frame's tree declares it, and what it declares. */
   private lastKey = "";
-  private lastDeclared: PathTree | true | undefined = undefined;
+  private lastDeclared: PathTree | true | "max" | undefined = undefined;
+  /** The leaf being read is a `"max"` member of an aggregate's element. */
+  private leafAggregated = false;
   /** The innermost open document, if one is open. */
   private document: Holder | null = null;
   /** A value was too large to keep. */
@@ -288,14 +337,35 @@ export class Skimmer {
     ) {
       return this.fail();
     }
-    if (character === 123 /* { */ && (target === Target.Inner || target === Target.Document || target === Target.Root)) {
+    if (character === 123 /* { */ && target !== Target.Skip && target !== Target.Leaf) {
       const value: Holder = {};
-      const document = target !== Target.Inner;
-      if (document) this.document = value;
-      else this.targetHolder![this.targetKey] = value;
-      const tree = document ? this.tree : this.targetTree!;
+      const document = target === Target.Document || target === Target.Root;
+      let tree: PathTree;
+      if (document) {
+        this.document = value;
+        tree = this.tree;
+      } else if (target === Target.Element) {
+        const list = this.frames[this.frames.length - 1]!.list!;
+        // An aggregate's element is read, folded in when it closes, and dropped.
+        if (list.aggregate === null) list.elements.push(value);
+        this.frames.push({ tree: list.tree, keys: compiled(list.tree), value, document, inList: list });
+        this.mode = Mode.KeyOrClose;
+        return index + 1;
+      } else {
+        this.targetHolder![this.targetKey] = value;
+        tree = this.targetTree!;
+      }
       this.frames.push({ tree, keys: compiled(tree), value, document });
       this.mode = Mode.KeyOrClose;
+      return index + 1;
+    }
+    if (character === 91 /* [ */ && target === Target.Inner) {
+      const tree = this.targetTree!;
+      const aggregate = aggregates(tree) ? {} : null;
+      const list: KeptList = { elements: [], aggregate, tree, holder: this.targetHolder!, key: this.targetKey, bytes: 0, count: 0, over: false };
+      this.targetHolder![this.targetKey] = aggregate ?? list.elements;
+      this.frames.push({ tree: null, keys: null, value: null, document: false, list });
+      this.mode = Mode.ValueOrClose;
       return index + 1;
     }
     if (character === 91 /* [ */ && target === Target.Root && this.options.arrayDocuments === true) {
@@ -384,7 +454,8 @@ export class Skimmer {
       const holder = this.targetHolder!;
       if (this.captureOverflow) {
         delete holder[this.targetKey];
-        this.overflow = true;
+        // An aggregate's value too large to be a number is skipped for that aggregate only.
+        if (!this.leafAggregated) this.overflow = true;
       } else {
         const raw = this.capture.length === 1 ? this.capture[0]! : this.capture.join("");
         // Parsed, which also gives the value storage of its own.
@@ -392,6 +463,14 @@ export class Skimmer {
           holder[this.targetKey] = JSON.parse(raw) as unknown;
         } catch {
           return this.fail();
+        }
+        // Counted against every list it is kept in. An aggregate's value is
+        // folded in and dropped, so it counts toward no cap anywhere.
+        if (!this.leafAggregated) for (const frame of this.frames) {
+          const list = frame.list;
+          if (list === undefined || list.over || list.aggregate !== null) continue;
+          list.bytes += this.captureLength;
+          if (list.bytes > SKIM_VALUE_CAP) this.overList(list);
         }
       }
       this.capture = null;
@@ -500,7 +579,10 @@ export class Skimmer {
     else {
       this.targetHolder = this.frames[this.frames.length - 1]!.value;
       this.targetKey = this.lastKey;
-      if (declared === true) this.target = Target.Leaf;
+      if (declared === true || declared === "max") {
+        this.target = Target.Leaf;
+        this.leafAggregated = declared === "max" && this.frames[this.frames.length - 1]!.inList?.aggregate != null;
+      }
       else {
         this.target = Target.Inner;
         this.targetTree = declared;
@@ -518,7 +600,7 @@ export class Skimmer {
     if (character === 44 /* , */) {
       if (frame.tree !== null) this.mode = Mode.Key;
       else {
-        this.target = Target.Document;
+        this.target = this.elementTarget(frame);
         this.mode = Mode.Value;
       }
       return index + 1;
@@ -531,9 +613,23 @@ export class Skimmer {
     const index = nonSpace(text, at);
     if (index === -1) return text.length;
     if (text.charCodeAt(index) === 93 /* ] */) return this.close(index);
-    this.target = Target.Document;
+    this.target = this.elementTarget(this.frames[this.frames.length - 1]!);
     this.mode = Mode.Value;
     return index;
+  }
+
+  /** What the next element of an array frame is: a document, an element of a kept list, or, past a list's cap, skipped. */
+  private elementTarget(frame: Frame): Target {
+    if (frame.list === undefined) return Target.Document;
+    return frame.list.over ? Target.Skip : Target.Element;
+  }
+
+  /** A list past its cap: left out of its holder, emptied, and nothing more of it kept. */
+  private overList(list: KeptList): void {
+    list.over = true;
+    list.elements.length = 0;
+    if (list.holder[list.key] === list.elements) delete list.holder[list.key];
+    this.overflow = true;
   }
 
   /** Closes the innermost tracked container at `index`. */
@@ -543,25 +639,18 @@ export class Skimmer {
       this.document = null;
       this.options.onDocument?.(frame.value!);
     }
+    const list = frame.inList;
+    if (list !== undefined && list.aggregate !== null) {
+      const aggregate = list.aggregate;
+      for (const [key, value] of Object.entries(frame.value!)) {
+        if (typeof value === "number" && Number.isFinite(value) && !(typeof aggregate[key] === "number" && aggregate[key] >= value)) aggregate[key] = value;
+      }
+    } else if (list !== undefined && !list.over) {
+      // An element with nothing declared is taken out; one kept counts toward the list's cap.
+      if (Object.keys(frame.value!).length === 0) list.elements.pop();
+      else if (++list.count > MAX_LIST_ELEMENTS) this.overList(list);
+    }
     this.afterValue();
     return index + 1;
   }
-}
-
-/** `value` cut down to the members `tree` declares, as the skimmer keeps them. For tests, and the contract. */
-export function pick(value: unknown, tree: PathTree): Holder | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const out: Holder = {};
-  for (const key of Object.keys(tree)) {
-    if (!Object.hasOwn(value, key)) continue;
-    const declared = tree[key]!;
-    const member = (value as Holder)[key];
-    if (declared === true) {
-      if (JSON.stringify(member).length <= SKIM_VALUE_CAP) out[key] = member;
-    } else {
-      const inner = pick(member, declared);
-      if (inner !== null) out[key] = inner;
-    }
-  }
-  return out;
 }

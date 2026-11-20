@@ -50,7 +50,7 @@ import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { priceKeyValues, removeOutbound, removeOutboundForm, requestUsage } from "./request-fields.ts";
+import { removeOutbound, removeOutboundForm, requestFacts } from "./request-fields.ts";
 import {
   jsonBody,
   meteredTranscriptionFormat,
@@ -137,7 +137,7 @@ class TargetProblem extends Error {
   }
 }
 
-interface TargetInput {
+export interface TargetInput {
   readonly slug: string;
   readonly caller: Caller;
   readonly preset: Preset;
@@ -156,8 +156,8 @@ interface TargetInput {
   readonly startedAt: number;
 }
 
-/** One target of the chain as an attempt ready to send, or a `TargetProblem`. */
-function targetAttempt(input: TargetInput): PreparedAttempt {
+/** One target of the chain as an attempt ready to send, or a `TargetProblem`. Exported for the tests of its billing facts. */
+export function targetAttempt(input: TargetInput): PreparedAttempt {
   const { connection, description, target, preset, style } = input;
   // Resolved by the one rule saving runs too (`resolvePresetTarget`): the
   // operation, its streaming sibling, and whether the target can be billed.
@@ -230,9 +230,8 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
   }
   const mode = requestedServiceMode(description, connection.baseUrl, fields, model);
   // What the meter takes from the request, and the values its rates depend on, as on the proxy.
-  const requestFields = { body: fields, query: new URLSearchParams() };
-  const measured = requestUsage(operation, requestFields);
-  const priceKeys = priceKeyValues(operation, requestFields);
+  // A preset sends no client query.
+  const facts = requestFacts(operation, { body: fields, query: new URLSearchParams() }, price?.price ?? null, input.caller.facts);
   const attempt: CallAttempt = {
     requestId: input.requestId,
     seq: input.seq,
@@ -252,8 +251,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     startedAt: input.startedAt,
     appVersion: input.caller.appVersion,
     clientTraceId: input.caller.clientTraceId,
-    ...(measured !== null ? { requestUsage: measured } : {}),
-    ...(priceKeys !== undefined ? { priceKeys } : {}),
+    ...facts,
   };
   const defaultHeaders = operation.style === undefined ? undefined : STYLE_HEADERS[operation.style];
   return {
