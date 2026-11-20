@@ -11,17 +11,21 @@
  * base64 image or number array is not walked in JavaScript character by
  * character.
  *
- * What it keeps, for a document `doc` and a path tree `tree`, is exactly
- * `pick(JSON.parse(doc), tree)`:
+ * What it keeps, for a document `doc` and a path tree `tree` (the tests hold
+ * a reference written apart from it, `test/skim-reference.ts`):
  *
  * - a leaf (`true`) keeps the member's whole value, decoded with `JSON.parse`
- *   once it closes, up to `SKIM_VALUE_CAP` characters of JSON text; a larger
- *   one is left out and `overflow` is set;
+ *   once it closes, up to `SKIM_VALUE_CAP` characters of its JSON text as
+ *   written; a larger one is left out and `overflow` is set;
  * - an inner tree keeps the member as an object holding only its declared
  *   members, when the member is an object; when it is an array, it keeps a
- *   list of its object elements, each with only its declared members (other
- *   elements are left out), so a value inside a list of objects, such as
- *   Deepgram's `results.channels[].detected_language`, can be declared;
+ *   list of its object elements that have at least one declared member, each
+ *   with only those (other elements are left out), so a value inside a list
+ *   of objects, such as Deepgram's `results.channels[].detected_language`,
+ *   can be declared. One list holds at most `MAX_LIST_ELEMENTS` elements and
+ *   `SKIM_VALUE_CAP` characters of kept leaves, counted as they are kept,
+ *   nested lists' too: past either, the list is left out, nothing more of it
+ *   is kept, and `overflow` is set;
  * - a key named twice keeps its last value, as `JSON.parse` does.
  *
  * A root object is one document. With `arrayDocuments`, a root array's
@@ -46,6 +50,9 @@ export const SKIM_VALUE_CAP = 64 * 1024;
  * can never grow its memory.
  */
 export const MAX_SKIP_DEPTH = 1024;
+
+/** The most elements one kept list holds (`SKIM_VALUE_CAP` caps its kept leaves' text). */
+export const MAX_LIST_ELEMENTS = 8192;
 
 /** A key longer than this, in characters of JSON text, cannot be a declared one. */
 const MAX_KEY = 256;
@@ -94,10 +101,22 @@ interface Frame {
   readonly value: Holder | null;
   /** A document's own object. */
   readonly document: boolean;
-  /** A kept array: its object elements, as they are kept. */
-  readonly list?: unknown[];
-  /** A kept array: the tree each object element is kept with. */
-  readonly elementTree?: PathTree;
+  /** A kept array: its object elements, as they are kept, and what they hold. */
+  readonly list?: KeptList;
+  /** An element of a kept array: the list it is in, so an element with nothing declared is taken out again. */
+  readonly inList?: KeptList;
+}
+
+/** A kept array while it is read: its elements, what they hold so far, and where it is kept. */
+interface KeptList {
+  readonly elements: unknown[];
+  readonly tree: PathTree;
+  readonly holder: Holder;
+  readonly key: string;
+  bytes: number;
+  count: number;
+  /** Past its cap: left out, and nothing more of it is kept. */
+  over: boolean;
 }
 
 const Mode = {
@@ -305,9 +324,11 @@ export class Skimmer {
         this.document = value;
         tree = this.tree;
       } else if (target === Target.Element) {
-        const frame = this.frames[this.frames.length - 1]!;
-        frame.list!.push(value);
-        tree = frame.elementTree!;
+        const list = this.frames[this.frames.length - 1]!.list!;
+        list.elements.push(value);
+        this.frames.push({ tree: list.tree, keys: compiled(list.tree), value, document, inList: list });
+        this.mode = Mode.KeyOrClose;
+        return index + 1;
       } else {
         this.targetHolder![this.targetKey] = value;
         tree = this.targetTree!;
@@ -317,9 +338,9 @@ export class Skimmer {
       return index + 1;
     }
     if (character === 91 /* [ */ && target === Target.Inner) {
-      const list: unknown[] = [];
-      this.targetHolder![this.targetKey] = list;
-      this.frames.push({ tree: null, keys: null, value: null, document: false, list, elementTree: this.targetTree! });
+      const list: KeptList = { elements: [], tree: this.targetTree!, holder: this.targetHolder!, key: this.targetKey, bytes: 0, count: 0, over: false };
+      this.targetHolder![this.targetKey] = list.elements;
+      this.frames.push({ tree: null, keys: null, value: null, document: false, list });
       this.mode = Mode.ValueOrClose;
       return index + 1;
     }
@@ -417,6 +438,13 @@ export class Skimmer {
           holder[this.targetKey] = JSON.parse(raw) as unknown;
         } catch {
           return this.fail();
+        }
+        // Counted against every list it is kept in.
+        for (const frame of this.frames) {
+          const list = frame.list;
+          if (list === undefined || list.over) continue;
+          list.bytes += this.captureLength;
+          if (list.bytes > SKIM_VALUE_CAP) this.overList(list);
         }
       }
       this.capture = null;
@@ -543,7 +571,7 @@ export class Skimmer {
     if (character === 44 /* , */) {
       if (frame.tree !== null) this.mode = Mode.Key;
       else {
-        this.target = frame.list !== undefined ? Target.Element : Target.Document;
+        this.target = this.elementTarget(frame);
         this.mode = Mode.Value;
       }
       return index + 1;
@@ -556,9 +584,23 @@ export class Skimmer {
     const index = nonSpace(text, at);
     if (index === -1) return text.length;
     if (text.charCodeAt(index) === 93 /* ] */) return this.close(index);
-    this.target = this.frames[this.frames.length - 1]!.list !== undefined ? Target.Element : Target.Document;
+    this.target = this.elementTarget(this.frames[this.frames.length - 1]!);
     this.mode = Mode.Value;
     return index;
+  }
+
+  /** What the next element of an array frame is: a document, an element of a kept list, or, past a list's cap, skipped. */
+  private elementTarget(frame: Frame): Target {
+    if (frame.list === undefined) return Target.Document;
+    return frame.list.over ? Target.Skip : Target.Element;
+  }
+
+  /** A list past its cap: left out of its holder, emptied, and nothing more of it kept. */
+  private overList(list: KeptList): void {
+    list.over = true;
+    list.elements.length = 0;
+    if (list.holder[list.key] === list.elements) delete list.holder[list.key];
+    this.overflow = true;
   }
 
   /** Closes the innermost tracked container at `index`. */
@@ -568,30 +610,13 @@ export class Skimmer {
       this.document = null;
       this.options.onDocument?.(frame.value!);
     }
+    const list = frame.inList;
+    if (list !== undefined && !list.over) {
+      // An element with nothing declared is taken out; one kept counts toward the list's cap.
+      if (Object.keys(frame.value!).length === 0) list.elements.pop();
+      else if (++list.count > MAX_LIST_ELEMENTS) this.overList(list);
+    }
     this.afterValue();
     return index + 1;
   }
-}
-
-/** `value` cut down to the members `tree` declares, as the skimmer keeps them. For tests, and the contract. */
-export function pick(value: unknown, tree: PathTree): Holder | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const out: Holder = {};
-  for (const key of Object.keys(tree)) {
-    if (!Object.hasOwn(value, key)) continue;
-    const declared = tree[key]!;
-    const member = (value as Holder)[key];
-    if (declared === true) {
-      if (JSON.stringify(member).length <= SKIM_VALUE_CAP) out[key] = member;
-    } else if (Array.isArray(member)) {
-      out[key] = member.flatMap((element) => {
-        const inner = pick(element, declared);
-        return inner === null ? [] : [inner];
-      });
-    } else {
-      const inner = pick(member, declared);
-      if (inner !== null) out[key] = inner;
-    }
-  }
-  return out;
 }

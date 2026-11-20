@@ -1,9 +1,11 @@
 /**
  * The skimmer's contract (`src/usage/skim.ts`): for any JSON document, fed in
- * pieces split anywhere, it keeps exactly `pick(JSON.parse(document), tree)`.
+ * pieces split anywhere, it keeps exactly what the reference
+ * (`./skim-reference.ts`) works out from the whole text.
  */
 import { describe, expect, it } from "vitest";
-import { pick, Skimmer, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
+import { MAX_LIST_ELEMENTS, Skimmer, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
+import { pickText } from "./skim-reference.ts";
 
 const TREE: PathTree = {
   usage: true,
@@ -68,15 +70,7 @@ function skim(text: string, pieces: readonly string[], options: { arrayDocuments
 
 /** What the contract says the skimmer keeps from `text`. */
 function expected(text: string, arrayDocuments: boolean): Record<string, unknown>[] {
-  const value = JSON.parse(text) as unknown;
-  if (Array.isArray(value) && arrayDocuments) {
-    return value.flatMap((element) => {
-      const kept = pick(element, TREE);
-      return kept === null ? [] : [kept];
-    });
-  }
-  const kept = pick(value, TREE);
-  return kept === null ? [] : [kept];
+  return pickText(text, TREE, arrayDocuments).documents;
 }
 
 /** `text` split at every point (at most 300 of them, spread evenly), and into single characters. */
@@ -144,9 +138,53 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
 
   it("keeps the declared members of each object in an array, and leaves its other elements out", () => {
     const text = '{"response":[{"model":"a","x":[1,{"model":"no"}]},7,"s",[{"model":"nested"}],{"usage":{"n":2}},{}],"message":[]}';
-    const want = [{ response: [{ model: "a" }, { usage: { n: 2 } }, {}], message: [] }];
+    // `{}` declares nothing, so it is left out like the number, the string and the nested list.
+    const want = [{ response: [{ model: "a" }, { usage: { n: 2 } }], message: [] }];
     for (const pieces of splits(text)) expect(skim(text, pieces).documents).toEqual(want);
     expect(expected(text, false)).toEqual(want);
+  });
+
+  const UTTERANCES: PathTree = { results: { utterances: { end: true } } };
+  const skimWith = (tree: PathTree, text: string) => {
+    const documents: Record<string, unknown>[] = [];
+    const skimmer = new Skimmer(tree, { onDocument: (value) => documents.push(value) });
+    skimmer.push(text);
+    skimmer.end();
+    return { documents, overflow: skimmer.overflow, complete: skimmer.complete };
+  };
+
+  it("keeps nothing for a long list of elements that declare nothing, and does not overflow", () => {
+    const text = `{"results":{"utterances":[${Array.from({ length: 100_000 }, () => '{"start":1,"words":[]}').join(",")}]}}`;
+    expect(skimWith(UTTERANCES, text)).toEqual({ documents: [{ results: { utterances: [] } }], overflow: false, complete: true });
+    expect(pickText(text, UTTERANCES)).toEqual({ documents: [{ results: { utterances: [] } }], overflow: false });
+  });
+
+  it("leaves out a list past its element cap or its text cap, and says so", () => {
+    const many = `{"results":{"utterances":[${Array.from({ length: MAX_LIST_ELEMENTS + 1 }, () => '{"end":1}').join(",")}]},"model":"m"}`;
+    const read = skimWith({ ...UTTERANCES, model: true }, many);
+    expect(read).toEqual({ documents: [{ results: {}, model: "m" }], overflow: true, complete: true });
+    expect(pickText(many, { ...UTTERANCES, model: true })).toEqual({ documents: read.documents, overflow: true });
+    // Exactly at the cap is kept.
+    const atCap = `{"results":{"utterances":[${Array.from({ length: MAX_LIST_ELEMENTS }, () => '{"end":1}').join(",")}]}}`;
+    expect(skimWith(UTTERANCES, atCap).overflow).toBe(false);
+    // Fewer elements whose kept text passes the cap together.
+    const long = `"${"a".repeat(1000)}"`;
+    const bytes = `{"results":{"utterances":[${Array.from({ length: Math.ceil(SKIM_VALUE_CAP / long.length) + 1 }, () => `{"end":${long}}`).join(",")}]}}`;
+    expect(skimWith(UTTERANCES, bytes)).toMatchObject({ documents: [{ results: {} }], overflow: true });
+    expect(pickText(bytes, UTTERANCES)).toMatchObject({ documents: [{ results: {} }], overflow: true });
+  });
+
+  it("caps a leaf by its text as written, as the reference does", () => {
+    // `[0]` padded past the cap: small written again, too large as sent.
+    const text = `{"usage":[0${" ".repeat(SKIM_VALUE_CAP)}],"model":"m"}`;
+    for (const pieces of [[text], [text.slice(0, 9), text.slice(9)]]) {
+      expect(skimWith(TREE, pieces.join(""))).toEqual({ documents: [{ model: "m" }], overflow: true, complete: true });
+    }
+    expect(pickText(text, TREE)).toEqual({ documents: [{ model: "m" }], overflow: true });
+    // One character under the cap is kept.
+    const under = `{"usage":[0${" ".repeat(SKIM_VALUE_CAP - 4)}]}`;
+    expect(skimWith(TREE, under)).toMatchObject({ documents: [{ usage: [0] }], overflow: false });
+    expect(pickText(under, TREE)).toEqual({ documents: [{ usage: [0] }], overflow: false });
   });
 
   it("decodes escaped keys, as JSON.parse does", () => {

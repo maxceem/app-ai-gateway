@@ -134,17 +134,24 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const facts = { app: attempt.appId, charge: id, providerType: attempt.providerType, providerSlug: attempt.providerSlug, model: attempt.model };
 
   const reported = outcome.providerCostUsd ?? null;
-  // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
-  // So is a call whose answer did not say which of the request's models served it.
-  // So is one whose stream's final event was cut, its usage read from an earlier event.
-  const modeUnknown =
-    attempt.requestedModeUnknown !== undefined ||
-    outcome.servedModeUnknown !== undefined ||
-    attempt.servedModelUnknown === true ||
-    (attempt.unpricedOptions?.length ?? 0) > 0 ||
-    usage?.finalEventUnread === true ||
-    usage?.measureWorkedOut === true ||
-    (usage !== null && servedModelInDoubt(attempt, usage, facts));
+  // Every reason a charge is an estimate, each judged and logged on its own,
+  // never skipped because an earlier one already applies:
+  // - a mode value the gateway does not know, in the request or the response;
+  // - an answer that did not say which of the request's models served it,
+  //   or, where the provider may change the model, did not name the billed one;
+  // - an option billed on top at a price the gateway does not have;
+  // - a stream whose final event was cut, its usage read from an earlier event;
+  // - a measure the reader worked out, not one the answer reported.
+  const reasons = [
+    attempt.requestedModeUnknown !== undefined,
+    outcome.servedModeUnknown !== undefined,
+    attempt.servedModelUnknown === true,
+    (attempt.unpricedOptions?.length ?? 0) > 0,
+    usage?.finalEventUnread === true,
+    usage?.measureWorkedOut === true,
+    usage !== null && servedModelInDoubt(attempt, usage, facts),
+  ];
+  const modeUnknown = reasons.includes(true);
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
   // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).

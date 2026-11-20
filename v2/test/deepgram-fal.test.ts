@@ -297,6 +297,23 @@ describe("Deepgram through the proxy", () => {
     expect(warnings.mock.calls.some((call) => String(call[0]).includes("usage_measure_worked_out"))).toBe(true);
   });
 
+  it("logs every reason a charge is an estimate: a fallback model and a worked-out duration together", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(
+      Response.json({
+        metadata: { channels: 1, model_info: { "m-1": { arch: "enhanced", name: "general-enhanced", version: "1" } } },
+        results: { channels: [{ detected_language: "fr" }], utterances: [{ end: 60 }] },
+      }),
+    );
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&detect_language=true&utterances=true`, key, new Uint8Array([1]), {
+      "content-type": "audio/wav",
+    });
+    expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 1, cost_nano: 4_300_000 }]);
+    const warned = warnings.mock.calls.map((call) => String(call[0]));
+    expect(warned.some((line) => line.includes("usage_measure_worked_out"))).toBe(true);
+    expect(warned.some((line) => line.includes("served_model_unexpected"))).toBe(true);
+  });
+
   it("refuses a request naming its model twice in the query, so the provider never runs a model nobody priced", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
     const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&model=base`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
