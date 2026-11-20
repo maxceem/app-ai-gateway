@@ -1034,7 +1034,8 @@
       "long_cached_input": 0.4,
       "long_output": 4.0,
       "author": "xAI",
-      "release_date": "2026-04-16"
+      "release_date": "2026-04-16",
+      "unlisted_since": "2026-11-20"
     },
     "grok-4.3": {
       "kind": "text",
@@ -1432,6 +1433,30 @@
     }
   },
   "perplexity": {
+    "google/gemini-3.6-flash": {
+      "kind": "text",
+      "input": 1.5,
+      "cached_input": 0.15,
+      "output": 7.5,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
+    "google/gemini-3.7-flash": {
+      "kind": "text",
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 3.75,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
+    "google/gemini-3.8-flash": {
+      "kind": "text",
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 3.75,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
     "openai/gpt-6.2-astra": {
       "kind": "text",
       "input": 8.0,
@@ -2139,6 +2164,14 @@
     }
   },
   "together": {
+    "tencent/Hy4": {
+      "kind": "text",
+      "input": 0.834,
+      "cached_input": 0.042,
+      "output": 2.501,
+      "author": "Tencent",
+      "release_date": "2026-11-20"
+    },
     "Qwen/Qwen4-Max": {
       "kind": "text",
       "input": 1.425,
