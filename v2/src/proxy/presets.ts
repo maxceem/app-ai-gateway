@@ -50,6 +50,7 @@ import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
+import { priceKeyValues, removeOutbound, requestUsage } from "./request-fields.ts";
 import {
   jsonBody,
   meteredTranscriptionFormat,
@@ -192,6 +193,8 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
       if (location.in === "body") body[location.field] = model;
       // The path names the model; the body names none, as v1.
       else delete body.model;
+      // Webhook fields, and fetch fields the operation does not need, never reach the provider.
+      removeOutbound(operation, body, new URLSearchParams());
       return body;
     };
     // Judged now, on a copy, so a refusal comes before admission. The body is built again when sent.
@@ -225,6 +228,10 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     };
   }
   const mode = requestedServiceMode(description, connection.baseUrl, fields, model);
+  // What the meter takes from the request, and the values its rates depend on, as on the proxy.
+  const requestFields = { body: fields, query: new URLSearchParams() };
+  const measured = requestUsage(operation, requestFields);
+  const priceKeys = priceKeyValues(operation, requestFields);
   const attempt: CallAttempt = {
     requestId: input.requestId,
     seq: input.seq,
@@ -244,6 +251,8 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     startedAt: input.startedAt,
     appVersion: input.caller.appVersion,
     clientTraceId: input.caller.clientTraceId,
+    ...(measured !== null ? { requestUsage: measured } : {}),
+    ...(priceKeys !== undefined ? { priceKeys } : {}),
   };
   const defaultHeaders = operation.style === undefined ? undefined : STYLE_HEADERS[operation.style];
   return {

@@ -17,11 +17,13 @@
  * The whole is rounded up once. A model priced per minute, per hour or per
  * image bills that measure instead (`priceUsage`).
  */
-import { MILLI_SCALE, priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { listedModes, priceForKeys, priceInMode, type ModelPrice } from "./prices.ts";
+import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
 export type TokenUsage = TokenCounts;
@@ -157,34 +159,57 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
 }
 
 /**
- * The cost of a usage at a price per minute, per hour or per image (v1's
- * `costAt`), or undefined when the price is not one of those. Time is priced
- * on the audio's milliseconds, so the measure is a whole number; images on
- * their count. A measure the usage does not report prices as null: its
- * counter was never sent, and pricing it would claim a confident $0.
+ * A usage's count in a unit, at the unit's scale, or undefined when the usage
+ * does not report it. A transcription's duration and an image API's count
+ * have fields of their own; every other unit is in `units`.
  */
-function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
-  const { rates } = price;
-  for (const [field, per] of [
-    ["per_minute", 60 * MILLI_SCALE],
-    ["per_hour", 3600 * MILLI_SCALE],
-  ] as const) {
-    const value = rates[field];
-    if (value === undefined) continue;
-    if (usage.audioSeconds === undefined) return null;
-    return { cost: priceUnitsPer(toMilli(usage.audioSeconds), value, per), rates: { [field]: value }, longContext: false };
+export function unitCount(usage: UsageObservation, unit: Unit): number | undefined {
+  const counted = usage.units?.[unit];
+  if (counted !== undefined) return counted;
+  if (unit === "audio_seconds" && usage.audioSeconds !== undefined) return toMilli(usage.audioSeconds);
+  if (unit === "images" && usage.images !== undefined) return usage.images;
+  return undefined;
+}
+
+/** The unit rates a price states, in table order. */
+function statedUnitRates(price: ModelPrice): UnitRate[] {
+  return UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
+}
+
+/** The first unit a stated rate bills that the usage reports, with its count. */
+function reportedUnit(unitRate: UnitRate, usage: UsageObservation): { unit: Unit; count: number } | null {
+  for (const unit of unitRate.units) {
+    const count = unitCount(usage, unit);
+    if (count !== undefined) return { unit, count };
   }
-  const perImage = rates.per_image;
-  if (perImage === undefined) return undefined;
-  if (usage.images === undefined) return null;
-  return { cost: priceUnitsPer(usage.images, perImage, 1), rates: { per_image: perImage }, longContext: false };
+  return null;
 }
 
 /**
- * The cost of one usage at one price, in the unit the price is in: time or
- * images where it states one, else tokens. Null when the usage does not
- * report that unit (v1's `reportsPricedMeasure`): a duration alone for a
- * token-priced model, or tokens alone for a time-priced one.
+ * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
+ * per million characters, ...), or undefined when the price states none. The
+ * first rate whose unit the usage reports bills. A price with unit rates but
+ * none the usage reports prices as null: the counter was never sent, and
+ * pricing it would claim a confident $0. A price that also bills tokens falls
+ * back to them.
+ */
+function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
+  const stated = statedUnitRates(price);
+  if (stated.length === 0) return undefined;
+  for (const unitRate of stated) {
+    const reported = reportedUnit(unitRate, usage);
+    if (reported === null) continue;
+    const value = price.rates[unitRate.field]!;
+    return { cost: priceUnitsPer(reported.count, value, unitRate.per), rates: { [unitRate.field]: value }, longContext: false };
+  }
+  return price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true ? undefined : null;
+}
+
+/**
+ * The cost of one usage at one price, in the unit the price is in: a unit
+ * rate where it states one the usage reports, else tokens. Null when the
+ * usage does not report that unit (v1's `reportsPricedMeasure`): a duration
+ * alone for a token-priced model, or tokens alone for a time-priced one.
  */
 export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
   const unit = priceUnitRate(price, usage);
@@ -195,14 +220,14 @@ export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing 
 
 /**
  * Whether a usage reports the measure a price bills (v1's
- * `reportsPricedMeasure`): a duration for a time price, an image count for an
- * image price, tokens for a token price.
+ * `reportsPricedMeasure`): a unit its unit rates bill, or tokens for a token
+ * price.
  */
 export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation): boolean {
-  const { rates } = price;
-  if (rates.per_minute !== undefined || rates.per_hour !== undefined) return usage.audioSeconds !== undefined;
-  if (rates.per_image !== undefined) return usage.images !== undefined;
-  return usage.noTokens !== true;
+  const stated = statedUnitRates(price);
+  if (stated.some((unitRate) => reportedUnit(unitRate, usage) !== null)) return true;
+  if (price.rates.input !== undefined && price.rates.output !== undefined) return usage.noTokens !== true;
+  return stated.length === 0 && usage.noTokens !== true;
 }
 
 /**
@@ -224,9 +249,12 @@ export function priceInServedMode(
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
 ): (Pricing & { readonly estimated: boolean }) | null {
+  // A price key's value the price does not list bills at the dearest listed, as an estimate.
+  const keyed = priceForKeys(price, usage.priceKeys);
+  price = keyed.price;
   const priced = priceIn(price, usage, served);
   if (priced === null) return null;
-  const estimated = priced.estimated || doubt;
+  const estimated = priced.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   if (!estimated) return { ...priced, estimated: false };
   // The one floor, after every path: an estimate costs at least what the same
   // usage costs at the model's standard price, whichever axis lacked a price.
@@ -272,14 +300,22 @@ export function totalTokens(usage: TokenCounts): number {
 
 /**
  * A usage's main billed unit and its count, kept on the charge and in the
- * rollups: the unit its price bills, else the one the usage reports. Audio is
- * in milliseconds (`audio_seconds` at `MILLI_SCALE`).
+ * rollups: the unit its price bills, else the one the usage reports. Counts
+ * are at the unit's scale (`./units.ts`), so audio is in milliseconds.
  */
-export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: "tokens" | "audio_seconds" | "images"; units: number } {
-  const rates = price?.rates;
-  const byTime = rates !== undefined ? rates.per_minute !== undefined || rates.per_hour !== undefined : usage.noTokens === true;
-  if (byTime && usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
-  const byImage = rates !== undefined ? rates.per_image !== undefined : usage.noTokens === true;
-  if (byImage && usage.images !== undefined) return { unit: "images", units: usage.images };
+export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: Unit | "tokens"; units: number } {
+  if (price !== null) {
+    for (const unitRate of statedUnitRates(price)) {
+      const reported = reportedUnit(unitRate, usage);
+      if (reported !== null) return { unit: reported.unit, units: reported.count };
+    }
+  }
+  // With no price, the unit the usage reports; with one, the price's unit.
+  if (price === null && usage.noTokens === true) {
+    const reported = Object.entries(usage.units ?? {}).find(([, count]) => count !== undefined);
+    if (reported !== undefined) return { unit: reported[0] as Unit, units: reported[1]! };
+    if (usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
+    if (usage.images !== undefined) return { unit: "images", units: usage.images };
+  }
   return { unit: "tokens", units: totalTokens(usage) };
 }

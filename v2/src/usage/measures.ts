@@ -5,10 +5,12 @@
  * count alone cannot price again: each modality's share of a side, each
  * variant's share of a bucket, the seconds of audio or the images a model
  * priced by time or per image bills, and the service mode that served the
- * request when it is not standard. So the sweep can price an
+ * request when it is not standard, the counts in other units (characters,
+ * credits, ...) and the price key values the request named. So the sweep can price an
  * `unresolved` charge later exactly as the request would have been.
  */
 import { toMilli } from "../money.ts";
+import { UNITS, type Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenVariants, UsageObservation } from "./observation.ts";
 import { isStandardMode, parseServiceModeName, serviceModeName, STANDARD_MODE, type ServiceMode } from "./service-modes.ts";
 import { VARIANTS } from "./token-rates.ts";
@@ -47,6 +49,13 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUn
   if (usage.audioSeconds !== undefined) measures.audio_ms = toMilli(usage.audioSeconds);
   if (usage.images !== undefined) measures.images = usage.images;
   if (usage.noTokens === true) measures.no_tokens = 1;
+  for (const unit of UNITS) {
+    const counted = usage.units?.[unit];
+    if (counted !== undefined) measures[`units_${unit}`] = counted;
+  }
+  if (usage.fromRequest === true) measures.from_request = 1;
+  if (usage.reportMissing === true) measures.report_missing = 1;
+  for (const [key, value] of Object.entries(usage.priceKeys ?? {})) measures[`key_${key}`] = value;
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
   if (modeUnknown) measures.service_mode_unknown = 1;
   return measures;
@@ -82,6 +91,15 @@ export function usageFromMeasures(
     (tokenVariants[variant.bucket] ??= {})[variant.name] = value;
   }
   const modeName = measures.service_mode;
+  const units: Partial<Record<Unit, number>> = {};
+  for (const unit of UNITS) {
+    const value = count(measures, `units_${unit}`);
+    if (value !== undefined) units[unit] = value;
+  }
+  const priceKeys: Record<string, string> = {};
+  for (const [name, value] of Object.entries(measures)) {
+    if (name.startsWith("key_") && typeof value === "string") priceKeys[name.slice("key_".length)] = value;
+  }
   const audioMs = count(measures, "audio_ms");
   const images = count(measures, "images");
   const usage: UsageObservation = {
@@ -94,6 +112,10 @@ export function usageFromMeasures(
     ...(audioMs !== undefined ? { audioSeconds: audioMs / 1000 } : {}),
     ...(images !== undefined ? { images } : {}),
     ...(count(measures, "no_tokens") !== undefined ? { noTokens: true as const } : {}),
+    ...(Object.keys(units).length > 0 ? { units } : {}),
+    ...(count(measures, "from_request") !== undefined ? { fromRequest: true as const } : {}),
+    ...(count(measures, "report_missing") !== undefined ? { reportMissing: true as const } : {}),
+    ...(Object.keys(priceKeys).length > 0 ? { priceKeys } : {}),
   };
   return {
     usage,

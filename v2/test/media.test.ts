@@ -415,7 +415,7 @@ describe("embeddings and speech", () => {
     expect(await chargesOf(appId)).toMatchObject([{ model: "gemini-embedding-001", input_tokens: 2000, cost_nano: 300_000 }]);
   });
 
-  it("prices speech streamed as events from its usage, and leaves plain audio's cost unknown, as v1", async () => {
+  it("prices speech streamed as events from its usage, and leaves plain audio's cost unknown for a token-priced model, as v1", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.speech"] });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const events = `data: ${JSON.stringify({ type: "speech.audio.delta", audio: "AAAA" })}\n\ndata: ${JSON.stringify({ type: "speech.audio.done", usage: { input_tokens: 10, output_tokens: 200, total_tokens: 210 } })}\n\n`;
@@ -426,9 +426,10 @@ describe("embeddings and speech", () => {
     const usage = { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
     expect(await chargesOf(appId)).toMatchObject([
       { status: "ok", cost_nano: priceTokens(listPrice("openai", "gpt-4o-mini-tts")!, usage)!.cost },
-      { status: "ok", measured: "estimated", price_source: "unresolved", cost_nano: null },
+      // Plain audio is measured by its input's characters, which a token price cannot bill.
+      { status: "ok", measured: "estimated", price_source: "unresolved", cost_nano: null, unit: "tokens" },
     ]);
-    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_usage_reported"));
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
   });
 });
 

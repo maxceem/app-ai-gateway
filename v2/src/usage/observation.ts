@@ -4,6 +4,8 @@
  * this file through the provider descriptions.
  */
 
+import type { Unit } from "../providers/operation.ts";
+
 /** The kinds of token a provider may price apart from text. */
 export type Modality = "image" | "audio" | "video";
 
@@ -54,6 +56,28 @@ export interface UsageObservation extends TokenCounts {
    * billed from them, never as $0.
    */
   readonly noTokens?: true;
+  /**
+   * Counts in units other than tokens, each a whole number at its unit's
+   * scale (`src/pricing/units.ts`): characters, milliseconds of video,
+   * credits at 1000 per credit, and so on. A transcription's duration and an
+   * image API's image count stay in `audioSeconds` and `images`.
+   */
+  readonly units?: Readonly<Partial<Record<Unit, number>>>;
+  /**
+   * The usage was worked out from the request, not reported by the provider
+   * (a request measure, or a response header's estimate): `measured: estimated`.
+   */
+  readonly fromRequest?: true;
+  /**
+   * The provider was meant to report the billed amount (a response header)
+   * and did not, so the request's estimate bills instead: priced as an estimate.
+   */
+  readonly reportMissing?: true;
+  /**
+   * The values of the operation's price keys this request was priced with,
+   * such as an image size (`src/pricing/prices.ts`, `by`).
+   */
+  readonly priceKeys?: Readonly<Record<string, string>>;
   /**
    * The answer did not end whole: its last document was cut, the stream did
    * not close, or a value was too large to keep. What was read may be short,

@@ -26,7 +26,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import type { CustomerRates, RateField } from "../pricing/prices.ts";
+import type { CustomerRates } from "../pricing/prices.ts";
 import {
   keyOrigin,
   readCloudflareGateway,
@@ -76,37 +76,71 @@ export function secretHint(secret: string): string {
   return secret.length < 12 ? "" : secret.slice(-4);
 }
 
-/** Dollars per million to stored rates. */
+/** One set of dollar rates as stored nano-dollar rates. `where` names it in an error. */
+function storedRates(rates: Readonly<Record<string, unknown>>, where: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [field, value] of Object.entries(rates)) {
+    if (typeof value !== "number") continue;
+    if (field === "factor" || field === "long_context_threshold") {
+      out[field] = value;
+      continue;
+    }
+    try {
+      out[field] = rateFromDollarsPerMillion(value);
+    } catch (error) {
+      if (!(error instanceof MoneyError)) throw error;
+      throw new GatewayError(400, "invalid_request", `${where}.${field}: the price is too large`);
+    }
+  }
+  return out;
+}
+
+/** Each nested table of rates, converted with `convert`. */
+function mapTables(
+  tables: Readonly<Record<string, unknown>> | undefined,
+  convert: (rates: Readonly<Record<string, unknown>>, where: string) => Record<string, number>,
+  where: string,
+): Record<string, Record<string, number>> | undefined {
+  if (tables === undefined) return undefined;
+  return Object.fromEntries(Object.entries(tables).map(([name, rates]) => [name, convert(rates as Record<string, unknown>, `${where}.${name}`)]));
+}
+
+/** Dollars to stored rates: each rate to whole nano-dollars per its amount, modes and price keys too. */
 export function ratesFromPricing(pricing: DollarPricing): CustomerRates {
-  const rates: Record<string, Partial<Record<RateField, number>> & { long_context_threshold?: number }> = {};
+  const rates: Record<string, Record<string, unknown>> = {};
   for (const [model, price] of Object.entries(pricing)) {
-    const entry: Partial<Record<RateField, number>> & { long_context_threshold?: number } = {};
-    for (const [field, value] of Object.entries(price)) {
-      if (field === "long_context_threshold") {
-        entry.long_context_threshold = value;
-        continue;
-      }
-      try {
-        entry[field as RateField] = rateFromDollarsPerMillion(value);
-      } catch (error) {
-        if (!(error instanceof MoneyError)) throw error;
-        throw new GatewayError(400, "invalid_request", `pricing.${model}.${field}: the price is too large`);
-      }
+    const where = `pricing.${model}`;
+    const { modes, by, ...flat } = price as Record<string, unknown> & { modes?: Record<string, unknown>; by?: Record<string, Record<string, unknown>> };
+    const entry: Record<string, unknown> = storedRates(flat, where);
+    const storedModes = mapTables(modes, storedRates, `${where}.modes`);
+    if (storedModes !== undefined) entry.modes = storedModes;
+    if (by !== undefined) {
+      entry.by = Object.fromEntries(Object.entries(by).map(([key, table]) => [key, mapTables(table, storedRates, `${where}.by.${key}`)]));
     }
     rates[model] = entry;
   }
   return rates;
 }
 
-/** Stored rates back to dollars per million, for display only. */
+/** One set of stored rates back to dollars, for display only. */
+function dollarRates(rates: Readonly<Record<string, unknown>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [field, value] of Object.entries(rates)) {
+    if (typeof value !== "number") continue;
+    out[field] = field === "factor" || field === "long_context_threshold" ? value : value / NANO_PER_DOLLAR;
+  }
+  return out;
+}
+
+/** Stored rates back to dollars, for display only. */
 function pricingFromRates(rates: CustomerRates): DollarPricing {
-  const pricing: Record<string, Record<string, number>> = {};
+  const pricing: Record<string, Record<string, unknown>> = {};
   for (const [model, entry] of Object.entries(rates)) {
-    const out: Record<string, number> = {};
-    for (const [field, value] of Object.entries(entry)) {
-      if (value === undefined) continue;
-      out[field] = field === "long_context_threshold" ? value : value / NANO_PER_DOLLAR;
-    }
+    const out: Record<string, unknown> = dollarRates(entry);
+    const modes = mapTables(entry.modes as Record<string, unknown> | undefined, dollarRates, "");
+    if (modes !== undefined) out.modes = modes;
+    const by = entry.by as Record<string, Record<string, unknown>> | undefined;
+    if (by !== undefined) out.by = Object.fromEntries(Object.entries(by).map(([key, table]) => [key, mapTables(table, dollarRates, "")]));
     pricing[model] = out;
   }
   return pricing as DollarPricing;

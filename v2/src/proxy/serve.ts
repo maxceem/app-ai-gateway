@@ -58,7 +58,8 @@ import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
-import { requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
+import { attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
+import { priceKeyValues, removeOutbound, requestFormFields, requestUsage } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
@@ -79,7 +80,11 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
 
 /** Whether this build can serve an operation: a call measured from its response body. */
 export function servedNow(operation: OperationDescription): boolean {
-  return operation.lifecycle === "call" && operation.meter.kind === "response_json";
+  const { kind } = operation.meter;
+  return (
+    operation.lifecycle === "call" &&
+    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
+  );
 }
 
 
@@ -307,6 +312,12 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       }
       // Read, never judged: a service mode is never refused (`./meter.ts`).
       const mode = requestedServiceMode(description, connection.baseUrl, body, model);
+      // What the meter takes from the request, and the values its rates depend on.
+      const fields = { body, query: url.searchParams };
+      const measured = requestUsage(operation, fields);
+      const priceKeys = priceKeyValues(operation, fields);
+      // Webhook fields, and fetch fields the operation does not need, never reach the provider.
+      const outbound = removeOutbound(operation, parsed.kind === "json" ? body : null, new URLSearchParams(sanitizedQuery(url)));
 
       // The output cap refuses on its own, so it runs before admission: a request
       // it refuses must not spend a request limit or the plan allowance. Only a
@@ -322,6 +333,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (parsed.kind === "form" && bodyModelChanged && location.in !== "path" && location.in !== "fixed" && location.in !== "query") {
         formChanges[location.field] = model;
       }
+      const formRemoved = parsed.kind === "form" ? outbound.formFields.filter((name) => parsed.fields.has(name)) : [];
 
       // An untouched body is sent as the client's own bytes, with its own content
       // type. A changed form is sent as a new form, so fetch writes a fresh
@@ -330,11 +342,12 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const sent: OutgoingBody =
         parsed.kind === "json"
           ? {
-              bytes: capped || metered || pinned || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
+              bytes:
+                capped || metered || pinned || bodyModelChanged || outbound.bodyChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
               contentType: "application/json",
             }
-          : Object.keys(formChanges).length > 0
-            ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges), contentType: null }
+          : Object.keys(formChanges).length > 0 || formRemoved.length > 0
+            ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges, formRemoved), contentType: null }
             : { bytes, contentType };
 
       // The credentials are opened before admission: a request that cannot be sent must not spend anything.
@@ -369,7 +382,11 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         appVersion: caller.appVersion,
         clientTraceId: caller.clientTraceId,
         ...(alternatives.size > 0 ? { alternatives } : {}),
+        ...(measured !== null ? { requestUsage: measured } : {}),
+        ...(priceKeys !== undefined ? { priceKeys } : {}),
       };
+      const kept = outbound.query?.toString();
+      const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
       return await sendAttempts(c, strippedHeaders(app, caller), [
         {
           connection,
@@ -377,7 +394,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           operation,
           hostKey: upstream.host,
           path: upstream.path,
-          query: sanitizedQuery(url),
+          query,
           credentials: () => Promise.resolve(credentials),
           body: () => sent,
           attempt,
@@ -451,7 +468,7 @@ export async function requestBody(
     }
     const boundary = multipartBoundary(contentType);
     const modelField = location.in === "body" || location.in === "form" ? location.field : null;
-    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names)]);
+    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
     if (modelField !== null) wanted.add(modelField);
     let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };
     try {
@@ -515,9 +532,11 @@ export async function withFields(
   source: Uint8Array | FormData,
   contentType: string,
   fields: Readonly<Record<string, string>>,
+  removed: readonly string[] = [],
 ): Promise<FormData> {
   const form = source instanceof FormData ? source : await parseForm(source, contentType);
   for (const [name, value] of Object.entries(fields)) form.set(name, value);
+  for (const name of removed) form.delete(name);
   return form;
 }
 
@@ -909,7 +928,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
       status: ok ? "ok" : "provider_error",
       httpStatus: upstream.status,
       errorCode: null,
-      usage: null,
+      usage: ok ? attemptUsage(operation, attempt, null, upstream.headers) : null,
       cut: false,
       latencyMs,
     });
@@ -928,7 +947,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
     observed.then(
       (body) => {
         const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
-        const usage = reading?.usage ?? null;
+        const usage = ok ? attemptUsage(operation, attempt, reading?.usage ?? null, upstream.headers) : null;
         // A stream is whole once its style's closing event arrived, even if the
         // app went away right after. One that ended without it was cut short,
         // however it ended. A style with no closing event, and an answer that

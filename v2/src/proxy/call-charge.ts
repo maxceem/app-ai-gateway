@@ -71,6 +71,14 @@ export interface CallAttempt {
   readonly alternatives?: Alternatives;
   /** The answer did not say which of the request's models served it: the price is an estimate. */
   readonly servedModelUnknown?: true;
+  /**
+   * What the operation's meter measured from the request, if it takes
+   * anything from it (`./request-fields.ts`): the usage of a request-measured
+   * call, and the fallback of one whose answer reports nothing.
+   */
+  readonly requestUsage?: UsageObservation | null;
+  /** The request's price key values (`./request-fields.ts`), kept on its usage so it is priced, and priced later, with them. */
+  readonly priceKeys?: Readonly<Record<string, string>>;
 }
 
 export interface AttemptOutcome {
@@ -119,6 +127,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     attempt.servedModelUnknown === true ||
     usage?.finalEventUnread === true;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
+  if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
   const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
 
   let costed: Costed;
@@ -129,7 +138,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";
   } else if (usage !== null) {
-    measured = outcome.cut ? "partial" : "complete";
+    // Worked out from the request, not reported by the provider: estimated, whatever the price.
+    measured = outcome.cut ? "partial" : usage.fromRequest === true ? "estimated" : "complete";
     if (attempt.price !== null && !reportsPricedMeasure(attempt.price.price, usage)) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
