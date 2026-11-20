@@ -174,6 +174,19 @@ export type Meter =
        */
       readonly units?: readonly Unit[];
       /**
+       * Token counts the provider reports in a response header rather than its
+       * body, each a share of a bucket (`../usage/token-rates.ts`): Kimi's Chat
+       * Completions sends its one-hour cache writes this way. Read only from an
+       * answer that does not stream.
+       */
+      readonly usageHeaders?: readonly UsageHeader[];
+      /**
+       * Its answers may report only the provider's own cost (`providerCost`),
+       * with no usage at all: xAI's images. A path that bills at the customer's
+       * rates cannot meter it (`../providers/custom.ts`).
+       */
+      readonly costOnly?: true;
+      /**
        * A flag that has the provider bill the audio once per channel
        * (Deepgram's `multichannel`): then the reported length is multiplied
        * by the channels the answer names (`audioChannels`). Otherwise it is
@@ -239,6 +252,13 @@ export type Meter =
   | { readonly kind: "wall_clock" }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
   | { readonly kind: "provider_event"; readonly adapter: string };
+
+/** A token count a response header carries: the header (lowercase), and the bucket share it is. */
+export interface UsageHeader {
+  readonly header: string;
+  readonly bucket: "cached_input" | "cache_write";
+  readonly name: "audio" | "1h" | "12h";
+}
 
 /**
  * Where an app's output cap (`max_output_tokens`) is enforced, by the field
@@ -473,6 +493,17 @@ export interface OperationDescription {
    * so one connection may list styles of different providers.
    */
   readonly rules?: ReadingRules;
+  /**
+   * Its request may also be a multipart upload, as an image edit is; it is
+   * JSON otherwise. A preset reads an upload only for such an operation.
+   */
+  readonly uploads?: true;
+  /**
+   * Saving needs a rate for every way its answers can come out
+   * (`meterCases`), not one: a custom provider's path, which has no list
+   * price or provider report to fall back on (`../providers/custom.ts`).
+   */
+  readonly pricedEveryWay?: true;
 }
 
 /**

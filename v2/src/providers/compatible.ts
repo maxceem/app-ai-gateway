@@ -167,6 +167,9 @@ export const cerebras = defineProvider({
   operations: withV1Paths("cerebras", [chat("cerebras.chat", "v1/chat/completions"), completions("cerebras.completions", "v1/completions")]),
 });
 
+/** Kimi's Chat Completions body has only the total cache write; its one-hour share is in a header of an answer that does not stream. */
+const KIMI_CHAT = { usageHeaders: [{ header: "msh-usage-cache-write-tokens-1h", bucket: "cache_write", name: "1h" }] } as const;
+
 export const moonshot = defineProvider({
   type: "moonshot",
   label: "Moonshot AI",
@@ -179,7 +182,9 @@ export const moonshot = defineProvider({
   refused: ["v1/users/*"],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
-  operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions"), messages("moonshot.messages", "anthropic/v1/messages")]),
+  operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions", KIMI_CHAT), messages("moonshot.messages", "anthropic/v1/messages")], {
+    chat: KIMI_CHAT,
+  }),
 });
 
 export const huggingface = defineProvider({

@@ -45,7 +45,7 @@ import {
   type UpstreamCredentials,
 } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { attemptCopy, declaredOperation, presetUpstream } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -90,8 +90,9 @@ export function deepMerge(base: Record<string, unknown>, overlay: Record<string,
 type PresetBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
 
 /** Whether an operation's API takes an upload besides JSON: an image edit. Only these accept a form (transcription always takes one). */
+/** Whether the operation's request may be an upload (`uploads`), as an image edit is. */
 function takesUpload(operation: OperationDescription): boolean {
-  return operation.style === "openai-images" && operation.match.path.endsWith("images/edits");
+  return operation.uploads === true;
 }
 
 async function presetBody(caller: Caller, contentType: string, preset: Preset, style: ApiStyle, operation: OperationDescription): Promise<PresetBody> {
@@ -298,7 +299,9 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       if (declared === null || style === undefined) {
         throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
       }
-      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, declared);
+      // The body is read as the first target's own operation reads it, never as the name's stand-in.
+      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation)) ?? declared;
+      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, resolved);
       const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
       const requestId = timeOrderedId(startedAt);
 

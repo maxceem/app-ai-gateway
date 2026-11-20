@@ -63,7 +63,7 @@ export const openai = defineProvider({
     transcription("openai.transcription", "v1/audio/transcriptions"),
     // Images report token usage, with image tokens apart.
     images("openai.images", "v1/images/generations"),
-    images("openai.images.edits", "v1/images/edits"),
+    images("openai.images.edits", "v1/images/edits", { uploads: true }),
     embeddings("openai.embeddings", "v1/embeddings"),
     speech("openai.speech", "v1/audio/speech"),
     defineOperation({

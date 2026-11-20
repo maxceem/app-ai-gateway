@@ -33,8 +33,9 @@ export const xai = defineProvider({
       messages("xai.messages", "v1/messages"),
       // A form with only the audio is served, as v1: xAI transcribes it with grok-transcribe.
       transcription("xai.transcription", "v1/stt", { defaultModel: "grok-transcribe" }),
-      images("xai.images", "v1/images/generations", { providerCost: "xai" }),
-      images("xai.images.edits", "v1/images/edits", { providerCost: "xai" }),
+      // Its answers report only the cost, no usage.
+      images("xai.images", "v1/images/generations", { providerCost: "xai", costOnly: true }),
+      images("xai.images.edits", "v1/images/edits", { providerCost: "xai", costOnly: true, uploads: true }),
       embeddings("xai.embeddings", "v1/embeddings"),
     ],
     { chat: { providerCost: "xai" }, responses: { providerCost: "xai" } },

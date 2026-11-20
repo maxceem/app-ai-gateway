@@ -186,7 +186,8 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
  * How far an operation can charge a price, at the key values it reads
  * (`keysRead`), if any, from the price's own rates:
  *
- * - `full`: one of its ways (`meterCases`) prices every usage in it;
+ * - `full`: one of its ways (`meterCases`) prices every usage in it, or,
+ *   for an operation priced every way (`pricedEveryWay`), each of them does;
  * - `partial`: some usage is priced, but no way fully, as a price in credits
  *   alone on text to speech, whose answer can come without its header;
  * - `none`: no usage at all, as `whisper-1` on chat, or a model the price list
@@ -207,11 +208,16 @@ function kindServed(operation: OperationDescription, price: ModelPrice): boolean
 function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined): Reach {
   if (!kindServed(operation, price)) return "none";
   let some = false;
+  let every = true;
   for (const way of meterCases(operation)) {
     const priced = way.map((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode));
-    if (priced.every(Boolean)) return "full";
+    const full = priced.every(Boolean);
+    // One way is enough, unless every way must be priced (`pricedEveryWay`, a custom provider's path).
+    if (full && operation.pricedEveryWay !== true) return "full";
+    if (!full) every = false;
     if (priced.some(Boolean)) some = true;
   }
+  if (operation.pricedEveryWay === true && every) return "full";
   return some ? "partial" : "none";
 }
 
@@ -816,7 +822,8 @@ export interface ModeCalls {
  * one rule for whether a rate entry is ever used. Each call the model can
  * take is priced by the one charge function (`priceInServedMode`), in every
  * mode it can be billed in, over every usage its meter can produce
- * (`meterCases`), fallbacks included, once with the entry and once without
+ * (`meterCases`, and each above every long-context threshold the rates name),
+ * fallbacks included, once with the entry and once without
  * it. An entry whose absence changes no charge is never used. Entries that
  * are unchanged from `before` are not judged again.
  */
@@ -831,11 +838,21 @@ export function unusedModeRate(
   const stored = (before?.[model] as { modes?: Record<string, unknown> } | undefined)?.modes;
   const changed = Object.keys(modes).filter((name) => stored === undefined || !Object.hasOwn(stored, name) || JSON.stringify(stored[name]) !== JSON.stringify(modes[name]));
   if (changed.length === 0) return null;
+  // The usages each call's meter can produce, and each with its input just over every long-context threshold the
+  // model's rates name, so a long rate is probed where it bills.
+  const entry = after[model] as { long_context_threshold?: unknown; modes?: Record<string, { long_context_threshold?: unknown }> };
+  const thresholds = [entry.long_context_threshold, ...Object.values(entry.modes ?? {}).map((one) => one?.long_context_threshold)].filter(
+    (value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+  );
+  const usagesOf = (operation: OperationDescription) =>
+    meterCases(operation)
+      .flat()
+      .flatMap((usage) => [usage, ...(usage.noTokens === true ? [] : thresholds.map((threshold) => ({ ...usage, inputTokens: threshold + 1 })))]);
   const charges = (rates: CustomerRates): string[] => {
     const price = customerPrice(rates, model);
     if (price === null) return [];
     return calls.flatMap(({ operation, modes: selectable }) =>
-      meterCases(operation).flat().flatMap((usage) =>
+      usagesOf(operation).flatMap((usage) =>
         selectable.map((mode) => JSON.stringify(priceInServedMode(price, usage, mode), (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value))),
       ),
     );

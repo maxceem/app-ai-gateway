@@ -14,19 +14,10 @@
  * bucket's rate, a modality at its side's rate and a long rate at its short
  * one. Never free.
  */
-import type { ApiStyle } from "../providers/operation.ts";
 import { UNIT_RATE_FIELDS } from "../pricing/units.ts";
 import type { Modality } from "./observation.ts";
 
 export type SplitBucket = "cached_input" | "cache_write";
-
-/** A response header that carries one variant's count, for one provider and API style. */
-interface HeaderReport {
-  readonly provider: string;
-  readonly style: ApiStyle;
-  /** Lowercase. */
-  readonly header: string;
-}
 
 export interface Variant {
   readonly bucket: SplitBucket;
@@ -37,8 +28,6 @@ export interface Variant {
   readonly reportedAt: readonly (readonly string[])[];
   /** A variant that is one modality's share of the cache. */
   readonly modality?: Modality;
-  /** Where one provider reports the count in a header instead, because its body has only the total. */
-  readonly reportedInHeader?: HeaderReport;
 }
 
 /** Every variant, in billing order within its bucket. */
@@ -58,12 +47,11 @@ export const VARIANTS: readonly Variant[] = [
     // Anthropic, and Moonshot's Messages API: a write kept for an hour bills
     // at 2x input, against 1.25x for the default five minutes. Kimi's Chat
     // Completions body reports only the total write; the one-hour share is in
-    // a header of a response that does not stream.
+    // a header its operation names (`usageHeaders`).
     bucket: "cache_write",
     name: "1h",
     field: "cache_write_1h",
     reportedAt: [["cache_creation", "ephemeral_1h_input_tokens"]],
-    reportedInHeader: { provider: "moonshot", style: "openai-chat", header: "msh-usage-cache-write-tokens-1h" },
   },
   {
     // OpenAI Responses: a write kept for 12 hours bills at 2.5x input.

@@ -18,11 +18,14 @@ import {
   customDescription,
   customOperation,
   customOperationName,
+  customStyleProblem,
   declaredHostNames,
   knownHostOwner,
   styleSource,
 } from "../src/providers/custom.ts";
 import { reportsCost } from "../src/pricing/prices.ts";
+import { meterCases } from "../src/pricing/units.ts";
+import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
@@ -145,6 +148,27 @@ describe("a custom provider's description", () => {
       }
     }
     expect(judged).toBeGreaterThan(CUSTOM_STYLES.length);
+  });
+
+  it("allows on a custom path only a style every answer of which a rate can price, for every provider that defines it", () => {
+    const refused: string[] = [];
+    for (const owner of [null, ...Object.values(BUILT_IN_PROVIDERS)]) {
+      const baseUrl = owner === null ? BASE : `https://${owner.hosts.main.split("/")[0]}/`;
+      for (const style of CUSTOM_STYLES) {
+        const unmetered = meterCases(customOperation(style, style, owner)).some((way) => way.some((usage) => !hasMeasure(usage)));
+        const problem = customStyleProblem(style, baseUrl);
+        expect(problem !== null, `${owner?.type ?? "unknown"} ${style}`).toBe(unmetered || (problem?.includes("cannot (") ?? false));
+        if (problem !== null) refused.push(`${owner?.type ?? "unknown"} ${style}`);
+      }
+    }
+    // xAI's images report only their cost; every other style on every host can be priced from rates.
+    expect(refused).toEqual(["xai openai-images"]);
+  });
+
+  it("reads Kimi's one-hour cache writes from its header on a custom Moonshot chat path, as on Moonshot's own", () => {
+    const description = customDescription({ baseUrl: "https://api.moonshot.ai/", auth: AUTH, paths: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }] });
+    const meter = description.operations[0]!.meter;
+    expect(meter.kind === "response_json" ? meter.usageHeaders : undefined).toEqual([{ header: "msh-usage-cache-write-tokens-1h", bucket: "cache_write", name: "1h" }]);
   });
 
   it("bills an xAI chat path at the connection's rates, never at xAI's own dollar report", () => {
@@ -297,6 +321,7 @@ describe("saving a custom provider", () => {
     ],
     [{ baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
     [{ baseUrl: "https://eu.api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
+    [{ baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/images/generations", style: "openai-images" }] }, "can report only their cost"],
     [{ baseUrl: "https://api.openai.com/v1%2Forganization/", passthrough: [{ method: "GET", path: "users" }] }, "encoded /"],
     [{ baseUrl: "https://llm.example.com/v1//chat/" }, "empty segment"],
     [{ baseUrl: "https://llm.example.com/v1/%E0%A4%A/" }, "broken percent-encoding"],
@@ -422,6 +447,13 @@ describe("saving a custom provider", () => {
     // A `priority+eu` call with no `eu` rate bills the global `priority` rate, as an estimate: the rate is used.
     expect((await createCustom(key, fields("https://api.eu.mistral.ai/", { priority: { factor: 2 } }))).status).toBe(201);
     expect((await createCustom(key, fields("https://us.api.x.ai/", { priority: { input: 2, output: 4 } }))).status).toBe(201);
+    // A long rate in a mode bills a call over the threshold.
+    const long = await createCustom(key, {
+      baseUrl: "https://us.api.x.ai/",
+      passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }],
+      pricing: { "some-model": { input: 1, output: 2, long_context_threshold: 100, modes: { priority: { long_input: 3 } } } },
+    });
+    expect(long.status, JSON.stringify(long.body)).toBe(201);
     // On a host with no region, no call is ever billed in one.
     const refused = await createCustom(key, fields(BASE, { us: { factor: 1.1 } }));
     expect(refused.status, JSON.stringify(refused.body)).toBe(400);
@@ -473,6 +505,25 @@ describe("saving a custom provider", () => {
       config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [created.body.provider.slug]: { operations: ["custom.openai-chat"], models: ["grok-4"] } } } },
     });
     expect(app.status).toBe(400);
+  });
+
+  it("needs a rate for every answer a speech path can return: a plain audio answer is billed by characters", async () => {
+    const key = await seedManagementKey();
+    const speech = (pricing: Record<string, unknown>) => createCustom(key, { passthrough: [{ method: "POST", path: "audio/speech", style: "openai-speech" }], pricing });
+    // Token rates alone price a streamed answer, never a plain audio one.
+    const tokensOnly = await speech({ "gpt-4o-mini-tts": { input: 0.6, output: 12 } });
+    expect(tokensOnly.status).toBe(400);
+    expect(JSON.stringify(tokensOnly.body)).toContain("pricing.gpt-4o-mini-tts");
+    const created = await speech({ "gpt-4o-mini-tts": { input: 0.6, output: 12, per_million_characters: 15 } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const app = await admin(key, "POST", "/v2/admin/apps", {
+      name: "Speech",
+      config: {
+        authentication: { type: "api_key", end_user: { source: "none" } },
+        routing: { providers: { [created.body.provider.slug]: { operations: ["custom.openai-speech"], models: ["gpt-4o-mini-tts"] } } },
+      },
+    });
+    expect(app.status, JSON.stringify(app.body)).toBe(201);
   });
 
   it("saves an API-style path with no rate yet: an app that routes it is judged when saved", async () => {
@@ -689,6 +740,24 @@ describe("serving a custom provider", () => {
     expect(response.status, text).toBe(403);
     expect(JSON.parse(text)).toMatchObject({ error: { code: "model_not_allowed" } });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sends an image edit preset on a custom path as the upload it is", async () => {
+    const rates = { "local-img": { input: 1_000_000_000, output: 2_000_000_000, per_image: 40_000_000 } };
+    const { appId, slug, key } = await setup([{ method: "POST", path: "v1/images/edits", style: "openai-images" }], ["custom.openai-images"], BASE, rates);
+    const stored = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(appId).first<{ config_json: string }>();
+    const config = { ...JSON.parse(stored!.config_json), presets: { edit: { provider: slug, operation: "custom.openai-images", model: "local-img" } } };
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify(config), appId).run();
+    fetchSpy.mockResolvedValueOnce(Response.json({ data: [{}], usage: { generated_images: 1 } }));
+    const form = new FormData();
+    form.append("prompt", "a hat");
+    form.append("image", new Blob([new Uint8Array(32)], { type: "image/png" }), "a.png");
+    const { response, text } = await send("POST", `/v2/apps/${appId}/presets/edit`, key, { body: form });
+    expect(response.status, text).toBe(200);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toBe("https://llm.example.com/v1/v1/images/edits");
+    expect(init!.body).toBeInstanceOf(FormData);
+    expect((init!.body as FormData).get("model")).toBe("local-img");
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

@@ -209,6 +209,22 @@ describe("adding a provider connection through a person", () => {
 });
 
 describe("replacing a provider key through a person", () => {
+  it("shows a custom provider's base URL as the only place its key is sent", async () => {
+    const { caller } = await person();
+    const created = await send(caller, "POST", "/v2/admin/providers", {
+      type: "custom",
+      name: "Mine",
+      slug: "mine",
+      secret: "sk-old-key-000000001111",
+      baseUrl: "https://llm.example.net/v1/",
+      auth: { header: "x-api-key", format: "{key}" },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const opened = await send(caller, "POST", `/v2/admin/providers/${created.body.provider.id}/key-handoffs`, { revision: 1 });
+    const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof: proofOf(opened.body.url) });
+    expect(shown.body.review.destinations).toEqual(["https://llm.example.net/v1/"]);
+  });
+
   it("replaces the key at the revision it was asked for", async () => {
     const { caller } = await person();
     const created = await send(caller, "POST", "/v2/admin/providers", { type: "openai", name: "OpenAI", slug: "openai", secret: "sk-old-key-000000001111" });

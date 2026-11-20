@@ -31,6 +31,8 @@ import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
 import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
 import type { PassthroughPath } from "./matcher.ts";
+import { meterCases } from "../pricing/units.ts";
+import { hasMeasure } from "../usage/observation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
 /** The provider type every custom provider connection has (`CUSTOM_PROVIDER_TYPE` in the contracts). */
@@ -129,6 +131,8 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   job: "refused",
   session: "refused",
   rules: "replaced",
+  uploads: "replaced",
+  pricedEveryWay: "replaced",
 };
 
 /** A provider's own operation of `style`: the first that is a POST with its model in the body or a form field. */
@@ -149,12 +153,25 @@ export function styleSource(style: CustomStyle, owner: ProviderDescription | nul
   return { provider: home, definition: definitionOf(home, style) };
 }
 
-/** Why a custom path of `style` on `baseUrl` cannot be served as its provider defines it, or null. */
+/**
+ * Why a custom path of `style` on `baseUrl` cannot be served as its provider
+ * defines it, or null:
+ *
+ * - its definition has a field a listed path cannot carry (`CARRIED`);
+ * - some answer it can return carries no measure a rate can price
+ *   (`meterCases`): with no provider dollar report, such an answer could
+ *   never be charged, as xAI's images, which report only their cost.
+ */
 export function customStyleProblem(style: CustomStyle, baseUrl: string): string | null {
-  const { provider, definition } = styleSource(style, knownHostOwner(baseUrl));
-  if (definition === null) return null;
-  const refused = (Object.keys(CARRIED) as (keyof OperationDescription)[]).find((field) => CARRIED[field] === "refused" && definition[field] !== undefined);
-  return refused === undefined ? null : `${provider.label} serves ${style} in a way a listed path cannot (${refused}); use its built-in connection instead`;
+  const owner = knownHostOwner(baseUrl);
+  const { provider, definition } = styleSource(style, owner);
+  if (definition !== null) {
+    const refused = (Object.keys(CARRIED) as (keyof OperationDescription)[]).find((field) => CARRIED[field] === "refused" && definition[field] !== undefined);
+    if (refused !== undefined) return `${provider.label} serves ${style} in a way a listed path cannot (${refused}); use its built-in connection instead`;
+  }
+  const unmetered = meterCases(customOperation(style, style, owner)).some((way) => way.some((usage) => !hasMeasure(usage)));
+  if (unmetered) return `${provider.label}'s ${style} answers can report only their cost, which a custom path does not bill; use its built-in connection instead`;
+  return null;
 }
 
 /**
@@ -180,6 +197,10 @@ export function customOperation(style: CustomStyle, path: string, owner: Provide
     name,
     match: { method: "POST", path },
     meter: billedMeter as OperationDescription["meter"],
+    // A listed path of an image style may be a generation or an edit.
+    ...(style === "openai-images" ? { uploads: true as const } : {}),
+    // No list price or provider report to fall back on: every way its answers come out needs a rate.
+    pricedEveryWay: true,
     rules: {
       serviceModes: source.serviceModes,
       ...(source.servedModes !== undefined ? { servedModes: source.servedModes } : {}),

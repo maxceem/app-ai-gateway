@@ -293,7 +293,7 @@ export function responseReader(
         return unread;
       }
       if (reading.overflow) log("warn", "usage_value_too_large", facts);
-      const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, description.type, style);
+      const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, meter.kind === "response_json" ? (meter.usageHeaders ?? []) : []);
       const base = { usage, providerCostUsd: metered ? reading.providerCostUsd : null, closed: reading.closed };
       return readingRules(description, operation).alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
     },

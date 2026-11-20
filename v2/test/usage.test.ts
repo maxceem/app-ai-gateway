@@ -16,6 +16,7 @@ import { requestedServiceMode, servedServiceMode } from "../src/proxy/meter.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
 import { readBody, withHeaderVariants, type BodyReaderOptions } from "../src/usage/readers.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import type { ApiStyle } from "../src/providers/operation.ts";
 
@@ -332,9 +333,12 @@ describe("token variants", () => {
       "openai-chat",
     );
     const headers = new Headers({ "msh-usage-cache-write-tokens-1h": "30" });
-    expect(withHeaderVariants(usage, headers, "application/json", "moonshot", "openai-chat").tokenVariants).toEqual({ cache_write: { "1h": 30 } });
-    expect(withHeaderVariants(usage, headers, "text/event-stream", "moonshot", "openai-chat").tokenVariants).toBeUndefined();
-    expect(withHeaderVariants(usage, headers, "application/json", "openai", "openai-chat").tokenVariants).toBeUndefined();
+    const kimi = BUILT_IN_PROVIDERS.moonshot!.operations.find((operation) => operation.name === "moonshot.chat")!.meter;
+    const reported = kimi.kind === "response_json" ? (kimi.usageHeaders ?? []) : [];
+    expect(withHeaderVariants(usage, headers, "application/json", reported).tokenVariants).toEqual({ cache_write: { "1h": 30 } });
+    expect(withHeaderVariants(usage, headers, "text/event-stream", reported).tokenVariants).toBeUndefined();
+    // An operation that names no such header reads none.
+    expect(withHeaderVariants(usage, headers, "application/json", []).tokenVariants).toBeUndefined();
   });
 
   it("keeps modalities and variants in a charge's measures, so it can be priced again exactly", () => {

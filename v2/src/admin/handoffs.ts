@@ -46,6 +46,7 @@ import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
 import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
+import { CUSTOM_TYPE } from "../providers/custom.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
@@ -298,11 +299,16 @@ export async function getHandoff(c: PageContext): Promise<Response> {
       : null;
   // Every host the key goes to: a custom base URL replaces only the main one;
   // through Cloudflare AI Gateway, the gateway is the only one.
+  // A custom provider's key goes only to its base URL.
   const hosts = builtInProvider(String(review.type))?.hosts ?? {};
   const destinations =
     cloudflare !== null
       ? [keyOrigin({ baseUrl: null, cloudflareGateway: cloudflare })]
-      : Object.entries(hosts).map(([key, host]) => (key === "main" && baseUrl !== null ? baseUrl : `https://${host}/`));
+      : review.type === CUSTOM_TYPE
+        ? baseUrl === null
+          ? []
+          : [baseUrl]
+        : Object.entries(hosts).map(([key, host]) => (key === "main" && baseUrl !== null ? baseUrl : `https://${host}/`));
   return c.json({
     id: details.id,
     kind,
