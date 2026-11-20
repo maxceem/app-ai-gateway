@@ -9,7 +9,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { callGap, resolvePassthrough } from "../src/pricing/billability.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, ProviderMatcher } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderMatcher, upstreamRoute, upstreamTargets } from "../src/providers/matcher.ts";
+import { matchTemplate, parseTemplate } from "../src/providers/path.ts";
+import { upstreamRequest } from "../src/providers/route.ts";
 import { openai } from "../src/providers/openai.ts";
 import { readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
@@ -121,8 +123,15 @@ describe("matching a listed path", () => {
     expect(() => compilePassthrough([{ method: "GET", path: "v1/files/{file_id}:content" }])).not.toThrow();
   });
 
-  it("never refuses a declared operation of any built-in provider by its own refused paths", () => {
-    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+  it("never refuses a declared operation of any built-in provider by its own refused paths, on any route", () => {
+    const routes = [
+      { baseUrl: null, cloudflareGateway: null },
+      { baseUrl: null, cloudflareGateway: { accountId: "a", gatewayId: "g" } },
+      { baseUrl: "https://example.com/v1/", cloudflareGateway: null },
+      { baseUrl: "https://example.com/openai/v1/", cloudflareGateway: null },
+    ];
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) for (const connection of routes) {
+      const route = upstreamRoute(description, connection);
       const matcher = new ProviderMatcher(description);
       for (const operation of description.operations) {
         const path = operation.match.path
@@ -132,7 +141,7 @@ describe("matching a listed path", () => {
             return Array.isArray(list) ? list[0]! : "some/model";
           }).replace(/\{[A-Za-z_][A-Za-z0-9_]*\}/u, "x1"))
           .join("/");
-        expect(matcher.match(operation.match.method, path), `${operation.name}: ${path}`).not.toMatchObject({ reason: "refused_path" });
+        expect(matcher.match(operation.match.method, path, { route }), `${operation.name}: ${path} ${JSON.stringify(connection)}`).not.toMatchObject({ reason: "refused_path" });
       }
     }
   });
@@ -159,6 +168,159 @@ describe("matching a listed path", () => {
     const description = BUILT_IN_PROVIDERS[type]!;
     const passthrough = compilePassthrough([{ method: method as "GET", path }]);
     expect(new ProviderMatcher(description).match(method, path, { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+  });
+});
+
+describe("judging a listing where the provider reads it", () => {
+  const CLOUDFLARE = { baseUrl: null, cloudflareGateway: { accountId: "a", gatewayId: "g" } };
+  const BASE_V1 = { baseUrl: "https://example.com/v1/", cloudflareGateway: null };
+  const compiled = (method: "GET" | "POST", path: string) => compilePassthrough([{ method, path }])[0]!;
+
+  it.each([
+    ["Cloudflare", CLOUDFLARE],
+    ["a base URL ending in /v1/", BASE_V1],
+    ["a base URL with OpenAI's Azure path", { baseUrl: "https://example.com/openai/v1/", cloudflareGateway: null }],
+  ] as const)("refuses on OpenAI through %s what the provider reads as a refused path or a declared operation", (_, connection) => {
+    const route = upstreamRoute(openai, connection);
+    const matcher = new ProviderMatcher(openai);
+    expect(matcher.refusedCovering(compiled("POST", "realtime/client_secrets"), route)).toBe("v1/realtime/client_secrets/*");
+    expect(matcher.refusedCovering(compiled("GET", "organization/{x}"), route)).toBe("v1/organization/*");
+    expect(matcher.overlappingOperation(compiled("POST", "responses"), route)).not.toBeNull();
+    // Straight to OpenAI, these paths are not ones it serves under `v1/`.
+    expect(matcher.refusedCovering(compiled("POST", "realtime/client_secrets"))).toBeNull();
+  });
+
+  it("refuses those paths at serve too, where the request really goes", () => {
+    const matcher = new ProviderMatcher(openai);
+    const passthrough = compilePassthrough([{ method: "POST", path: "realtime/client_secrets" }, { method: "GET", path: "organization/{x}" }]);
+    for (const connection of [CLOUDFLARE, BASE_V1]) {
+      const route = upstreamRoute(openai, connection);
+      expect(matcher.match("POST", "realtime/client_secrets", { passthrough, route })).toMatchObject({ reason: "refused_path" });
+      expect(matcher.match("GET", "organization/admin_api_keys", { passthrough, route })).toMatchObject({ reason: "refused_path" });
+    }
+    expect(matcher.match("POST", "realtime/client_secrets", { passthrough })).toMatchObject({ kind: "passthrough" });
+  });
+
+  it("refuses on fal a listing its priced-models path would also take upstream", () => {
+    const fal = new ProviderMatcher(BUILT_IN_PROVIDERS.fal!);
+    expect(fal.overlappingOperation(compiled("POST", "fal-ai/{a}/{b}"))).toBe("fal.run");
+  });
+
+  it("routes Cloudflare's prefix: a path may or may not start with it", () => {
+    const route = upstreamRoute(openai, CLOUDFLARE);
+    const lit = (value: string) => ({ kind: "literal", value }) as const;
+    expect(upstreamTargets(route, "main", [lit("v1"), lit("files")])).toEqual({ host: "main", paths: [[lit("v1"), lit("files")]] });
+    expect(upstreamTargets(route, "main", [lit("files")])).toEqual({ host: "main", paths: [[lit("v1"), lit("files")]] });
+    expect(upstreamTargets(route, "main", compiled("GET", "{x}/files").template.segments)?.paths).toHaveLength(2);
+    expect(upstreamTargets(route, "queue", [lit("x")])).toBeNull();
+    expect(upstreamTargets(upstreamRoute(openai, BASE_V1), "main", [lit("files")])?.paths).toEqual([[lit("v1"), lit("files")], [lit("files")]]);
+  });
+
+  /** Routes each provider can have: direct, Cloudflare where it is served, and base URLs mounted three ways. */
+  const routesOf = (description: (typeof BUILT_IN_PROVIDERS)[string]) => [
+    { baseUrl: null, cloudflareGateway: null },
+    ...(description.cloudflareGateway !== undefined ? [CLOUDFLARE] : []),
+    BASE_V1,
+    { baseUrl: "https://example.com/api/", cloudflareGateway: null },
+    { baseUrl: "https://example.com/openai/v1/", cloudflareGateway: null },
+  ];
+
+  /** The paths the provider may read a sent URL as, worked out from the URL `upstreamRequest` builds, not from `upstreamTargets`. */
+  function readAs(description: (typeof BUILT_IN_PROVIDERS)[string], connection: { baseUrl: string | null; cloudflareGateway: object | null }, path: string): string[][] {
+    const record = {
+      id: "c",
+      accountId: "a",
+      type: description.type,
+      slug: "s",
+      status: "active",
+      baseUrl: connection.baseUrl,
+      secretBlob: null,
+      rates: null,
+      servingProviders: null,
+      cloudflareGateway: connection.cloudflareGateway === null ? null : { accountId: "a", gatewayId: "g", tokenBlob: "", tokenHint: null },
+    } as const;
+    const { url } = upstreamRequest(record, description, {
+      hostKey: "main",
+      path: path.replace(/^\//u, ""),
+      query: "",
+      credentials: { providerKey: "k", cloudflareToken: "t" },
+      appId: "app",
+      userId: null,
+    });
+    const segments = new URL(url).pathname.split("/").filter((piece) => piece !== "").map((piece) => decodeURIComponent(piece));
+    if (connection.cloudflareGateway !== null) {
+      // `/v1/<account>/<gateway>/<slug>/<rest>`: Cloudflare's endpoint for the provider adds its prefix back.
+      const prefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+      return [[...prefix, ...segments.slice(4)]];
+    }
+    if (connection.baseUrl !== null) {
+      const base = new URL(connection.baseUrl).pathname.split("/").filter((piece) => piece !== "").length;
+      return Array.from({ length: base + 1 }, (_, drop) => segments.slice(drop));
+    }
+    const hostPrefix = description.hosts.main.split("/").slice(1).filter((piece) => piece !== "").length;
+    return [segments.slice(hostPrefix)];
+  }
+
+  it("never lets a listing that saves reach a refused path or a declared operation, on any route (fuzz)", () => {
+    let seed = 0x5eed;
+    const random = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    let saved = 0;
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      const matcher = new ProviderMatcher(description);
+      const refused = description.refused.map((pattern) => parseTemplate(pattern, { rest: true }));
+      const words = new Set(["v1", "x", "files", "chat"]);
+      for (const source of [...description.refused, ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
+        for (const piece of source.split("/")) if (piece !== "" && piece !== "*" && !piece.includes("{")) words.add(piece);
+      }
+      const vocabulary = [...words];
+      const shapes = [...vocabulary, "{a}", "{b}", "comp{c}", "{d}:generateContent"];
+      const operations = description.operations
+        .filter((op) => (op.upstream?.host ?? "main") === "main")
+        .map((op) => ({
+          op,
+          template: parseTemplate(op.upstream?.path ?? op.match.path, { multi: true }),
+          lists: Object.fromEntries(Object.entries(op.multiSegment ?? {}).map(([name, list]) => [name, list === "priced_models" ? ("any" as const) : new Set(list)])),
+        }));
+      for (const connection of routesOf(description)) {
+        const route = upstreamRoute(description, connection);
+        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
+        for (let round = 0; round < 60; round += 1) {
+          const method = (["GET", "POST"] as const)[random(2)]!;
+          const path = Array.from({ length: 1 + random(4) }, () => shapes[random(shapes.length)]!).join("/");
+          let listing;
+          try {
+            listing = compilePassthrough([{ method, path }])[0]!;
+          } catch {
+            continue;
+          }
+          if (matcher.refusedCovering(listing, route) !== null || matcher.overlappingOperation(listing, route) !== null) continue;
+          saved += 1;
+          for (let fill = 0; fill < 6; fill += 1) {
+            const concrete = listing.template.segments
+              .map((segment) => (segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + vocabulary[random(vocabulary.length)]! + segment.suffix : "x"))
+              .join("/");
+            const match = matcher.match(method, concrete, { passthrough: [listing], route });
+            if (match.kind !== "passthrough") continue;
+            for (const read of readAs(description, connection, match.upstream.path)) {
+              const where = `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
+              for (const pattern of refused) expect(matchTemplate(pattern, read, { ignoreCase: true }), where).toBeNull();
+              for (const { op, template, lists } of operations) {
+                if (op.match.method !== method) continue;
+                const readings = prefix.length > 0 && !template.segments.slice(0, prefix.length).every((segment, index) => segment.kind === "literal" && segment.value === prefix[index])
+                  ? [template, { source: "", segments: [...prefix.map((value) => ({ kind: "literal", value }) as const), ...template.segments] }]
+                  : [template];
+                for (const reading of readings) expect(matchTemplate(reading, read, { closedLists: lists }), `${where} reaches ${op.name}`).toBeNull();
+              }
+            }
+          }
+        }
+      }
+    }
+    // The fuzz judged a real number of saved listings, not only refused ones.
+    expect(saved).toBeGreaterThan(300);
   });
 });
 
@@ -387,13 +549,14 @@ async function admin(key: string, method: string, path: string, body?: unknown) 
 }
 
 describe("saving a listed path", () => {
-  const create = (key: string, passthrough: unknown) =>
+  const create = (key: string, passthrough: unknown, route: Record<string, unknown> = {}) =>
     admin(key, "POST", "/v2/admin/providers", {
       type: "openai",
       name: "OpenAI",
       slug: `openai-${crypto.randomUUID().slice(0, 6)}`,
       secret: "sk-live-secret-abcd",
       passthrough,
+      ...route,
     });
 
   it("stores a list with its prices, and shows it back in dollars", async () => {
@@ -484,6 +647,47 @@ describe("saving a listed path", () => {
       expect(JSON.parse(text)).toMatchObject({ error: { code: "path_not_allowed" } });
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("judges a listing on the connection's route: through Cloudflare or a base URL ending in /v1/", async () => {
+    const key = await seedManagementKey();
+    const routes = [
+      { cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-for-tests-1234" } },
+      { baseUrl: "https://example.com/v1/" },
+    ];
+    for (const route of routes) {
+      for (const passthrough of [
+        [{ method: "POST", path: "realtime/client_secrets" }],
+        [{ method: "GET", path: "organization/{x}" }],
+        [{ method: "POST", path: "responses" }],
+      ]) {
+        const refused = await create(key, passthrough, route);
+        expect(refused.status, JSON.stringify([route, passthrough])).toBe(400);
+      }
+      expect((await create(key, [{ method: "POST", path: "moderations" }], route)).status).toBe(201);
+    }
+  });
+
+  it("judges kept listings again when the connection moves to a new route", async () => {
+    const key = await seedManagementKey();
+    const created = await create(key, [{ method: "POST", path: "realtime/client_secrets" }]);
+    expect(created.status).toBe(201);
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://example.com/v1/", secret: "sk-live-secret-abcd" });
+    expect(moved.status).toBe(400);
+    expect(JSON.stringify(moved.body)).toContain("never allows");
+  });
+
+  it("refuses on fal a listing its model runs would also take", async () => {
+    const key = await seedManagementKey();
+    const refused = await admin(key, "POST", "/v2/admin/providers", {
+      type: "fal",
+      name: "fal",
+      slug: `fal-${crypto.randomUUID().slice(0, 6)}`,
+      secret: "fal-live-secret-abcd",
+      passthrough: [{ method: "POST", path: "fal-ai/{a}/{b}" }],
+    });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("fal.run");
   });
 
   it("lets an app enable passthrough on the connection", async () => {

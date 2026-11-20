@@ -39,7 +39,14 @@ import {
   type CloudflareGatewaySetting,
 } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
-import { compilePassthrough, ProviderMatcher, type CompiledPassthrough, type PassthroughPath } from "../providers/matcher.ts";
+import {
+  compilePassthrough,
+  ProviderMatcher,
+  upstreamRoute,
+  type CompiledPassthrough,
+  type PassthroughPath,
+  type UpstreamRoute,
+} from "../providers/matcher.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
 import { readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
 import { TemplateError } from "../providers/path.ts";
@@ -195,14 +202,17 @@ function passthroughView(stored: string | null): z.output<typeof PassthroughPath
  * - its price, if any, is whole nano-dollars that the one charge function
  *   bills (`resolvePassthrough`, `callGap`);
  * - a path not listed before must not be one the provider always refuses
- *   (it could never be reached), nor match any path a declared operation
- *   matches (listed paths are matched first, so it would take that
- *   operation's requests unmetered). Paths
- *   listed before are not judged again, so a later release that refuses or
- *   declares one never stops a save.
+ *   (it could never be reached), nor overlap a declared operation (listed
+ *   paths are matched first, so it would take that operation's requests
+ *   unmetered). Both are judged on the connection's `route` too: where the
+ *   provider reads the path through a base URL or Cloudflare AI Gateway
+ *   (`upstreamTargets`). Paths listed before on the same route are not
+ *   judged again, so a later release that refuses or declares one never
+ *   stops a save. A new route judges them all (`before` is then empty).
  */
 function passthroughJson(
   description: ProviderDescription,
+  route: UpstreamRoute,
   asked: readonly z.output<typeof PassthroughPathSchema>[],
   before: readonly PassthroughPath[],
 ): string | null {
@@ -235,12 +245,12 @@ function passthroughJson(
       throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
     if (!known.has(key)) {
-      if (matcher.refusedCovering(compiled) !== null) {
+      if (matcher.refusedCovering(compiled, route) !== null) {
         throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
       }
       // Listed paths are matched before declared operations, so a listing that
       // could match any of an operation's paths would take its requests unmetered.
-      const operation = matcher.overlappingOperation(compiled);
+      const operation = matcher.overlappingOperation(compiled, route);
       if (operation !== null) {
         throw new GatewayError(
           400,
@@ -376,7 +386,8 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
   const servingJson = servingProvidersJson(description, body.servingProviders);
-  const passthroughStored = body.passthrough === undefined ? null : passthroughJson(description, body.passthrough, []);
+  const passthroughStored =
+    body.passthrough === undefined ? null : passthroughJson(description, upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare }), body.passthrough, []);
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
   await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type, baseUrl }, newRates);
@@ -508,11 +519,17 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       : description === null
         ? null
         : servingProvidersJson(description, body.servingProviders);
+  // Listed paths are judged on the route they will be sent on. A new base URL
+  // or Cloudflare setting judges every listed path again, kept or sent.
   let passthroughStored = current.passthrough_json;
-  if (body.passthrough === null) passthroughStored = null;
-  else if (body.passthrough !== undefined) {
+  const routeMoved = to !== from;
+  const kept = body.passthrough === undefined && routeMoved ? passthroughView(current.passthrough_json) : undefined;
+  const listing = body.passthrough === null ? null : (body.passthrough ?? kept);
+  if (listing === null) passthroughStored = null;
+  else if (listing !== undefined) {
     if (description === null) throw new GatewayError(400, "invalid_request", `passthrough: provider type ${current.type} is not supported`);
-    passthroughStored = passthroughJson(description, body.passthrough, readPassthrough(current.passthrough_json));
+    const route = upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare });
+    passthroughStored = passthroughJson(description, route, listing, routeMoved ? [] : readPassthrough(current.passthrough_json));
   }
   const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
   if (body.pricing !== undefined) {

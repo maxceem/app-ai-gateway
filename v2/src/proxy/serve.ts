@@ -52,7 +52,7 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "../providers/connections.ts";
-import { ProviderMatcher, type PassthroughPath, type UpstreamTarget } from "../providers/matcher.ts";
+import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
 import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { upstreamRequest } from "../providers/route.ts";
@@ -77,6 +77,18 @@ function responseDeadlineMs(operation: OperationDescription): number {
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
 const matchers = new Map<string, ProviderMatcher>();
+
+const ROUTES = new WeakMap<ConnectionRecord, UpstreamRoute>();
+
+/** A loaded connection's route (`upstreamRoute`), worked out once per loaded record. */
+function routeOf(description: ProviderDescription, connection: ConnectionRecord): UpstreamRoute {
+  let route = ROUTES.get(connection);
+  if (route === undefined) {
+    route = upstreamRoute(description, connection);
+    ROUTES.set(connection, route);
+  }
+  return route;
+}
 
 export function matcherFor(description: ProviderDescription): ProviderMatcher {
   let matcher = matchers.get(description.type);
@@ -260,7 +272,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // A connection's listed paths are reached only by an app that enables
       // passthrough on this route (plan section 4.5).
       const passthrough = routing.operations.includes(PASSTHROUGH) ? compiledPassthrough(connection.passthrough ?? []) : [];
-      const match = matcher.match(c.req.method, target.path, { passthrough });
+      // Refused paths are judged where the request really goes too: its base URL or Cloudflare.
+      const match = matcher.match(c.req.method, target.path, { passthrough, route: routeOf(description, connection) });
       if (match.kind === "passthrough") {
         return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, upstream: match.upstream, url, startedAt });
       }

@@ -136,9 +136,111 @@ function literalFits(value: string, part: Extract<TemplateSegment, { kind: "part
   return value.length > part.prefix.length + part.suffix.length && value.startsWith(part.prefix) && value.endsWith(part.suffix);
 }
 
+/**
+ * How a connection's requests reach its provider, as far as their paths go
+ * (`upstreamRoute`). Refused paths and declared operations are written as the
+ * provider reads its paths, so they are judged on the upstream target a
+ * request reaches (`upstreamTargets`), not on the gateway path alone.
+ */
+export interface UpstreamRoute {
+  /** The path of the connection's base URL, in segments, put before every path to the main host. Null without one. */
+  readonly basePath: readonly string[] | null;
+  /**
+   * Through Cloudflare AI Gateway: the path Cloudflare's endpoint for the
+   * provider stands for (`stripPathPrefix`, OpenAI's `v1`), in segments. A
+   * path that starts with it is sent without it, and the provider reads it
+   * back on; any other path is read with it added. Null when direct.
+   */
+  readonly cloudflarePrefix: readonly string[] | null;
+}
+
+/** The provider's own hosts, with no base URL or Cloudflare. */
+export const DIRECT_ROUTE: UpstreamRoute = { basePath: null, cloudflarePrefix: null };
+
+/**
+ * A connection's route, as `upstreamRequest` (`./route.ts`) sends it:
+ * through Cloudflare AI Gateway when it has that setting, else to its base
+ * URL when it has one, else to the provider's hosts.
+ */
+export function upstreamRoute(
+  description: ProviderDescription,
+  connection: { readonly baseUrl: string | null; readonly cloudflareGateway: object | null },
+): UpstreamRoute {
+  if (connection.cloudflareGateway !== null) {
+    const prefix = description.cloudflareGateway?.stripPathPrefix ?? "";
+    return { basePath: null, cloudflarePrefix: prefix.split("/").filter((piece) => piece !== "") };
+  }
+  if (connection.baseUrl !== null) {
+    let pathname = "/";
+    try {
+      pathname = new URL(connection.baseUrl).pathname;
+    } catch {
+      // A stored base URL passed the origin guard; one that does not read sends nothing anyway.
+    }
+    const basePath = pathname.split("/").filter((piece) => piece !== "").map((piece) => {
+      try {
+        return decodeURIComponent(piece);
+      } catch {
+        return piece;
+      }
+    });
+    return { basePath, cloudflarePrefix: null };
+  }
+  return DIRECT_ROUTE;
+}
+
+/** Where a path sent on a host reaches: the host, and each path the provider may read it as. */
+export interface UpstreamTargets {
+  /** A key of the provider's `hosts`. The main host stands for the base URL or Cloudflare too. */
+  readonly host: string;
+  readonly paths: readonly (readonly TemplateSegment[])[];
+}
+
+const literal = (value: string): TemplateSegment => ({ kind: "literal", value });
+
+/**
+ * The upstream targets of `path` (decoded request segments as literals, or a
+ * template) sent to `hostKey` on `route`, written as the provider reads its
+ * paths. The one place this is worked out; saving and serving both use it.
+ *
+ * - Direct: the path itself, under the host's own path prefix.
+ * - A base URL (main host only): its path, then the request's. Where the base
+ *   URL mounts the provider is not known, so each way of reading it is a
+ *   target: the whole base path, then without its first segment, and so on.
+ * - Cloudflare AI Gateway (main host only): Cloudflare's provider endpoint
+ *   adds back its prefix (`cloudflarePrefix`). A path that may or may not
+ *   start with it (a `{name}` part there) has both targets.
+ *
+ * Null for a host Cloudflare does not serve: nothing is sent there.
+ */
+export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: readonly TemplateSegment[]): UpstreamTargets | null {
+  if (hostKey !== "main") return route.cloudflarePrefix !== null ? null : { host: hostKey, paths: [path] };
+  const prefix = route.cloudflarePrefix;
+  if (prefix !== null) {
+    if (prefix.length === 0) return { host: "main", paths: [path] };
+    const added = [...prefix.map(literal), ...path];
+    const head = path.slice(0, prefix.length);
+    const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
+    if (starts) return { host: "main", paths: [path] };
+    const may =
+      head.length === prefix.length &&
+      head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: prefix[index]! }));
+    return { host: "main", paths: may ? [path, added] : [added] };
+  }
+  const base = route.basePath;
+  if (base !== null && base.length > 0) {
+    const paths: (readonly TemplateSegment[])[] = base.map((_, from) => [...base.slice(from).map(literal), ...path]);
+    paths.push(path);
+    return { host: "main", paths };
+  }
+  return { host: "main", paths: [path] };
+}
+
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
   readonly passthrough?: readonly CompiledPassthrough[];
+  /** The connection's route (`upstreamRoute`). Direct when left out. */
+  readonly route?: UpstreamRoute;
 }
 
 export class ProviderMatcher {
@@ -218,10 +320,14 @@ export class ProviderMatcher {
       }
     }
 
+    const route = context.route ?? DIRECT_ROUTE;
     for (const listed of context.passthrough ?? []) {
       if (listed.listed.method !== method) continue;
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
+      // Refused paths are judged again where the request really goes.
+      const refused = this.refusedAt(upstreamTargets(route, "main", segments.map(literal)));
+      if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "passthrough", listed: listed.listed, parts, upstream: { host: "main", path: joinSegments(segments) } };
     }
 
@@ -231,6 +337,9 @@ export class ProviderMatcher {
       if (parts === null) continue;
       const path = compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts);
       if (path === null) return { kind: "refused", reason: "bad_path", detail: "dot_segment" };
+      const sent = normalizePath(path);
+      const refused = sent.ok ? this.refusedAt(upstreamTargets(route, compiled.host, sent.segments.map(literal))) : null;
+      if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
 
@@ -238,34 +347,59 @@ export class ProviderMatcher {
   }
 
   /**
-   * The refused path that takes every request a listed path could match,
-   * whatever its parts hold, or null. Such a listing could never be reached:
-   * refused paths are checked first. One that takes only some of them is not
-   * reported, for the same reason.
+   * The first refused path that takes every path of one of `targets` (a
+   * `{name}` part stands for any value), or null. Only the main host has
+   * refused paths: the others serve declared operations only.
    */
-  refusedCovering(listed: CompiledPassthrough): string | null {
-    const segments = listed.template.segments.map((segment) =>
-      segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
-    );
-    for (const pattern of this.refused) {
-      if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return pattern.source;
+  private refusedAt(targets: UpstreamTargets | null): string | null {
+    if (targets === null || targets.host !== "main") return null;
+    for (const path of targets.paths) {
+      const segments = path.map((segment) =>
+        segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
+      );
+      for (const pattern of this.refused) {
+        if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return pattern.source;
+      }
     }
     return null;
   }
 
   /**
-   * The first declared operation, of the listing's method, that some request
-   * path matches as well as the listed path, or null. Listed paths are
-   * matched before declared operations (plan section 4.5), so any overlap
-   * would let a listing take a declared operation's requests unmetered:
-   * saving refuses it. A `{name...}` part with a closed list overlaps only
-   * through a value on that list; the priced-models list through any value.
+   * The refused path that takes every request a listed path could match on
+   * `route`, whatever its parts hold, at the gateway or where the request
+   * goes, or null. Such a listing could never be reached: refused paths are
+   * checked first, on both. One that takes only some of them is not
+   * reported, for the same reason.
    */
-  overlappingOperation(listed: CompiledPassthrough): string | null {
+  refusedCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
+    const gateway = this.refusedAt({ host: "main", paths: [listed.template.segments] });
+    return gateway ?? this.refusedAt(upstreamTargets(route, "main", listed.template.segments));
+  }
+
+  /**
+   * The first declared operation, of the listing's method, whose requests a
+   * listed path could also take on `route`, or null. Listed paths are matched
+   * before declared operations (plan section 4.5), so any overlap would let a
+   * listing take a declared operation's requests unmetered: saving refuses
+   * it. They overlap when some gateway path matches both, or when some path
+   * the provider reads matches both upstream targets (`upstreamTargets`): a
+   * listing's, and the operation's upstream path on its host. A `{name...}`
+   * part with a closed list overlaps only through a value on that list; the
+   * priced-models list through any value.
+   */
+  overlappingOperation(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
     const mine = listed.template.segments as readonly SegmentPattern[];
+    const sent = upstreamTargets(route, "main", mine);
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== listed.listed.method) continue;
-      if (templatesMeet(mine, compiled)) return compiled.operation.name;
+      if (templatesMeet(mine, compiled.template.segments, compiled.closedLists)) return compiled.operation.name;
+      const theirs = upstreamTargets(route, compiled.host, (compiled.upstream ?? compiled.template).segments);
+      if (sent === null || theirs === null || theirs.host !== sent.host) continue;
+      for (const path of sent.paths) {
+        if (theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists))) {
+          return compiled.operation.name;
+        }
+      }
     }
     return null;
   }
@@ -299,9 +433,8 @@ export class ProviderMatcher {
   }
 }
 
-/** Whether some request path matches both a listed path and a declared operation's path. */
-function templatesMeet(listed: readonly SegmentPattern[], compiled: CompiledOperation): boolean {
-  const pattern = compiled.template.segments;
+/** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */
+function templatesMeet(listed: readonly SegmentPattern[], pattern: readonly TemplateSegment[], closedLists: ClosedLists): boolean {
   const multiAt = pattern.findIndex((segment) => segment.kind === "multi");
   const meetAll = (theirs: readonly TemplateSegment[], at: number) =>
     theirs.every((segment, index) => segment.kind !== "multi" && segment.kind !== "rest" && segmentsMeet(listed[at + index]!, segment));
@@ -311,7 +444,7 @@ function templatesMeet(listed: readonly SegmentPattern[], compiled: CompiledOper
   const middle = listed.length - before.length - after.length;
   if (middle < 1 || !meetAll(before, 0) || !meetAll(after, listed.length - after.length)) return false;
   const name = (pattern[multiAt] as Extract<TemplateSegment, { kind: "multi" }>).name;
-  const list = compiled.closedLists[name];
+  const list = closedLists[name];
   if (list === undefined) return false;
   // Any value fills the middle segments: each listed segment has some value.
   if (list === "any") return true;
