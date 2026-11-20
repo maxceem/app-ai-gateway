@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { priceUnits, priceUnitsMixed, priceUnitsPer, priceUnitsSum, rate } from "../src/money.ts";
-import { billing, CHECK_PROBES, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { billing, CHECK_PROBES, listedModelProblem, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, servedModes, type CustomerRates } from "../src/pricing/prices.ts";
 import { costAtRate, costOfRates, priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
@@ -39,11 +39,14 @@ describe("Fable's cases: save, eligibility and the charge agree", () => {
     // Saving the rates on a connection that can only speak refuses it too, for the same reason.
     const speaking = elevenlabs.operations.filter((op) => op.name.startsWith("elevenlabs.tts"));
     expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", speaking)).toMatchObject({ kind: "bills_nothing" });
-    // Speech to text could bill credits alone, but text to speech, which the model also reaches, only partly: refused (4b S3).
-    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toMatchObject({
-      kind: "bills_nothing",
-      operation: expect.stringMatching(/^elevenlabs\.tts/u),
-    });
+    // A connection save does not know which operations apps enable: credits alone bill speech to text, so it saves (4b S6).
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
+    // An app enabling text to speech for it is refused: an answer without its header cannot be charged.
+    const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
+    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toEqual({ operation: "elevenlabs.tts" });
+    // An app enabling only speech to text lists it.
+    const stt = elevenlabs.operations.filter((op) => op.name === "elevenlabs.stt");
+    expect(listedModelProblem(stt, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toBeNull();
   });
 
   it("both rates, plus a key value stating only credits: every case is charged, so all three accept", () => {

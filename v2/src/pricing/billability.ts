@@ -185,11 +185,17 @@ function reach(operation: OperationDescription, price: ModelPrice, mode: Service
  * reports its own cost charges fully whatever the price, as a listed model is
  * served there (`billingAt`); a connection's rates are judged on what they
  * price themselves.
+ *
+ * `partialBlocks` says whether partial reach refuses. An app save knows the
+ * operations it enables, so it always does. A connection save does not, so
+ * for a model the price list gives no kind it does not: the app that enables
+ * an operation is refused there instead.
  */
 function firstGap(
   operations: readonly OperationDescription[],
   price: ModelPrice,
   costCounts = false,
+  partialBlocks = true,
 ): { readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string } | null {
   const modes = servedModes(price);
   // An operation sees only the keys it reads, so many combinations are the same check: each is run once.
@@ -204,7 +210,7 @@ function firstGap(
   for (const candidate of keyCandidates(price).candidates) {
     for (const mode of modes) {
       const reaches = operations.map((operation) => reachOf(operation, mode, candidate.values));
-      const partly = reaches.indexOf("partial");
+      const partly = partialBlocks ? reaches.indexOf("partial") : -1;
       if (partly !== -1) return { values: candidate.values, mode: serviceModeName(mode), operation: operations[partly]!.name };
       if (!reaches.includes("full")) return { values: candidate.values, mode: serviceModeName(mode) };
     }
@@ -358,6 +364,8 @@ export function savedPriceProblem(
     const empty = effectivePrices(price).find((one) => Object.keys(one.price.rates).length === 0);
     return empty === undefined ? null : { kind: "bills_nothing", values: empty.values, mode: empty.mode };
   }
-  const gap = firstGap(operations, price);
+  // The connection does not know which operations an app will enable: a model with no listed kind
+  // needs only one it charges fully; the app save refuses the ones it charges partly.
+  const gap = firstGap(operations, price, false, price.kind !== undefined);
   return gap === null ? null : { kind: "bills_nothing", ...gap };
 }
