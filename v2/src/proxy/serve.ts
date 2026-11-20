@@ -728,8 +728,13 @@ export async function sendAttempts(
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
     // The budget is checked before anything is opened or built for a fallback.
+    // With a failed answer held and no time left for another, that answer is
+    // passed on as it is, never a gateway error.
     if (deadline !== undefined && deadline - Date.now() <= 0) {
-      if (previous !== null) retire(c, previous);
+      if (previous !== null) {
+        budgetExhausted(index);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      }
       throw budgetExhausted(index);
     }
     let secret: string;

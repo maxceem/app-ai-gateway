@@ -90,10 +90,19 @@ function fakeContext(): { c: ProxyContext; done: () => Promise<unknown> } {
   return { c, done: () => Promise.allSettled(waits) };
 }
 
+/** The charge rows one call wrote. */
+async function chargesOfCall(requestId: string): Promise<Record<string, any>[]> {
+  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE owner_id = ? ORDER BY seq").bind(requestId).all();
+  return results;
+}
+
 const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), contentType: "application/json" });
 
 /** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */
-function unitAttempt(seq: number, overrides: Partial<{ secret: () => Promise<string>; body: () => ReturnType<typeof jsonBody> }> = {}) {
+function unitAttempt(
+  seq: number,
+  overrides: Partial<{ secret: () => Promise<string>; body: () => ReturnType<typeof jsonBody>; requestId: string }> = {},
+) {
   const description = BUILT_IN_PROVIDERS.openai!;
   return {
     connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null },
@@ -105,7 +114,7 @@ function unitAttempt(seq: number, overrides: Partial<{ secret: () => Promise<str
     secret: overrides.secret ?? vi.fn(async () => SECRET),
     body: overrides.body ?? vi.fn(jsonBody),
     attempt: {
-      requestId: "req_unit",
+      requestId: overrides.requestId ?? "req_unit",
       seq,
       accountId: ACCOUNT_ID,
       appId: "app_unit",
@@ -347,6 +356,7 @@ describe("presets", () => {
     expect(passed.response.status).toBe(503);
     expect(JSON.parse(passed.text)).toEqual({ error: { code: "busy" } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect((await charges(appId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
   });
 
   it("sends nothing more once the app went away", async () => {
@@ -381,20 +391,47 @@ describe("presets", () => {
     expect(providerSignal?.aborted).toBe(false);
   });
 
-  it("gives a fallback only what is left of the first-byte budget, never building an expired one's body", async () => {
+  it("passes the held 503 on when the budget is gone before a fallback, never building its body", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const { c, done } = fakeContext();
-      const fallback = unitAttempt(2, { body: vi.fn(jsonBody) });
+      const requestId = `req_${crypto.randomUUID()}`;
+      const fallback = unitAttempt(2, { body: vi.fn(jsonBody), requestId });
       fetchSpy.mockImplementation(async () => {
         vi.setSystemTime(Date.now() + 121_000);
-        return new Response("busy", { status: 503 });
+        return Response.json({ error: { code: "busy" } }, { status: 503 });
       });
-      await expect(sendAttempts(c, [], [unitAttempt(1), fallback])).rejects.toMatchObject({ status: 504 });
+      const response = await sendAttempts(c, [], [unitAttempt(1, { requestId }), fallback]);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "busy" } });
       await done();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fallback.body).not.toHaveBeenCalled();
       expect(fallback.secret).not.toHaveBeenCalled();
+      expect((await chargesOfCall(requestId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes the held 503 on when a fallback's key uses up the budget, sending nothing after it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { c, done } = fakeContext();
+      const requestId = `req_${crypto.randomUUID()}`;
+      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)), requestId });
+      const after = unitAttempt(3, { requestId });
+      fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
+      const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging, after]);
+      await vi.advanceTimersByTimeAsync(120_001);
+      const response = await answered;
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "busy" } });
+      await done();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(after.secret).not.toHaveBeenCalled();
+      expect(after.body).not.toHaveBeenCalled();
+      expect((await chargesOfCall(requestId)).map((row) => row.seq)).toEqual([1]);
     } finally {
       vi.useRealTimers();
     }
@@ -415,9 +452,10 @@ describe("presets", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const { c, done } = fakeContext();
-      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)) });
+      const requestId = `req_${crypto.randomUUID()}`;
+      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)), requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
-      const answered = sendAttempts(c, [], [unitAttempt(1), hanging]);
+      const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging]);
       await vi.advanceTimersByTimeAsync(120_001);
       const response = await answered;
       expect(response.status).toBe(503);
@@ -425,6 +463,7 @@ describe("presets", () => {
       await done();
       expect(hanging.secret).toHaveBeenCalledTimes(1);
       expect(hanging.body).not.toHaveBeenCalled();
+      expect((await chargesOfCall(requestId)).map((row) => row.seq)).toEqual([1]);
     } finally {
       vi.useRealTimers();
     }
