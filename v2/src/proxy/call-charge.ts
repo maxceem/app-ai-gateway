@@ -33,11 +33,11 @@ import { log } from "../core/log.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
-import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
-import type { UsageObservation } from "../usage/observation.ts";
+import { withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { Alternatives } from "./alternatives.ts";
 
@@ -97,6 +97,16 @@ export interface AttemptOutcome {
   readonly latencyMs: number | null;
 }
 
+/** `priceInServedMode`, with a figure too large to price read as no price, so the caller can fall back. */
+function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceMode, doubt: boolean): ReturnType<typeof priceInServedMode> {
+  try {
+    return priceInServedMode(price, usage, mode, doubt);
+  } catch (error) {
+    if (error instanceof MoneyError) return null;
+    throw error;
+  }
+}
+
 export function chargeId(requestId: string, seq: number): string {
   return `${requestId}:${seq}`;
 }
@@ -110,7 +120,7 @@ interface Costed {
 
 export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = Date.now()): LedgerEntry {
   const id = chargeId(attempt.requestId, attempt.seq);
-  const { usage } = outcome;
+  let { usage } = outcome;
   const servedMode = outcome.servedMode ?? attempt.requestedMode;
   const succeeded = outcome.status === "ok" || outcome.status === "client_aborted";
   // The provider said yes (2xx), so an answer cut short may have been billed.
@@ -128,7 +138,19 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     usage?.finalEventUnread === true;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
-  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
+  let priced = usage === null || attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, servedMode, modeUnknown);
+  if (priced === null && attempt.price !== null && usage !== null && reported === null && usage.reportMissing !== true) {
+    // A report whose charge cannot be stored (a figure far too large) is no
+    // report: the request's estimate prices the call instead, as when a
+    // header is missing.
+    const fallback = withoutReport(usage);
+    const repriced = fallback === null ? null : pricedOrNull(attempt.price.price, fallback, servedMode, modeUnknown);
+    if (repriced !== null) {
+      log("warn", "usage_report_unpriceable", facts);
+      usage = fallback;
+      priced = repriced;
+    }
+  }
 
   let costed: Costed;
   let measured: Measured;

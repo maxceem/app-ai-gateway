@@ -39,8 +39,11 @@ describe("Fable's cases: save, eligibility and the charge agree", () => {
     // Saving the rates on a connection that can only speak refuses it too, for the same reason.
     const speaking = elevenlabs.operations.filter((op) => op.name.startsWith("elevenlabs.tts"));
     expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", speaking)).toMatchObject({ kind: "bills_nothing" });
-    // Speech to text reports credits with no estimate beside them, so credits alone bill it: the connection's rates save.
-    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
+    // Speech to text could bill credits alone, but text to speech, which the model also reaches, only partly: refused (4b S3).
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toMatchObject({
+      kind: "bills_nothing",
+      operation: expect.stringMatching(/^elevenlabs\.tts/u),
+    });
   });
 
   it("both rates, plus a key value stating only credits: every case is charged, so all three accept", () => {

@@ -235,6 +235,12 @@ export interface OutboundFields {
   readonly fetches?: readonly FieldRef[];
   /** Fetch fields the operation needs: kept. Listed so a reader sees they were judged. */
   readonly fetchKept?: readonly FieldRef[];
+  /**
+   * Fields a provider would take as a credential instead of the key, such as
+   * ElevenLabs' single-use `token`: removed, so a request reaches the
+   * provider with the gateway's key alone.
+   */
+  readonly credentials?: readonly FieldRef[];
 }
 
 /** A request option that turns a call into background work. */
@@ -325,6 +331,13 @@ export interface OperationDescription {
   readonly background?: readonly BackgroundOption[];
   readonly meter: Meter;
   readonly priceKeys?: readonly PriceKey[];
+  /**
+   * The price list's kinds of model it serves, such as `speech`. A model the
+   * list names with another kind (a transcription model beside it on the same
+   * connection) is not one it is saved against. A model with no kind is judged
+   * by its price alone.
+   */
+  readonly modelKinds?: readonly string[];
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }

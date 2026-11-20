@@ -998,7 +998,8 @@ function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome):
 /**
  * The attempt's charge. If pricing throws (a cost too large to store, say),
  * the charge is still written, unpriced, and the failure is logged: a charge
- * is never lost or silently miscounted.
+ * is never lost or silently miscounted. The retry carries neither the price
+ * nor the provider's own figure, so it never meets the same throwing report.
  */
 function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
   try {
@@ -1010,7 +1011,7 @@ function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
       model: attempt.model,
       error: errorFacts(error),
     });
-    return callCharge({ ...attempt, price: null }, outcome);
+    return callCharge({ ...attempt, price: null }, { ...outcome, providerCostUsd: null });
   }
 }
 

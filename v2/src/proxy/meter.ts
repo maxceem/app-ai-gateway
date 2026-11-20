@@ -14,6 +14,7 @@ import { builtInProvider } from "../providers/index.ts";
 import { listedAs } from "../providers/listing.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { errorFacts } from "../core/error-facts.ts";
+import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import type { Unit } from "../providers/operation.ts";
@@ -257,16 +258,32 @@ export function responseReader(
   };
 }
 
+/** A plain decimal, with an optional exponent: no sign, no hex, no `Infinity`. */
+const DECIMAL = /^\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$/u;
+
+/**
+ * A number a provider sends in a header, or null when it is not one. The one
+ * parser for every header meter and header cost report: a plain decimal 0 or
+ * more. A figure that is not finite, or a positive one so small it reads as
+ * 0, is no number.
+ */
+export function headerNumber(text: string | null): number | null {
+  if (text === null || !DECIMAL.test(text)) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+  // `1e-400` reads as 0: a positive figure lost to underflow is not a zero.
+  if (value === 0 && /[1-9]/u.test(text.replace(/[eE].*$/u, ""))) return null;
+  return value;
+}
+
 /**
  * The billed amount a response header reports (ElevenLabs' `character-cost`,
  * fal's `x-fal-billable-units`), as a usage in the meter's unit, or null when
  * the header is missing or not a number 0 or more.
  */
 export function headerUsage(headers: Headers, header: string, unit: Unit): UsageObservation | null {
-  const text = headers.get(header);
-  if (text === null || text.trim() === "") return null;
-  const value = Number(text);
-  if (!Number.isFinite(value) || value < 0) return null;
+  const value = headerNumber(headers.get(header));
+  if (value === null) return null;
   // A figure too large to count exactly is no report: the estimate bills instead.
   const count = scaledCount(unit, value);
   if (!Number.isSafeInteger(count)) return null;
@@ -286,10 +303,16 @@ export function attemptCostUsd(operation: OperationDescription, reading: Respons
   if (meter.kind !== "response_header" || meter.providerCost === undefined) return null;
   const { header, currency } = meter.providerCost;
   if (currency !== undefined && headers.get(currency.header)?.trim().toLowerCase() !== currency.value.toLowerCase()) return null;
-  const text = headers.get(header);
-  if (text === null || text.trim() === "") return null;
-  const value = Number(text);
-  return Number.isFinite(value) && value >= 0 ? value : null;
+  const value = headerNumber(headers.get(header));
+  if (value === null) return null;
+  // A figure too large to store as a charge is no report: the meter's own measure prices the call instead.
+  try {
+    fromDollars(value);
+  } catch {
+    log("warn", "provider_cost_unusable", { operation: operation.name, header });
+    return null;
+  }
+  return value;
 }
 
 /**

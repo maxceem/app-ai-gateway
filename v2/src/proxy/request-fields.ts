@@ -51,7 +51,7 @@ export function requestFormFields(operation: OperationDescription): string[] {
   const refs: FieldRef[] = [...(operation.priceKeys ?? []).map((key) => key.from)];
   const measure = requestMeasureOf(operation.meter);
   if (measure !== null) refs.push({ in: "form", field: measure.field });
-  for (const ref of [...(operation.outbound?.webhooks ?? []), ...(operation.outbound?.fetches ?? [])]) refs.push(ref);
+  for (const ref of outboundRemoved(operation)) refs.push(ref);
   return refs.filter((ref) => ref.in !== "query").map((ref) => ref.field);
 }
 
@@ -156,9 +156,10 @@ export function removeOutboundForm(operation: OperationDescription, form: FormDa
   for (const ref of outboundRemoved(operation)) if (ref.in === "form" || ref.in === "body") form.delete(ref.field);
 }
 
-/** Fields an operation removes before sending: every webhook field, and fetch fields it does not need. */
+/** Fields an operation removes before sending: every webhook field, fetch fields it does not need, and client credentials. */
 function outboundRemoved(operation: OperationDescription): FieldRef[] {
-  return [...(operation.outbound?.webhooks ?? []), ...(operation.outbound?.fetches ?? [])];
+  const outbound = operation.outbound;
+  return [...(outbound?.webhooks ?? []), ...(outbound?.fetches ?? []), ...(outbound?.credentials ?? [])];
 }
 
 /**

@@ -6,11 +6,12 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { billing, priceSources } from "../src/pricing/billability.ts";
+import { billing, listedModelProblem, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
-import { attemptCostUsd } from "../src/proxy/meter.ts";
+import { attemptCostUsd, headerNumber } from "../src/proxy/meter.ts";
 import { servedNow } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -124,6 +125,37 @@ describe("ElevenLabs operations", () => {
     expect(billing(stt, priceSources({ type: "elevenlabs", rates: null }), "scribe_v9")).toMatchObject({ problem: null, reportsCost: true, price: null });
   });
 
+  it("reads header numbers as plain decimals only: no hex, no infinity, no underflow to 0 (4b S1)", () => {
+    expect(headerNumber("33")).toBe(33);
+    expect(headerNumber(" 2.5 ")).toBe(2.5);
+    expect(headerNumber("0")).toBe(0);
+    expect(headerNumber("0.0005")).toBe(0.0005);
+    expect(headerNumber("5e-4")).toBe(0.0005);
+    for (const bad of ["0x21", "0b11", "-1", "+3", "Infinity", "1e400", "1e-400", "", "  ", "lots", "1,000", null]) {
+      expect(headerNumber(bad), String(bad)).toBeNull();
+    }
+  });
+
+  it("refuses a credits-only price for a text-to-speech model, even beside speech to text, since an answer without its header cannot be charged (4b S3)", () => {
+    const stored = { eleven_multilingual_v2: { per_credit: 80_000 } };
+    expect(savedPriceProblem(stored, "eleven_multilingual_v2", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "bills_nothing", operation: expect.stringMatching(/^elevenlabs\.tts/u) });
+    const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
+    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: stored }), "eleven_multilingual_v2")).toEqual({ operation: "elevenlabs.tts" });
+    // Both rates: every way text to speech answers is charged, and the model lists beside speech to text.
+    const both = { eleven_multilingual_v2: { per_credit: 80_000, per_million_characters: 80_000_000_000 } };
+    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: both }), "eleven_multilingual_v2")).toBeNull();
+    // A transcription model is not judged against text to speech, so it lists beside it.
+    expect(listedModelProblem(elevenlabs.operations, priceSources({ type: "elevenlabs", rates: null }), "scribe_v2")).toBeNull();
+    // A model priced for an operation it cannot reach at all is still fine there: whisper-1 beside chat (3a-2 S1).
+    const openai = BUILT_IN_PROVIDERS.openai!.operations.filter((op) => op.name === "openai.chat" || op.name === "openai.transcription");
+    expect(listedModelProblem(openai, priceSources({ type: "openai", rates: null }), "whisper-1")).toBeNull();
+  });
+
+  it("prices the flash v2 and Scribe v3 models like their siblings (4b S4)", () => {
+    expect(listPrice("elevenlabs", "eleven_flash_v2")!.rates).toEqual(listPrice("elevenlabs", "eleven_flash_v2_5")!.rates);
+    expect(listPrice("elevenlabs", "scribe_v3")!.rates).toEqual(listPrice("elevenlabs", "scribe_v2")!.rates);
+  });
+
   it("reads ElevenLabs' dollar figure only in US dollars and as a number 0 or more", () => {
     const stt = elevenlabs.operations.find((op) => op.name === "elevenlabs.stt")!;
     const cost = (headers: Record<string, string>) => attemptCostUsd(stt, null, new Headers(headers));
@@ -191,6 +223,23 @@ describe("text to speech through the proxy", () => {
     expect(await chargesOf(appId)).toMatchObject([{ operation: "elevenlabs.tts_timestamps", cost_nano: 2_640_000 }]);
   });
 
+  it("bills the request's characters when the header is not a plain decimal (4b S1)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
+    fetchSpy.mockResolvedValue(audio("0x21"));
+    await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello", model_id: "eleven_flash_v2_5" });
+    expect(await chargesOf(appId)).toMatchObject([{ unit: "characters", measured: "estimated", cost_nano: 200_000 }]);
+  });
+
+  it("bills the request's characters when the credits reported are too large to charge, never leaving the call unpriced (4b S2)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValue(audio("1e12"));
+    await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello", model_id: "eleven_multilingual_v2" });
+    // 5 characters at $80 per million.
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", unit: "characters", measured: "estimated", price_source: "list_rate", cost_nano: 400_000 }]);
+    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_report_unpriceable"));
+  });
+
   it("bills credits at the customer's own rate per credit", async () => {
     // $0.00005 a credit, stored as nano-dollars; characters at $50 per million.
     const { appId, slug, key } = await setup(
@@ -242,6 +291,36 @@ describe("speech to text through the proxy", () => {
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v2", file: new Blob([new Uint8Array(8)]) });
     // 5 credits at $0.0001 each.
     expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+  });
+
+  it("bills the credits when ElevenLabs' dollar figure is too large to store, and never retries that figure (4b S2)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValue(
+      Response.json({ text: "Hello." }, { headers: { "character-cost": "5", "fiat-cost-before-overages": "1e300", "fiat-currency": "usd" } }),
+    );
+    await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v2", file: new Blob([new Uint8Array(8)]) });
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_unusable"));
+  });
+
+  it("bills Scribe v3's credits at the list rate when no dollar figure comes (4b S4)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
+    fetchSpy.mockResolvedValue(Response.json({ text: "Hello." }, { headers: { "character-cost": "5" } }));
+    await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v3", file: new Blob([new Uint8Array(8)]) });
+    expect(await chargesOf(appId)).toMatchObject([{ model: "scribe_v3", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+  });
+
+  it("never sends a client's single-use token, and keeps the other query options (4b S5)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
+    fetchSpy.mockResolvedValue(Response.json({ text: "Hello." }, { headers: { "character-cost": "5", "fiat-cost-before-overages": "0.0005", "fiat-currency": "usd" } }));
+    await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text?token=sutkn_client&enable_logging=false`, key, {
+      model_id: "scribe_v2",
+      file: new Blob([new Uint8Array(8)]),
+    });
+    const sent = new URL(String(fetchSpy.mock.calls[0]![0]));
+    expect(sent.searchParams.has("token")).toBe(false);
+    expect(sent.searchParams.get("enable_logging")).toBe("false");
   });
 
   it("leaves the cost unresolved and logged when a model with no price of ours gets no dollar figure", async () => {

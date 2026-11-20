@@ -87,3 +87,26 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly finalEventUnread?: true;
 }
+
+/**
+ * The usage as if the provider had reported nothing: only the units worked
+ * out from the request, marked `reportMissing`, or null when there are none.
+ * A report whose charge cannot be stored (a figure far too large) is treated
+ * this way, so the request's estimate prices the call instead.
+ */
+export function withoutReport(usage: UsageObservation): UsageObservation | null {
+  const estimated = usage.estimatedUnits ?? [];
+  const units = Object.fromEntries(Object.entries(usage.units ?? {}).filter(([unit]) => estimated.includes(unit as Unit)));
+  if (Object.keys(units).length === 0) return null;
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    noTokens: true,
+    units,
+    estimatedUnits: estimated,
+    reportMissing: true,
+    ...(usage.priceKeys !== undefined ? { priceKeys: usage.priceKeys } : {}),
+  };
+}

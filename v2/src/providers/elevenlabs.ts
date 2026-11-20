@@ -59,6 +59,7 @@ export const elevenlabs = defineProvider({
       lifecycle: "call",
       transport: "stream",
       model: ttsModel,
+      modelKinds: ["speech"],
       meter: ttsMeter,
     }),
     defineOperation({
@@ -67,6 +68,7 @@ export const elevenlabs = defineProvider({
       lifecycle: "call",
       transport: "stream",
       model: ttsModel,
+      modelKinds: ["speech"],
       meter: ttsMeter,
     }),
     defineOperation({
@@ -75,6 +77,7 @@ export const elevenlabs = defineProvider({
       lifecycle: "call",
       transport: "http",
       model: ttsModel,
+      modelKinds: ["speech"],
       meter: ttsMeter,
     }),
     defineOperation({
@@ -83,6 +86,7 @@ export const elevenlabs = defineProvider({
       lifecycle: "call",
       transport: "binary",
       model: ttsModel,
+      modelKinds: ["speech"],
       meter: ttsMeter,
     }),
     defineOperation({
@@ -91,6 +95,7 @@ export const elevenlabs = defineProvider({
       lifecycle: "call",
       transport: "upload",
       model: { in: "body", field: "model_id" },
+      modelKinds: ["transcription"],
       outbound: {
         // A webhook answers later, outside the gateway: the request is kept synchronous.
         webhooks: [
@@ -100,6 +105,8 @@ export const elevenlabs = defineProvider({
         ],
         // The audio to transcribe, when it is not uploaded: the operation needs it.
         fetchKept: [{ in: "form", field: "cloud_storage_url" }],
+        // A single-use token a client could send: the gateway's key is the only credential.
+        credentials: [{ in: "query", field: "token" }],
       },
       meter: {
         kind: "response_header",

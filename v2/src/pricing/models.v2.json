@@ -38,6 +38,12 @@
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
+    "eleven_flash_v2": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
     "eleven_turbo_v2_5": {
       "kind": "speech",
       "per_credit": 0.00008,
@@ -62,6 +68,11 @@
       "author": "ElevenLabs"
     },
     "scribe_v2": {
+      "kind": "transcription",
+      "per_credit": 0.0001,
+      "author": "ElevenLabs"
+    },
+    "scribe_v3": {
       "kind": "transcription",
       "per_credit": 0.0001,
       "author": "ElevenLabs"
