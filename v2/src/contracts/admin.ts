@@ -148,6 +148,23 @@ export const ModelPricingSchema = z
 
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
+/**
+ * A path a provider connection lists for passthrough (plan section 4.5): a
+ * path of the provider the gateway does not declare, forwarded as it is to
+ * apps that enable `passthrough`. `{name}` parts match exactly one segment.
+ */
+export const PassthroughPathSchema = z
+  .object({
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+    path: z.string().trim().min(1).max(500),
+    /** A flat price per request, in dollars, charged for each answer the provider accepts. Without it, its calls are not priced and budgets are not enforced on them. */
+    per_request: z.number().finite().nonnegative().optional(),
+  })
+  .strict()
+  .meta({ id: "PassthroughPath" });
+
+const PassthroughListSchema = z.array(PassthroughPathSchema).max(100, { error: "passthrough may list at most 100 paths" });
+
 export const ProviderSchema = z
   .object({
     id: z.string(),
@@ -169,6 +186,8 @@ export const ProviderSchema = z
       .optional(),
     /** For Vercel AI Gateway: the serving providers pinned on every request (`providerOptions.gateway.only`). */
     servingProviders: z.array(z.string()).nullable().optional(),
+    /** The paths it lists for passthrough. Left out when it lists none. */
+    passthrough: z.array(PassthroughPathSchema).optional(),
     pricing: ProviderPricingSchema.nullable(),
     revision: z.number().int().positive(),
     createdAt: z.string(),
@@ -214,6 +233,8 @@ export const ProviderCreateRequestSchema = z
     baseUrl: z.string().optional(),
     cloudflareGateway: CloudflareGatewayInputSchema.optional(),
     servingProviders: ServingProvidersSchema.optional(),
+    /** Paths to forward as they are, to apps that enable `passthrough` on this connection. */
+    passthrough: PassthroughListSchema.optional(),
     pricing: ProviderPricingSchema.optional(),
   })
   .strict()
@@ -233,6 +254,8 @@ export const ProviderUpdateRequestSchema = z
     cloudflareGateway: CloudflareGatewayInputSchema.partial({ token: true }).nullable().optional(),
     /** The serving providers to pin, or null to stop pinning. */
     servingProviders: ServingProvidersSchema.nullable().optional(),
+    /** The whole new list of passthrough paths, or null to list none. */
+    passthrough: PassthroughListSchema.nullable().optional(),
     pricing: ProviderPricingSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })

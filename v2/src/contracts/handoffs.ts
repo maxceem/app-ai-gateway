@@ -27,9 +27,10 @@ import {
 /**
  * Adding a provider connection: everything `createProvider` takes but the key,
  * and but a Cloudflare AI Gateway setting, whose token is a secret this flow
- * does not carry. A person sets that in the console.
+ * does not carry. A person sets that in the console. Passthrough paths are
+ * left out too: listing them is a trust choice a person makes in the console.
  */
-export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true })
+export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true, passthrough: true })
   .strict()
   .meta({ id: "ProviderHandoffRequest" });
 

@@ -54,15 +54,52 @@ export const elevenlabs = defineProvider({
   auth: { header: "xi-api-key", format: "{key}" },
   // ElevenLabs has no service modes on these APIs.
   serviceModes: [],
-  // First draft. Step 5 reviews the refused paths of every provider.
+  // A closed set, not every resource a key could change (plan section 4.5:
+  // admin and key-creation paths; the provider research's "never expose"
+  // list). Anything else a customer lists is their own trust choice.
+  // `test/elevenlabs-refused.test.ts` checks every operation of ElevenLabs'
+  // API against this set, both ways.
   refused: [
+    // The account and its admin: user, workspaces and their team, service
+    // accounts and their API keys, usage, and billing actions.
     "v1/user/*",
     "v1/workspace/*",
+    "v1/workspaces/*",
     "v1/service-accounts/*",
-    "v1/history/*",
     "v1/usage/*",
-    "v1/voices/add",
-    "v1/voices/{voice_id}/edit",
+    "v1/reception/reseller/workspaces/*",
+    "v1/reception/team/*",
+    "v1/reception/reseller/billing/*",
+    { path: "v1/productions/orders/{order_id}/submit", methods: ["POST"] },
+    // Account-wide history, which holds every app's generations.
+    "v1/history/*",
+    "v1/audio-isolation/history/*",
+    // Stored credentials.
+    "v1/convai/secrets/*",
+    { path: "v1/convai/environment-variables/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
+    // Deleting an environment removes its values from every environment variable.
+    { path: "v1/convai/environments/{environment}", methods: ["DELETE"] },
+    // Tokens and signed URLs for live sessions, until a customer can opt in
+    // to them path by path (plan D4).
+    "v1/convai/conversation/token/*",
+    "v1/convai/conversation/get-signed-url/*",
+    "v1/convai/conversation/get_signed_url/*",
+    "v1/convai/realtime/client_secrets/*",
+    "v1/single-use-token/*",
+    // An agent's link answers with a conversation token. Agent reads may hold
+    // a `shareable_token` too; they stay allowed, since passthrough never
+    // changes a body and the customer turns sharing on themselves.
+    { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
+    // From the research: deleting a voice (not a collection, a voice's place
+    // in one, or a sample), and creating, changing or deleting agents and
+    // their settings (not queries under an agent, such as `rag-query`).
+    { path: "v1/voices/{voice_id}", methods: ["DELETE"] },
+    "v1/convai/agents/create",
+    { path: "v1/convai/agents/{agent_id}/duplicate", methods: ["POST"] },
+    { path: "v1/convai/agents/{agent_id}", methods: ["PUT", "PATCH", "DELETE"] },
+    { path: "v1/convai/agents/{agent_id}/avatar", methods: ["POST"] },
+    { path: "v1/convai/agents/{agent_id}/hold-audio", methods: ["POST", "DELETE"] },
+    { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

@@ -22,7 +22,7 @@
  * limit, budget or allowance that does not answer is skipped and the request
  * is served, logged as a warning (`AGENTS.md`).
  */
-import { configuredBudgetScope, scopeHasLimits, type BudgetScope } from "../contracts/app-config.ts";
+import { configuredBudgetScope, scopeHasLimits, type BudgetScope, type LimitScope } from "../contracts/app-config.ts";
 import { admitAllowance } from "../billing/allowance.ts";
 import { admitAppTraffic, getAppTrafficBillingAccess, APP_TRAFFIC_BILLING_DEADLINE_MS } from "../billing/access.ts";
 import { billingBinding } from "../billing/contract.ts";
@@ -48,6 +48,12 @@ export interface AdmissionInput {
   identity: GatewayIdentity;
   waitUntil: (promise: Promise<unknown>) => void;
   refuse: RefusalMarker;
+  /**
+   * A passthrough call with no price (plan section 4.5): it has no cost to
+   * spend, so the user's and the app's spending limits are not checked for
+   * it. Its request limits and the plan allowance still are.
+   */
+  unpriced?: boolean;
   /** For tests. */
   limitsDeadlineMs?: number;
   billingDeadlineMs?: number;
@@ -141,7 +147,10 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
   // cache unsettled. It never rejects, and its own deadline bounds it.
   if (billingAccess !== null) input.waitUntil(billingAccess.catch(() => undefined));
 
-  const perUser = app.limits.per_user;
+  // An unpriced call is judged as if no spending limit were set.
+  const counted = <T extends LimitScope>(scope: T): T =>
+    input.unpriced === true ? { ...scope, spending: { ...scope.spending, monthly_nano: null } } : scope;
+  const perUser = counted(app.limits.per_user);
   const userLimits = {
     now,
     rpm: perUser.requests.per_minute,
@@ -167,8 +176,8 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
   }
 
   // 2. The app's own limits.
-  if (scopeHasLimits(app.limits.per_app)) {
-    const perApp = app.limits.per_app;
+  const perApp = counted(app.limits.per_app);
+  if (scopeHasLimits(perApp)) {
     // A limiter whose turn comes after the deadline is skipped, not called.
     const answer = remaining() <= 0 ? LATE : await within(
       rpc<RequestLimitResult>(

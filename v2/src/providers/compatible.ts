@@ -14,7 +14,8 @@ export const perplexity = defineProvider({
   label: "Perplexity",
   hosts: { main: "api.perplexity.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
+  // Creating and revoking API keys.
+  refused: ["generate_auth_token/*", "revoke_auth_token/*", "v1/generate_auth_token/*", "v1/revoke_auth_token/*"],
   // No probe: Perplexity has no free call that needs a key.
   cloudflareGateway: { slug: "perplexity-ai" },
   // `fast` is Perplexity's alias for priority.
@@ -44,7 +45,8 @@ export const deepseek = defineProvider({
   // DeepSeek's base URL has no `v1` segment; `v1/` is accepted as well.
   hosts: { main: "api.deepseek.com" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
+  // The account's balance.
+  refused: ["user/*", "v1/user/*"],
   probe: { path: "models" },
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("deepseek", [
@@ -134,9 +136,9 @@ export const fireworks = defineProvider({
   // The inference plane is `inference/v1`; `v1` on the same host is the control plane.
   hosts: { main: "api.fireworks.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Its control plane under `v1/` is not refused yet: v1 served text paths
-  // there by their shape. Step 5 reviews refused paths.
-  refused: [],
+  // Its control plane is `v1/accounts`: keys, users, deployments and secrets.
+  // The rest of `v1/` stays open: v1 served text paths there by their shape.
+  refused: ["v1/accounts/*"],
   // No probe: its list-models call needs the account id, which the key does not give.
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("fireworks", [
@@ -169,7 +171,8 @@ export const moonshot = defineProvider({
   // The international host. `api.moonshot.cn` is a separate platform.
   hosts: { main: "api.moonshot.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
+  // The account's balance.
+  refused: ["v1/users/*"],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions"), messages("moonshot.messages", "anthropic/v1/messages")]),

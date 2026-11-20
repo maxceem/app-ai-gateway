@@ -18,7 +18,9 @@ import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { openSecret } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
+import type { PassthroughPath } from "./matcher.ts";
 import type { ProviderDescription } from "./operation.ts";
+import { readPassthrough } from "./passthrough.ts";
 
 /** A connection's Cloudflare AI Gateway setting, as stored (D13). The token is sealed. */
 export interface CloudflareGatewaySetting {
@@ -41,6 +43,8 @@ export interface ConnectionRecord {
   readonly cloudflareGateway: CloudflareGatewaySetting | null;
   /** The serving providers pinned on every request, for a gateway that has them (`servingProvidersField`), or null. */
   readonly servingProviders: readonly string[] | null;
+  /** The paths it lists for passthrough (`./passthrough.ts`). None when left out. */
+  readonly passthrough?: readonly PassthroughPath[];
 }
 
 /**
@@ -104,6 +108,7 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
             rates: (row.rates as CustomerRates | null) ?? null,
             cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
             servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
+            passthrough: readPassthrough(row.passthrough),
           };
     connectionCache.set(key, value, { storedAt: startedAt });
     return value;

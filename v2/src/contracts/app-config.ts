@@ -238,7 +238,11 @@ const ModelNameSchema = z.string().trim().min(1).max(200);
  */
 export const ProviderRoutingSchema = z
   .object({
-    /** Declared operation names, such as `openai.chat`. At least one. */
+    /**
+     * Declared operation names, such as `openai.chat`. At least one.
+     * `passthrough` lets the app reach the paths the connection lists for
+     * passthrough, forwarded as they are.
+     */
     operations: z
       .array(z.string().trim().min(1).max(100))
       .min(1, { error: "operations must name at least one operation" })

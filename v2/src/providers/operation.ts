@@ -469,6 +469,12 @@ export interface OperationDescription {
 }
 
 /** How the provider's key is sent. */
+/** A refused path for some methods only. */
+export interface RefusedPath {
+  readonly path: string;
+  readonly methods: readonly HttpMethod[];
+}
+
 export interface ProviderAuth {
   readonly header: string;
   /** `{key}` is replaced with the key, such as `Bearer {key}`. */
@@ -527,12 +533,21 @@ export interface ProviderDescription {
    */
   readonly countedInputModalities?: readonly Modality[];
   /**
+   * Client headers a listed passthrough path forwards besides the usual
+   * allowlist (`../proxy/headers.ts`), by exact lowercase name or by a prefix
+   * ending in `-`, such as Gemini's resumable upload headers. A name that
+   * could carry a credential is never forwarded this way.
+   */
+  readonly passthroughHeaders?: readonly string[];
+  /**
    * Paths that are always refused, even if a customer lists them: key
    * creation, admin, account and billing paths. Checked before anything else,
    * ignoring case. A trailing `*` segment matches the rest of the path,
    * including nothing, so `v1/organization/*` also refuses `v1/organization`.
+   * An entry may name methods (`RefusedPath`): only those are refused there,
+   * such as deleting a voice while reading one stays allowed.
    */
-  readonly refused: readonly string[];
+  readonly refused: readonly (string | RefusedPath)[];
   /**
    * This provider can be reached through Cloudflare AI Gateway (D13): the
    * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's

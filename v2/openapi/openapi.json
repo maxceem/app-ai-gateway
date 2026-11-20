@@ -1794,6 +1794,12 @@
               "type": "string"
             }
           },
+          "passthrough": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PassthroughPath"
+            }
+          },
           "pricing": {
             "type": [
               "object",
@@ -2244,6 +2250,35 @@
           "updatedAt"
         ]
       },
+      "PassthroughPath": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "per_request": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "method",
+          "path"
+        ],
+        "additionalProperties": false
+      },
       "ProviderResponse": {
         "type": "object",
         "properties": {
@@ -2313,6 +2348,13 @@
               "maxLength": 100
             },
             "maxItems": 50
+          },
+          "passthrough": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PassthroughPath"
+            },
+            "maxItems": 100
           },
           "pricing": {
             "type": "object",
@@ -2880,6 +2922,16 @@
               "maxLength": 100
             },
             "maxItems": 50
+          },
+          "passthrough": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PassthroughPath"
+            },
+            "maxItems": 100
           },
           "pricing": {
             "type": [

@@ -60,6 +60,8 @@ export interface CallAttempt {
   readonly price: { readonly price: ModelPrice; readonly source: PriceSourceKind } | null;
   /** The operation's answers carry the provider's own cost. */
   readonly reportsCost: boolean;
+  /** A passthrough path with no price: charged `not_priced`, never priced later (`resolvePassthrough`). */
+  readonly notPriced?: true;
   /** The service mode the request asked for. */
   readonly requestedMode: ServiceMode;
   /** A value of the request's mode the gateway does not know: it is billed at standard, as an estimate. */
@@ -185,6 +187,12 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     // What the provider charged wins: it is the whole figure, discounts included.
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";
+  } else if (attempt.notPriced === true) {
+    // A passthrough path the customer listed with no price (plan section
+    // 4.5): there is nothing to price, now or later, so nothing is retried or
+    // logged as unpriced. The console says budgets are not enforced for it.
+    costed = { costNano: null, priceSource: "not_priced", estimate: false, rates: null };
+    measured = "complete";
   } else if (usage !== null) {
     // Set below, from the measure the pricing result billed.
     measured = "complete";
@@ -269,7 +277,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     providerConnectionId: attempt.connectionId,
     operation: attempt.operation,
     preset: attempt.preset ?? null,
-    model: attempt.model,
+    // A passthrough call has no model (`PASSTHROUGH_OPERATION`).
+    model: attempt.model === "" ? null : attempt.model,
     status: outcome.status,
     httpStatus: outcome.httpStatus,
     errorCode: outcome.errorCode,

@@ -37,11 +37,55 @@ export function withoutHeaders(client: Headers, names: readonly string[]): Heade
   return headers;
 }
 
-/** The client's headers a provider may see. */
-export function upstreamHeaders(client: Headers): Headers {
+/**
+ * Words that, as a part of a header's name (between `-`s), mean it may carry
+ * a credential. Such a header is never forwarded, whatever list names it: the
+ * provider key is the gateway's alone.
+ */
+const CREDENTIAL_WORDS: ReadonlySet<string> = new Set([
+  "auth",
+  "authorization",
+  "apikey",
+  "key",
+  "token",
+  "secret",
+  "password",
+  "credential",
+  "credentials",
+  "cookie",
+  "session",
+  "signature",
+]);
+
+/** Allowlisted names with such a word that carry no credential: a retry key is a request id. */
+const NOT_CREDENTIALS: ReadonlySet<string> = new Set(["idempotency-key"]);
+
+/** Whether a header's name says it may carry a credential. */
+export function mayCarryCredential(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (NOT_CREDENTIALS.has(lower)) return false;
+  return lower.split(/[-_]/u).some((word) => CREDENTIAL_WORDS.has(word));
+}
+
+/** Whether `name` is one of `extra`: an exact name, or a prefix ending in `-`. */
+export function isExtraClientHeader(name: string, extra: readonly string[]): boolean {
+  const lower = name.toLowerCase();
+  return extra.some((entry) => (entry.endsWith("-") ? lower.startsWith(entry) : lower === entry));
+}
+
+/**
+ * The client's headers a provider may see: the allowlist, plus, on a listed
+ * passthrough path, the headers its provider declares for one
+ * (`passthroughHeaders`, such as Gemini's `x-goog-upload-*`). The app's own
+ * credential headers were taken out before (`withoutHeaders`), and no header
+ * whose name says it may carry a credential is sent (`mayCarryCredential`).
+ */
+export function upstreamHeaders(client: Headers, extra: readonly string[] = []): Headers {
   const headers = new Headers();
   client.forEach((value, name) => {
-    if (isForwardedClientHeader(name)) headers.set(name, value);
+    const listed = isForwardedClientHeader(name) || (extra.length > 0 && isExtraClientHeader(name, extra));
+    // Checked last, on every header a list lets through, `x-stainless-*` included.
+    if (listed && !mayCarryCredential(name)) headers.set(name, value);
   });
   return headers;
 }

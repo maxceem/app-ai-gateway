@@ -152,9 +152,21 @@ function unitAttempt(
   };
 }
 
-/** What the provider was sent on call `index`: its URL, headers and JSON body. */
+/** Every provider host, as a URL's host. */
+const PROVIDER_HOSTS = new Set(Object.values(BUILT_IN_PROVIDERS).flatMap((description) => Object.values(description.hosts).map((host) => host.split("/")[0]!)));
+
+/**
+ * The calls sent to a provider, in order. Picked by URL, not by position in
+ * every `fetch` the test saw: another call to `fetch` (one still running from
+ * the test before, say) is never taken for the provider's.
+ */
+function upstreamCalls(): Parameters<typeof fetch>[] {
+  return fetchSpy.mock.calls.filter(([input]) => PROVIDER_HOSTS.has(new URL(input instanceof Request ? input.url : String(input)).host));
+}
+
+/** What the provider was sent on its call `index`: its URL, headers and JSON body. */
 function sent(index = 0): { url: string; headers: Headers; body: Record<string, any> } {
-  const [input, init] = fetchSpy.mock.calls[index]!;
+  const [input, init] = upstreamCalls()[index]!;
   const body = init?.body;
   return {
     url: String(input),
@@ -693,7 +705,7 @@ describe("presets", () => {
     await response.text();
     await waitOnExecutionContext(ctx);
     expect(response.status).toBe(200);
-    const sentForm = fetchSpy.mock.calls[0]![1]!.body as FormData;
+    const sentForm = upstreamCalls()[0]![1]!.body as FormData;
     expect(sentForm.get("model")).toBe("gpt-image-2");
     expect(sentForm.get("prompt")).toBe("a hat");
     expect(sentForm.get("image")).toBeInstanceOf(File);
@@ -733,7 +745,7 @@ describe("presets", () => {
     await response.text();
     await waitOnExecutionContext(ctx);
     expect(response.status).toBe(200);
-    const sentForm = fetchSpy.mock.calls[0]![1]!.body as FormData;
+    const sentForm = upstreamCalls()[0]![1]!.body as FormData;
     expect(sentForm.get("model")).toBe("whisper-1");
     expect(sentForm.get("file")).toBeInstanceOf(File);
     expect((await charges(appId))[0]).toMatchObject({ model: "whisper-1", unit: "audio_seconds" });

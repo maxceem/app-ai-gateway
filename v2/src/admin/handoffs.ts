@@ -434,6 +434,7 @@ async function providerAddWrite(
     cloudflare_gateway_json: null,
     serving_providers_json: null,
     rates_json: rates === null ? null : JSON.stringify(rates),
+    passthrough_json: null,
     revision: 1,
     created_by: openerUserId,
     created_at: now,

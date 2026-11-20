@@ -9,7 +9,9 @@
  *    request's App Attest counter so it can never be sent again, and check
  *    whether the end user is blocked.
  * 3. Match the path to a declared operation, closed by default, and check the
- *    app allows that connection, operation and model.
+ *    app allows that connection, operation and model. A path the connection
+ *    lists for passthrough is sent as it is instead, when the app enables
+ *    passthrough (`servePassthrough`).
  * 4. Read the body once (20 MiB at most), apply the request policy (the
  *    output cap refuses here), then admit the request: the app's own limits
  *    and the plan allowance, in that order (`../limits/admission.ts`).
@@ -42,7 +44,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { listedUnitRate, priceSources, resolveCall, servedNow, type CallRefusal } from "../pricing/billability.ts";
+import { listedUnitRate, priceSources, resolveCall, resolvePassthrough, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionCredentials,
@@ -50,7 +52,9 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "../providers/connections.ts";
-import { ProviderMatcher } from "../providers/matcher.ts";
+import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
+import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
+import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
@@ -73,6 +77,18 @@ function responseDeadlineMs(operation: OperationDescription): number {
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
 const matchers = new Map<string, ProviderMatcher>();
+
+const ROUTES = new WeakMap<ConnectionRecord, UpstreamRoute>();
+
+/** A loaded connection's route (`upstreamRoute`), worked out once per loaded record. */
+function routeOf(description: ProviderDescription, connection: ConnectionRecord): UpstreamRoute {
+  let route = ROUTES.get(connection);
+  if (route === undefined) {
+    route = upstreamRoute(description, connection);
+    ROUTES.set(connection, route);
+  }
+  return route;
+}
 
 export function matcherFor(description: ProviderDescription): ProviderMatcher {
   let matcher = matchers.get(description.type);
@@ -253,7 +269,14 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       }
 
       const matcher = matcherFor(description);
-      const match = matcher.match(c.req.method, target.path);
+      // A connection's listed paths are reached only by an app that enables
+      // passthrough on this route (plan section 4.5).
+      const passthrough = routing.operations.includes(PASSTHROUGH) ? compiledPassthrough(connection.passthrough ?? []) : [];
+      // Refused paths are judged where the request really goes too: its base URL or Cloudflare.
+      const match = matcher.match(c.req.method, target.path, { passthrough, route: routeOf(description, connection) });
+      if (match.kind === "passthrough") {
+        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, upstream: match.upstream, url, startedAt });
+      }
       if (match.kind !== "operation") {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
       }
@@ -396,6 +419,82 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       ]);
     },
   );
+}
+
+/**
+ * Sends a request to a passthrough path the connection lists (plan section
+ * 4.5): the body as the client sent it, with its own content type, the
+ * provider's key in its header, to the provider's host only. Auth, the app's
+ * limits and the plan allowance apply as for any call. It is charged as one
+ * `passthrough` call, at the path's flat price or `not_priced`
+ * (`resolvePassthrough`).
+ */
+async function servePassthrough(
+  c: ProxyContext,
+  caller: Caller,
+  input: {
+    readonly app: AppRecord;
+    readonly connection: ConnectionRecord;
+    readonly description: ProviderDescription;
+    readonly listed: PassthroughPath;
+    readonly upstream: UpstreamTarget;
+    readonly url: URL;
+    readonly startedAt: number;
+  },
+): Promise<Response> {
+  const { app, connection, description, url, startedAt } = input;
+  caller.facts.operation = PASSTHROUGH;
+  const call = resolvePassthrough(input.listed);
+  const { operation, bill } = call;
+  const bytes = await caller.readBody();
+  const contentType = c.req.header("content-type") ?? "";
+  // Never read: the body goes as the client's own bytes. One with no type is sent with none.
+  const sent: OutgoingBody = { bytes, contentType: contentType === "" ? null : contentType };
+  const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
+  // The credentials are opened before admission: a request that cannot be sent must not spend anything.
+  const credentials = await connectionCredentials(c.env, connection);
+  await admitRequest({
+    env: c.env,
+    app,
+    identity: caller.identity,
+    waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+    refuse: refusal,
+    // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
+    ...(bill.notPriced === true ? { unpriced: true } : {}),
+  });
+  const attempt: CallAttempt = {
+    requestId: timeOrderedId(startedAt),
+    seq: 1,
+    accountId: app.accountId,
+    appId: app.id,
+    identity: caller.identity,
+    providerType: connection.type,
+    connectionId: connection.id,
+    providerSlug: connection.slug,
+    operation: operation.name,
+    model: call.model,
+    price: bill.price,
+    reportsCost: false,
+    ...(bill.notPriced === true ? { notPriced: true as const } : {}),
+    requestedMode: STANDARD_MODE,
+    startedAt,
+    appVersion: caller.appVersion,
+    clientTraceId: caller.clientTraceId,
+    ...facts,
+  };
+  return await sendAttempts(c, strippedHeaders(app, caller), [
+    {
+      connection,
+      description,
+      operation,
+      hostKey: input.upstream.host,
+      path: input.upstream.path,
+      query: sanitizedQuery(url),
+      credentials: () => Promise.resolve(credentials),
+      body: () => sent,
+      attempt,
+    },
+  ]);
 }
 
 const REFUSALS = new WeakMap<object, { reason: string; scope: string | null }>();
@@ -804,7 +903,8 @@ export async function sendAttempts(
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
       const client = withoutHeaders(c.req.raw.headers, stripped);
-      const headers = upstreamHeaders(client);
+      // A listed passthrough path also forwards the headers its provider declares for one.
+      const headers = upstreamHeaders(client, isPassthrough(prepared.operation) ? (description.passthroughHeaders ?? []) : []);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
         if (!headers.has(name)) headers.set(name, value);
       }
@@ -843,7 +943,8 @@ export async function sendAttempts(
       fetching = fetch(url, {
         method: c.req.method,
         headers,
-        body: body.form ?? (body.bytes as Uint8Array<ArrayBuffer>),
+        // A GET carries no body: fetch refuses one, even an empty one.
+        body: c.req.method === "GET" ? null : (body.form ?? (body.bytes as Uint8Array<ArrayBuffer>)),
         // Never follow a redirect: it could take the key to another host.
         redirect: "manual",
         signal: controller.signal,
@@ -975,7 +1076,10 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
         // Charged as the model that served it, when the request named another it could be served with:
         // its price, and the mode the request asked of its provider, which the served mode starts from.
         const charged = ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt;
-        const served = servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
+        // A passthrough answer is not read, so it names no mode: it is billed as asked, at its flat price.
+        const served: ReturnType<typeof servedServiceMode> = isPassthrough(operation)
+          ? { mode: charged.requestedMode }
+          : servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
         const outcome: AttemptOutcome = ok
           ? {
               // A stream the provider broke, or ended early, is a failed attempt, not one the app left.
