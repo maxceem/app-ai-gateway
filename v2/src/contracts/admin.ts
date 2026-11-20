@@ -126,6 +126,8 @@ export const ProviderSchema = z
       .object({ accountId: z.string(), gatewayId: z.string(), tokenHint: z.string().nullable() })
       .nullable()
       .optional(),
+    /** For Vercel AI Gateway: the serving providers pinned on every request (`providerOptions.gateway.only`). */
+    servingProviders: z.array(z.string()).nullable().optional(),
     pricing: ProviderPricingSchema.nullable(),
     revision: z.number().int().positive(),
     createdAt: z.string(),
@@ -141,6 +143,16 @@ export const ProviderListResponseSchema = z
 export const SecretSchema = z.string().min(1).max(4096);
 
 const CloudflareIdSchema = z.string().trim().min(1).max(100);
+
+/**
+ * For Vercel AI Gateway: the serving providers a connection may use, pinned
+ * by the gateway on every request over the app's own value (v1's
+ * `providerOnly`). Vercel judges the names: its list of providers changes.
+ */
+const ServingProvidersSchema = z
+  .array(z.string().trim().min(1).max(100))
+  .max(50)
+  .refine((values) => new Set(values).size === values.length, { error: "servingProviders cannot repeat a value" });
 
 /**
  * Sending a connection's traffic through Cloudflare AI Gateway (D13): the
@@ -160,6 +172,7 @@ export const ProviderCreateRequestSchema = z
     secret: SecretSchema.optional(),
     baseUrl: z.string().optional(),
     cloudflareGateway: CloudflareGatewayInputSchema.optional(),
+    servingProviders: ServingProvidersSchema.optional(),
     pricing: ProviderPricingSchema.optional(),
   })
   .strict()
@@ -177,6 +190,8 @@ export const ProviderUpdateRequestSchema = z
      * may be left out to keep the stored one, for the same account and gateway.
      */
     cloudflareGateway: CloudflareGatewayInputSchema.partial({ token: true }).nullable().optional(),
+    /** The serving providers to pin, or null to stop pinning. */
+    servingProviders: ServingProvidersSchema.nullable().optional(),
     pricing: ProviderPricingSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })

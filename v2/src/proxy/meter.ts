@@ -39,7 +39,7 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
  * serving other providers' models (Vercel), the model's provider is the one
  * it is listed under (`src/providers/listing.ts`), and, as v1:
  * - a gateway's field that it hands on as the provider's own (`as`) is read
- *   with that provider's table, so a value means what it means there:
+ *   with that provider's table only, so a value means what it means there:
  *   Vercel's `priority` is fast on OpenAI's models and priority on Gemini's;
  * - a field that is one provider's own option (`forProvider`) is read only for
  *   that provider's models, never carried to another's;
@@ -62,8 +62,9 @@ function fieldsFor(
   const mapped = own.map((field) => {
     if (field.as === undefined) return field;
     const table = target.serviceModes.find((candidate) => candidate.axis === field.axis && candidate.names.includes(field.as!));
-    // The provider's meaning wins; a value only the gateway names keeps the gateway's.
-    return table === undefined ? field : ({ ...field, values: { ...field.values, ...table.values } } as ServiceModeField);
+    // Only the provider's own table, as v1: a value it does not list is unknown
+    // there, and billed at the standard floor, whatever the gateway calls it.
+    return table === undefined ? field : ({ ...field, values: table.values } as ServiceModeField);
   });
   return native ? [...mapped, ...target.serviceModes] : mapped;
 }

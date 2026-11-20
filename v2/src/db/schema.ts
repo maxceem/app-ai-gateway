@@ -160,6 +160,12 @@ export const providerConnection = sqliteTable(
     /** The customer's own rates, in nano-dollars per million units, keyed by model. */
     rates: text("rates_json", { mode: "json" }).$type<Record<string, unknown>>(),
     /**
+     * For a gateway serving many providers (Vercel AI Gateway): the serving
+     * providers it may use, pinned on every request by the gateway, over the
+     * app's own value (v1's `providerOnly`, D13). A JSON list, or null.
+     */
+    servingProviders: text("serving_providers_json", { mode: "json" }).$type<string[]>(),
+    /**
      * Listed passthrough paths, and for a custom provider how its key is sent
      * and which API style each path speaks (plan section 4.5).
      */

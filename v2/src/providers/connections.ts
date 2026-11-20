@@ -39,6 +39,8 @@ export interface ConnectionRecord {
   readonly rates: CustomerRates | null;
   /** Sending this connection's traffic through Cloudflare AI Gateway, or null. */
   readonly cloudflareGateway: CloudflareGatewaySetting | null;
+  /** The serving providers pinned on every request, for a gateway that has them (`servingProvidersField`), or null. */
+  readonly servingProviders: readonly string[] | null;
 }
 
 /**
@@ -48,7 +50,15 @@ export interface ConnectionRecord {
  */
 export function readCloudflareGateway(stored: unknown): CloudflareGatewaySetting | null {
   if (stored === null || stored === undefined) return null;
-  const value = typeof stored === "string" ? (JSON.parse(stored) as unknown) : stored;
+  let value: unknown = stored;
+  if (typeof stored === "string") {
+    try {
+      value = JSON.parse(stored) as unknown;
+    } catch (error) {
+      log("error", "cloudflare_gateway_unreadable", { error: errorFacts(error) });
+      return null;
+    }
+  }
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   const { account_id: accountId, gateway_id: gatewayId, token_blob: tokenBlob, token_hint: tokenHint } = record;
@@ -93,6 +103,7 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
             secretBlob: row.secretBlob,
             rates: (row.rates as CustomerRates | null) ?? null,
             cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
+            servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
           };
     connectionCache.set(key, value, { storedAt: startedAt });
     return value;

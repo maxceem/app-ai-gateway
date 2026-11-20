@@ -89,11 +89,23 @@ function parsed(text: string): unknown {
   }
 }
 
-/** Root members read forwards from the document's start. */
-function fromHead(text: string, keys: ReadonlySet<string>, found: Map<string, unknown>): void {
-  let at = skipSpace(text, 0);
-  if (text[at] !== "{") return;
-  at = skipSpace(text, at + 1);
+/**
+ * The fields wanted from one object: a key maps to `true` for its whole value,
+ * or to the fields wanted from inside it, when its value is an object.
+ */
+type Wanted = ReadonlyMap<string, true | Wanted>;
+
+/** What was found in one object: values, and objects of the values found inside them. */
+type Found = Map<string, unknown>;
+
+/**
+ * Members of the object opening at `open`, read forwards. Reading stops at
+ * the first thing that does not fit, after looking inside a wanted object it
+ * could not read to its end.
+ */
+function fromHead(text: string, open: number, wanted: Wanted, found: Found): void {
+  if (text[open] !== "{") return;
+  let at = skipSpace(text, open + 1);
   if (text[at] === "}") return;
   for (;;) {
     if (text[at] !== '"') return;
@@ -104,11 +116,20 @@ function fromHead(text: string, keys: ReadonlySet<string>, found: Map<string, un
     if (text[at] !== ":") return;
     const start = skipSpace(text, at + 1);
     const end = valueEnd(text, start);
-    if (end === -1) return;
-    if (typeof key === "string" && keys.has(key) && !found.has(key)) {
-      const value = parsed(text.slice(start, end));
-      if (value !== undefined) found.set(key, value);
+    const want = typeof key === "string" ? wanted.get(key) : undefined;
+    if (want !== undefined && !found.has(key as string)) {
+      if (want === true) {
+        if (end !== -1) {
+          const value = parsed(text.slice(start, end));
+          if (value !== undefined) found.set(key as string, value);
+        }
+      } else if (text[start] === "{") {
+        const inside: Found = new Map();
+        fromHead(text, start, want, inside);
+        if (inside.size > 0) found.set(key as string, inside);
+      }
     }
+    if (end === -1) return;
     at = skipSpace(text, end);
     if (text[at] === "}") return;
     if (text[at] !== ",") return;
@@ -116,12 +137,16 @@ function fromHead(text: string, keys: ReadonlySet<string>, found: Map<string, un
   }
 }
 
-/** Whether the quote at `at` is escaped, or null when the backslashes before it run to the text's start. */
+/**
+ * Whether the quote at `at` is escaped, or null when what decides it runs to
+ * the text's start: a backslash before the window could escape it, a quote at
+ * index 0 included.
+ */
 function escaped(text: string, at: number): boolean | null {
   let slashes = 0;
   let index = at - 1;
   for (; index >= 0 && text[index] === "\\"; index -= 1) slashes += 1;
-  if (index < 0 && slashes > 0) return null;
+  if (index < 0) return null;
   return slashes % 2 === 1;
 }
 
@@ -171,16 +196,29 @@ function skipSpaceBack(text: string, at: number): number {
   return index;
 }
 
-/** Root members read backwards from the document's closing `}`. */
-function fromTail(text: string, keys: ReadonlySet<string>, found: Map<string, unknown>): void {
-  let at = skipSpaceBack(text, text.length - 1);
-  if (text[at] !== "}") return;
-  at = skipSpaceBack(text, at - 1);
+/**
+ * Members of the object closing at `close`, read backwards. A member whose
+ * value starts before the text is too large to see whole: when it is an
+ * object and one object is wanted from this level, it is taken to be that one
+ * (a Responses event's `response`), and read backwards inside, from its end.
+ */
+function fromTail(text: string, close: number, wanted: Wanted, found: Found): void {
+  if (text[close] !== "}") return;
+  let at = skipSpaceBack(text, close - 1);
   if (text[at] === "{") return;
   for (;;) {
     if (at < 0) return;
     const start = valueStartBack(text, at);
-    if (start === -1) return;
+    if (start === -1) {
+      const objects = [...wanted].filter(([key, want]) => want !== true && !found.has(key));
+      if (text[at] === "}" && objects.length === 1) {
+        const [key, want] = objects[0]!;
+        const inside: Found = new Map();
+        fromTail(text, at, want as Wanted, inside);
+        if (inside.size > 0) found.set(key, inside);
+      }
+      return;
+    }
     const value = text.slice(start, at + 1);
     let colon = skipSpaceBack(text, start - 1);
     if (text[colon] !== ":") return;
@@ -189,9 +227,16 @@ function fromTail(text: string, keys: ReadonlySet<string>, found: Map<string, un
     const keyStart = stringStartBack(text, colon);
     if (keyStart === -1) return;
     const key = parsed(text.slice(keyStart, colon + 1));
-    if (typeof key === "string" && keys.has(key) && !found.has(key)) {
-      const raw = parsed(value);
-      if (raw !== undefined) found.set(key, raw);
+    const want = typeof key === "string" ? wanted.get(key) : undefined;
+    if (want !== undefined && !found.has(key as string)) {
+      if (want === true) {
+        const raw = parsed(value);
+        if (raw !== undefined) found.set(key as string, raw);
+      } else if (text[at] === "}") {
+        const inside: Found = new Map();
+        fromTail(text, at, want, inside);
+        if (inside.size > 0) found.set(key as string, inside);
+      }
     }
     at = skipSpaceBack(text, keyStart - 1);
     if (text[at] === "{") return;
@@ -200,21 +245,53 @@ function fromTail(text: string, keys: ReadonlySet<string>, found: Map<string, un
   }
 }
 
-/**
- * The root fields named by `keys` of a document known by its anchored windows:
- * each found on its own, in the tail, else in the head. Null when none is
- * whole in either.
- */
-export function anchoredRootFields(text: AnchoredText, keys: readonly string[]): Record<string, unknown> | null {
-  const wanted = new Set(keys);
-  const tail = new Map<string, unknown>();
-  const head = new Map<string, unknown>();
-  if (text.tail !== undefined) fromTail(text.tail, wanted, tail);
-  if (text.head !== undefined) fromHead(text.head, wanted, head);
-  const root: Record<string, unknown> = {};
-  for (const key of keys) {
-    if (tail.has(key)) root[key] = tail.get(key);
-    else if (head.has(key)) root[key] = head.get(key);
+/** The wanted tree of a list of paths. */
+function wantedOf(paths: readonly (readonly string[])[]): Wanted {
+  const root = new Map<string, true | Map<string, unknown>>();
+  for (const path of paths) {
+    let level = root as Map<string, unknown>;
+    path.forEach((key, index) => {
+      if (index === path.length - 1) {
+        if (!level.has(key)) level.set(key, true);
+        return;
+      }
+      let next = level.get(key);
+      if (!(next instanceof Map)) {
+        next = new Map();
+        level.set(key, next);
+      }
+      level = next as Map<string, unknown>;
+    });
   }
-  return Object.keys(root).length === 0 ? null : root;
+  return root as unknown as Wanted;
+}
+
+/** Each wanted field from the tail, else from the head, as plain objects. */
+function merged(wanted: Wanted, tail: Found | undefined, head: Found | undefined): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, want] of wanted) {
+    if (want === true) {
+      if (tail?.has(key)) out[key] = tail.get(key);
+      else if (head?.has(key)) out[key] = head.get(key);
+      continue;
+    }
+    const inner = merged(want, tail?.get(key) as Found | undefined, head?.get(key) as Found | undefined);
+    if (inner !== null) out[key] = inner;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+/**
+ * The fields named by `paths` of a document known by its anchored windows:
+ * each found on its own, in the tail, else in the head. A path of one key is
+ * a root field; a longer one is a field inside a root object
+ * (`["response", "usage"]`). Null when none is whole in either.
+ */
+export function anchoredRootFields(text: AnchoredText, paths: readonly (readonly string[])[]): Record<string, unknown> | null {
+  const wanted = wantedOf(paths);
+  const tail: Found = new Map();
+  const head: Found = new Map();
+  if (text.tail !== undefined) fromTail(text.tail, skipSpaceBack(text.tail, text.tail.length - 1), wanted, tail);
+  if (text.head !== undefined) fromHead(text.head, skipSpace(text.head, 0), wanted, head);
+  return merged(wanted, tail, head);
 }

@@ -43,6 +43,8 @@ export const vercel = defineProvider({
   // Vercel's own fallback models, tried when the first cannot serve: each must
   // be one the app allows and has a price for, and the one that served is billed.
   alternativeModels: { field: "providerOptions.gateway.models" },
+  // The serving providers a connection may pin (v1's `providerOnly`).
+  servingProvidersField: "providerOptions.gateway.only",
   modelNamespaces: {
     openai: "openai",
     anthropic: "anthropic",

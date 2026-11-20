@@ -390,6 +390,13 @@ export interface ProviderDescription {
    */
   readonly alternativeModels?: { readonly field: string };
   /**
+   * A request field that limits which providers serve the request (Vercel's
+   * `providerOptions.gateway.only`). A connection may pin it
+   * (`servingProviders`): the gateway then sets it on every request, over the
+   * app's own value (v1's `providerOnly`).
+   */
+  readonly servingProvidersField?: string;
+  /**
    * Headers the gateway sets on every request to this provider for its own
    * reporting, such as Vercel's spend attribution. A client can never send
    * them: client headers are an allowlist (`src/proxy/headers.ts`).

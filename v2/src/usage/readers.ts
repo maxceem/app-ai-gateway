@@ -389,16 +389,20 @@ const NO_VALUE = Symbol("no SSE value");
  * An SSE event's data: its `data:` lines only, each without the field name and
  * one space after it, joined with line breaks as SSE does. Comments and other
  * fields are dropped. The one place an event's data is taken, for whole events
- * and cut ones alike. `cutAtStart` is for an event a window cut at its start:
- * its first line is the rest of a line whose field name was cut off, of
- * unknown kind (a `data:` line or a comment), so it is dropped, as for any kept
- * tail. Only whole lines after a line break the reader saw are classified.
+ * and cut ones alike. `cutAtStart` is for an event that a window cut at its
+ * start, and that ended: its first line is the rest of a line whose field name
+ * was cut off, of unknown kind. When a whole `data:` line follows it, it is
+ * dropped: only whole lines after a line break the reader saw are classified.
+ * When none does, it is the event's last line, holding the end of its data
+ * (an image or a final answer larger than the kept tail), and it is kept as
+ * data, read as a tail from the event's end.
  */
 function sseData(block: string, cutAtStart = false): string | null {
-  const data = block
-    .split("\n")
+  const lines = block.split("\n");
+  const keepFirst = cutAtStart && !lines.slice(1).some((line) => line.startsWith("data:"));
+  const data = lines
     .flatMap((line, index) => {
-      if (index === 0 && cutAtStart) return [];
+      if (index === 0 && cutAtStart) return keepFirst ? [line] : [];
       if (!line.startsWith("data:")) return [];
       const value = line.slice(5);
       return [value.startsWith(" ") ? value.slice(1) : value];
@@ -503,13 +507,28 @@ function splitTail(tail: string): { cut: string; ended: boolean; events: string 
  * raw, whatever its type: the reader judges it, so a tier that is a number or
  * empty is present but unusable, which means unknown.
  */
-const ROOT_KEYS: readonly string[] = ["usage", "usageMetadata", "model", "service_tier", "duration"];
+const ROOT_PATHS: readonly (readonly string[])[] = [
+  ["usage"],
+  ["usageMetadata"],
+  ["model"],
+  ["service_tier"],
+  ["duration"],
+  // A Responses event keeps its answer's fields under `response`.
+  ["response", "usage"],
+  ["response", "model"],
+  ["response", "service_tier"],
+];
+
+/** Marks a document and every object in it as scanned, not parsed whole. */
+function markScanned(value: unknown): void {
+  if (typeof value !== "object" || value === null) return;
+  SCANNED.add(value);
+  for (const inner of Object.values(value)) markScanned(inner);
+}
 
 function rootFields(text: AnchoredText): Record<string, unknown> | null {
-  const root = anchoredRootFields(text, ROOT_KEYS);
-  if (root === null) return null;
-  SCANNED.add(root);
-  for (const value of Object.values(root)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  const root = anchoredRootFields(text, ROOT_PATHS);
+  if (root !== null) markScanned(root);
   return root;
 }
 
@@ -525,6 +544,8 @@ export interface ResponseValues {
   backwards(): Iterable<unknown>;
   /** The values of the head window, first first. Only Anthropic needs it: `message_start` opens the stream. */
   headForwards(): Iterable<unknown>;
+  /** A stream whose final event was cut and gave no usage: any usage read is from an earlier event. */
+  finalEventUnread?(): boolean;
 }
 
 function documentValues(values: readonly unknown[]): ResponseValues {
@@ -549,17 +570,21 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     const split = body.truncated ? splitTail(body.tail) : null;
     const tail = split ? sseEvents(split.events) : null;
     let cutDocument: Record<string, unknown> | null | undefined;
+    // The event the tail window cut at its start, read from its end when it ended.
+    const cutEvent = (): Record<string, unknown> | null => {
+      if (cutDocument === undefined) {
+        const data = split?.ended ? sseData(split.cut, true) : null;
+        cutDocument = data === null ? null : rootFields({ tail: data });
+      }
+      return cutDocument;
+    };
     return {
       *backwards() {
         if (tail) yield* tail.backwards();
         if (split) {
           // The duration a transcription's cut event still shows counts too, as v1.
-          // Cut at its start, so only its end anchors it, when it did end.
-          if (cutDocument === undefined) {
-            const data = split.ended ? sseData(split.cut, true) : null;
-            cutDocument = data === null ? null : rootFields({ tail: data });
-          }
-          if (cutDocument) yield cutDocument;
+          const document = cutEvent();
+          if (document) yield document;
         }
         yield* head.backwards();
         // Events cut inside a window, tried only after every intact one.
@@ -567,6 +592,14 @@ export function responseValues(body: ObservedText, contentType: string): Respons
         yield* head.cut();
       },
       headForwards: () => head.forwards(),
+      finalEventUnread() {
+        // Only when the cut event is the stream's last with data, and gave no usage.
+        if (split === null || tail === null || split.cut.trim() === "") return false;
+        for (const _value of tail.forwards()) return false;
+        const document = cutEvent();
+        const response = document?.response as Record<string, unknown> | undefined;
+        return document === null || (document.usage === undefined && document.usageMetadata === undefined && response?.usage === undefined);
+      },
     };
   }
   if (body.truncated) {
@@ -660,6 +693,11 @@ function withStreamTier(usage: UsageObservation, values: ResponseValues): UsageO
  * the provider declares it always counts, which only the OpenAI shape reads.
  */
 export function readUsage(values: ResponseValues, style: ApiStyle, counted: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
+  const usage = readStyleUsage(values, style, counted);
+  return usage !== null && values.finalEventUnread?.() === true ? { ...usage, finalEventUnread: true } : usage;
+}
+
+function readStyleUsage(values: ResponseValues, style: ApiStyle, counted: readonly Modality[]): UsageObservation | null {
   switch (style) {
     case "openai-chat":
     case "openai-completions": {

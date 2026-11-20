@@ -1785,6 +1785,15 @@
               "tokenHint"
             ]
           },
+          "servingProviders": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "pricing": {
             "type": [
               "object",
@@ -1922,6 +1931,15 @@
               "token"
             ],
             "additionalProperties": false
+          },
+          "servingProviders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "maxItems": 50
           },
           "pricing": {
             "type": "object",
@@ -2104,6 +2122,18 @@
               "gatewayId"
             ],
             "additionalProperties": false
+          },
+          "servingProviders": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "maxItems": 50
           },
           "pricing": {
             "type": [

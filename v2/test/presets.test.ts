@@ -111,7 +111,7 @@ function unitAttempt(
 ) {
   const description = BUILT_IN_PROVIDERS.openai!;
   return {
-    connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null, cloudflareGateway: null },
+    connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null, cloudflareGateway: null, servingProviders: null },
     description,
     operation: description.operations.find((operation) => operation.name === "openai.chat")!,
     hostKey: "main",

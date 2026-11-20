@@ -56,7 +56,7 @@ import type { OperationDescription, ProviderDescription } from "../providers/ope
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
-import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
+import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
 import { observeBody, streamClosed } from "./observe.ts";
@@ -313,6 +313,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // JSON body has one; a form is an upload with no output to cap.
       const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
       const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
+      const pinned = parsed.kind === "json" && pinServingProviders(description, connection.servingProviders, body);
       // A transcription is only sent in a format whose answer can be priced.
       const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
       const location = operation.model;
@@ -329,7 +330,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const sent: OutgoingBody =
         parsed.kind === "json"
           ? {
-              bytes: capped || metered || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
+              bytes: capped || metered || pinned || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
               contentType: "application/json",
             }
           : Object.keys(formChanges).length > 0

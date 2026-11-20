@@ -59,4 +59,10 @@ export interface UsageObservation extends TokenCounts {
    * billed from them, never as $0.
    */
   readonly noTokens?: true;
+  /**
+   * A stream's final event was cut by the kept window and its usage could not
+   * be read: what was read came from an earlier event, so it may be short.
+   * Billed as an estimate, never as exact.
+   */
+  readonly finalEventUnread?: true;
 }

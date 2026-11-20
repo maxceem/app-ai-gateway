@@ -29,7 +29,7 @@ import {
  * and but a Cloudflare AI Gateway setting, whose token is a secret this flow
  * does not carry. A person sets that in the console.
  */
-export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true })
+export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true })
   .strict()
   .meta({ id: "ProviderHandoffRequest" });
 

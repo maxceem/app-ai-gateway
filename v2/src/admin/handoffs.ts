@@ -430,6 +430,7 @@ async function providerAddWrite(
     secret_hint: secretHint(secret),
     base_url: review.baseUrl,
     cloudflare_gateway_json: null,
+    serving_providers_json: null,
     rates_json: rates === null ? null : JSON.stringify(rates),
     revision: 1,
     created_by: openerUserId,

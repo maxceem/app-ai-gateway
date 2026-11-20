@@ -43,6 +43,13 @@
       "when": 1795091028838,
       "tag": "0005_cf_auth_1_0",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795162571529,
+      "tag": "0006_serving_providers",
+      "breakpoints": true
     }
   ]
 }

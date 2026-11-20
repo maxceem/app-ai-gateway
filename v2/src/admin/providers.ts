@@ -57,6 +57,7 @@ export interface ConnectionRow {
   secret_hint: string | null;
   base_url: string | null;
   cloudflare_gateway_json: string | null;
+  serving_providers_json: string | null;
   rates_json: string | null;
   revision: number;
   created_by: string;
@@ -121,6 +122,7 @@ export function providerView(row: ConnectionRow) {
     secretHint: row.secret_hint,
     baseUrl: row.base_url,
     cloudflareGateway: cloudflareView(readCloudflareGateway(row.cloudflare_gateway_json)),
+    servingProviders: row.serving_providers_json === null ? null : (JSON.parse(row.serving_providers_json) as string[]),
     pricing: row.rates_json === null ? null : pricingFromRates(JSON.parse(row.rates_json) as CustomerRates),
     revision: row.revision,
     createdAt: iso(row.created_at),
@@ -165,6 +167,15 @@ function checkRoute(
   if (baseUrl !== null) {
     throw new GatewayError(400, "invalid_request", "cloudflareGateway: a connection goes through a base URL or Cloudflare AI Gateway, not both");
   }
+}
+
+/** Pinned serving providers, for a provider type that has the field (`servingProvidersField`) only. */
+function servingProvidersJson(description: ProviderDescription, list: readonly string[] | null | undefined): string | null {
+  if (list === undefined || list === null) return null;
+  if (description.servingProvidersField === undefined) {
+    throw new GatewayError(400, "invalid_request", `servingProviders: ${description.label} takes no serving providers`);
+  }
+  return list.length === 0 ? null : JSON.stringify(list);
 }
 
 /** A connection with no key reaches its provider only through Cloudflare AI Gateway, with Cloudflare's stored keys. */
@@ -220,14 +231,15 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const origin = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
   const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
+  const servingJson = servingProvidersJson(description, body.servingProviders);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
   try {
     written = await c.env.DB.prepare(
       `INSERT INTO provider_connection
-        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, rates_json, revision, created_by, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
+        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, serving_providers_json, rates_json, revision, created_by, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
     )
       .bind(
         id,
@@ -239,6 +251,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         body.secret === undefined ? null : secretHint(body.secret),
         baseUrl,
         cloudflareJson,
+        servingJson,
         body.pricing === undefined ? null : JSON.stringify(ratesFromPricing(body.pricing)),
         actor.userId,
         now,
@@ -340,6 +353,12 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
     blob = await sealSecret(c.env, "providerKey", identity(to), secret);
   }
   if (blob === null && cloudflare === null) throw keyNeeded();
+  const servingJson =
+    body.servingProviders === undefined
+      ? current.serving_providers_json
+      : description === null
+        ? null
+        : servingProvidersJson(description, body.servingProviders);
   const rates =
     body.pricing === undefined
       ? current.rates_json
@@ -348,7 +367,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         : JSON.stringify(ratesFromPricing(body.pricing));
   const result = await c.env.DB.prepare(
     `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, cloudflare_gateway_json = ?,
-       rates_json = ?, revision = revision + 1, updated_at = ?
+       serving_providers_json = ?, rates_json = ?, revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
   )
     .bind(
@@ -358,6 +377,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       hint,
       baseUrl,
       cloudflareJson,
+      servingJson,
       rates,
       Date.now(),
       current.id,
@@ -411,6 +431,7 @@ export async function testProvider(c: AdminContext): Promise<Response> {
             baseUrl,
             secretBlob: null,
             rates: null,
+            servingProviders: null,
             cloudflareGateway:
               cloudflare === null ? null : { accountId: cloudflare.accountId, gatewayId: cloudflare.gatewayId, tokenBlob: "", tokenHint: null },
           },

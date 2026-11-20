@@ -13,7 +13,6 @@ import { priceTokens, priceUsage } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { audioUsage, imagesUsage, readUsage, responseValues } from "../src/usage/readers.ts";
-import { callCharge } from "../src/proxy/call-charge.ts";
 import { requestBody } from "../src/proxy/serve.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
@@ -472,40 +471,12 @@ describe("usage in other units", () => {
     expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42 });
   });
 
-  it("leaves a duration found only in a cut event's partial first line unpriced, and logs it (a change from v1)", () => {
-    // The tail window starts inside the stream's final event. That first line's
-    // kind (a data line or a comment) cannot be known, so it is dropped, and the
-    // duration in it is not read. v1 read it; this is rare (an event over the
-    // ~1 MiB kept tail, hours of audio), and is never billed $0.
+  it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
+    // The event's last line, cut at its start, with no whole data line after
+    // it: the end of its data, read as a tail from the event's end.
     const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
     const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");
-    const usage = readUsage(values, "openai-transcription");
-    expect(usage).toBeNull();
-    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const whisper = listPrice("openai", "whisper-1")!;
-    const entry = callCharge(
-      {
-        requestId: "req_cut_duration",
-        seq: 1,
-        accountId: ACCOUNT_ID,
-        appId: "app_cut",
-        identity: { appId: "app_cut", userId: null, credentialType: "api_key", authMethod: "api_key", installId: null, appleAccountId: null },
-        providerType: "openai",
-        connectionId: "conn_cut",
-        providerSlug: "openai",
-        operation: "openai.transcription",
-        model: "whisper-1",
-        price: { price: whisper, source: "list_rate" },
-        reportsCost: false,
-        requestedMode: STANDARD_MODE,
-        startedAt: Date.now(),
-        appVersion: null,
-        clientTraceId: null,
-      },
-      { status: "ok", httpStatus: 200, errorCode: null, usage, cut: false, latencyMs: 10 },
-    );
-    expect(entry.charge).toMatchObject({ costNano: null, priceSource: "unresolved" });
-    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_unresolved_cost"));
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42.5, noTokens: true });
   });
 
   it("does not read a form whose model is in the path, as v1, so its shape is never refused", async () => {

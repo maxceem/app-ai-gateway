@@ -112,8 +112,13 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const reported = outcome.providerCostUsd ?? null;
   // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
   // So is a call whose answer did not say which of the request's models served it.
+  // So is one whose stream's final event was cut, its usage read from an earlier event.
   const modeUnknown =
-    attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined || attempt.servedModelUnknown === true;
+    attempt.requestedModeUnknown !== undefined ||
+    outcome.servedModeUnknown !== undefined ||
+    attempt.servedModelUnknown === true ||
+    usage?.finalEventUnread === true;
+  if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
 
   let costed: Costed;

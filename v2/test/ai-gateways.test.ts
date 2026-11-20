@@ -10,7 +10,7 @@ import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
-import type { ConnectionRecord } from "../src/providers/connections.ts";
+import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
 import { upstreamRequest } from "../src/providers/route.ts";
@@ -70,6 +70,7 @@ function record(overrides: Partial<ConnectionRecord> = {}): ConnectionRecord {
     secretBlob: null,
     rates: null,
     cloudflareGateway: null,
+    servingProviders: null,
     ...overrides,
   };
 }
@@ -198,7 +199,11 @@ describe("Vercel's models, priced and read as their provider's", () => {
     const anthropicFast = { providerOptions: { anthropic: { speed: "fast" } } };
     expect(requestedServiceMode(vercel, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
     expect(requestedServiceMode(vercel, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
-    // A value only Vercel names keeps Vercel's meaning.
+    // Only the model's provider's table counts, as v1: `fast` is no Gemini tier (F3).
+    const fast = requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "fast" } } }, "google/gemini-4-neon");
+    expect(fast.mode.tier).toBe("standard");
+    expect(fast.unknown).toBeDefined();
+    // A value the provider's table lacks is unknown, at the standard floor.
     expect(requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
       "standard",
     );
@@ -496,6 +501,27 @@ describe("calls through the gateways, end to end", () => {
     const priority = priceInServedMode(listPrice("gemini", "gemini-4-neon")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 }, { tier: "priority", region: "global" })!;
     expect(Number(rows[0]!.cost_nano)).toBe(priority.cost);
     expect(rows[0]!.price_is_estimate).toBe(0);
+  });
+
+  it("pins a Vercel connection's serving providers over the app's own value (F5, v1's providerOnly)", async () => {
+    const pinned = await routed({ type: "vercel", secret: PROVIDER_KEY, servingProviders: ["bedrock", "vertex"] }, "vercel.chat", ["openai/gpt-4o-mini"]);
+    fetchSpy.mockResolvedValue(Response.json({ id: "c6", model: "openai/gpt-4o-mini", choices: [], usage }));
+    await call(pinned.slug, pinned.appKey, pinned.appId, "v1/chat/completions", {
+      model: "openai/gpt-4o-mini",
+      messages: [],
+      providerOptions: { gateway: { only: ["anthropic"], order: ["x"] } },
+    });
+    const sentBody = JSON.parse(new TextDecoder().decode(fetchSpy.mock.calls[0]![1]?.body as Uint8Array)) as Record<string, any>;
+    expect(sentBody.providerOptions.gateway).toEqual({ only: ["bedrock", "vertex"], order: ["x"] });
+    const key = await seedManagementKey();
+    const refused = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, servingProviders: ["a"] });
+    expect(refused.status).toBe(400);
+  });
+
+  it("reads an unreadable Cloudflare setting as none, and logs it (F4)", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(readCloudflareGateway("{not json")).toBeNull();
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("cloudflare_gateway_unreadable"));
   });
 
   it("refuses to save a Vercel model with no price under its namespace", async () => {

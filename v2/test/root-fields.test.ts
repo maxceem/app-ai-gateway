@@ -3,11 +3,14 @@
  * (`src/usage/root-fields.ts`): a small JSON tokenizer, read forwards from a
  * head that starts the document and backwards from a tail that ends it.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { listPrice } from "../src/pricing/prices.ts";
+import { callCharge } from "../src/proxy/call-charge.ts";
+import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { anchoredRootFields } from "../src/usage/root-fields.ts";
 import { readUsage, responseValues } from "../src/usage/readers.ts";
 
-const KEYS = ["usage", "model", "service_tier", "duration"];
+const KEYS = [["usage"], ["model"], ["service_tier"], ["duration"]];
 
 describe("anchored root fields", () => {
   it("counts a head scalar only when something follows it inside the window (S11)", () => {
@@ -22,7 +25,7 @@ describe("anchored root fields", () => {
 
   it("returns any whole value raw, an empty array included (S12)", () => {
     expect(anchoredRootFields({ head: '{"service_tier":[],"model":"m","x":' }, KEYS)).toEqual({ service_tier: [], model: "m" });
-    expect(anchoredRootFields({ tail: '"service_tier":99,"model":""}' }, KEYS)).toEqual({ service_tier: 99, model: "" });
+    expect(anchoredRootFields({ tail: '0,"service_tier":99,"model":""}' }, KEYS)).toEqual({ service_tier: 99, model: "" });
   });
 
   it("reads only root members, past escaped quotes and braces inside strings", () => {
@@ -30,6 +33,11 @@ describe("anchored root fields", () => {
     expect(anchoredRootFields({ head }, KEYS)).toEqual({ model: "m1" });
     const tail = String.raw`"text":"b \"}\" { [","nested":{"model":"no","usage":{"a":1}},"model":"m2"}`;
     expect(anchoredRootFields({ tail }, KEYS)).toEqual({ model: "m2" });
+  });
+
+  it("never trusts a quote at a tail's first character: a backslash before the window could escape it (F2)", () => {
+    expect(anchoredRootFields({ tail: '"model":"m"}' }, KEYS)).toBeNull();
+    expect(anchoredRootFields({ tail: ' "model":"m"}' }, KEYS)).toEqual({ model: "m" });
   });
 
   it("stops at a string cut by a window, never guessing past it", () => {
@@ -78,5 +86,75 @@ describe("anchors in responses", () => {
     // An unended event whose data stops after a nested object: never read as if it ended there.
     const unended = 'data: {"text":"x","nested":{"usage":{"prompt_tokens":9,"completion_tokens":9}}';
     expect(readUsage(responseValues({ head: unended, tail: "", truncated: false }, "text/event-stream"), "openai-chat")).toBeNull();
+  });
+});
+
+describe("final events larger than the kept tail (F1)", () => {
+  const big = "A".repeat(64);
+
+  it("reads an image stream's final event from its end", () => {
+    const head = 'data: {"type":"image_generation.partial_image","b64_json":"AA"}\n\n';
+    const tail = `${big}","usage":{"input_tokens":50,"output_tokens":4160,"total_tokens":4210}}\n\n`;
+    const usage = readUsage(responseValues({ head, tail, truncated: true }, "text/event-stream"), "openai-images");
+    expect(usage).toMatchObject({ outputTokens: 4160 });
+    expect(usage?.finalEventUnread).toBeUndefined();
+  });
+
+  it("reads Responses' usage under `response`, inside the event's last large member", () => {
+    const head = 'data: {"type":"response.created","response":{"id":"r"}}\n\n';
+    const tail = `${big}"}],"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19}},"sequence_number":9}\n\n`;
+    expect(readUsage(responseValues({ head, tail, truncated: true }, "text/event-stream"), "openai-responses")).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 7,
+    });
+  });
+
+  it("reads Gemini's last chunk, and never books an earlier chunk's usage as exact when the last one is lost", () => {
+    const earlier = 'data: {"candidates":[],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1,"totalTokenCount":11}}\n\n';
+    const last = `${big}"}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1290,"totalTokenCount":1300}}\n\n`;
+    expect(readUsage(responseValues({ head: earlier, tail: last, truncated: true }, "text/event-stream"), "gemini-generate")).toMatchObject({
+      outputTokens: 1290,
+    });
+    // The final event never ended: its usage is lost, and the earlier one is only an estimate.
+    const lost = readUsage(responseValues({ head: earlier, tail: big, truncated: true }, "text/event-stream"), "gemini-generate");
+    expect(lost).toMatchObject({ outputTokens: 1, finalEventUnread: true });
+  });
+
+  it("reads a streamed transcription's large final event from its end", () => {
+    const head = 'data: {"type":"transcript.text.delta","delta":"x"}\n\n';
+    const tail = `${big}","usage":{"type":"tokens","input_tokens":40,"output_tokens":10,"total_tokens":50}}\n\n`;
+    expect(readUsage(responseValues({ head, tail, truncated: true }, "text/event-stream"), "openai-transcription")).toMatchObject({
+      inputTokens: 40,
+      outputTokens: 10,
+    });
+  });
+
+  it("bills a charge whose final event was lost as an estimate, and logs it", () => {
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const usage = { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1, finalEventUnread: true as const };
+    const entry = callCharge(
+      {
+        requestId: "req_lost_final",
+        seq: 1,
+        accountId: "acc",
+        appId: "app_lost",
+        identity: { appId: "app_lost", userId: null, credentialType: "api_key", authMethod: "api_key", installId: null, appleAccountId: null },
+        providerType: "gemini",
+        connectionId: "conn",
+        providerSlug: "gemini",
+        operation: "gemini.stream.v1beta",
+        model: "gemini-4-neon",
+        price: { price: listPrice("gemini", "gemini-4-neon")!, source: "list_rate" },
+        reportsCost: false,
+        requestedMode: STANDARD_MODE,
+        startedAt: Date.now(),
+        appVersion: null,
+        clientTraceId: null,
+      },
+      { status: "ok", httpStatus: 200, errorCode: null, usage, cut: false, latencyMs: 5 },
+    );
+    expect(entry.charge.priceIsEstimate).toBe(true);
+    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_final_event_unread"));
+    warnings.mockRestore();
   });
 });

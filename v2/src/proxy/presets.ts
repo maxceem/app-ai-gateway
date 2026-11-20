@@ -49,7 +49,7 @@ import { attemptCopy, declaredOperation, presetOperation, presetUpstream, stream
 import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
-import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
+import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import {
   jsonBody,
   meteredTranscriptionFormat,
@@ -206,6 +206,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
       const body = shaped();
       applyOutputCap(operation, body, preset.max_output_tokens);
       requestStreamUsage(operation, body);
+      pinServingProviders(description, connection.servingProviders, body);
       return { bytes: new TextEncoder().encode(JSON.stringify(body)), contentType: "application/json" };
     };
   } else {
