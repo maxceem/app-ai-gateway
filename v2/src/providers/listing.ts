@@ -15,7 +15,11 @@ export interface ListedModel {
 
 /** The provider type and model id `model` of a `type` connection is listed under. */
 export function listedAs(type: string, model: string): ListedModel {
-  const namespaces = builtInProvider(type)?.modelNamespaces;
+  return listedIn(builtInProvider(type)?.modelNamespaces, type, model);
+}
+
+/** The same, with the namespaces given: an operation's own (`readingRules`), such as a custom provider's path on Vercel's host. */
+export function listedIn(namespaces: Readonly<Record<string, string>> | undefined, type: string, model: string): ListedModel {
   if (namespaces === undefined) return { type, model };
   const slash = model.indexOf("/");
   const namespace = slash > 0 ? model.slice(0, slash) : "";

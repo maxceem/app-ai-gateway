@@ -86,6 +86,18 @@ describe("adding a provider connection through a person", () => {
     expect(shown.body.review.destinations).toEqual(["https://llm.example.net/"]);
   });
 
+  it("refuses a mode rate no call on the connection is ever billed at, as a direct save does", async () => {
+    const { caller } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", {
+      type: "mistral",
+      name: "Mistral",
+      slug: "mistral-eu-rate",
+      pricing: { "mistral-small-latest": { input: 0.1, output: 0.3, modes: { eu: { factor: 1.1 } } } },
+    });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(400);
+    expect(JSON.stringify(opened.body)).toContain("modes.eu: no call on this connection is ever billed at this rate");
+  });
+
   it("names every host a provider sends the key to", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "fal", name: "fal" });

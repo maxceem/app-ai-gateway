@@ -451,10 +451,9 @@ export function priceInMode(price: ModelPrice, mode: ServiceMode): ModelPrice | 
 /**
  * The entries of a price's `modes` that bill `mode` (`priceInMode`): none for
  * the standard mode, the exact key, or the tier's then the region's; null
- * when the price has no rate in that mode. The one rule for which entry a
- * mode bills, so saving can tell an entry no served mode would ever reach.
+ * when the price has no rate in that mode.
  */
-export function modeEntries(price: ModelPrice, mode: ServiceMode): readonly string[] | null {
+function modeEntries(price: ModelPrice, mode: ServiceMode): readonly string[] | null {
   if (isStandardMode(mode)) return [];
   const modes = price.modes;
   if (modes === undefined) return null;

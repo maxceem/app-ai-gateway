@@ -15,7 +15,7 @@
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { modelSet, resolveAlternative, type Billing, type PriceSources } from "../pricing/billability.ts";
-import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { fieldValue, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -42,7 +42,7 @@ export function judgedAlternatives(
   body: Record<string, unknown>,
   policy: { readonly allowed: readonly string[] | undefined; readonly sources: PriceSources; readonly baseUrl: string | null },
 ): Alternatives {
-  const field = description.alternativeModels?.field;
+  const field = readingRules(description, operation).alternativeModels?.field;
   if (field === undefined) return NONE;
   const listed = fieldValue((name) => (Object.hasOwn(body, name) ? body[name] : undefined), field);
   if (listed === undefined || listed === null) return NONE;

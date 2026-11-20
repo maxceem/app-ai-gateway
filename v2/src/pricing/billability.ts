@@ -35,7 +35,7 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import { rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
@@ -48,7 +48,6 @@ import {
   effectivePrices,
   keyCandidates,
   listPrice,
-  modeEntries,
   priceInMode,
   reportsCost,
   resolvePrice,
@@ -615,7 +614,7 @@ export function reachableCalls(
           const call = resolveCall(route, rewrites, view.sources, operation, requested, listed, SAVING);
           if (call.kind === "admitted") found.push({ ...call, slug, entry: "proxy" });
         }
-        if (view.description.alternativeModels === undefined) continue;
+        if (readingRules(view.description, operation).alternativeModels === undefined) continue;
         for (const other of names) {
           RESOLVED_CALLS.count += 1;
           const call = resolveAlternative(operation, view.sources, other, listed, SAVING);
@@ -806,17 +805,48 @@ function ownRatesGap(operations: readonly OperationDescription[], price: ModelPr
  * or null when the list has no rate for it. Only a comparison: a cross-check
  * header is judged by it (`src/proxy/meter.ts`), and nothing is billed by it.
  */
+/** One operation a model's calls can take, and every service mode it can be billed in (`selectableModes`). */
+export interface ModeCalls {
+  readonly operation: OperationDescription;
+  readonly modes: readonly ServiceMode[];
+}
+
 /**
- * The entries of a model's saved `modes` that no selectable mode bills
- * (`modeEntries`, the rule `priceInMode` bills by): a rate saved there would
- * never be charged, and the call would bill another rate instead. Saving
- * refuses them.
+ * A mode rate this save adds or changes that can never bill, or null: the
+ * one rule for whether a rate entry is ever used. Each call the model can
+ * take is priced by the one charge function (`priceInServedMode`), in every
+ * mode it can be billed in, over every usage its meter can produce
+ * (`meterCases`), fallbacks included, once with the entry and once without
+ * it. An entry whose absence changes no charge is never used. Entries that
+ * are unchanged from `before` are not judged again.
  */
-export function unselectableModeRates(rates: CustomerRates, model: string, selectable: readonly ServiceMode[]): readonly string[] {
-  const price = customerPrice(rates, model);
-  if (price === null || price.modes === undefined) return [];
-  const reached = new Set(selectable.flatMap((mode) => modeEntries(price, mode) ?? []));
-  return Object.keys(price.modes).filter((name) => !reached.has(name));
+export function unusedModeRate(
+  after: CustomerRates,
+  before: CustomerRates | null,
+  model: string,
+  calls: readonly ModeCalls[],
+): string | null {
+  const modes = (after[model] as { modes?: Record<string, unknown> } | undefined)?.modes;
+  if (modes === undefined) return null;
+  const stored = (before?.[model] as { modes?: Record<string, unknown> } | undefined)?.modes;
+  const changed = Object.keys(modes).filter((name) => stored === undefined || !Object.hasOwn(stored, name) || JSON.stringify(stored[name]) !== JSON.stringify(modes[name]));
+  if (changed.length === 0) return null;
+  const charges = (rates: CustomerRates): string[] => {
+    const price = customerPrice(rates, model);
+    if (price === null) return [];
+    return calls.flatMap(({ operation, modes: selectable }) =>
+      meterCases(operation).flat().flatMap((usage) =>
+        selectable.map((mode) => JSON.stringify(priceInServedMode(price, usage, mode), (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value))),
+      ),
+    );
+  };
+  const withEntry = charges(after);
+  for (const name of changed) {
+    const { [name]: _dropped, ...rest } = modes;
+    const without = charges({ ...after, [model]: { ...after[model], modes: rest } });
+    if (without.every((charge, index) => charge === withEntry[index])) return name;
+  }
+  return null;
 }
 
 export function listedUnitRate(providerType: string, model: string, unit: Unit): number | null {

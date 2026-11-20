@@ -57,6 +57,7 @@ import {
   newConnectionId,
   providerView,
   ratesFromPricing,
+  assertModesSelectable,
   secretHint,
   type ConnectionRow,
 } from "./providers.ts";
@@ -213,7 +214,7 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
   }
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
-  if (body.pricing !== undefined) ratesFromPricing(body.pricing, body.type);
+  if (body.pricing !== undefined) assertModesSelectable(builtInProvider(body.type)!, baseUrl, ratesFromPricing(body.pricing, body.type), null);
   await refuseTakenSlug(c.env.DB, actor.accountId, slug);
   await (await planCap(c.env, c.env.DB, actor.accountId, "provider")).assertNotReached();
   consoleAt(c.env);
@@ -398,6 +399,8 @@ async function providerAddWrite(
   const cap = await planCap(env, env.DB, accountId, "provider");
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
+  const description = builtInProvider(review.type);
+  if (description !== null) assertModesSelectable(description, review.baseUrl ?? null, rates, null);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
   await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type, baseUrl: review.baseUrl ?? null }, rates);
   const statement = guardedInsert(

@@ -478,9 +478,14 @@ export interface OperationDescription {
 /**
  * The rules a provider states once for reading its operations' requests and
  * answers: its service modes, the modes its answers name, the transcription
- * formats that carry a measure, and the input modalities its usage counts.
+ * formats that carry a measure, the input modalities its usage counts, the
+ * other models a request may name and which provider each model's tables
+ * are read with.
  */
-export type ReadingRules = Pick<ProviderDescription, "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities">;
+export type ReadingRules = Pick<
+  ProviderDescription,
+  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "modelNamespaces"
+>;
 
 /**
  * The reading rules for `operation` of `description`: its own when it carries

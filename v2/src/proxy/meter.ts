@@ -11,8 +11,8 @@
  *   values.
  */
 import { builtInProvider } from "../providers/index.ts";
-import { listedAs } from "../providers/listing.ts";
-import { readingRules, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { listedIn } from "../providers/listing.ts";
+import { readingRules, type ApiStyle, type OperationDescription, type ProviderDescription, type ReadingRules } from "../providers/operation.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
@@ -51,12 +51,13 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
  */
 function fieldsFor(
   description: ProviderDescription,
+  rules: ReadingRules,
   fields: readonly ServiceModeField[],
   model: string | undefined,
   native: boolean,
 ): readonly ServiceModeField[] {
-  if (description.modelNamespaces === undefined) return fields;
-  const listed = model === undefined ? null : listedAs(description.type, model);
+  if (rules.modelNamespaces === undefined) return fields;
+  const listed = model === undefined ? null : listedIn(rules.modelNamespaces, description.type, model);
   // A provider's own options are read for that provider's models only.
   const own = fields.filter((field) => field.forProvider === undefined || field.forProvider === listed?.type);
   const target = listed === null || listed.type === description.type ? null : builtInProvider(listed.type);
@@ -85,7 +86,7 @@ export function requestedServiceMode(
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
   const rules = readingRules(description, operation);
-  const reading = readServiceMode(fieldsFor(description, rules.serviceModes, model, true), (name) =>
+  const reading = readServiceMode(fieldsFor(description, rules, rules.serviceModes, model, true), (name) =>
     Object.hasOwn(body, name) ? body[name] : undefined,
   );
   const region = baseUrlRegion(description, baseUrl);
@@ -120,8 +121,8 @@ export function selectableModes(
       }
     }
   };
-  add(fieldsFor(description, rules.serviceModes, model, true), true);
-  add(fieldsFor(description, rules.servedModes ?? rules.serviceModes, model, false), false);
+  add(fieldsFor(description, rules, rules.serviceModes, model, true), true);
+  add(fieldsFor(description, rules, rules.servedModes ?? rules.serviceModes, model, false), false);
   return [...tiers].flatMap((tier) => [...regions].map((region) => ({ tier, region })));
 }
 
@@ -140,7 +141,7 @@ export function servedServiceMode(
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
   const rules = readingRules(description, operation);
-  const fields = fieldsFor(description, rules.servedModes ?? rules.serviceModes, model, false);
+  const fields = fieldsFor(description, rules, rules.servedModes ?? rules.serviceModes, model, false);
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
@@ -276,7 +277,7 @@ export function responseReader(
       if (body.stopped) stop("budget");
     },
     finish(headers, clean) {
-      const unread = { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+      const unread = { usage: null, providerCostUsd: null, closed: null, ...(readingRules(description, operation).alternativeModels ? { servedModel: null } : {}) };
       if (stopped !== null) return unread;
       let reading;
       try {
@@ -294,7 +295,7 @@ export function responseReader(
       if (reading.overflow) log("warn", "usage_value_too_large", facts);
       const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, description.type, style);
       const base = { usage, providerCostUsd: metered ? reading.providerCostUsd : null, closed: reading.closed };
-      return description.alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
+      return readingRules(description, operation).alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
     },
   };
 }

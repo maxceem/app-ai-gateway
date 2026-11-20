@@ -11,7 +11,18 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { CUSTOM_PATH_STYLES } from "../src/contracts/admin.ts";
 import { describeConnection } from "../src/providers/connections.ts";
-import { CUSTOM_STYLES, customAuthProblem, customDescription, customOperationName, declaredHostNames, knownHostOwner } from "../src/providers/custom.ts";
+import {
+  CARRIED,
+  CUSTOM_STYLES,
+  customAuthProblem,
+  customDescription,
+  customOperation,
+  customOperationName,
+  declaredHostNames,
+  knownHostOwner,
+  styleSource,
+} from "../src/providers/custom.ts";
+import { reportsCost } from "../src/pricing/prices.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
@@ -107,6 +118,40 @@ describe("a custom provider's description", () => {
     // On a known host, that provider's own definition and rules.
     const groq = customDescription({ baseUrl: "https://api.groq.com/openai/v1/", auth: AUTH, paths: [{ method: "POST", path: "chat/completions", style: "openai-chat" }] });
     expect(readingRules(groq, groq.operations[0]).serviceModes).toBe(BUILT_IN_PROVIDERS.groq!.serviceModes);
+  });
+
+  it("carries every field of a built-in definition as `CARRIED` says, for every provider and style", () => {
+    let judged = 0;
+    for (const owner of [null, ...Object.values(BUILT_IN_PROVIDERS)]) {
+      for (const style of CUSTOM_STYLES) {
+        const { provider, definition } = styleSource(style, owner);
+        if (definition === null) continue;
+        const custom = customOperation(style, "listed/path", owner);
+        judged += 1;
+        for (const field of Object.keys(CARRIED) as (keyof OperationDescription)[]) {
+          const where = `${provider.type} ${style} ${field}`;
+          if (CARRIED[field] === "kept") expect(custom[field], where).toEqual(definition[field]);
+          if (CARRIED[field] === "refused") expect(custom[field], where).toBeUndefined();
+        }
+        expect(custom.name).toBe(`custom.${style}`);
+        expect(custom.match).toEqual({ method: "POST", path: "listed/path" });
+        // The meter is the definition's, never with the provider's own dollar report.
+        const { providerCost: _report, ...meter } = definition.meter as typeof definition.meter & { providerCost?: unknown };
+        expect(custom.meter, `${provider.type} ${style} meter`).toEqual(meter);
+        expect(reportsCost(custom)).toBe(false);
+        expect(custom.rules?.serviceModes).toBe(provider.serviceModes);
+        expect(custom.rules?.alternativeModels).toBe(provider.alternativeModels);
+        expect(custom.rules?.modelNamespaces).toBe(provider.modelNamespaces);
+      }
+    }
+    expect(judged).toBeGreaterThan(CUSTOM_STYLES.length);
+  });
+
+  it("bills an xAI chat path at the connection's rates, never at xAI's own dollar report", () => {
+    const description = customDescription({ baseUrl: "https://api.x.ai/", auth: AUTH, paths: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }] });
+    const xaiChat = BUILT_IN_PROVIDERS.xai!.operations.find((one) => one.style === "openai-chat")!;
+    expect(reportsCost(xaiChat)).toBe(true);
+    expect(reportsCost(description.operations[0]!)).toBe(false);
   });
 
   it("is null for a custom row without its base URL or key header, which no save stores", () => {
@@ -259,7 +304,7 @@ describe("saving a custom provider", () => {
     [{ auth: { header: "x-appattest-proof", format: "{key}" } }, "reads who is calling from it"],
     [
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
-      "no call on this connection is billed in us",
+      "modes.us: no call on this connection is ever billed at this rate",
     ],
     [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "never allows"],
   ])("refuses %j", async (fields, message) => {
@@ -367,20 +412,41 @@ describe("saving a custom provider", () => {
     expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 3, passthrough: [chatPath], pricing: PRICING })).status).toBe(200);
   });
 
-  it("refuses a mode rate on a regional host that no call there is billed in, and saves the one it is", async () => {
+  it("judges a mode rate by the charge function, fallbacks included: a tier rate bills a regional host's calls", async () => {
     const key = await seedManagementKey();
-    const fields = (modes: Record<string, unknown>) => ({
-      baseUrl: "https://us.api.x.ai/",
+    const fields = (baseUrl: string, modes: Record<string, unknown>) => ({
+      baseUrl,
       passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }],
-      pricing: { "grok-fast": { input: 1, output: 2, modes } },
+      pricing: { "some-model": { input: 1, output: 2, modes } },
     });
-    // A priority call there is billed in `priority+us`, which a `priority` rate alone never reaches.
-    // With a `us` rate beside it, `priority` does bill there, scaled by the region's factor.
-    const refused = await createCustom(key, fields({ priority: { input: 2, output: 4 } }));
+    // A `priority+eu` call with no `eu` rate bills the global `priority` rate, as an estimate: the rate is used.
+    expect((await createCustom(key, fields("https://api.eu.mistral.ai/", { priority: { factor: 2 } }))).status).toBe(201);
+    expect((await createCustom(key, fields("https://us.api.x.ai/", { priority: { input: 2, output: 4 } }))).status).toBe(201);
+    // On a host with no region, no call is ever billed in one.
+    const refused = await createCustom(key, fields(BASE, { us: { factor: 1.1 } }));
     expect(refused.status, JSON.stringify(refused.body)).toBe(400);
-    expect(JSON.stringify(refused.body)).toContain("modes.priority: no call on this connection is billed in priority");
-    expect((await createCustom(key, fields({ "priority+us": { input: 2.2, output: 4.4 } }))).status).toBe(201);
-    expect((await createCustom(key, fields({ priority: { input: 2, output: 4 }, us: { factor: 1.1 } }))).status).toBe(201);
+    expect(JSON.stringify(refused.body)).toContain("modes.us: no call on this connection is ever billed at this rate");
+  });
+
+  it("judges only the mode entries a save adds or changes: a stored one stays when only the standard rate changes", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "OpenAI", slug: `oa-${crypto.randomUUID().slice(0, 6)}`, secret: "sk-live-secret-abcd" });
+    const id = created.body.provider.id as string;
+    // As if stored by an earlier release: an `eu` rate a global connection never bills.
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ "gpt-4o-mini": { input: 150_000_000, output: 600_000_000, modes: { eu: { factor: 1.1 } } } }), id)
+      .run();
+    const changed = await admin(key, "PUT", `/v2/admin/providers/${id}`, {
+      revision: 1,
+      pricing: { "gpt-4o-mini": { input: 0.2, output: 0.6, modes: { eu: { factor: 1.1 } } } },
+    });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    // A changed `eu` entry is judged.
+    const refused = await admin(key, "PUT", `/v2/admin/providers/${id}`, {
+      revision: 2,
+      pricing: { "gpt-4o-mini": { input: 0.2, output: 0.6, modes: { eu: { factor: 1.2 } } } },
+    });
+    expect(refused.status).toBe(400);
   });
 
   it("judges only mode rates a save adds or changes, never ones stored before", async () => {
@@ -396,6 +462,17 @@ describe("saving a custom provider", () => {
       pricing: { "local-llm": { input: 1, output: 2, modes: { eu: { factor: 1.1 } } }, "other-llm": { input: 1, output: 2 } },
     });
     expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+  });
+
+  it("needs the connection's rates for an xAI chat path: xAI's dollar report is never taken", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }] });
+    expect(created.status).toBe(201);
+    const app = await admin(key, "POST", "/v2/admin/apps", {
+      name: "xAI custom",
+      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [created.body.provider.slug]: { operations: ["custom.openai-chat"], models: ["grok-4"] } } } },
+    });
+    expect(app.status).toBe(400);
   });
 
   it("saves an API-style path with no rate yet: an app that routes it is judged when saved", async () => {
@@ -422,6 +499,7 @@ async function setup(
   operations: readonly string[],
   baseUrl = BASE,
   ratesJson: Record<string, unknown> = { "local-llm": { input: 1_000_000_000, output: 2_000_000_000 } },
+  models?: readonly string[],
 ) {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -438,7 +516,7 @@ async function setup(
     .run();
   const appId = await seedRoutedApp(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
-    { providers: { [slug]: { operations } } },
+    { providers: { [slug]: { operations, ...(models === undefined ? {} : { models }) } } },
   );
   const { key } = await seedAppKey(appId);
   return { appId, slug, key };
@@ -581,6 +659,36 @@ describe("serving a custom provider", () => {
     expect(() => requestCredential(headers, auth, "x-user")).toThrow(/access token is required/);
     expect(() => requestCredential(new Headers({ "x-end-user-id": "agw_x" }), auth, "x-end-user-id")).toThrow(/access token is required/);
     expect(requestCredential(new Headers({ "x-api-key": "agw_key" }), auth, "x-api-key")).toEqual({ token: "agw_key", headerName: "x-api-key" });
+  });
+
+  it("bills an xAI chat path at the connection's rate even when the answer reports its cost", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }], ["custom.openai-chat"], "https://api.x.ai/");
+    fetchSpy.mockResolvedValueOnce(
+      Response.json({ id: "c1", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500, cost_in_usd_ticks: 999_000_000_000 } }),
+    );
+    const { response } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
+      body: JSON.stringify({ model: "local-llm", messages: [] }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(await chargesOf(appId)).toEqual([expect.objectContaining({ price_source: "customer_rate", cost_nano: 2_000_000 })]);
+  });
+
+  it("judges a Vercel chat path's fallback models against the app's list, as Vercel's own connection does", async () => {
+    const { appId, slug, key } = await setup(
+      [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
+      ["custom.openai-chat"],
+      "https://ai-gateway.vercel.sh/v1/",
+      { "openai/gpt-4o-mini": { input: 150_000_000, output: 600_000_000 }, "openai/gpt-4o": { input: 2_500_000_000, output: 10_000_000_000 } },
+      ["openai/gpt-4o-mini"],
+    );
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "openai/gpt-4o-mini", messages: [], providerOptions: { gateway: { models: ["openai/gpt-4o"] } } }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

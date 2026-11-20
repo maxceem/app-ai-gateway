@@ -41,7 +41,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unselectableModeRates } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { selectableModes } from "../proxy/meter.ts";
 import {
@@ -57,6 +57,7 @@ import {
   customAuthProblem,
   customDescription,
   customOperationName,
+  customStyleProblem,
   isCustomStyle,
   knownHostOwner,
 } from "../providers/custom.ts";
@@ -287,6 +288,8 @@ function passthroughJson(
       }
       if (styles.has(entry.style)) throw new GatewayError(400, "invalid_request", `${where}.style: list one path per API style; ${entry.style} has one already`);
       styles.add(entry.style);
+      const problem = customStyleProblem(entry.style, subject.baseUrl);
+      if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
     }
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
@@ -359,30 +362,28 @@ function passthroughJson(
 }
 
 /**
- * A saved rate in a service mode no call on the connection can be billed in:
- * refused. The modes a call can be billed in are read by the same code that
- * reads them when serving (`selectableModes`), for the connection's base URL
- * and each of its operations, and the entry each mode bills by the same rule
- * as a charge (`unselectableModeRates`). A rate there would never bill, and
- * the call would bill another rate instead, possibly a lower one. Only rates
- * new or changed by this save are judged (`before`): rates already stored
- * are not judged again.
+ * A rate in a service mode that no call on the connection can ever bill:
+ * refused when this save adds or changes it. Which modes a call can be
+ * billed in is read by the code that reads them when serving
+ * (`selectableModes`), for the connection's base URL and each operation; and
+ * whether a rate entry is ever used, by the one charge function, fallbacks
+ * included (`unusedModeRate`). Every save of rates runs it: a direct create
+ * or update, and a hand-off.
  */
-function assertModesSelectable(
+export function assertModesSelectable(
   description: ProviderDescription,
   baseUrl: string | null,
   rates: CustomerRates | null,
   before: CustomerRates | null,
 ): void {
   for (const model of Object.keys(rates ?? {})) {
-    if (before !== null && Object.hasOwn(before, model) && JSON.stringify(before[model]) === JSON.stringify(rates![model])) continue;
-    const selectable = description.operations.flatMap((operation) => selectableModes(description, operation, baseUrl, model));
-    const [unused] = unselectableModeRates(rates!, model, selectable);
-    if (unused === undefined) continue;
+    const calls = description.operations.map((operation) => ({ operation, modes: selectableModes(description, operation, baseUrl, model) }));
+    const unused = unusedModeRate(rates!, before, model, calls);
+    if (unused === null) continue;
     throw new GatewayError(
       400,
       "invalid_request",
-      `pricing.${model}.modes.${unused}: no call on this connection is billed in ${unused}, so the rate would never bill; price the mode its calls are served in instead`,
+      `pricing.${model}.modes.${unused}: no call on this connection is ever billed at this rate; price the mode its calls are served in instead`,
     );
   }
 }
