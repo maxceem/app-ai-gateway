@@ -20,7 +20,7 @@ describe("multipart forms", () => {
     const bytes = form(
       part('Content-Disposition: form-data; name="file"; filename="a.mp3"\r\nContent-Type: audio/mpeg', "\r\n--XyY near miss\r\nbinary"),
       part('Content-Disposition: form-data; name="model"', "whisper-1"),
-      part("Content-Disposition: form-data; name=response_format", "json"),
+      part('Content-Disposition: form-data; name="response_format"', "json"),
       part('content-disposition: form-data; name="model"', "other"),
       part('Content-Disposition: form-data; name="prompt"', "x".repeat(5000)),
     );
@@ -44,6 +44,16 @@ describe("multipart forms", () => {
     expect(scan(form(part('Content-Disposition: form-data; name="file"; filename="a"', "x"))).size).toBe(0);
   });
 
+  it("refuses what the platform's parser refuses: an unquoted name, a name in another case, a type in another case", async () => {
+    const refused = ['form-data; name=model', 'form-data; NAME="model"', 'Form-Data; name="model"', "form-data; name*=UTF-8''model"];
+    for (const disposition of refused) {
+      const bytes = form(part(`Content-Disposition: ${disposition}`, "m")) as Uint8Array<ArrayBuffer>;
+      const platform = new Request("https://local.invalid", { method: "POST", headers: { "content-type": `multipart/form-data; boundary=${B}` }, body: bytes }).formData();
+      await expect(platform, disposition).rejects.toThrow();
+      expect(() => scan(bytes), disposition).toThrow(MultipartError);
+    }
+  });
+
   it("refuses a form it cannot read exactly", () => {
     const refused = [
       encode(part('Content-Disposition: form-data; name="model"', "m")), // never closed
@@ -56,14 +66,47 @@ describe("multipart forms", () => {
     for (const bytes of refused) expect(() => scan(bytes), new TextDecoder().decode(bytes)).toThrow(MultipartError);
   });
 
-  it("reads the same fields the platform's own parser does", async () => {
-    const source = new FormData();
-    source.append("model", "gpt-4o-transcribe");
-    source.append("file", new Blob([new Uint8Array(4096).fill(13)]), "audio.mp3");
-    source.append("response_format", "verbose_json");
-    const request = new Request("https://local.invalid", { method: "POST", body: source });
-    const boundary = multipartBoundary(request.headers.get("content-type")!)!;
-    const fields = scanMultipart(new Uint8Array(await request.arrayBuffer()), boundary, new Set(["model", "response_format"]));
-    expect(fields).toEqual(new Map([["model", ["gpt-4o-transcribe"]], ["response_format", ["verbose_json"]]]));
+  it("reads the same fields as the platform's own parser, across odd but valid forms", async () => {
+    const wanted = ["model", "response_format", "service_tier"];
+    const forms: [label: string, parts: string[]][] = [
+      ["a semicolon in a quoted filename", [part('Content-Disposition: form-data; name="file"; filename="interview; take 2.mp3"', "x"), part('Content-Disposition: form-data; name="model"', "whisper-1")]],
+      ["an escaped quote in a filename", [part('Content-Disposition: form-data; name="file"; filename="say \\"hi\\".mp3"', "x"), part('Content-Disposition: form-data; name="model"', "m")]],
+      ["odd spacing", [part('Content-Disposition:form-data;name="model" ;  filename = "a b.txt"', "m"), part('Content-Disposition: form-data ;name = "response_format";', "json")]],
+      ["a tab", [part('Content-Disposition: form-data;\tname="model"', "gpt"), part('Content-Disposition: form-data; name="service_tier"', "flex")]],
+      ["a quoted semicolon in a name", [part('Content-Disposition: form-data; name="a;b"', "x"), part('Content-Disposition: form-data; name="model"', "m")]],
+      ["repeated fields", [part('Content-Disposition: form-data; name="model"', "a"), part('Content-Disposition: form-data; name="model"', "b")]],
+      ["a form built by the platform", []],
+    ];
+    for (const [label, parts] of forms) {
+      let bytes: Uint8Array<ArrayBuffer>;
+      let boundary = B;
+      if (parts.length === 0) {
+        const source = new FormData();
+        source.append("model", "gpt-4o-transcribe");
+        source.append("file", new Blob([new Uint8Array(4096).fill(13)]), "a; b \"c\".mp3");
+        source.append("response_format", "verbose_json");
+        const request = new Request("https://local.invalid", { method: "POST", body: source });
+        boundary = multipartBoundary(request.headers.get("content-type")!)!;
+        bytes = new Uint8Array(await request.arrayBuffer());
+      } else {
+        bytes = form(...parts) as Uint8Array<ArrayBuffer>;
+      }
+      let platform: FormData;
+      try {
+        platform = await new Request("https://local.invalid", {
+          method: "POST",
+          headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+          body: bytes,
+        }).formData();
+      } catch (error) {
+        throw new Error(`the platform refuses the form with ${label}: ${String(error)}`);
+      }
+      const expected = new Map<string, (string | null)[]>();
+      for (const name of wanted) {
+        const values = platform.getAll(name).map((value) => (typeof value === "string" ? value : null));
+        if (values.length > 0) expected.set(name, values);
+      }
+      expect(scanMultipart(bytes, boundary, new Set(wanted)), label).toEqual(expected);
+    }
   });
 });

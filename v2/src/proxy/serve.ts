@@ -224,6 +224,17 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     // A transcription is only sent in a format whose answer can be priced.
     const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
 
+    // An untouched body is sent as the client's own bytes, with its own content
+    // type. A changed form is sent as a new form, so fetch writes a fresh
+    // boundary. Built before admission: a form that cannot be rebuilt is
+    // refused before it spends anything.
+    const sent: OutgoingBody =
+      parsed.kind === "json"
+        ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
+        : format !== null
+          ? { form: await withFormat(bytes, contentType, format), contentType: null }
+          : { bytes, contentType };
+
     // Admission comes last, once the request is known to be one that can be
     // served: the app's own limits, then the plan allowance.
     await admitRequest({
@@ -233,15 +244,6 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       waitUntil: (promise) => c.executionCtx.waitUntil(promise),
       refuse: refusal,
     });
-
-    // An untouched body is sent as the client's own bytes, with its own content
-    // type. A changed form is sent as a new form, so fetch writes a fresh boundary.
-    const sent: OutgoingBody =
-      parsed.kind === "json"
-        ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
-        : format !== null
-          ? { form: await withFormat(bytes, contentType, format), contentType: null }
-          : { bytes, contentType };
 
     const attempt: CallAttempt = {
       requestId: timeOrderedId(startedAt),
@@ -375,11 +377,16 @@ function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<
  * fresh boundary for it.
  */
 async function withFormat(bytes: Uint8Array, contentType: string, format: string): Promise<FormData> {
-  const form = await new Request("https://local.invalid", {
-    method: "POST",
-    headers: { "content-type": contentType },
-    body: bytes as Uint8Array<ArrayBuffer>,
-  }).formData();
+  let form: FormData;
+  try {
+    form = await new Request("https://local.invalid", {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body: bytes as Uint8Array<ArrayBuffer>,
+    }).formData();
+  } catch {
+    throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
+  }
   form.set("response_format", format);
   return form;
 }

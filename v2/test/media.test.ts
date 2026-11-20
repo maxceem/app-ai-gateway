@@ -244,6 +244,24 @@ describe("transcription", () => {
     ]);
   });
 
+  it("refuses a form it must rebuild but cannot parse before admission, so it spends no request limit", async () => {
+    const { appId, slug, key } = await setup("groq", { operations: ["groq.transcription.openai"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.limits', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ per_app: { requests: { per_minute: 1 } } }), appId)
+      .run();
+    clearCaches();
+    // A form the scanner reads that the platform's parser still refuses.
+    vi.spyOn(Request.prototype, "formData").mockRejectedValueOnce(new TypeError("unreadable form"));
+    const refused = await upload(`/v2/apps/${appId}/proxy/${slug}/openai/v1/audio/transcriptions`, key, { model: "whisper-large-v3", file: AUDIO });
+    expect(refused.response.status).toBe(400);
+    expect(refused.text).toContain("invalid_request");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // The app's one request a minute is still there.
+    fetchSpy.mockResolvedValue(Response.json({ text: "hi", duration: 3 }));
+    const served = await upload(`/v2/apps/${appId}/proxy/${slug}/openai/v1/audio/transcriptions`, key, { model: "whisper-large-v3", file: AUDIO });
+    expect(served.response.status).toBe(200);
+  });
+
   it("refuses a form that names its model twice, and a transcription sent as JSON to a provider that judges its format", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.transcription"] });
     const twice = await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, { model: ["whisper-1", "gpt-4o-transcribe"], file: AUDIO });

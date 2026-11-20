@@ -45,25 +45,79 @@ function find(bytes: Uint8Array, needle: Uint8Array, from: number): number {
   return -1;
 }
 
-/** A part's field name and whether it is a file, from its headers. */
+/**
+ * The parameters of a `Content-Disposition` value after its type: `key=token`
+ * or `key="quoted string"`, where a quoted string may hold `;` and a
+ * backslash escapes the next character. Spaces around `;` and `=` are
+ * allowed. Keys keep their case: the platform's parser reads `name` only.
+ */
+function dispositionParams(value: string): { type: string; params: [key: string, value: string, quoted: boolean][] } {
+  let at = 0;
+  const skipSpace = () => {
+    while (value[at] === " " || value[at] === "\t") at += 1;
+  };
+  const token = () => {
+    const start = at;
+    while (at < value.length && !/[\s;="]/u.test(value[at]!)) at += 1;
+    return value.slice(start, at);
+  };
+  skipSpace();
+  const type = token();
+  const params: [string, string, boolean][] = [];
+  for (;;) {
+    skipSpace();
+    if (at >= value.length) return { type, params };
+    if (value[at] !== ";") throw new MultipartError("A part's Content-Disposition cannot be read");
+    at += 1;
+    skipSpace();
+    if (at >= value.length) return { type, params };
+    const key = token();
+    skipSpace();
+    if (key === "" || value[at] !== "=") throw new MultipartError("A part's Content-Disposition cannot be read");
+    at += 1;
+    skipSpace();
+    let found = "";
+    const quoted = value[at] === '"';
+    if (quoted) {
+      at += 1;
+      for (;;) {
+        if (at >= value.length) throw new MultipartError("A quoted value does not close");
+        const character = value[at]!;
+        if (character === '"') break;
+        if (character === "\\" && at + 1 < value.length) at += 1;
+        found += value[at];
+        at += 1;
+      }
+      at += 1;
+    } else {
+      found = token();
+    }
+    params.push([key, found, quoted]);
+  }
+}
+
+/**
+ * A part's field name and whether it is a file, from its headers. As strict
+ * as the platform's own parser, which v1 used, or stricter: the type is
+ * exactly `form-data`, the name is quoted, and anything another parser could
+ * read differently is refused (a name given twice, in another case, or
+ * encoded, and an encoded filename).
+ */
 function partName(headers: string): { name: string; file: boolean } {
   const line = headers.split("\r\n").find((header) => /^content-disposition\s*:/iu.test(header));
   if (line === undefined) throw new MultipartError("A part has no Content-Disposition");
-  const params = line.slice(line.indexOf(":") + 1).split(";").map((param) => param.trim());
-  if (params[0]?.toLowerCase() !== "form-data") throw new MultipartError("A part is not form-data");
+  const { type, params } = dispositionParams(line.slice(line.indexOf(":") + 1));
+  if (type !== "form-data") throw new MultipartError("A part is not form-data");
   let name: string | null = null;
   let file = false;
-  for (const param of params.slice(1)) {
-    const match = /^([A-Za-z*]+)\s*=\s*(?:"([^"]*)"|([^\s";]*))$/u.exec(param);
-    if (!match) throw new MultipartError("A part's Content-Disposition cannot be read");
-    const key = match[1]!.toLowerCase();
-    // An encoded name could name a field differently to another parser.
-    if (key === "name*") throw new MultipartError("A part names itself in an encoded form");
-    if (key === "name") {
-      if (name !== null) throw new MultipartError("A part names itself twice");
-      name = match[2] ?? match[3] ?? "";
+  for (const [key, value, quoted] of params) {
+    const lower = key.toLowerCase();
+    if (lower === "name*" || lower === "filename*") throw new MultipartError("A part names itself in an encoded form");
+    if (lower === "name") {
+      if (key !== "name" || !quoted || name !== null) throw new MultipartError("A part's name cannot be read exactly");
+      name = value;
     }
-    if (key === "filename" || key === "filename*") file = true;
+    if (lower === "filename") file = true;
   }
   if (name === null) throw new MultipartError("A part has no name");
   return { name, file };
@@ -97,7 +151,9 @@ export function scanMultipart(bytes: Uint8Array, boundary: string, wanted: Reado
       const length = next - bodyStart;
       // A view, never a copy, and decoded only when short enough to be a name.
       const value = file || length > MAX_VALUE_BYTES ? null : decoder.decode(bytes.subarray(bodyStart, next));
-      values.set(name, [...(values.get(name) ?? []), value]);
+      const list = values.get(name);
+      if (list === undefined) values.set(name, [value]);
+      else list.push(value);
     }
     at = next + delimiter.length;
   }
