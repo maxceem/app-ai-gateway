@@ -68,6 +68,18 @@ async function settlesAtDeadline<T>(call: () => Promise<T>, deadlineMs: number):
   return pending;
 }
 
+/** The `reason` of each `app_limits_unchecked` warning, in order. */
+function uncheckedReasons(): string[] {
+  return warn.mock.calls.flatMap((call) => {
+    try {
+      const event = JSON.parse(String(call[0])) as { message: string; reason?: string };
+      return event.message === "app_limits_unchecked" ? [String(event.reason)] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 /** The events logged at a level, by name. */
 function logged(spy: MockInstance<(...args: unknown[]) => void>): string[] {
   return spy.mock.calls.map((call) => {
@@ -203,15 +215,25 @@ describe("admission order and timeout rules", () => {
     await Promise.all(kept);
   });
 
-  it("serves a request when a limit check is slow or fails, and logs it", async () => {
+  it("serves a request when a limit check is slow, and logs it", async () => {
     const calls: string[] = [];
     const stubbed = {
       ...env,
       END_USER_LIMITER: limiter("user", calls, allowed, SLOW),
-      APP_LIMITER: { getByName: () => ({ checkRequest: async () => { throw new Error("object gone"); } }) },
+      APP_LIMITER: limiter("app", calls, allowed),
     } as unknown as Env;
     await expect(settlesAtDeadline(() => admitRequest(input({ env: stubbed, limitsDeadlineMs: 30 })), 30)).resolves.toBeUndefined();
-    expect(logged(warn).filter((name) => name === "app_limits_unchecked")).toHaveLength(2);
+    expect(uncheckedReasons()).toEqual(["deadline", "deadline"]);
+  });
+
+  it("serves a request when a limit check fails, and logs it", async () => {
+    const stubbed = {
+      ...env,
+      END_USER_LIMITER: limiter("user", [], allowed),
+      APP_LIMITER: { getByName: () => ({ checkRequest: async () => { throw new Error("object gone"); } }) },
+    } as unknown as Env;
+    await expect(admitRequest(input({ env: stubbed }))).resolves.toBeUndefined();
+    expect(uncheckedReasons()).toEqual(["failed"]);
   });
 
   it("shares one deadline: three slow limiters do not cost three deadlines", async () => {

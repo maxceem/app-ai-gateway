@@ -1,5 +1,5 @@
 // Refuses real timers in v2's tests: no `setTimeout`, `setInterval`,
-// `scheduler.wait` or sleep helper. A test uses fake timers, or waits on the
+// `scheduler.wait`, `AbortSignal.timeout` or sleep helper. A test uses fake timers, or waits on the
 // event itself (a promise the fake resolves, `waitFor`, a fake the test
 // releases). Real timers make tests slower and flaky.
 //
@@ -22,8 +22,9 @@ const helperFile = /(^|\/)test\/.+\.[cm]?[jt]sx?$/;
 const scopes = ["v2/test", "v2/console", "v2/cli/test"];
 const skipped = new Set(["node_modules", "dist"]);
 
-// Whitespace and newlines may sit before `(`, and around the `.` in `scheduler.wait`.
-const timer = /\b(?:setTimeout|setInterval|sleep|scheduler\s*\.\s*wait)\s*\(/g;
+// Whitespace and newlines may sit before `(`, and around the `.` in
+// `scheduler.wait` and `AbortSignal.timeout`.
+const timer = /\b(?:setTimeout|setInterval|sleep|scheduler\s*\.\s*wait|AbortSignal\s*\.\s*timeout)\s*\(/g;
 const allowed = /\/\/\s*real-timer:\s*\S/;
 
 function* files(dir) {

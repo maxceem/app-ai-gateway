@@ -34,7 +34,12 @@ describe("readOrKnown", () => {
   });
 
   it("answers what the read answers in time, even a refusal", async () => {
-    await expect(readOrKnown("t", known(), () => Promise.resolve("fresh"), BUDGET_MS)).resolves.toBe("fresh");
+    useFakeClock();
+    const read = readOrKnown("t", known(), () => late("fresh"), BUDGET_MS);
+    await slow.reached();
+    await vi.advanceTimersByTimeAsync(1);
+    slow.release();
+    await expect(read).resolves.toBe("fresh");
     const refusal = new Error("App is not registered");
     await expect(readOrKnown("t", known(), () => Promise.reject(refusal), BUDGET_MS)).rejects.toBe(refusal);
   });
