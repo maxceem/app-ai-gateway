@@ -5,9 +5,9 @@
  */
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import models from "../pricing/models.json";
+import { PRICE_FILE } from "../pricing/price-file.ts";
 import type { AdminVariables } from "./actor.ts";
 
 export function listModelPrices(c: Context<{ Bindings: Env; Variables: AdminVariables }>): Response {
-  return c.json({ prices: models as Record<string, Record<string, Record<string, unknown>>> } satisfies OperationResponse<"listModelPrices">);
+  return c.json({ prices: PRICE_FILE as Record<string, Record<string, Record<string, unknown>>> } satisfies OperationResponse<"listModelPrices">);
 }

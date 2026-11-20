@@ -127,9 +127,22 @@ export type Meter =
   /**
    * Usage in the response body or stream, read by the API style's usage
    * reader. `providerCost` names the provider's own cost report, read from the
-   * same response, which wins over our price.
+   * same response, which wins over our price. `requestMeasure` bills an answer
+   * that reports no usage at all from the request instead (OpenAI's speech
+   * answered as plain audio: the characters of its input), for a model priced
+   * in that unit.
    */
-  | { readonly kind: "response_json"; readonly style: ApiStyle; readonly providerCost?: ProviderCostReport }
+  | {
+      readonly kind: "response_json";
+      readonly style: ApiStyle;
+      readonly providerCost?: ProviderCostReport;
+      readonly requestMeasure?: RequestMeasure & { readonly unit: Unit };
+      /**
+       * The units other than tokens its reader reports, which a price may bill
+       * instead: a transcription's `audio_seconds`, an image API's `images`.
+       */
+      readonly units?: readonly Unit[];
+    }
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
@@ -195,13 +208,18 @@ export interface FieldRef {
 }
 
 /**
- * Fields that make the provider call or fetch a URL. Webhook fields are always
- * removed: a webhook could grow a bill the budget never sees. Fetch fields
- * are kept only where the operation needs them, such as `audio_url` for
- * speech-to-text. Any other fetch field is removed.
+ * Fields that make the provider call or fetch a URL (plan section 4.1).
+ * Webhook fields are always removed: a webhook could grow a bill the budget
+ * never sees. A fetch field is removed too, unless the operation needs it,
+ * such as `audio_url` for speech-to-text, which is then listed in
+ * `fetchKept` instead. The gateway removes them before the request is sent
+ * (`src/proxy/request-fields.ts`).
  */
 export interface OutboundFields {
   readonly webhooks?: readonly FieldRef[];
+  /** Fetch fields the operation does not need: removed. */
+  readonly fetches?: readonly FieldRef[];
+  /** Fetch fields the operation needs: kept. Listed so a reader sees they were judged. */
   readonly fetchKept?: readonly FieldRef[];
 }
 
@@ -212,10 +230,16 @@ export interface BackgroundOption {
   readonly action: "refuse" | "job";
 }
 
-/** A rate that depends on a request field, such as image size or video resolution. */
+/**
+ * A rate that depends on a request field, such as image size or video
+ * resolution. The price names its rates per value under `by.<name>`
+ * (`src/pricing/prices.ts`). `default` is the value the provider uses when
+ * the request names none.
+ */
 export interface PriceKey {
   readonly name: string;
   readonly from: FieldRef;
+  readonly default?: string;
 }
 
 /** Where the model is in the request. `Part` is a part name of the match template. */

@@ -113,7 +113,7 @@ export function transcription(name: string, path: string, options: { readonly de
     transport: "upload",
     style: "openai-transcription",
     model: { in: "form", field: "model", ...(options.defaultModel !== undefined ? { default: options.defaultModel } : {}) },
-    meter: { kind: "response_json", style: "openai-transcription" },
+    meter: { kind: "response_json", style: "openai-transcription", units: ["audio_seconds"] },
   });
 }
 
@@ -130,7 +130,12 @@ export function images(name: string, path: string, options: TextOptions = {}): O
     style: "openai-images",
     model: { in: "body", field: "model" },
     background: DETACHED,
-    meter: meter("openai-images", options),
+    meter: { ...meter("openai-images", options), units: ["images"] },
+    // What an image's price varies by on the providers' own lists: its size and quality.
+    priceKeys: [
+      { name: "size", from: { in: "body", field: "size" } },
+      { name: "quality", from: { in: "body", field: "quality" } },
+    ],
   });
 }
 
@@ -150,8 +155,10 @@ export function embeddings(name: string, path: string): OperationDescription {
 
 /**
  * Text to speech. The answer is audio, or a stream of events ending with its
- * usage. Audio alone reports no usage, so its cost stays unknown and is
- * logged, as in v1, until step 4 measures the request's characters.
+ * usage. Audio alone reports no usage: it is billed from the request's
+ * characters for a model priced per character (`per_million_characters`, a
+ * customer's own rate say), and otherwise its cost stays unknown and is
+ * logged, as in v1. Usage in the answer, where it has some, always wins.
  */
 export function speech(name: string, path: string): OperationDescription {
   return defineOperation({
@@ -162,7 +169,7 @@ export function speech(name: string, path: string): OperationDescription {
     style: "openai-speech",
     model: { in: "body", field: "model" },
     background: DETACHED,
-    meter: { kind: "response_json", style: "openai-speech" },
+    meter: { kind: "response_json", style: "openai-speech", requestMeasure: { measure: "characters", field: "input", unit: "characters" } },
   });
 }
 

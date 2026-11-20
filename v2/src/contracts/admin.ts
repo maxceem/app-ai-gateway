@@ -7,6 +7,8 @@
  */
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
+import { RATE_FIELDS } from "../usage/token-rates.ts";
+import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
 
@@ -86,24 +88,63 @@ export const AppKeyRevokeResponseSchema = z
   .object({ app_id: z.string(), key: AppKeySchema })
   .meta({ id: "AppKeyRevokeResponse" });
 
+const PriceAmountSchema = z.number().nonnegative().finite();
+
+/** Every rate a price may carry, each optional: a token rate per million tokens, or a unit rate (`src/pricing/units.ts`). */
+const RATE_SHAPE = Object.fromEntries(RATE_FIELDS.map((field) => [field, PriceAmountSchema.optional()])) as Record<
+  string,
+  z.ZodOptional<typeof PriceAmountSchema>
+>;
+
+/** A set of rates, in dollars. */
+const PriceRatesSchema = z.object(RATE_SHAPE).strict();
+
+/** A model's price in one service mode: a factor on its standard rates, and any rate the mode prices apart. */
+const PricingModeSchema = z.object({ factor: PriceAmountSchema.optional(), ...RATE_SHAPE }).strict();
+
+const PRICE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,39}$/u;
+
 /**
- * A customer's own prices for one model, in dollars per million units, as v1
- * takes them. They are converted once to whole nano-dollars per million units
- * when saved.
+ * A customer's own prices for one model, in dollars, as v1 takes them, in any
+ * unit (plan section 4.2): token rates per million tokens, and unit rates per
+ * the amount each names (`per_minute`, `per_image`, `per_million_characters`,
+ * `per_credit`, `per_unit`, `per_request`, ...). They are converted once to
+ * whole nano-dollars when saved.
+ *
+ * - `modes`: prices in service modes other than standard. Left out, the price
+ *   list's mode factors apply to these rates (v1).
+ * - `by`: rates that depend on a request field an operation names as a price
+ *   key, such as `{ "size": { "1024x1024": { "per_image": 0.04 } } }`.
  */
 export const ModelPricingSchema = z
   .object({
-    input: z.number().nonnegative().finite(),
-    output: z.number().nonnegative().finite(),
-    cached_input: z.number().nonnegative().finite().optional(),
-    cache_write: z.number().nonnegative().finite().optional(),
-    long_input: z.number().nonnegative().finite().optional(),
-    long_cached_input: z.number().nonnegative().finite().optional(),
-    long_cache_write: z.number().nonnegative().finite().optional(),
-    long_output: z.number().nonnegative().finite().optional(),
+    ...RATE_SHAPE,
     long_context_threshold: z.number().int().positive().optional(),
+    modes: z
+      .record(
+        z.string().refine((name) => name !== "standard" && parseServiceModeName(name) !== null, {
+          message: "Name a service mode: flex, priority, fast or ultrafast, a region such as us or eu, or a tier+region pair",
+        }),
+        PricingModeSchema,
+      )
+      .optional(),
+    by: z
+      .record(
+        z.string().regex(PRICE_KEY_PATTERN, "A price key is lowercase letters, digits and _"),
+        z.record(z.string().min(1).max(100), PriceRatesSchema),
+      )
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((price, context) => {
+    const entry = price as Record<string, unknown>;
+    if ((entry.input === undefined) !== (entry.output === undefined)) {
+      context.addIssue({ code: "custom", message: "input and output are priced together" });
+    }
+    if (price.long_context_threshold === undefined && Object.keys(entry).some((field) => field.startsWith("long_") && field !== "long_context_threshold")) {
+      context.addIssue({ code: "custom", message: "Long-context rates need long_context_threshold" });
+    }
+  });
 
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 

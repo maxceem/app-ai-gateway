@@ -35,7 +35,7 @@ import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
-import { billedUnits, priceInServedMode, reportsPricedMeasure } from "../pricing/tokens.ts";
+import { priceInServedMode, reportedUnits } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -71,6 +71,14 @@ export interface CallAttempt {
   readonly alternatives?: Alternatives;
   /** The answer did not say which of the request's models served it: the price is an estimate. */
   readonly servedModelUnknown?: true;
+  /**
+   * What the operation's meter measured from the request, if it takes
+   * anything from it (`./request-fields.ts`): the usage of a request-measured
+   * call, and the fallback of one whose answer reports nothing.
+   */
+  readonly requestUsage?: UsageObservation | null;
+  /** The request's price key values (`./request-fields.ts`), kept on its usage so it is priced, and priced later, with them. */
+  readonly priceKeys?: Readonly<Record<string, string>>;
 }
 
 export interface AttemptOutcome {
@@ -119,6 +127,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     attempt.servedModelUnknown === true ||
     usage?.finalEventUnread === true;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
+  if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
   const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
 
   let costed: Costed;
@@ -129,8 +138,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";
   } else if (usage !== null) {
-    measured = outcome.cut ? "partial" : "complete";
-    if (attempt.price !== null && !reportsPricedMeasure(attempt.price.price, usage)) {
+    // Set below, from the measure the pricing result billed.
+    measured = "complete";
+    if (attempt.price !== null && priced === null) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
       // Its price would multiply counters that were never sent, and no later
@@ -182,7 +192,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = "complete";
   }
 
-  const billed = usage === null ? null : billedUnits(usage, attempt.price?.price ?? null);
+  // The unit the price billed, with its count, from the pricing result itself;
+  // an unpriced usage keeps the unit it reports.
+  const billed = priced !== null ? { unit: priced.unit, units: priced.units } : usage === null ? null : reportedUnits(usage);
+  if (usage !== null && reported === null) {
+    // Worked out from the request, not reported by the provider: estimated, whatever the price.
+    const unpricedEstimate = billed !== null && billed.unit !== "tokens" && usage.estimatedUnits?.includes(billed.unit) === true;
+    measured = outcome.cut ? "partial" : priced !== null ? priced.measured : unpricedEstimate ? "estimated" : "complete";
+  }
   const charge: ChargeRow = {
     id,
     kind: "attempt",

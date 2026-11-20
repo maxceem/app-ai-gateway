@@ -2,7 +2,8 @@
  * The price file and the rates the gateway prices with (plan section 4.2,
  * "Prices"; D12, D20).
  *
- * `models.json` is v1's price file, copied as it is: price updates on v1's
+ * The price file is v1's `models.json`, copied as it is, plus v2's own
+ * prices (`./price-file.ts`): price updates on v1's
  * main branch are copied here, never merged (D16). It writes dollars per
  * million units, and per minute, per hour or per image for the models priced
  * that way. Each number is converted once, when this module loads, to an
@@ -12,10 +13,11 @@
  * A price is never removed: a model the providers stopped listing keeps its
  * entry with `unlisted_since`, and is still priced.
  */
-import models from "./models.json";
-import type { OperationDescription } from "../providers/operation.ts";
-import { MoneyError, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
+import { PRICE_FILE } from "./price-file.ts";
+import type { OperationDescription, Unit } from "../providers/operation.ts";
+import { MoneyError, NANO_PER_DOLLAR, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
 import {
+  STANDARD_MODE,
   isStandardMode,
   parseServiceModeName,
   serviceModeName,
@@ -23,13 +25,26 @@ import {
   type ServiceMode,
 } from "../usage/service-modes.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
+import { operationUnits, UNIT_RATES } from "./units.ts";
 
 /** The name of a rate a price may carry: a token rate (`input`, `long_cache_write_1h`, ...) or a unit rate (`per_minute`). */
 export type RateField = string;
 
+/** Rates as integers, by field. */
+export type RateSet = Readonly<Partial<Record<RateField, RateNanoPerMillion>>>;
+
+/**
+ * Rates that depend on a request field (an operation's price key): for each
+ * key, the rates each value of it bills at, replacing the model's own
+ * (`by: { size: { "1024x1024": { per_image: 0.04 } } }` in the price file).
+ */
+export type KeyedRates = Readonly<Record<string, Readonly<Record<string, RateSet>>>>;
+
 /** A model's rates as integers, plus the rest of its price-file entry as written. */
 export interface ModelPrice {
-  readonly rates: Readonly<Partial<Record<RateField, RateNanoPerMillion>>>;
+  readonly rates: RateSet;
+  /** Rates by price key value (`keyedPrices`). */
+  readonly keyed?: KeyedRates;
   /** Prompt size above which the `long_*` rates apply. */
   readonly longContextThreshold?: number;
   readonly kind?: string;
@@ -42,18 +57,41 @@ export interface ModelPrice {
 
 type PriceFile = Record<string, Record<string, Record<string, unknown>>>;
 
-function loadEntry(provider: string, model: string, entry: Record<string, unknown>): ModelPrice {
+/** The rates an object states, converted from dollars once. `where` names it in an error. */
+function dollarRates(entry: Readonly<Record<string, unknown>>, where: string): Partial<Record<RateField, RateNanoPerMillion>> {
   const rates: Partial<Record<RateField, RateNanoPerMillion>> = {};
   for (const field of RATE_FIELDS) {
     const value = entry[field];
     if (value === undefined) continue;
-    if (typeof value !== "number") throw new MoneyError(`Price file: ${provider}/${model}.${field} is not a number`);
+    if (typeof value !== "number") throw new MoneyError(`Price file: ${where}.${field} is not a number`);
     rates[field] = rateFromDollarsPerMillion(value);
   }
+  return rates;
+}
+
+/** `by` as written, its rates converted the way `convert` says: a price file writes dollars, a customer's stored rates nano-dollars. */
+function readKeyed(by: unknown, convert: (rates: Readonly<Record<string, unknown>>, where: string) => RateSet, where: string): KeyedRates | undefined {
+  if (typeof by !== "object" || by === null) return undefined;
+  const keyed: Record<string, Record<string, RateSet>> = {};
+  for (const [key, values] of Object.entries(by as Record<string, unknown>)) {
+    if (typeof values !== "object" || values === null) continue;
+    const table: Record<string, RateSet> = {};
+    for (const [value, rates] of Object.entries(values as Record<string, unknown>)) {
+      if (typeof rates === "object" && rates !== null) table[value] = convert(rates as Record<string, unknown>, `${where}.by.${key}.${value}`);
+    }
+    keyed[key] = table;
+  }
+  return keyed;
+}
+
+function loadEntry(provider: string, model: string, entry: Record<string, unknown>): ModelPrice {
+  const rates = dollarRates(entry, `${provider}/${model}`);
+  const keyed = readKeyed(entry.by, dollarRates, `${provider}/${model}`);
   const threshold = entry.long_context_threshold;
   const modes = entry.modes;
   return {
     rates,
+    ...(keyed !== undefined ? { keyed } : {}),
     ...(typeof threshold === "number" ? { longContextThreshold: threshold } : {}),
     ...(typeof entry.kind === "string" ? { kind: entry.kind } : {}),
     ...(typeof entry.unlisted_since === "string" ? { unlistedSince: entry.unlisted_since } : {}),
@@ -73,15 +111,27 @@ function loadPriceFile(file: PriceFile): ReadonlyMap<string, ReadonlyMap<string,
 }
 
 /** Our price list, converted once. */
-export const PRICE_LIST = loadPriceFile(models as PriceFile);
+export const PRICE_LIST = loadPriceFile(PRICE_FILE as PriceFile);
 
 /**
- * A customer's own rates for one connection, as stored in `rates_json`:
- * integer nano-dollars per million tokens, keyed by model.
+ * A customer's own rates for one connection, as stored in `rates_json`, keyed
+ * by model. Each entry has its rates as integer nano-dollars (per million
+ * tokens, or per the unit a unit rate names: `../pricing/units.ts`), and may
+ * have `long_context_threshold`, `modes` (each mode's `factor` and its own
+ * rates, in nano-dollars) and `by` (rates by price key value, in nano-dollars).
  */
-export type CustomerRates = Readonly<
-  Record<string, Partial<Record<RateField, number>> & { readonly long_context_threshold?: number }>
->;
+export type CustomerRateEntry = Readonly<Record<string, unknown>>;
+export type CustomerRates = Readonly<Record<string, CustomerRateEntry>>;
+
+/** Stored nano-dollar rates, checked and wrapped. */
+function nanoRates(entry: Readonly<Record<string, unknown>>): Partial<Record<RateField, RateNanoPerMillion>> {
+  const rates: Partial<Record<RateField, RateNanoPerMillion>> = {};
+  for (const field of RATE_FIELDS) {
+    const value = entry[field];
+    if (typeof value === "number") rates[field] = rate(value);
+  }
+  return rates;
+}
 
 /** Each mode's factor alone, without the rates our list states for it. */
 function modeFactors(modes: Readonly<Record<string, ModePrice>> | undefined): Record<string, ModePrice> | undefined {
@@ -90,24 +140,43 @@ function modeFactors(modes: Readonly<Record<string, ModePrice>> | undefined): Re
 }
 
 /**
+ * A customer's own modes, as a mode entry reads them: the factor as it is,
+ * and each rate back in dollars, which `withModePrice` converts again. The
+ * round trip is exact for any rate a price can hold (below 10^15 nano-dollars).
+ */
+function customerModes(modes: unknown): Record<string, ModePrice> | undefined {
+  if (typeof modes !== "object" || modes === null) return undefined;
+  const out: Record<string, ModePrice> = {};
+  for (const [name, entry] of Object.entries(modes as Record<string, unknown>)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const mode: Record<string, number> = {};
+    for (const [field, value] of Object.entries(entry as Record<string, unknown>)) {
+      if (typeof value !== "number") continue;
+      mode[field] = field === "factor" ? value : value / NANO_PER_DOLLAR;
+    }
+    out[name] = mode as ModePrice;
+  }
+  return out;
+}
+
+/**
  * A customer's rates for one model, checked and wrapped. Null when the model
  * has none. A customer's rate replaces ours: a rate it leaves out falls back
- * as it would on an entry without it, never to our figure. Our list's service
- * modes still apply, but only as factors: a rate the list states for a mode is
- * the list's figure, not the customer's (v1).
+ * as it would on an entry without it, never to our figure. Its own `modes`
+ * apply where it states them; otherwise our list's modes still apply, but
+ * only as factors: a rate the list states for a mode is the list's figure, not
+ * the customer's (v1).
  */
 export function customerPrice(rates: CustomerRates | null | undefined, model: string, listed?: ModelPrice | null): ModelPrice | null {
   if (!rates || !Object.hasOwn(rates, model)) return null;
   const entry = rates[model]!;
-  const wrapped: Partial<Record<RateField, RateNanoPerMillion>> = {};
-  for (const field of RATE_FIELDS) {
-    const value = entry[field];
-    if (value !== undefined) wrapped[field] = rate(value);
-  }
-  const modes = modeFactors(listed?.modes);
+  const threshold = entry.long_context_threshold;
+  const modes = customerModes(entry.modes) ?? modeFactors(listed?.modes);
+  const keyed = readKeyed(entry.by, (values) => nanoRates(values), model);
   return {
-    rates: wrapped,
-    ...(entry.long_context_threshold !== undefined ? { longContextThreshold: entry.long_context_threshold } : {}),
+    rates: nanoRates(entry),
+    ...(keyed !== undefined ? { keyed } : {}),
+    ...(typeof threshold === "number" ? { longContextThreshold: threshold } : {}),
     ...(listed?.kind !== undefined ? { kind: listed.kind } : {}),
     ...(modes !== undefined ? { modes } : {}),
     raw: entry,
@@ -139,37 +208,162 @@ export function resolvePrice(
   return ours === null ? null : { price: ours, source: "list_rate" };
 }
 
-/** Whether a price bills tokens: it has input and output rates. */
-function pricesTokens(price: ModelPrice): boolean {
-  return price.rates.input !== undefined && price.rates.output !== undefined;
+/** Whether rates bill tokens: they have input and output rates. */
+function billsTokens(rates: RateSet): boolean {
+  return rates.input !== undefined && rates.output !== undefined;
 }
 
-/** Whether a price can bill something: tokens, or a time or image rate. */
-function isComplete(price: ModelPrice): boolean {
-  const { rates } = price;
-  return rates.per_minute !== undefined || rates.per_hour !== undefined || rates.per_image !== undefined || pricesTokens(price);
+/** Whether rates bill a unit: a unit rate for it, or input and output for tokens. */
+function billsUnit(rates: RateSet, unit: Unit | "tokens"): boolean {
+  if (unit === "tokens") return billsTokens(rates);
+  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.includes(unit));
 }
 
 /**
- * Whether a price is in a unit an operation measures. An operation read by a
- * usage reader is billed in tokens, except where its answers also report
- * another unit: a transcription its audio's duration (a price per minute or
- * per hour), an image API the images it made (a price per image). The units
- * of other meters arrive with their providers.
+ * The prices a charge's selection walks, in one list (`priceInServedMode`):
+ * the key candidates for the request's values, then the model's own standard
+ * price, which bills when no candidate can. Without `values`, every key value:
+ * what eligibility judges.
+ */
+export function chargeCandidates(
+  price: ModelPrice,
+  values?: Readonly<Record<string, string>>,
+): { readonly keyed: readonly ModelPrice[]; readonly estimated: boolean; readonly fallback: ModelPrice } {
+  const { candidates, estimated } = keyCandidates(price, values);
+  return { keyed: candidates.map((candidate) => candidate.price), estimated, fallback: priceInMode(price, STANDARD_MODE) ?? price };
+}
+
+/**
+ * Every price a request may be charged at: each candidate the selection
+ * walks (`chargeCandidates`) in each mode run time reaches, through the same
+ * mode function. For a price whose rates do not fit once a mode scales them
+ * (saving refuses it), the candidates as they are.
+ */
+function chargeablePrices(price: ModelPrice): readonly { readonly price: ModelPrice }[] {
+  const { keyed, fallback } = chargeCandidates(price);
+  const inModes = (one: ModelPrice) => {
+    try {
+      return effectivePrices({ ...one, keyed: undefined });
+    } catch {
+      return [{ price: one }];
+    }
+  };
+  return [...keyed.flatMap(inModes), { price: fallback }];
+}
+
+/**
+ * Whether an operation can bill a model at this price: the one definition,
+ * used at save and on every request. It is judged on the effective prices the
+ * charge itself can use (each key value, each service mode), so a rate a key
+ * value or a mode supplies counts, and a key value that replaces the base's
+ * unit rates is judged as it bills.
+ *
+ * - Usually: some effective price bills one of the units the operation
+ *   measures (`operationUnits`).
+ * - A header meter with an estimate: every effective price bills both the
+ *   header's unit and the estimate's, so a missing header falls back to a
+ *   measure the price can still bill.
  */
 export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
+  const effective = chargeablePrices(price);
   const { meter } = operation;
-  if (meter.kind !== "response_json") return isComplete(price);
-  if (pricesTokens(price)) return true;
-  const { rates } = price;
-  if (meter.style === "openai-transcription") return rates.per_minute !== undefined || rates.per_hour !== undefined;
-  if (meter.style === "openai-images") return rates.per_image !== undefined;
-  return false;
+  if (meter.kind === "response_header" && meter.estimate !== undefined) {
+    // Every price a key value can produce; the standard fallback bills only when they cannot.
+    const estimate = meter.estimate;
+    const keyed = effective.slice(0, -1);
+    return keyed.every((one) => billsUnit(one.price.rates, meter.unit) && billsUnit(one.price.rates, estimate.unit));
+  }
+  const units = operationUnits(operation);
+  return effective.some((one) => units.some((unit) => billsUnit(one.price.rates, unit)));
 }
 
 /** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */
 export function reportsCost(operation: OperationDescription): boolean {
   return operation.meter.kind === "response_json" && operation.meter.providerCost !== undefined;
+}
+
+/** Whether rates state a unit rate. */
+function statesUnitRate(rates: RateSet): boolean {
+  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined);
+}
+
+/**
+ * Rates with one price-key value's rates applied: they replace the model's
+ * own. A value that states a unit rate replaces every unit rate the model
+ * has, so the unit it names is the one billed, not one the model listed first.
+ */
+function withValue(rates: RateSet, value: RateSet): RateSet {
+  const merged: Partial<Record<RateField, RateNanoPerMillion>> = { ...rates };
+  if (statesUnitRate(value)) for (const unitRate of UNIT_RATES) delete merged[unitRate.field];
+  return Object.assign(merged, value);
+}
+
+/** A candidate price for a request: the price with one value applied for each of its keys. */
+export interface KeyCandidate {
+  /** The value used for each key: the request's, or one the price lists when the request's is unknown. */
+  readonly values: Readonly<Record<string, string>>;
+  readonly price: ModelPrice;
+}
+
+/**
+ * The prices a request may bill at, with its price keys applied (an
+ * operation's `priceKeys`, a price's `by`). A value the request names and the
+ * price lists gives one price. A value the price does not list, or a key the
+ * request did not name and the operation gives no default for, gives one
+ * candidate per value listed for that key, each applied on its own, never
+ * merged. `estimated` says a key's value was unknown. Without `values`, every
+ * value of every key: every price the model can bill at, which saving checks.
+ */
+export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string, string>>): { candidates: KeyCandidate[]; estimated: boolean } {
+  if (price.keyed === undefined) return { candidates: [{ values: {}, price }], estimated: false };
+  let candidates: { values: Record<string, string>; rates: RateSet }[] = [{ values: {}, rates: price.rates }];
+  let estimated = false;
+  for (const [key, table] of Object.entries(price.keyed)) {
+    const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
+    if (value !== undefined && Object.hasOwn(table, value)) {
+      candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: value }, rates: withValue(candidate.rates, table[value]!) }));
+      continue;
+    }
+    estimated = true;
+    const listed = Object.entries(table);
+    if (listed.length === 0) continue;
+    candidates = candidates.flatMap((candidate) =>
+      listed.map(([name, rates]) => ({ values: { ...candidate.values, [key]: name }, rates: withValue(candidate.rates, rates) })),
+    );
+  }
+  return { candidates: candidates.map(({ values: used, rates }) => ({ values: used, price: { ...price, rates } })), estimated };
+}
+
+/** Whether rates can bill anything: input and output tokens, or a unit rate. */
+export function ratesBill(rates: RateSet): boolean {
+  return (rates.input !== undefined && rates.output !== undefined) || statesUnitRate(rates);
+}
+
+/**
+ * Every effective price a model's price can produce at run time: each key
+ * value (and so every unknown-value candidate) in each service mode the
+ * run-time selection can reach, resolved by the run-time functions themselves
+ * (`keyCandidates`, `priceInMode`). Saving checks each for billability and
+ * for rates that fit; there is no other composition. A rate that does not fit
+ * throws here, as it would at run time (`MoneyError`).
+ */
+export function effectivePrices(price: ModelPrice): { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] {
+  const listed = listedModes(price);
+  const tiers = new Set(listed.filter((mode) => mode.region === "global").map((mode) => mode.tier));
+  const regions = new Set(listed.filter((mode) => mode.tier === "standard").map((mode) => mode.region));
+  // Standard, each listed mode, and each tier in each region, which
+  // `priceInMode` resolves as run time does: an exact pair first, else the
+  // tier's price times the region's factor.
+  const modes: ServiceMode[] = [{ tier: "standard", region: "global" }, ...listed];
+  for (const tier of tiers) for (const region of regions) if (tier !== "standard") modes.push({ tier, region });
+  const out: { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] = [];
+  for (const candidate of keyCandidates(price).candidates) {
+    for (const mode of modes) {
+      const effective = priceInMode(candidate.price, mode);
+      if (effective !== undefined) out.push({ values: candidate.values, mode: serviceModeName(mode), price: effective });
+    }
+  }
+  return out;
 }
 
 /** A rate × factor, rounded up once, so a mode price is never under its true figure. */

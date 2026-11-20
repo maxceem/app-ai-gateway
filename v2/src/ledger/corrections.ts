@@ -25,7 +25,7 @@
  */
 import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources } from "../pricing/billability.ts";
-import { billedUnits, priceInServedMode } from "../pricing/tokens.ts";
+import { priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
@@ -86,6 +86,8 @@ export function correctionOf(
     readonly estimate?: boolean;
     /** The unit the correction's cost is in, where the price bills another than the charge recorded. */
     readonly unit?: string;
+    /** How complete the measure the correction billed is: a pricing correction's comes from its pricing result. */
+    readonly measured?: "complete" | "estimated";
   },
 ): ChargeRow {
   return {
@@ -97,7 +99,7 @@ export function correctionOf(
     httpStatus: null,
     errorCode: null,
     costNano: input.costNano,
-    measured: "complete",
+    measured: input.measured ?? "complete",
     priceSource: input.priceSource,
     priceIsEstimate: input.kind === "pricing" ? (input.estimate ?? false) : original.priceIsEstimate,
     inputTokens: null,
@@ -305,7 +307,8 @@ export async function priceUnresolvedCharge(
   const { usage } = stored;
   const priced = priceInServedMode(resolved.price, usage, stored.mode, stored.modeUnknown);
   if (priced === null) return { status: "no_price" };
-  const billed = billedUnits(usage, resolved.price);
+  // The unit and count the price billed, from the pricing result itself.
+  const billed = { unit: priced.unit, units: priced.units };
   const correction = correctionOf(original, {
     id: pricingCorrectionId(original.id),
     kind: "pricing",
@@ -318,6 +321,7 @@ export async function priceUnresolvedCharge(
     unit: billed.unit,
     now: input.now,
     estimate: priced.estimated,
+    measured: priced.measured,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

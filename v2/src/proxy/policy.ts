@@ -16,20 +16,10 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import type { OperationDescription, OutputCap, ProviderDescription } from "../providers/operation.ts";
+import { fieldAt } from "./request-fields.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-/** The value at a dot path of the body, or undefined. */
-function fieldAt(body: Record<string, unknown>, path: string): unknown {
-  let value: unknown = body;
-  for (const key of path.split(".")) {
-    const record = asRecord(value);
-    if (record === null || !Object.hasOwn(record, key)) return undefined;
-    value = record[key];
-  }
-  return value;
 }
 
 /** Refuses a request whose background option is set to a literal `true`. */

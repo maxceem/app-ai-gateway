@@ -17,11 +17,13 @@
  * The whole is rounded up once. A model priced per minute, per hour or per
  * image bills that measure instead (`priceUsage`).
  */
-import { MILLI_SCALE, priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { chargeCandidates, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
 export type TokenUsage = TokenCounts;
@@ -35,6 +37,11 @@ export interface Pricing {
    */
   readonly rates: Readonly<Record<string, RateNanoPerMillion>>;
   readonly longContext: boolean;
+  /** The unit the price billed, and its count at the unit's scale: the charge's unit and units. */
+  readonly unit: Unit | "tokens";
+  readonly units: number;
+  /** The measure billed was worked out from the request, not reported by the provider. */
+  readonly fromEstimate: boolean;
 }
 
 type Part = readonly [units: number, rate: RateNanoPerMillion];
@@ -153,38 +160,78 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
     ...bucketParts("cache_write", usage.cacheWriteTokens, buckets.cache_write, price, longContext, tokenVariants, used),
     ...sideParts(usage.outputTokens, buckets.output, modalityRates(price, OUTPUT_RATES, longContext, used), usage.modalityTokens?.output),
   ];
-  return { cost: priceUnitsSum(parts), rates: used, longContext };
+  return { cost: priceUnitsSum(parts), rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
 }
 
 /**
- * The cost of a usage at a price per minute, per hour or per image (v1's
- * `costAt`), or undefined when the price is not one of those. Time is priced
- * on the audio's milliseconds, so the measure is a whole number; images on
- * their count. A measure the usage does not report prices as null: its
- * counter was never sent, and pricing it would claim a confident $0.
+ * A usage's count in a unit, at the unit's scale, or undefined when the usage
+ * does not report it. A transcription's duration and an image API's count
+ * have fields of their own; every other unit is in `units`.
+ */
+export function unitCount(usage: UsageObservation, unit: Unit): number | undefined {
+  const counted = usage.units?.[unit];
+  if (counted !== undefined) return counted;
+  if (unit === "audio_seconds" && usage.audioSeconds !== undefined) return toMilli(usage.audioSeconds);
+  if (unit === "images" && usage.images !== undefined) return usage.images;
+  return undefined;
+}
+
+/** The unit rates a price states, in table order. */
+function statedUnitRates(price: ModelPrice): UnitRate[] {
+  return UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
+}
+
+/**
+ * The first unit a stated rate bills that the usage reports, with its count.
+ * With `reportedOnly`, a unit worked out from the request is passed over.
+ */
+function reportedUnit(unitRate: UnitRate, usage: UsageObservation, reportedOnly = false): { unit: Unit; count: number } | null {
+  for (const unit of unitRate.units) {
+    if (reportedOnly && usage.estimatedUnits?.includes(unit) === true) continue;
+    const count = unitCount(usage, unit);
+    if (count !== undefined) return { unit, count };
+  }
+  return null;
+}
+
+/**
+ * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
+ * per million characters, ...), or undefined when the price states none.
+ * A unit the provider reported is billed before one worked out from the
+ * request (a header's credits before the request's characters); among them,
+ * the table's order. A price with unit rates but none the usage reports
+ * prices as null: the counter was never sent, and pricing it would claim a
+ * confident $0. A price that also bills tokens falls back to them.
  */
 function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
-  const { rates } = price;
-  for (const [field, per] of [
-    ["per_minute", 60 * MILLI_SCALE],
-    ["per_hour", 3600 * MILLI_SCALE],
-  ] as const) {
-    const value = rates[field];
-    if (value === undefined) continue;
-    if (usage.audioSeconds === undefined) return null;
-    return { cost: priceUnitsPer(toMilli(usage.audioSeconds), value, per), rates: { [field]: value }, longContext: false };
+  const stated = statedUnitRates(price);
+  if (stated.length === 0) return undefined;
+  const tokensReported = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
+  for (const reportedOnly of [true, false]) {
+    // Reported tokens the price bills come before a unit worked out from the request.
+    if (!reportedOnly && tokensReported) return undefined;
+    for (const unitRate of stated) {
+      const reported = reportedUnit(unitRate, usage, reportedOnly);
+      if (reported === null) continue;
+      const value = price.rates[unitRate.field]!;
+      return {
+        cost: priceUnitsPer(reported.count, value, unitRate.per),
+        rates: { [unitRate.field]: value },
+        longContext: false,
+        unit: reported.unit,
+        units: reported.count,
+        fromEstimate: usage.estimatedUnits?.includes(reported.unit) === true,
+      };
+    }
   }
-  const perImage = rates.per_image;
-  if (perImage === undefined) return undefined;
-  if (usage.images === undefined) return null;
-  return { cost: priceUnitsPer(usage.images, perImage, 1), rates: { per_image: perImage }, longContext: false };
+  return price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true ? undefined : null;
 }
 
 /**
- * The cost of one usage at one price, in the unit the price is in: time or
- * images where it states one, else tokens. Null when the usage does not
- * report that unit (v1's `reportsPricedMeasure`): a duration alone for a
- * token-priced model, or tokens alone for a time-priced one.
+ * The cost of one usage at one price, in the unit the price is in: a unit
+ * rate where it states one the usage reports, else tokens. Null when the
+ * usage does not report that unit (v1's `reportsPricedMeasure`): a duration
+ * alone for a token-priced model, or tokens alone for a time-priced one.
  */
 export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
   const unit = priceUnitRate(price, usage);
@@ -194,44 +241,92 @@ export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing 
 }
 
 /**
- * Whether a usage reports the measure a price bills (v1's
- * `reportsPricedMeasure`): a duration for a time price, an image count for an
- * image price, tokens for a token price.
+ * A usage priced on one given unit only, or null when the price has no rate
+ * for it or the usage does not report it: the standard floor is worked out on
+ * the same measure the chosen price billed.
  */
-export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation): boolean {
-  const { rates } = price;
-  if (rates.per_minute !== undefined || rates.per_hour !== undefined) return usage.audioSeconds !== undefined;
-  if (rates.per_image !== undefined) return usage.images !== undefined;
-  return usage.noTokens !== true;
+function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Pricing | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : priceTokens(price, usage);
+  const count = unitCount(usage, unit);
+  if (count === undefined) return null;
+  const unitRate = UNIT_RATES.find((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined);
+  if (unitRate === undefined) return null;
+  const value = price.rates[unitRate.field]!;
+  return {
+    cost: priceUnitsPer(count, value, unitRate.per),
+    rates: { [unitRate.field]: value },
+    longContext: false,
+    unit,
+    units: count,
+    fromEstimate: usage.estimatedUnits?.includes(unit) === true,
+  };
 }
 
 /**
- * The cost of one usage in the service mode that served it (v1's
- * `computeCost`). A mode the model has no price in is billed at an estimate,
- * on the axis that lacks a price only: a tier cheaper than standard at
- * standard, a dearer tier at the dearest tier the model is priced in, a region
- * at the dearest priced region. `estimated` says so.
+ * The one rule for picking among prices of the same usage, wherever several
+ * are tried (key candidates, the modes an estimate searches): one billing a
+ * measure the provider reported before any billing the request's estimate;
+ * among those, the dearest. Null when there are none.
+ */
+function preferred<P extends Pricing>(prices: readonly P[]): P | null {
+  const reported = prices.filter((one) => !one.fromEstimate);
+  const pool = reported.length > 0 ? reported : prices;
+  let dearest: P | null = null;
+  for (const one of pool) if (dearest === null || one.cost > dearest.cost) dearest = one;
+  return dearest;
+}
+
+/** A charge's price, as one result: what both a live charge and the sweep write. */
+export type ChargePricing = Pricing & {
+  /** Billed at an estimate: a mode or key value with no price, a missing report, or any other doubt. */
+  readonly estimated: boolean;
+  /** `estimated` when the measure billed was worked out from the request, else `complete`. */
+  readonly measured: "complete" | "estimated";
+};
+
+/**
+ * The price of one usage, chosen once (v1's `computeCost`, plus price keys
+ * and measures worked out from the request). The only place a charge's price,
+ * unit, count and labels are decided; the live charge and the sweep use it.
  *
- * `doubt` is any reason the gateway is not sure what it is pricing: a mode
- * value it does not know, a served model it cannot tell, or any later one.
- * The one rule for every estimate, whatever made it one, is applied once, at
- * the end, after every path: an estimate is never billed below what the same
- * usage costs at the model's standard price (`AGENTS.md`).
+ * 1. Each candidate (the price, or one per listed value of a price key the
+ *    request named no listed value for) is priced on its own, never merged,
+ *    in the service mode that served the request, billing the measure the
+ *    provider reported first, else the request's estimate.
+ * 2. The dearest candidate that bills a reported measure wins; only when none
+ *    can, the dearest that bills the estimate.
+ * 3. An estimate (a mode or key value with no price, a missing report, or
+ *    `doubt`: a mode value the gateway does not know, a served model it
+ *    cannot tell, ...) is floored at the model's own standard price, before
+ *    any key value or mode, worked out on the same measure (`AGENTS.md`).
+ * 4. When no candidate can bill, the model's own standard price bills, as an
+ *    estimate, if it can. Only otherwise is the usage unpriced (null).
  */
 export function priceInServedMode(
   price: ModelPrice,
   usage: UsageObservation,
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
-): (Pricing & { readonly estimated: boolean }) | null {
-  const priced = priceIn(price, usage, served);
-  if (priced === null) return null;
-  const estimated = priced.estimated || doubt;
-  if (!estimated) return { ...priced, estimated: false };
-  // The one floor, after every path: an estimate costs at least what the same
-  // usage costs at the model's standard price, whichever axis lacked a price.
-  const standard = priceUsage(priceInMode(price, STANDARD_MODE) ?? price, usage);
-  return standard !== null && standard.cost > priced.cost ? { ...standard, estimated: true } : { ...priced, estimated: true };
+): ChargePricing | null {
+  // The one candidate list, which eligibility judges too (`chargeCandidates`).
+  const keyed = chargeCandidates(price, usage.priceKeys);
+  const priced: (Pricing & { readonly estimated: boolean })[] = [];
+  for (const candidate of keyed.keyed) {
+    const one = priceIn(candidate, usage, served);
+    if (one !== null) priced.push(one);
+  }
+  const standardPrice = keyed.fallback;
+  const chosen = preferred(priced);
+  if (chosen === null) {
+    const standard = priceUsage(standardPrice, usage);
+    return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
+  }
+  const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
+  const measured = chosen.fromEstimate ? "estimated" : "complete";
+  if (!estimated) return { ...chosen, estimated: false, measured };
+  // The one floor: at least the model's own standard price on the same measure.
+  const floor = priceOnUnit(standardPrice, usage, chosen.unit);
+  return floor !== null && floor.cost > chosen.cost ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {
@@ -253,15 +348,15 @@ function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode):
   const cheaper = SERVICE_TIERS[mode.tier].rank < SERVICE_TIERS.standard.rank;
   const tryTiers: ServiceTier[] = tierPriced ? [mode.tier] : cheaper ? ["standard"] : ["standard", ...tiers];
   const tryRegions: ServiceRegion[] = regionPriced ? [mode.region] : ["global", ...regions];
-  let dearest: Pricing | null = null;
+  const tried: Pricing[] = [];
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
       const candidate = priceInMode(price, { tier, region });
       const priced = candidate === undefined ? null : priceUsage(candidate, usage);
-      if (priced !== null && (dearest === null || priced.cost > dearest.cost)) dearest = priced;
+      if (priced !== null) tried.push(priced);
     }
   }
-  const fallback = dearest ?? priceUsage(price, usage);
+  const fallback = preferred(tried) ?? priceUsage(price, usage);
   return fallback === null ? null : { ...fallback, estimated: true };
 }
 
@@ -271,15 +366,18 @@ export function totalTokens(usage: TokenCounts): number {
 }
 
 /**
- * A usage's main billed unit and its count, kept on the charge and in the
- * rollups: the unit its price bills, else the one the usage reports. Audio is
- * in milliseconds (`audio_seconds` at `MILLI_SCALE`).
+ * The unit and count an unpriced usage is kept under, on the charge and in
+ * the rollups: the unit it reports (an estimate's only when it reports
+ * nothing else), else its tokens. A priced usage is kept under the unit its
+ * price billed (`Pricing.unit`). Counts are at the unit's scale.
  */
-export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: "tokens" | "audio_seconds" | "images"; units: number } {
-  const rates = price?.rates;
-  const byTime = rates !== undefined ? rates.per_minute !== undefined || rates.per_hour !== undefined : usage.noTokens === true;
-  if (byTime && usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
-  const byImage = rates !== undefined ? rates.per_image !== undefined : usage.noTokens === true;
-  if (byImage && usage.images !== undefined) return { unit: "images", units: usage.images };
+export function reportedUnits(usage: UsageObservation): { unit: Unit | "tokens"; units: number } {
+  if (usage.noTokens === true) {
+    const entries = Object.entries(usage.units ?? {}).filter(([, count]) => count !== undefined) as [Unit, number][];
+    const reported = entries.find(([unit]) => usage.estimatedUnits?.includes(unit) !== true) ?? entries[0];
+    if (reported !== undefined) return { unit: reported[0], units: reported[1] };
+    if (usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
+    if (usage.images !== undefined) return { unit: "images", units: usage.images };
+  }
   return { unit: "tokens", units: totalTokens(usage) };
 }

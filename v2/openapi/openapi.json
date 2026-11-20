@@ -1806,15 +1806,43 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "output": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cached_input": {
                   "type": "number",
                   "minimum": 0
                 },
+                "cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_12h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -1826,7 +1854,19 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_12h": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -1834,15 +1874,336 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_minute": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_hour": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_second": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_image": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_megapixel": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_million_characters": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_credit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_unit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_request": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
+                },
+                "modes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "factor": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_minute": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_hour": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_second": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_image": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_megapixel": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_million_characters": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_credit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_unit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "by": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_minute": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_hour": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_second": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_megapixel": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_million_characters": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_credit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_unit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
                 }
               },
-              "required": [
-                "input",
-                "output"
-              ],
               "additionalProperties": false
             }
           },
@@ -1950,15 +2311,43 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "output": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cached_input": {
                   "type": "number",
                   "minimum": 0
                 },
+                "cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_12h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -1970,7 +2359,19 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_12h": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -1978,15 +2379,336 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_minute": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_hour": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_second": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_image": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_megapixel": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_million_characters": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_credit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_unit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_request": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
+                },
+                "modes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "factor": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_minute": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_hour": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_second": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_image": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_megapixel": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_million_characters": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_credit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_unit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "by": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_minute": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_hour": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_second": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_megapixel": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_million_characters": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_credit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_unit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
                 }
               },
-              "required": [
-                "input",
-                "output"
-              ],
               "additionalProperties": false
             }
           }
@@ -2147,15 +2869,43 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "output": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cached_input": {
                   "type": "number",
                   "minimum": 0
                 },
+                "cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_12h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -2167,7 +2917,19 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_12h": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -2175,15 +2937,336 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_minute": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_hour": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_second": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_image": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_megapixel": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_million_characters": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_credit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_unit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_request": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
+                },
+                "modes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "factor": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_minute": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_hour": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_second": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_image": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_megapixel": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_million_characters": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_credit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_unit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "by": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_minute": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_hour": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_second": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_megapixel": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_million_characters": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_credit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_unit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
                 }
               },
-              "required": [
-                "input",
-                "output"
-              ],
               "additionalProperties": false
             }
           },
@@ -2276,15 +3359,43 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "output": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cached_input": {
                   "type": "number",
                   "minimum": 0
                 },
+                "cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write_12h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "image_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -2296,7 +3407,19 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_cached_input_audio": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_1h": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write_12h": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -2304,15 +3427,336 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "long_image_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_video_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_minute": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_hour": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_second": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_image": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_megapixel": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_million_characters": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_credit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_unit": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "per_request": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
+                },
+                "modes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "factor": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cached_input_audio": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_1h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_cache_write_12h": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_video_input": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_minute": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_hour": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_second": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_image": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_megapixel": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_million_characters": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_credit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_unit": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "by": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cached_input_audio": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_1h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_cache_write_12h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_video_input": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_minute": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_hour": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_second": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_megapixel": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_million_characters": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_credit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_unit": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
                 }
               },
-              "required": [
-                "input",
-                "output"
-              ],
               "additionalProperties": false
             }
           }

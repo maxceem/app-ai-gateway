@@ -15,6 +15,7 @@
  * one. Never free.
  */
 import type { ApiStyle } from "../providers/operation.ts";
+import { UNIT_RATE_FIELDS } from "../pricing/units.ts";
 import type { Modality } from "./observation.ts";
 
 export type SplitBucket = "cached_input" | "cache_write";
@@ -87,8 +88,8 @@ const SHORT_FIELDS = [
 /** Every token rate: each bucket and its variants, the modality rates, then their long-context rates. */
 const TOKEN_RATE_FIELDS: readonly string[] = [...SHORT_FIELDS, ...SHORT_FIELDS.map((field) => `long_${field}`)];
 
-/** Every rate a price may carry: the token rates, and the rates priced per minute, hour or image. */
-export const RATE_FIELDS: readonly string[] = [...TOKEN_RATE_FIELDS, "per_minute", "per_hour", "per_image"];
+/** Every rate a price may carry: the token rates, and the unit rates (`../pricing/units.ts`). */
+export const RATE_FIELDS: readonly string[] = [...TOKEN_RATE_FIELDS, ...UNIT_RATE_FIELDS];
 
 /** Rates by field. The unit is whatever the caller works in. */
 export type Rates = Readonly<Partial<Record<string, number>>>;

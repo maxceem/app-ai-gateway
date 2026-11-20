@@ -16,6 +16,8 @@ import type { ApiStyle, OperationDescription, ProviderDescription } from "../pro
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { UsageObservation } from "../usage/observation.ts";
+import type { Unit } from "../providers/operation.ts";
+import { scaledCount } from "../pricing/units.ts";
 import { bodyReader, withHeaderVariants, type BodyReader } from "../usage/readers.ts";
 import {
   readServiceMode,
@@ -253,4 +255,82 @@ export function responseReader(
       return description.alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
     },
   };
+}
+
+/**
+ * The billed amount a response header reports (ElevenLabs' `character-cost`,
+ * fal's `x-fal-billable-units`), as a usage in the meter's unit, or null when
+ * the header is missing or not a number 0 or more.
+ */
+export function headerUsage(headers: Headers, header: string, unit: Unit): UsageObservation | null {
+  const text = headers.get(header);
+  if (text === null || text.trim() === "") return null;
+  const value = Number(text);
+  if (!Number.isFinite(value) || value < 0) return null;
+  // A figure too large to count exactly is no report: the estimate bills instead.
+  const count = scaledCount(unit, value);
+  if (!Number.isSafeInteger(count)) return null;
+  return { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { [unit]: count } };
+}
+
+/**
+ * A reported usage with the request's measure kept beside it, for every meter
+ * that takes one: the request's units are added as estimates, never over a
+ * unit the provider reported. With no report, the request's measure alone.
+ */
+function withRequestMeasure(reported: UsageObservation | null, fromRequest: UsageObservation | null): UsageObservation | null {
+  if (fromRequest === null) return reported;
+  if (reported === null) return fromRequest;
+  const reportedUnits = reported.units ?? {};
+  const estimatedUnits = (fromRequest.estimatedUnits ?? []).filter((unit) => reportedUnits[unit] === undefined);
+  const added = Object.fromEntries(Object.entries(fromRequest.units ?? {}).filter(([unit]) => reportedUnits[unit as Unit] === undefined));
+  return {
+    ...reported,
+    units: { ...added, ...reportedUnits },
+    ...(estimatedUnits.length > 0 ? { estimatedUnits: [...(reported.estimatedUnits ?? []), ...estimatedUnits] } : {}),
+  };
+}
+
+/**
+ * The usage a successful attempt is billed by, by its meter kind (plan
+ * section 4.1, "Meter"), with the request's price key values on it:
+ *
+ * - usage in the response: what the reader read; an answer that reported
+ *   none is billed by the request measure, where the meter has one;
+ * - a response header: the amount it reports; a header that is missing falls
+ *   back to the request's estimate, priced as an estimate;
+ * - a request measure or count: what was measured from the request.
+ */
+export function attemptUsage(
+  operation: OperationDescription,
+  attempt: { readonly requestUsage?: UsageObservation | null; readonly priceKeys?: Readonly<Record<string, string>> },
+  reading: UsageObservation | null,
+  headers: Headers,
+): UsageObservation | null {
+  const { meter } = operation;
+  const fromRequest = attempt.requestUsage ?? null;
+  let usage: UsageObservation | null;
+  switch (meter.kind) {
+    case "response_json":
+      // What the request measured is kept next to what the answer reported,
+      // so a price in the request's unit can still bill (streamed speech that
+      // reports tokens, at a per-character price).
+      usage = withRequestMeasure(reading, meter.requestMeasure !== undefined ? fromRequest : null);
+      break;
+    case "response_header": {
+      // Both measures are kept: the amount the header reports, and the
+      // request's estimate. The price bills the reported one where it can,
+      // else the estimate (`priceInServedMode`).
+      const reported = headerUsage(headers, meter.header, meter.unit);
+      usage = reported === null ? (fromRequest === null ? null : { ...fromRequest, reportMissing: true }) : withRequestMeasure(reported, fromRequest);
+      break;
+    }
+    case "request_measure":
+    case "request_count":
+      usage = fromRequest;
+      break;
+    default:
+      usage = reading;
+  }
+  return usage !== null && attempt.priceKeys !== undefined ? { ...usage, priceKeys: attempt.priceKeys } : usage;
 }
