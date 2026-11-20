@@ -66,6 +66,7 @@ describe("multipart forms", () => {
     for (const bytes of refused) expect(() => scan(bytes), new TextDecoder().decode(bytes)).toThrow(MultipartError);
   });
 
+  // Run in the Workers pool, so the platform's parser here is workerd's, as the gateway's.
   it("reads the same fields as the platform's own parser, across odd but valid forms", async () => {
     const wanted = ["model", "response_format", "service_tier"];
     const forms: [label: string, parts: string[]][] = [
@@ -74,6 +75,9 @@ describe("multipart forms", () => {
       ["odd spacing", [part('Content-Disposition:form-data;name="model" ;  filename = "a b.txt"', "m"), part('Content-Disposition: form-data ;name = "response_format";', "json")]],
       ["a tab", [part('Content-Disposition: form-data;\tname="model"', "gpt"), part('Content-Disposition: form-data; name="service_tier"', "flex")]],
       ["a quoted semicolon in a name", [part('Content-Disposition: form-data; name="a;b"', "x"), part('Content-Disposition: form-data; name="model"', "m")]],
+      ["filename* beside a plain filename", [part(`Content-Disposition: form-data; name="model"; filename="a.txt"; filename*=UTF-8''b.txt`, "m"), part('Content-Disposition: form-data; name="response_format"', "json")]],
+      ["filename* alone, read as text", [part("Content-Disposition: form-data; name=\"model\"; filename*=UTF-8''a.txt", "whisper-1")]],
+      ["an empty filename, read as text", [part('Content-Disposition: form-data; name="model"; filename=""', "whisper-1")]],
       ["repeated fields", [part('Content-Disposition: form-data; name="model"', "a"), part('Content-Disposition: form-data; name="model"', "b")]],
       ["a form built by the platform", []],
     ];

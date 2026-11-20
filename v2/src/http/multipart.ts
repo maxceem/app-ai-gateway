@@ -99,9 +99,10 @@ function dispositionParams(value: string): { type: string; params: [key: string,
 /**
  * A part's field name and whether it is a file, from its headers. As strict
  * as the platform's own parser, which v1 used, or stricter: the type is
- * exactly `form-data`, the name is quoted, and anything another parser could
- * read differently is refused (a name given twice, in another case, or
- * encoded, and an encoded filename).
+ * exactly `form-data`, the name is quoted, and a name another parser could
+ * read differently is refused (given twice, in another case, or encoded). A
+ * part is a file where it has a non-empty `filename`, as the platform reads
+ * it: `filename=""` is text, and `filename*` is ignored.
  */
 function partName(headers: string): { name: string; file: boolean } {
   const line = headers.split("\r\n").find((header) => /^content-disposition\s*:/iu.test(header));
@@ -112,12 +113,12 @@ function partName(headers: string): { name: string; file: boolean } {
   let file = false;
   for (const [key, value, quoted] of params) {
     const lower = key.toLowerCase();
-    if (lower === "name*" || lower === "filename*") throw new MultipartError("A part names itself in an encoded form");
+    if (lower === "name*") throw new MultipartError("A part names itself in an encoded form");
     if (lower === "name") {
       if (key !== "name" || !quoted || name !== null) throw new MultipartError("A part's name cannot be read exactly");
       name = value;
     }
-    if (lower === "filename") file = true;
+    if (key === "filename" && value !== "") file = true;
   }
   if (name === null) throw new MultipartError("A part has no name");
   return { name, file };
