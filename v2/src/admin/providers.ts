@@ -16,7 +16,7 @@
  *   gateway, so turning it on or off moves the key, by the rule above.
  * - Passthrough paths (plan section 4.5) are checked when saved: each must be
  *   a valid template, and a newly listed one must not be one the provider
- *   always refuses or one a declared operation serves (`passthroughJson`).
+ *   always refuses, nor overlap a declared operation (`passthroughJson`).
  */
 import type { Context } from "hono";
 import {
@@ -195,8 +195,9 @@ function passthroughView(stored: string | null): z.output<typeof PassthroughPath
  * - its price, if any, is whole nano-dollars that the one charge function
  *   bills (`resolvePassthrough`, `callGap`);
  * - a path not listed before must not be one the provider always refuses
- *   (it could never be reached), nor one a declared operation serves (the
- *   app should enable that operation, which meters and prices it). Paths
+ *   (it could never be reached), nor match any path a declared operation
+ *   matches (listed paths are matched first, so it would take that
+ *   operation's requests unmetered). Paths
  *   listed before are not judged again, so a later release that refuses or
  *   declares one never stops a save.
  */
@@ -234,15 +235,17 @@ function passthroughJson(
       throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
     if (!known.has(key)) {
-      const covering = matcher.covering(compiled);
-      if (covering?.kind === "refused") {
+      if (matcher.refusedCovering(compiled) !== null) {
         throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
       }
-      if (covering?.kind === "operation") {
+      // Listed paths are matched before declared operations, so a listing that
+      // could match any of an operation's paths would take its requests unmetered.
+      const operation = matcher.overlappingOperation(compiled);
+      if (operation !== null) {
         throw new GatewayError(
           400,
           "invalid_request",
-          `${where}.path: ${key} is served by the ${covering.operation} operation; enable it on the app instead, which meters and prices it`,
+          `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
         );
       }
     }

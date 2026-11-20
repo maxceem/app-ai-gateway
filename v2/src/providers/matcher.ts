@@ -29,6 +29,7 @@ import {
   type Parts,
   type PathRefusal,
   type Template,
+  type TemplateSegment,
 } from "./path.ts";
 
 /** A path a customer listed for passthrough (plan section 4.5). */
@@ -116,10 +117,24 @@ const LISTED_PATH = /^[A-Za-z0-9\-._~:@!$&'()+,;=/{}]+$/u;
  */
 const ANY_VALUE = "{}";
 
-/** What takes every request a listed path could match, whatever its parts hold: one of the provider's refused paths, or a declared operation. */
-export type Covering =
-  | { readonly kind: "refused"; readonly pattern: string }
-  | { readonly kind: "operation"; readonly operation: string };
+/** One segment of a listed path, or of an operation's path outside its `{name...}` part. */
+type SegmentPattern = Extract<TemplateSegment, { kind: "literal" } | { kind: "part" }>;
+
+/** Whether some one segment matches both patterns, as `matchTemplate` compares them: exactly. */
+function segmentsMeet(a: SegmentPattern, b: SegmentPattern): boolean {
+  if (a.kind === "literal" && b.kind === "literal") return a.value === b.value;
+  if (a.kind === "literal") return literalFits(a.value, b as Extract<TemplateSegment, { kind: "part" }>);
+  if (b.kind === "literal") return literalFits(b.value, a);
+  // Two parts meet when one prefix starts the other and one suffix ends the
+  // other: a value long enough then fills both, each part non-empty.
+  const prefixes = a.prefix.startsWith(b.prefix) || b.prefix.startsWith(a.prefix);
+  const suffixes = a.suffix.endsWith(b.suffix) || b.suffix.endsWith(a.suffix);
+  return prefixes && suffixes;
+}
+
+function literalFits(value: string, part: Extract<TemplateSegment, { kind: "part" }>): boolean {
+  return value.length > part.prefix.length + part.suffix.length && value.startsWith(part.prefix) && value.endsWith(part.suffix);
+}
 
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
@@ -223,25 +238,34 @@ export class ProviderMatcher {
   }
 
   /**
-   * What always takes a listed path's requests instead of it, whatever its
-   * parts hold: a refused path (checked first, so the listing could never be
-   * reached), or a declared operation (the customer should enable that, which
-   * meters and prices it). Null when neither does. A refused path or an
-   * operation that takes only some of its requests is not reported: refused
-   * paths are checked first on every request anyway.
+   * The refused path that takes every request a listed path could match,
+   * whatever its parts hold, or null. Such a listing could never be reached:
+   * refused paths are checked first. One that takes only some of them is not
+   * reported, for the same reason.
    */
-  covering(listed: CompiledPassthrough): Covering | null {
+  refusedCovering(listed: CompiledPassthrough): string | null {
     const segments = listed.template.segments.map((segment) =>
       segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
     );
     for (const pattern of this.refused) {
-      if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return { kind: "refused", pattern: pattern.source };
+      if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return pattern.source;
     }
+    return null;
+  }
+
+  /**
+   * The first declared operation, of the listing's method, that some request
+   * path matches as well as the listed path, or null. Listed paths are
+   * matched before declared operations (plan section 4.5), so any overlap
+   * would let a listing take a declared operation's requests unmetered:
+   * saving refuses it. A `{name...}` part with a closed list overlaps only
+   * through a value on that list; the priced-models list through any value.
+   */
+  overlappingOperation(listed: CompiledPassthrough): string | null {
+    const mine = listed.template.segments as readonly SegmentPattern[];
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== listed.listed.method) continue;
-      if (matchTemplate(compiled.template, segments, { closedLists: compiled.closedLists }) !== null) {
-        return { kind: "operation", operation: compiled.operation.name };
-      }
+      if (templatesMeet(mine, compiled)) return compiled.operation.name;
     }
     return null;
   }
@@ -273,4 +297,28 @@ export class ProviderMatcher {
     if (compiled === undefined) return null;
     return compiled.template.segments.flatMap((segment) => (segment.kind === "part" || segment.kind === "multi" ? [segment.name] : []));
   }
+}
+
+/** Whether some request path matches both a listed path and a declared operation's path. */
+function templatesMeet(listed: readonly SegmentPattern[], compiled: CompiledOperation): boolean {
+  const pattern = compiled.template.segments;
+  const multiAt = pattern.findIndex((segment) => segment.kind === "multi");
+  const meetAll = (theirs: readonly TemplateSegment[], at: number) =>
+    theirs.every((segment, index) => segment.kind !== "multi" && segment.kind !== "rest" && segmentsMeet(listed[at + index]!, segment));
+  if (multiAt === -1) return pattern.length === listed.length && meetAll(pattern, 0);
+  const before = pattern.slice(0, multiAt);
+  const after = pattern.slice(multiAt + 1);
+  const middle = listed.length - before.length - after.length;
+  if (middle < 1 || !meetAll(before, 0) || !meetAll(after, listed.length - after.length)) return false;
+  const name = (pattern[multiAt] as Extract<TemplateSegment, { kind: "multi" }>).name;
+  const list = compiled.closedLists[name];
+  if (list === undefined) return false;
+  // Any value fills the middle segments: each listed segment has some value.
+  if (list === "any") return true;
+  for (const value of list) {
+    const pieces = value.split("/");
+    if (pieces.length !== middle) continue;
+    if (pieces.every((piece, index) => segmentsMeet(listed[before.length + index]!, { kind: "literal", value: piece }))) return true;
+  }
+  return false;
 }

@@ -70,16 +70,48 @@ describe("matching a listed path", () => {
     expect(matcher.match("GET", "V1/FILES/file-abc", { passthrough: listed })).toEqual({ kind: "refused", reason: "not_declared" });
   });
 
-  it("reports what always takes a listing instead: a refused path, or a declared operation", () => {
+  it("reports a refused path that takes every request a listing could match", () => {
     const [refused, partial, files] = listed as [any, any, any];
-    expect(matcher.covering(refused)).toEqual({ kind: "refused", pattern: "v1/organization/*" });
+    expect(matcher.refusedCovering(refused)).toBe("v1/organization/*");
     // `v1/organization/users` is refused on its own, but `v1/teams/users` is not.
-    expect(matcher.covering(partial)).toBeNull();
-    expect(matcher.covering(files)).toBeNull();
-    const [chat] = compilePassthrough([{ method: "POST", path: "v1/chat/completions" }]);
-    expect(matcher.covering(chat!)).toEqual({ kind: "operation", operation: "openai.chat" });
-    const [chatGet] = compilePassthrough([{ method: "GET", path: "v1/chat/completions" }]);
-    expect(matcher.covering(chatGet!)).toBeNull();
+    expect(matcher.refusedCovering(partial)).toBeNull();
+    expect(matcher.refusedCovering(files)).toBeNull();
+  });
+
+  const overlap = (method: "GET" | "POST", path: string, on: ProviderMatcher = matcher) => on.overlappingOperation(compilePassthrough([{ method, path }])[0]!);
+
+  it.each([
+    ["POST", "v1/chat/completions", "openai.chat"],
+    ["POST", "v1/chat/{what}", "openai.chat"],
+    ["POST", "v1/chat/comp{rest}", "openai.chat"],
+    ["POST", "v1/{endpoint}", "openai.responses"],
+    ["POST", "{version}/embeddings", "openai.embeddings"],
+    ["GET", "v1/{endpoint}", "openai.realtime"],
+  ] as const)("finds %s %s overlapping %s", (method, path, operation) => {
+    expect(overlap(method, path)).toBe(operation);
+  });
+
+  it("finds a broad listing with several parts overlapping some operation", () => {
+    expect(overlap("POST", "v1/{a}/{b}")).not.toBeNull();
+    expect(overlap("POST", "{a}/{b}/{c}")).not.toBeNull();
+  });
+
+  it.each([
+    ["GET", "v1/chat/completions"],
+    ["GET", "v1/files/{file_id}"],
+    ["POST", "v1/moderations"],
+    ["POST", "v1/audio/translations"],
+    ["POST", "v1/files/{file_id}/content"],
+    ["POST", "v1/chat/x{rest}"],
+  ] as const)("finds no overlap for the narrow listing %s %s", (method, path) => {
+    expect(overlap(method, path)).toBeNull();
+  });
+
+  it("overlaps a `{name...}` part only through a value its list allows", () => {
+    const fal = new ProviderMatcher(BUILT_IN_PROVIDERS.fal!);
+    // The priced-models list takes any model.
+    expect(overlap("POST", "run/{owner}/{model}", fal)).toBe("fal.run");
+    expect(overlap("POST", "{x}/{owner}/{model}", fal)).not.toBeNull();
   });
 
   it("takes only plain path characters in a listing", () => {
@@ -390,6 +422,7 @@ describe("saving a listed path", () => {
     [[{ method: "GET", path: "v1/organization/{thing}" }], "always refused"],
     [[{ method: "POST", path: "v1/realtime/client_secrets" }], "always refused"],
     [[{ method: "POST", path: "v1/chat/completions" }], "openai.chat"],
+    [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
     [[{ method: "GET", path: "v1/files/%2e%2e" }], "path"],
     [[{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/files" }], "listed twice"],
@@ -419,6 +452,38 @@ describe("saving a listed path", () => {
     });
     expect(kept.status).toBe(200);
     expect(kept.body.provider.passthrough).toHaveLength(3);
+  });
+
+  it("refuses a broad listing that overlaps a declared operation, and saves a narrow one", async () => {
+    const key = await seedManagementKey();
+    for (const path of ["v1/{endpoint}", "v1/{a}/{b}", "{version}/embeddings"]) {
+      const refused = await create(key, [{ method: "POST", path }]);
+      expect(refused.status, path).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain("can match a path of the openai.");
+    }
+    const narrow = await create(key, [{ method: "POST", path: "v1/moderations" }, { method: "GET", path: "v1/files/{file_id}" }]);
+    expect(narrow.status).toBe(201);
+  });
+
+  it("never lets an app with only passthrough reach a declared operation through a listing", async () => {
+    const key = await seedManagementKey();
+    expect((await create(key, [{ method: "POST", path: "v1/{endpoint}" }])).status).toBe(400);
+    const created = await create(key, [{ method: "POST", path: "v1/moderations" }]);
+    const slug = created.body.provider.slug as string;
+    const app = await admin(key, "POST", "/v2/admin/apps", {
+      name: "Only passthrough",
+      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [slug]: { operations: ["passthrough"] } } } },
+    });
+    expect(app.status).toBe(201);
+    for (const path of ["v1/embeddings", "v1/responses", "v1/chat/completions"]) {
+      const { response, text } = await send("POST", `/v2/apps/${app.body.app.id}/proxy/${slug}/${path}`, app.body.api_key.key, {
+        body: JSON.stringify({ model: "text-embedding-3-small", input: "x" }),
+        headers: { "content-type": "application/json" },
+      });
+      expect(response.status, path).toBe(403);
+      expect(JSON.parse(text)).toMatchObject({ error: { code: "path_not_allowed" } });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("lets an app enable passthrough on the connection", async () => {
