@@ -112,11 +112,12 @@ function reportedModes(
   for (const name of names) {
     for (const record of records) {
       const value = record?.[name];
-      if (typeof value === "string" && value.length > 0) {
-        (found ??= {})[name] = value;
-        if (record && SCANNED.has(record)) scanned = true;
-        break;
-      }
+      if (value === undefined || value === null) continue;
+      // A value that is not a usable string is kept too, as one no table
+      // knows: the gateway then bills at least at standard, as an estimate.
+      (found ??= {})[name] = typeof value === "string" && value.length > 0 ? value : "(other)";
+      if (record && SCANNED.has(record)) scanned = true;
+      break;
     }
   }
   return found ? { reportedModes: found, ...(scanned ? { modesScanned: true as const } : {}) } : {};
