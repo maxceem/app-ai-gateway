@@ -22,7 +22,7 @@ import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { keyCandidates, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { chargeCandidates, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
 import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
@@ -308,13 +308,14 @@ export function priceInServedMode(
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
 ): ChargePricing | null {
-  const keyed = keyCandidates(price, usage.priceKeys);
+  // The one candidate list, which eligibility judges too (`chargeCandidates`).
+  const keyed = chargeCandidates(price, usage.priceKeys);
   const priced: (Pricing & { readonly estimated: boolean })[] = [];
-  for (const candidate of keyed.candidates) {
-    const one = priceIn(candidate.price, usage, served);
+  for (const candidate of keyed.keyed) {
+    const one = priceIn(candidate, usage, served);
     if (one !== null) priced.push(one);
   }
-  const standardPrice = priceInMode(price, STANDARD_MODE) ?? price;
+  const standardPrice = keyed.fallback;
   const chosen = preferred(priced);
   if (chosen === null) {
     const standard = priceUsage(standardPrice, usage);

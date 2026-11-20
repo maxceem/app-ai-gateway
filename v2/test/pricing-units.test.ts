@@ -133,6 +133,9 @@ describe("price keys", () => {
 
   it("falls back to the model's own standard price when no candidate can bill the measure", () => {
     const keyed = priced({ per_image: 40_000_000 }, { keyed: { size: { big: { per_megapixel: rate(1) } } } });
+    // Eligibility judges the same candidate list, the fallback included: an image API may bill it.
+    const imagesOp = openai.operations.find((op) => op.name === "openai.images")!;
+    expect(billing(imagesOp, priceSources({ type: "openai", rates: { m: { per_image: 40_000_000, by: { size: { big: { per_megapixel: 1 } } } } } }), "m").problem).toBeNull();
     expect(priceInServedMode(keyed, { ...counted(undefined), images: 2, priceKeys: { size: "huge" } }, STANDARD_MODE)).toMatchObject({
       cost: 80_000_000,
       unit: "images",

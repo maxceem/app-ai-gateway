@@ -17,6 +17,7 @@ import { PRICE_FILE } from "./price-file.ts";
 import type { OperationDescription, Unit } from "../providers/operation.ts";
 import { MoneyError, NANO_PER_DOLLAR, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
 import {
+  STANDARD_MODE,
   isStandardMode,
   parseServiceModeName,
   serviceModeName,
@@ -219,16 +220,35 @@ function billsUnit(rates: RateSet, unit: Unit | "tokens"): boolean {
 }
 
 /**
- * Every effective price a request may be charged at (`effectivePrices`: each
- * key value in each mode run time reaches), or, for a price whose rates do
- * not fit once a mode scales them (saving refuses it), its key candidates.
+ * The prices a charge's selection walks, in one list (`priceInServedMode`):
+ * the key candidates for the request's values, then the model's own standard
+ * price, which bills when no candidate can. Without `values`, every key value:
+ * what eligibility judges.
+ */
+export function chargeCandidates(
+  price: ModelPrice,
+  values?: Readonly<Record<string, string>>,
+): { readonly keyed: readonly ModelPrice[]; readonly estimated: boolean; readonly fallback: ModelPrice } {
+  const { candidates, estimated } = keyCandidates(price, values);
+  return { keyed: candidates.map((candidate) => candidate.price), estimated, fallback: priceInMode(price, STANDARD_MODE) ?? price };
+}
+
+/**
+ * Every price a request may be charged at: each candidate the selection
+ * walks (`chargeCandidates`) in each mode run time reaches, through the same
+ * mode function. For a price whose rates do not fit once a mode scales them
+ * (saving refuses it), the candidates as they are.
  */
 function chargeablePrices(price: ModelPrice): readonly { readonly price: ModelPrice }[] {
-  try {
-    return effectivePrices(price);
-  } catch {
-    return keyCandidates(price).candidates;
-  }
+  const { keyed, fallback } = chargeCandidates(price);
+  const inModes = (one: ModelPrice) => {
+    try {
+      return effectivePrices({ ...one, keyed: undefined });
+    } catch {
+      return [{ price: one }];
+    }
+  };
+  return [...keyed.flatMap(inModes), { price: fallback }];
 }
 
 /**
@@ -248,8 +268,10 @@ export function pricesOperation(operation: OperationDescription, price: ModelPri
   const effective = chargeablePrices(price);
   const { meter } = operation;
   if (meter.kind === "response_header" && meter.estimate !== undefined) {
+    // Every price a key value can produce; the standard fallback bills only when they cannot.
     const estimate = meter.estimate;
-    return effective.every((one) => billsUnit(one.price.rates, meter.unit) && billsUnit(one.price.rates, estimate.unit));
+    const keyed = effective.slice(0, -1);
+    return keyed.every((one) => billsUnit(one.price.rates, meter.unit) && billsUnit(one.price.rates, estimate.unit));
   }
   const units = operationUnits(operation);
   return effective.some((one) => units.some((unit) => billsUnit(one.price.rates, unit)));
