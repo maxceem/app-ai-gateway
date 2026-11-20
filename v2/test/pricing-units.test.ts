@@ -289,6 +289,37 @@ describe("request measures and headers", () => {
     expect(priceInServedMode(priced({ per_credit: 1, per_million_characters: 1 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits" });
   });
 
+  it("bills the request's measure exactly with a cross-check header, and keeps the header beside it (T27)", () => {
+    const op = operation({
+      kind: "response_header",
+      header: "character-cost",
+      unit: "credits",
+      estimate: { measure: "characters", field: "text", unit: "characters" },
+      headerRole: "cross_check",
+    });
+    const request = requestUsage(op, fields({ text: "x".repeat(33) }));
+    const lines = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // Flash v2.5 really reported 7 credits for 33 characters.
+    const both = attemptUsage(op, { requestUsage: request }, null, new Headers({ "character-cost": "7" }))!;
+    expect(both).toMatchObject({ units: { characters: 33, credits: 7_000 }, secondaryUnits: ["credits"] });
+    expect(both.estimatedUnits).toBeUndefined();
+    expect(lines.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+      expect.objectContaining({ level: "info", message: "header_cross_check_differs", header_amount: 7, request: { characters: 33 } }),
+    );
+    // A price with both rates bills the characters, exactly.
+    expect(priceInServedMode(priced({ per_credit: 1, per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "characters", units: 33, estimated: false });
+    // A price with only a rate per credit still bills the credits.
+    expect(priceInServedMode(priced({ per_credit: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits", units: 7_000, estimated: false });
+    // No header: the characters bill alone, still exact, and nothing is missing.
+    const alone = attemptUsage(op, { requestUsage: request }, null, new Headers())!;
+    expect(alone).toMatchObject({ units: { characters: 33 } });
+    expect(alone.reportMissing).toBeUndefined();
+    expect(priceInServedMode(priced({ per_million_characters: 1_000_000 }), alone, STANDARD_MODE)).toMatchObject({ estimated: false });
+    // Saving: characters bill every way; credits alone miss the answer without its header.
+    expect(ways(op)).toEqual([["credits+characters", "characters"]]);
+    lines.mockRestore();
+  });
+
   it("keeps units, price keys and the request's facts in the charge's measures", () => {
     const usage = { ...counted({ characters: 9 }), estimatedUnits: ["characters" as const], reportMissing: true as const, priceKeys: { size: "1024x1024" } };
     expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject(usage);

@@ -1,7 +1,7 @@
 /**
  * ElevenLabs through a live v2 deployment (plan step 4b): text to speech
- * billed by the credits its `character-cost` header reports, or by the
- * request's characters when the header is missing, and speech to text billed
+ * billed by the request's characters, with the credits its `character-cost`
+ * header reports kept only as a cross-check (T27), and speech to text billed
  * at ElevenLabs' own dollar figure, with its webhook fields removed.
  * Everything is made through the management API and removed afterwards.
  *
@@ -91,7 +91,7 @@ async function usageOf(user: string): Promise<{ charges: number; cost_nano: numb
   assert.fail(`no charge for ${user}`);
 }
 
-test("text to speech passes the audio through and is billed by the credits its header reports", { skip }, async () => {
+test("text to speech passes the audio through and is billed", { skip }, async () => {
   const user = `smoke-tts-${run}`;
   const text = "Hello from the gateway cost test.";
   const response = await call(`v1/text-to-speech/${VOICE}`, JSON.stringify({ text, model_id: "eleven_multilingual_v2" }), user, "application/json");
@@ -100,8 +100,19 @@ test("text to speech passes the audio through and is billed by the credits its h
   assert.equal((await response.arrayBuffer()).byteLength, 1024);
   const usage = await usageOf(user);
   assert.equal(usage.charges, 1);
-  // 33 credits at $0.00008 each.
+  // 33 characters at $80 per million (the same as 33 credits at $0.00008 each).
   assert.equal(usage.cost_nano, 2_640_000);
+});
+
+test("text to speech is billed by the request's characters, not the credits its header reports (T27)", { skip }, async () => {
+  const user = `smoke-tts-flash-${run}`;
+  const text = "Hello from the gateway cost test.";
+  const response = await call(`v1/text-to-speech/${VOICE}`, JSON.stringify({ text, model_id: "eleven_flash_v2_5" }), user, "application/json");
+  assert.equal(response.status, 200, await response.clone().text());
+  await response.arrayBuffer();
+  const usage = await usageOf(user);
+  // 33 characters at $40 per million; the mock's 17 credits would have been 1,360,000.
+  assert.equal(usage.cost_nano, 1_320_000);
 });
 
 test("a streamed answer with no credits header is billed on the request's characters", { skip }, async () => {

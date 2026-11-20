@@ -18,7 +18,7 @@ import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
 import { hasMeasure, type UsageObservation } from "../usage/observation.ts";
 import type { Unit } from "../providers/operation.ts";
-import { scaledCount } from "../pricing/units.ts";
+import { scaledCount, unitScale } from "../pricing/units.ts";
 import { bodyReader, withHeaderVariants, type BodyReader } from "../usage/readers.ts";
 import {
   readServiceMode,
@@ -356,6 +356,28 @@ function withRequestMeasure(reported: UsageObservation | null, fromRequest: Usag
 }
 
 /**
+ * The request's measure as the billed usage, exact, with the header's amount
+ * kept beside it as a secondary measure (`headerRole: "cross_check"`). A
+ * header that disagrees with the request's measure is logged at `info`: it
+ * is expected (credits are not characters), and recorded for comparison.
+ * With no header, the request's measure bills alone, still exact.
+ */
+function crossChecked(operation: OperationDescription, header: UsageObservation | null, fromRequest: UsageObservation | null, headerUnit: Unit): UsageObservation | null {
+  const measured = fromRequest === null ? null : (({ estimatedUnits: _estimated, ...exact }) => exact)(fromRequest);
+  if (header === null) return measured;
+  const recorded: UsageObservation = { ...header, secondaryUnits: [headerUnit] };
+  if (measured === null) return recorded;
+  // Compared as whole amounts, each unit at its own scale (credits can be fractional).
+  const amount = (unit: Unit, count: number | undefined) => (count === undefined ? null : count / unitScale(unit));
+  const headerAmount = amount(headerUnit, header.units?.[headerUnit]);
+  const measures = Object.entries(measured.units ?? {}).map(([unit, count]) => [unit, amount(unit as Unit, count)] as const);
+  if (measures.some(([unit, value]) => unit !== headerUnit && value !== headerAmount)) {
+    log("info", "header_cross_check_differs", { operation: operation.name, header_unit: headerUnit, header_amount: headerAmount, request: Object.fromEntries(measures) });
+  }
+  return { ...measured, units: { ...header.units, ...measured.units }, secondaryUnits: [headerUnit] };
+}
+
+/**
  * The usage a successful attempt is billed by, by its meter kind (plan
  * section 4.1, "Meter"), with the request's price key values on it:
  *
@@ -387,6 +409,10 @@ export function attemptUsage(
       usage = withRequestMeasure(reading, meter.requestMeasure !== undefined ? fromRequest : null);
       break;
     case "response_header": {
+      if (meter.headerRole === "cross_check") {
+        usage = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit);
+        break;
+      }
       // Every measure is kept: the amount the header reports, what the body
       // reports where the meter reads it, and the request's estimate. The
       // price bills a reported one where it can, else the estimate

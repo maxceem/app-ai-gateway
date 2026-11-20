@@ -203,6 +203,16 @@ export type Meter =
        * are the units the reader reports.
        */
       readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
+      /**
+       * `cross_check`: the request's measure (`estimate`) is what the provider
+       * bills, exactly, and the header is only recorded beside it, as a
+       * secondary measure. ElevenLabs bills text to speech per character of
+       * the request in dollars; its `character-cost` header counts credits,
+       * which are not the billed amount (T27). A price in the header's unit
+       * still bills it, when that is the only rate a price has. A meter with
+       * `body` does not take this.
+       */
+      readonly headerRole?: "cross_check";
     }
   /** For providers that report no usage: measured from the request. */
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)
