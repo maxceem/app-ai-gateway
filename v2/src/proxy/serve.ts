@@ -371,7 +371,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           hostKey: upstream.host,
           path: upstream.path,
           query: sanitizedQuery(url),
-          secret,
+          secret: () => Promise.resolve(secret),
           body: () => sent,
           attempt,
         },
@@ -618,8 +618,12 @@ export interface PreparedAttempt {
   readonly hostKey: string;
   readonly path: string;
   readonly query: string;
-  /** The connection's key, opened before admission: an attempt is only planned with a key that works. */
-  readonly secret: string;
+  /**
+   * Opens the connection's key. The first attempt's is opened before
+   * admission, so a request whose key cannot be opened is refused before it
+   * spends anything; a fallback's only when the chain reaches it.
+   */
+  readonly secret: () => Promise<string>;
   /** Built only when this attempt is sent, so a long chain never holds every target's body at once. */
   readonly body: () => OutgoingBody;
   readonly attempt: CallAttempt;
@@ -697,7 +701,10 @@ function clientGone(c: ProxyContext): boolean {
  *   proxy's own 120 s: a fallback gets what is left of it.
  * - Every attempt sends the whole body again: it was read whole before the
  *   first one, and each attempt's own body is built only when it is sent.
- * - Every key was opened before admission (`secret`).
+ * - A fallback's key is opened only when the chain reaches it, within what
+ *   is left of the budget. One that cannot be opened is logged and skipped;
+ *   when nothing usable is left, the previous attempt's answer is passed to
+ *   the app as it is.
  * - Nothing is sent after the app went away.
  */
 export async function sendAttempts(
@@ -706,16 +713,42 @@ export async function sendAttempts(
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
 ): Promise<Response> {
   let deadline: number | undefined;
+  /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number } | null = null;
+  /** The error of an attempt that got no answer, for when nothing usable follows it. */
+  let failure: GatewayError | null = null;
+  const budgetExhausted = (index: number): GatewayError => {
+    log("warn", "provider_ttfb_budget_exhausted", {
+      app: attempts[0].attempt.appId,
+      skipped: attempts.slice(index).map((next) => next.connection.slug),
+    });
+    return new GatewayError(504, "provider_error", "Provider did not respond in time");
+  };
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
-    // The budget is checked before anything is built for a fallback.
+    // The budget is checked before anything is opened or built for a fallback.
     if (deadline !== undefined && deadline - Date.now() <= 0) {
-      log("warn", "provider_ttfb_budget_exhausted", {
+      if (previous !== null) retire(c, previous);
+      throw budgetExhausted(index);
+    }
+    let secret: string;
+    try {
+      secret = await withinMs(prepared.secret(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
+    } catch (error) {
+      // With nothing tried before it and nothing after it, its failure is the answer.
+      if (last && previous === null && failure === null) throw error;
+      log("warn", "preset_fallback_skipped", {
         app: attempt.appId,
-        skipped: attempts.slice(index).map((next) => next.connection.slug),
+        providerSlug: connection.slug,
+        code: error instanceof GatewayError ? error.code : "key_timeout",
       });
-      throw new GatewayError(504, "provider_error", "Provider did not respond in time");
+      continue;
+    }
+    // Only now is a fallback really sent: the failed answer before it is charged and let go.
+    if (previous !== null) {
+      retire(c, previous);
+      previous = null;
     }
     const body = prepared.body();
     const headers = upstreamHeaders(c.req.raw.headers);
@@ -729,7 +762,7 @@ export async function sendAttempts(
     if (body.contentType === null) headers.delete("content-type");
     else headers.set("content-type", body.contentType);
     // A callback, so a key containing `$&` or `$1` is sent as it is.
-    headers.set(description.auth.header, description.auth.format.replace("{key}", () => prepared.secret));
+    headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
     const origin = upstreamOrigin(connection, description, prepared.hostKey);
     const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
 
@@ -742,13 +775,7 @@ export async function sendAttempts(
     const providerStart = Date.now();
     deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
     const remainingMs = deadline - providerStart;
-    if (remainingMs <= 0) {
-      log("warn", "provider_ttfb_budget_exhausted", {
-        app: attempt.appId,
-        skipped: attempts.slice(index).map((next) => next.connection.slug),
-      });
-      throw new GatewayError(504, "provider_error", "Provider did not respond in time");
-    }
+    if (remainingMs <= 0) throw budgetExhausted(index);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), remainingMs);
     let upstream: Response;
@@ -778,41 +805,60 @@ export async function sendAttempts(
         cut: false,
         latencyMs: Date.now() - providerStart,
       });
-      if (!last) continue;
-      throw timedOut
+      failure = timedOut
         ? new GatewayError(504, "provider_error", "Provider did not respond in time")
         : new GatewayError(502, "provider_error", "Provider request failed");
+      if (!last) continue;
+      throw failure;
     } finally {
       clearTimeout(timer);
     }
     const latencyMs = Date.now() - providerStart;
 
     if (!last && retryableStatus(upstream.status)) {
-      // Charged, at no cost, with the error code its body names, read in the
-      // background: the next attempt goes out at once.
-      const status = upstream.status;
-      const head = upstream.body === null ? Promise.resolve("") : failedBodyHead(upstream.body);
-      c.executionCtx.waitUntil(
-        head.then((text) =>
-          recordLedgerEntry(
-            c.env,
-            safeCharge(attempt, {
-              status: "provider_error",
-              httpStatus: status,
-              errorCode: providerErrorCode(text),
-              usage: null,
-              cut: false,
-              latencyMs,
-            }),
-          ),
-        ),
-      );
+      // Kept, not yet charged: if no later attempt can be sent, it is the answer.
+      previous = { prepared, upstream, latencyMs };
+      failure = null;
       continue;
     }
     return answer(c, prepared, upstream, latencyMs);
   }
-  // The last attempt always answers or throws above.
-  throw new GatewayError(502, "provider_error", "Provider request failed");
+  // Every later attempt was skipped: the last failed answer is passed on as it is.
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+  throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
+}
+
+/** A promise that rejects once `ms` have passed without it settling. */
+function withinMs<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new GatewayError(504, "provider_error", "The provider key could not be opened in time")), Math.max(0, ms));
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Charges a failed answer a fallback was sent after, at no cost, with the
+ * error code its body names, read in the background and the rest cancelled.
+ */
+function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: Response; latencyMs: number }): void {
+  const { upstream, latencyMs } = failed;
+  const head = upstream.body === null ? Promise.resolve("") : failedBodyHead(upstream.body);
+  c.executionCtx.waitUntil(
+    head.then((text) =>
+      recordLedgerEntry(
+        c.env,
+        safeCharge(failed.prepared.attempt, {
+          status: "provider_error",
+          httpStatus: upstream.status,
+          errorCode: providerErrorCode(text),
+          usage: null,
+          cut: false,
+          latencyMs,
+        }),
+      ),
+    ),
+  );
 }
 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */

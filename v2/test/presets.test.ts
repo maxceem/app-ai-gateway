@@ -7,7 +7,10 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { deepMerge } from "../src/proxy/presets.ts";
+import { sendAttempts, type ProxyContext } from "../src/proxy/serve.ts";
+import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import {
   ACCOUNT_ID,
@@ -78,6 +81,49 @@ async function charges(appId: string): Promise<Record<string, any>[]> {
 }
 
 let fetchSpy: MockInstance<typeof fetch>;
+
+/** A request context for calling the attempt loop directly; `done` waits for its background work. */
+function fakeContext(): { c: ProxyContext; done: () => Promise<unknown> } {
+  const waits: Promise<unknown>[] = [];
+  const raw = new Request(`${ORIGIN}/v2/apps/app_unit/presets/unit`, { method: "POST" });
+  const c = { env, req: { raw, method: "POST" }, executionCtx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) } } as unknown as ProxyContext;
+  return { c, done: () => Promise.allSettled(waits) };
+}
+
+const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), contentType: "application/json" });
+
+/** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */
+function unitAttempt(seq: number, overrides: Partial<{ secret: () => Promise<string>; body: () => ReturnType<typeof jsonBody> }> = {}) {
+  const description = BUILT_IN_PROVIDERS.openai!;
+  return {
+    connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null },
+    description,
+    operation: description.operations.find((operation) => operation.name === "openai.chat")!,
+    hostKey: "main",
+    path: "/v1/chat/completions",
+    query: "",
+    secret: overrides.secret ?? vi.fn(async () => SECRET),
+    body: overrides.body ?? vi.fn(jsonBody),
+    attempt: {
+      requestId: "req_unit",
+      seq,
+      accountId: ACCOUNT_ID,
+      appId: "app_unit",
+      identity: { appId: "app_unit", userId: null, credentialType: "api_key" as const, authMethod: "api_key" as const, installId: null, appleAccountId: null },
+      providerType: "openai",
+      connectionId: `conn_${seq}`,
+      providerSlug: `openai-unit-${seq}`,
+      operation: "openai.chat",
+      model: "gpt-4o-mini",
+      price: null,
+      reportsCost: false,
+      requestedMode: STANDARD_MODE,
+      startedAt: Date.now(),
+      appVersion: null,
+      clientTraceId: null,
+    },
+  };
+}
 
 /** What the provider was sent on call `index`: its URL, headers and JSON body. */
 function sent(index = 0): { url: string; headers: Headers; body: Record<string, any> } {
@@ -310,9 +356,9 @@ describe("presets", () => {
       presets: { chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "gpt-4o-mini" }] } },
     });
     const app = new AbortController();
+    let providerSignal: AbortSignal | null | undefined;
     fetchSpy.mockImplementation(async (_input, init) => {
-      // The provider is never handed the app's own signal.
-      expect(init?.signal).not.toBe(app.signal);
+      providerSignal = init?.signal;
       app.abort();
       return Response.json({ error: { code: "busy" } }, { status: 503 });
     });
@@ -331,23 +377,54 @@ describe("presets", () => {
     await waitOnExecutionContext(ctx);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(await charges(appId)).toHaveLength(1);
+    // The provider's own signal is untouched when the app goes away: its answer is read to the end.
+    expect(providerSignal?.aborted).toBe(false);
   });
 
-  it("gives a fallback only what is left of the first-byte budget", async () => {
-    const first = await connection("openai");
-    const second = await connection("openai");
-    const { appId, key } = await appWith({
-      presets: { chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "gpt-4o-mini" }] } },
-    });
+  it("gives a fallback only what is left of the first-byte budget, never building an expired one's body", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
+      const { c, done } = fakeContext();
+      const fallback = unitAttempt(2, { body: vi.fn(jsonBody) });
       fetchSpy.mockImplementation(async () => {
         vi.setSystemTime(Date.now() + 121_000);
         return new Response("busy", { status: 503 });
       });
-      const { response } = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [] });
-      expect(response.status).toBe(504);
+      await expect(sendAttempts(c, [], [unitAttempt(1), fallback])).rejects.toMatchObject({ status: 504 });
+      await done();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fallback.body).not.toHaveBeenCalled();
+      expect(fallback.secret).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers from the first attempt at once, never opening a fallback's key it does not need", async () => {
+    const { c, done } = fakeContext();
+    const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)) });
+    fetchSpy.mockImplementation(async () => CHAT_OK());
+    const response = await sendAttempts(c, [], [unitAttempt(1), hanging]);
+    expect(response.status).toBe(200);
+    await response.text();
+    await done();
+    expect(hanging.secret).not.toHaveBeenCalled();
+  });
+
+  it("passes the 503 on as it is when the last fallback's key cannot be opened in the time left", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { c, done } = fakeContext();
+      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)) });
+      fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
+      const answered = sendAttempts(c, [], [unitAttempt(1), hanging]);
+      await vi.advanceTimersByTimeAsync(120_001);
+      const response = await answered;
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "busy" } });
+      await done();
+      expect(hanging.secret).toHaveBeenCalledTimes(1);
+      expect(hanging.body).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

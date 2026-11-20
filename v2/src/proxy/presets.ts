@@ -11,9 +11,10 @@
  * 1. The caller is checked as on the proxy (`serveCaller`).
  * 2. The body is read once. A JSON body gets the preset's `params` merged in,
  *    winning over the app's values. A transcription is a multipart upload.
- * 3. Each target of the chain becomes an attempt, its key opened now. The
- *    first must work: a missing connection, an operation it cannot serve or
- *    a key that cannot be opened is refused, before anything is spent; a
+ * 3. Each target of the chain becomes an attempt. The first must work: a
+ *    missing connection, an operation it cannot serve or a key that cannot
+ *    be opened is refused, before anything is spent (a fallback's key is
+ *    opened only when the chain reaches it); a
  *    model whose price has gone since the preset was saved is served and
  *    priced later. A fallback that cannot work is left out of the chain. A
  *    disabled first connection is a pause: the chain goes on to its
@@ -125,7 +126,7 @@ interface TargetInput {
   readonly streaming: boolean;
   readonly connection: ConnectionRecord;
   readonly description: ProviderDescription;
-  readonly secret: string;
+  readonly secret: () => Promise<string>;
   readonly target: Pick<PresetFallback, "operation" | "model">;
   /** The chain's first target, which is served even when its price has gone since the preset was saved. */
   readonly primary: boolean;
@@ -295,9 +296,12 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
             if (primary) paused = error;
             continue;
           }
-          // Opened before admission: a target whose key cannot be opened is
-          // refused when it is the first, as v1, and left out when a fallback.
-          const secret = await connectionSecret(c.env, connection);
+          // The first target's key is opened before admission, so one that
+          // cannot be opened is refused before anything is spent, as v1. A
+          // fallback's is opened only when the chain reaches it.
+          const opened = primary ? await connectionSecret(c.env, connection) : null;
+          const open = connection;
+          const secret = opened !== null ? () => Promise.resolve(opened) : () => connectionSecret(c.env, open);
           attempts.push(
             targetAttempt({
               slug,
