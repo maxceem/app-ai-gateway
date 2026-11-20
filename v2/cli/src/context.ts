@@ -179,6 +179,7 @@ export class Context {
       if (!renewed) {
         // Revoked, expired or already used: nothing it holds works any more.
         delete disk.active!.login;
+        delete disk.active!.account;
         return null;
       }
       disk.active!.login = renewed;
@@ -448,7 +449,10 @@ export class Context {
       } catch {
         revoked = false;
       }
-      if (revoked) delete disk.active!.login;
+      if (revoked) {
+        delete disk.active!.login;
+        delete disk.active!.account;
+      }
       return revoked;
     });
     this.state = state;

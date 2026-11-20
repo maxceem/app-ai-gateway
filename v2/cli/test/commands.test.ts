@@ -363,3 +363,21 @@ test("app update refuses --revision beside the shortcuts", async () => {
   const result = await run(["app", "update", "app_1", "--status", "disabled", "--revision", "7", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(result.json().error.code, "conflicting_flags");
 });
+
+test("after logout, no command names the signed-out account", async () => {
+  const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+  const out = sinks();
+  const transport = fakeTransport(async (path) => {
+    if (path === "/v2/console/capabilities") return { data: { billing: false, registrationOpen: true, googleAuth: false, oauth: true } };
+    throw new Error(`unexpected ${path}`);
+  }, () => ({ status: 200, data: {} }));
+  const io = { env: {}, clock: fakeClock() };
+  assert.equal(await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io, catalogCache: new MemoryCatalogCache() }), 0);
+  assert.equal(store.held.active?.account, undefined);
+  // A state that still carries an account but no sign-in names none either.
+  store.held = { schemaVersion: 1, active: { url: URL_, account: { id: "org_1", name: "Acme" } } };
+  const status = sinks();
+  const code = await main(["deployment", "status", "--json"], { store, transport, stdout: status.stdout, stderr: status.stderr, io, catalogCache: new MemoryCatalogCache() });
+  assert.equal(code, 0, status.err.text);
+  assert.equal(JSON.parse(status.out.text).context.accountId, undefined);
+});

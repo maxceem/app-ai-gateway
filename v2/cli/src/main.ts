@@ -199,11 +199,11 @@ async function write(stdout: OutputSink, text: string): Promise<void> {
 
 /**
  * Where a result came from. The stored account describes the stored sign-in,
- * so it is named only for a command that ran as that sign-in, not as
- * `AGW_MANAGEMENT_KEY`.
+ * so it is named only while that sign-in is stored and the command ran as
+ * it, not as `AGW_MANAGEMENT_KEY`.
  */
 function outputContext(ctx: Context): OutputContext {
-  const account = ctx.environmentKey ? undefined : ctx.active?.account?.id;
+  const account = ctx.environmentKey || !ctx.active?.login ? undefined : ctx.active.account?.id;
   return { url: ctx.url, ...(account === undefined ? {} : { accountId: account }) };
 }
 
