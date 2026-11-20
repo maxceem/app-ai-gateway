@@ -323,8 +323,13 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         } catch (error) {
           const problem = error instanceof TargetProblem ? error.error : error;
           if (primary) throw problem;
-          // A fallback that cannot work is left out; the save that wrote it checked it.
-          log("warn", "preset_fallback_skipped", {
+          // A fallback is left out either because it cannot work (its
+          // connection, operation or price: the save that wrote it checked
+          // them), or because it refuses this request (a background option,
+          // an output field over the cap, a transcription format). Logged
+          // apart, so the monitor alerts on the first only.
+          const refusedRequest = !(error instanceof TargetProblem) && problem instanceof GatewayError && problem.status < 500;
+          log("warn", refusedRequest ? "preset_fallback_refused_request" : "preset_fallback_skipped", {
             app: app.id,
             preset: slug,
             providerSlug: target.provider,

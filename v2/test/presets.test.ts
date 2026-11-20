@@ -543,6 +543,39 @@ describe("presets", () => {
     expect(sent().headers.get("anthropic-version")).toBe("2023-06-01");
   });
 
+  it("logs a fallback that refuses this request apart from one that cannot work", async () => {
+    const xai = await connection("xai");
+    const openai = await connection("openai");
+    const { appId, key } = await appWith({
+      presets: {
+        stt: {
+          provider: xai,
+          operation: "xai.transcription",
+          model: "grok-transcribe",
+          fallback: [{ provider: openai, model: "whisper-1" }, { provider: "gone-connection", model: "whisper-1" }],
+        },
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockImplementation(async () => Response.json({ text: "hi", duration: 3 }));
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(64)], { type: "audio/mpeg" }), "a.mp3");
+    // OpenAI cannot price a plain-text answer, so its fallback refuses this request; xAI has no such rule.
+    form.append("response_format", "text");
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/presets/stt`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-end-user-id": "u" }, body: form }),
+      env,
+      ctx,
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    const logged = warn.mock.calls.map(([line]) => (typeof line === "string" ? line : JSON.stringify(line)));
+    expect(logged.filter((line) => line.includes('"preset_fallback_refused_request"') && line.includes(openai))).toHaveLength(1);
+    expect(logged.filter((line) => line.includes('"preset_fallback_skipped"') && line.includes("gone-connection"))).toHaveLength(1);
+  });
+
   it("sends a transcription preset's upload with its model set", async () => {
     const slug = await connection("openai");
     const { appId, key } = await appWith({ presets: { stt: { provider: slug, operation: "openai.transcription", model: "whisper-1" } } });
@@ -605,6 +638,27 @@ describe("saving rewrites and presets", () => {
     await waitOnExecutionContext(ctx);
     return { status: response.status, body: (await response.json()) as Record<string, any> };
   }
+
+  it("lets an app with a stored rewrite whose price has gone be saved, if the rewrite is unchanged", async () => {
+    const { appId } = await appWith({ routing: { model_rewrites: { house: "no-such-model-zz" } } });
+    const key = await seedManagementKey();
+    const put = async (rewrites: Record<string, string>) => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/admin/apps/${appId}`, {
+          method: "PUT",
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+          body: JSON.stringify({ name: "Renamed", revision: 1, config: { authentication: AUTH, routing: { model_rewrites: rewrites } } }),
+        }),
+        env,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return response.status;
+    };
+    expect(await put({ house: "no-such-model-yy" })).toBe(400);
+    expect(await put({ house: "no-such-model-zz" })).toBe(200);
+  });
 
   it("needs a price for each rewrite's target, and judges a listed model by its rewrite", async () => {
     const slug = await connection("openai");

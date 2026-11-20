@@ -113,9 +113,10 @@ export function parseAppConfig(raw: unknown): AppConfig {
 export interface StoredEntries {
   readonly providers: Readonly<Record<string, unknown>>;
   readonly presets: Readonly<Record<string, unknown>>;
+  readonly rewrites: Readonly<Record<string, unknown>>;
 }
 
-const NOTHING_STORED: StoredEntries = { providers: {}, presets: {} };
+const NOTHING_STORED: StoredEntries = { providers: {}, presets: {}, rewrites: {} };
 
 interface ConnectionRow {
   type: string;
@@ -144,7 +145,7 @@ export async function checkAppConfig(
     return rows.get(slug) ?? null;
   };
   const rewrites = config.routing.model_rewrites ?? {};
-  await checkRewrites(db, accountId, rewrites);
+  await checkRewrites(db, accountId, rewrites, stored.rewrites);
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
     const connection = await connectionRow(slug);
     if (connection === null) {
@@ -205,8 +206,15 @@ export async function checkAppConfig(
  * for any provider, or a connection's own rate. A rewrite names no provider,
  * so the app's model lists and each request judge the rest (v1).
  */
-async function checkRewrites(db: D1Database, accountId: string, rewrites: Readonly<Record<string, string>>): Promise<void> {
-  const targets = Object.entries(rewrites);
+async function checkRewrites(
+  db: D1Database,
+  accountId: string,
+  rewrites: Readonly<Record<string, string>>,
+  stored: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  // An unchanged rewrite was checked when it was saved. Its price may have
+  // gone since; that must not stop the app being saved, even to rename it.
+  const targets = Object.entries(rewrites).filter(([source, target]) => !(Object.hasOwn(stored, source) && stored[source] === target));
   if (targets.length === 0) return;
   const { results } = await db
     .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ?")
@@ -420,8 +428,11 @@ export async function createApp(c: AdminContext): Promise<Response> {
 
 /** The routing a stored configuration has, by slug, read loosely: it was valid when saved. */
 function storedRouting(row: AppRow): StoredEntries {
-  const config = JSON.parse(row.config_json) as { routing?: { providers?: Record<string, unknown> }; presets?: Record<string, unknown> };
-  return { providers: config.routing?.providers ?? {}, presets: config.presets ?? {} };
+  const config = JSON.parse(row.config_json) as {
+    routing?: { providers?: Record<string, unknown>; model_rewrites?: Record<string, unknown> };
+    presets?: Record<string, unknown>;
+  };
+  return { providers: config.routing?.providers ?? {}, presets: config.presets ?? {}, rewrites: config.routing?.model_rewrites ?? {} };
 }
 
 /** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */

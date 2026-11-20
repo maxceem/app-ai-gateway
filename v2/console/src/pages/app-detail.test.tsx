@@ -95,6 +95,18 @@ describe("AppDetailPage", () => {
     });
   });
 
+  it("keeps the app's model rewrites when the providers are saved", async () => {
+    const withRewrites = testApp({ config: { ...testApp().config, routing: { ...testApp().config.routing, model_rewrites: { house: "gpt-a" } } } });
+    const fetchMock = stub({ [`GET ${APP_URL}`]: { body: { app: withRewrites } }, [`PUT ${APP_URL}`]: { body: { app: withRewrites } } });
+    renderTab("providers");
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Allow openai-eu" }));
+    await userEvent.click(screen.getByRole("button", { name: /save providers/i }));
+
+    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
+    expect(putBody(fetchMock).config.routing.model_rewrites).toEqual({ house: "gpt-a" });
+  });
+
   it("saves limits in nano-dollars", async () => {
     const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
     renderTab("limits");
