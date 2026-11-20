@@ -194,6 +194,10 @@ describe("Vercel's models, priced and read as their provider's", () => {
     expect(requestedServiceMode(vercel, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
     // The model's provider's own fields are read too, with its table (S5).
     expect(requestedServiceMode(vercel, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
+    // A provider's own options never carry to another provider's model (S9).
+    const anthropicFast = { providerOptions: { anthropic: { speed: "fast" } } };
+    expect(requestedServiceMode(vercel, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
     // A value only Vercel names keeps Vercel's meaning.
     expect(requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
       "standard",
@@ -459,6 +463,21 @@ describe("calls through the gateways, end to end", () => {
     expect(Number(served.cost_nano)).toBe(priceTokens(listPrice("anthropic", "claude-sonnet-5")!, tokens)!.cost);
     const unknown = rows.find((row) => row.model === "openai/gpt-4o-mini")!;
     expect(unknown.price_is_estimate).toBe(1);
+  });
+
+  it("bills a charge it cannot tell the served model of at standard at least, though flex was asked (S4)", async () => {
+    const open = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", undefined);
+    fetchSpy.mockResolvedValue(Response.json({ id: "c5", choices: [], usage }));
+    // A model with a flex price, at half the standard rate.
+    await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
+      model: "openai/gpt-6-sol",
+      messages: [],
+      providerOptions: { gateway: { serviceTier: "flex", models: ["anthropic/claude-sonnet-5"] } },
+    });
+    const [row] = await charges(open.appId);
+    const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    expect(Number(row!.cost_nano)).toBe(priceTokens(listPrice("openai", "gpt-6-sol")!, tokens)!.cost);
+    expect(row!.price_is_estimate).toBe(1);
   });
 
   it("prices a fallback that served in the mode the request asks of its own provider (S9)", async () => {

@@ -719,22 +719,24 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    // The root's fields in the tail, where most answers report, tried first;
-    // then the root's fields at the top of the kept head, for an answer that
-    // reports them before a large payload. A reader takes the first usage it
-    // can use; the strings naming what served it (the model, the tier) are the
-    // root's own wherever they were kept, so each document carries them.
+    // One root, read field by field: each root field the reader or the meter
+    // needs is taken from the kept tail, where most answers report, else from
+    // the top of the kept head, for an answer that reports it before a large
+    // payload. So every root field that is anywhere in view is in the one
+    // document, whichever window it was in.
     const head = headUsageDocument(body.head);
     const tail = rootTailUsageDocument(body.tail);
-    const documents = [head, tail].filter((document): document is Record<string, unknown> => document !== null);
-    for (const key of ROOT_STRING_KEYS) {
+    const root: Record<string, unknown> = {};
+    for (const key of [...ROOT_OBJECT_KEYS, ...ROOT_STRING_KEYS]) {
       const value = tail?.[key] ?? head?.[key];
-      if (value === undefined) continue;
-      for (const document of documents) document[key] ??= value;
+      if (value !== undefined) root[key] = value;
     }
-    const last = withDuration(documents.at(-1) ?? null, body.tail, body.head);
-    if (documents.length === 0 && last !== null) documents.push(last);
-    return documentValues(documents);
+    const document = withDuration(Object.keys(root).length === 0 ? null : root, body.tail, body.head);
+    if (document !== null) {
+      SCANNED.add(document);
+      for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+    }
+    return documentValues(document === null ? [] : [document]);
   }
   let parsed: unknown;
   try {

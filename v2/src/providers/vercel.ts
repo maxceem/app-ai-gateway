@@ -63,13 +63,12 @@ export const vercel = defineProvider({
       axis: "tier",
       values: { default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "fast" },
     },
-    {
-      names: ["providerOptions.gateway.speed", "providerOptions.anthropic.speed"],
-      axis: "tier",
-      values: { standard: "standard", fast: "fast" },
-    },
+    { names: ["providerOptions.gateway.speed"], axis: "tier", values: { standard: "standard", fast: "fast" } },
+    // A provider's own options apply to its models only (`forProvider`).
+    { names: ["providerOptions.anthropic.speed"], forProvider: "anthropic", axis: "tier", values: { standard: "standard", fast: "fast" } },
     {
       names: ["providerOptions.openai.serviceTier"],
+      forProvider: "openai",
       axis: "tier",
       values: { auto: "standard", default: "standard", flex: "flex", priority: "fast", fast: "fast", ultrafast: "ultrafast" },
     },

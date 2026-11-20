@@ -456,6 +456,14 @@ describe("usage in other units", () => {
     expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, noTokens: true })).toBeNull();
   });
 
+  it("reads each root field of a large answer wherever it was kept: usage in the head, the model and duration in the tail (3c S10)", () => {
+    const head = `{"usage":{"type":"tokens","input_tokens":40,"output_tokens":10,"total_tokens":50},"text":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}","model":"gpt-4o-transcribe","duration":42}`;
+    const values = responseValues({ head, tail, truncated: true }, "application/json");
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ inputTokens: 40, outputTokens: 10 });
+    expect([...values.backwards()][0]).toMatchObject({ model: "gpt-4o-transcribe", duration: 42, usage: { input_tokens: 40 } });
+  });
+
   it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
     const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
     const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");

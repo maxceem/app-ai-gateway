@@ -303,7 +303,7 @@ export async function priceUnresolvedCharge(
   const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
   if (stored === null) return { status: "no_price" };
   const { usage } = stored;
-  const priced = priceInServedMode(resolved.price, usage, stored.mode);
+  const priced = priceInServedMode(resolved.price, usage, stored.mode, stored.modeUnknown);
   if (priced === null) return { status: "no_price" };
   const billed = billedUnits(usage, resolved.price);
   const correction = correctionOf(original, {
@@ -317,7 +317,7 @@ export async function priceUnresolvedCharge(
     // Its cost lands in the rollup of the unit the price bills.
     unit: billed.unit,
     now: input.now,
-    estimate: priced.estimated || stored.modeUnknown,
+    estimate: priced.estimated,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

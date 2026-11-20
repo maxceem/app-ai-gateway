@@ -114,7 +114,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   // So is a call whose answer did not say which of the request's models served it.
   const modeUnknown =
     attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined || attempt.servedModelUnknown === true;
-  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode);
+  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
 
   let costed: Costed;
   let measured: Measured;
@@ -136,7 +136,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       costed = {
         costNano: priced.cost,
         priceSource: attempt.price!.source,
-        estimate: priced.estimated || modeUnknown,
+        estimate: priced.estimated,
         rates: priced.rates,
       };
       logModes(attempt, servedMode, outcome.servedModeUnknown, priced.estimated, facts);

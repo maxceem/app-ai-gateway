@@ -119,12 +119,19 @@ export type ServiceModeField =
      * (OpenAI's `priority` is its fast mode). `values` answers otherwise.
      */
     readonly as?: string;
+    /**
+     * For a gateway serving many providers' models: the one provider type this
+     * field is an option of (Vercel's `providerOptions.anthropic.speed`). It
+     * is read only for a model of that provider, never carried to another's.
+     */
+    readonly forProvider?: string;
   }
   | {
     readonly names: readonly string[];
     readonly axis: "region";
     readonly values: Readonly<Record<string, ServiceRegion>>;
     readonly as?: string;
+    readonly forProvider?: string;
   };
 
 /** One field's value, as a request or a response gave it: the field's name and the value, made safe to log. */

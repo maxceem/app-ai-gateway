@@ -41,6 +41,8 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
  * - a gateway's field that it hands on as the provider's own (`as`) is read
  *   with that provider's table, so a value means what it means there:
  *   Vercel's `priority` is fast on OpenAI's models and priority on Gemini's;
+ * - a field that is one provider's own option (`forProvider`) is read only for
+ *   that provider's models, never carried to another's;
  * - with `native`, the request's own fields in that provider's spelling are
  *   read too (a top-level `service_tier`), since the gateway passes them on.
  * Any other field reads as declared.
@@ -51,15 +53,17 @@ function fieldsFor(
   model: string | undefined,
   native: boolean,
 ): readonly ServiceModeField[] {
-  if (model === undefined || description.modelNamespaces === undefined) return fields;
-  const listed = listedAs(description.type, model);
-  const target = listed.type === description.type ? null : builtInProvider(listed.type);
-  if (target === null) return fields;
-  const mapped = fields.map((field) => {
+  if (description.modelNamespaces === undefined) return fields;
+  const listed = model === undefined ? null : listedAs(description.type, model);
+  // A provider's own options are read for that provider's models only.
+  const own = fields.filter((field) => field.forProvider === undefined || field.forProvider === listed?.type);
+  const target = listed === null || listed.type === description.type ? null : builtInProvider(listed.type);
+  if (target === null) return own;
+  const mapped = own.map((field) => {
     if (field.as === undefined) return field;
-    const own = target.serviceModes.find((candidate) => candidate.axis === field.axis && candidate.names.includes(field.as!));
+    const table = target.serviceModes.find((candidate) => candidate.axis === field.axis && candidate.names.includes(field.as!));
     // The provider's meaning wins; a value only the gateway names keeps the gateway's.
-    return own === undefined ? field : ({ ...field, values: { ...field.values, ...own.values } } as ServiceModeField);
+    return table === undefined ? field : ({ ...field, values: { ...field.values, ...table.values } } as ServiceModeField);
   });
   return native ? [...mapped, ...target.serviceModes] : mapped;
 }
@@ -116,10 +120,9 @@ export function servedServiceMode(
   }
   // A tier the response names in a value the table does not know, or in two
   // sources that disagree, says nothing the gateway can price: it may be
-  // dearer than asked. It is billed at least at standard, never at a cheaper
-  // tier, and marked as an estimate.
+  // dearer than asked. It is flagged; pricing bills any doubt at least at
+  // standard, as an estimate (`priceInServedMode`).
   const doubt = doubtfulTier(fields, read);
-  if (doubt !== undefined && SERVICE_TIERS[tier].rank < SERVICE_TIERS.standard.rank) tier = "standard";
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
   const flagged = unknown ?? doubt;
