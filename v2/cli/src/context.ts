@@ -198,10 +198,11 @@ export class Context {
   private async newerToken(used: OAuthLogin): Promise<string | undefined> {
     const url = this.url;
     const { state, result } = await this.store.update((disk) => {
-      const stored = disk.active?.login;
-      // Another sign-in, or a sign-in to another gateway, took this one's
-      // place: nothing of it is used or adopted here.
-      if (stored && (stored.id !== used.id || disk.active?.url !== url)) return "replaced" as const;
+      // Another gateway, or another sign-in, took this one's place: nothing
+      // of it is used or adopted here.
+      if (disk.active?.url !== url) return "replaced" as const;
+      const stored = disk.active.login;
+      if (stored && stored.id !== used.id) return "replaced" as const;
       return stored;
     });
     if (result === "replaced") this.replaced();
@@ -418,8 +419,10 @@ export class Context {
     const { state } = await this.store.update((disk) => {
       // A sign-in already stored for this gateway is kept: the environment's
       // key only wins while it is set.
-      const kept = disk.active?.url === target ? disk.active.login : undefined;
-      disk.active = { url: target, account: who.account, ...(kept ? { login: kept } : {}) };
+      // The account stored beside it describes that sign-in, so it stays with
+      // it; the key's own account is what this command reports.
+      const kept = disk.active?.url === target ? disk.active : null;
+      disk.active = { url: target, ...(kept?.login ? { login: kept.login, ...(kept.account ? { account: kept.account } : {}) } : {}) };
     });
     this.state = state;
     this.say(`${MANAGEMENT_KEY_ENV} is set, so it stays the credential for every command; nothing was stored.`);

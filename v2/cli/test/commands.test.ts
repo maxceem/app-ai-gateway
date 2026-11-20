@@ -347,3 +347,19 @@ test("the hand-off link file is removed once the command stops waiting, and a no
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("connect with AGW_MANAGEMENT_KEY leaves the stored sign-in's account beside it, and a key's command names no stored account", async () => {
+  const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+  const other = { ...SESSION, session: { ...SESSION.session, account: { id: "org_9", name: "Other" } } };
+  const connected = await runWith(["deployment", "connect", "--url", URL_, "--json"], { store, handler: () => other, env: { AGW_MANAGEMENT_KEY: "agw_mgmt_env" } });
+  assert.equal(connected.code, 0, connected.err);
+  assert.equal(store.held.active?.account?.id, "org_1");
+  const json = JSON.parse(connected.out);
+  assert.equal(json.result.account.id, "org_9");
+  assert.equal(json.context.accountId, undefined);
+});
+
+test("app update refuses --revision beside the shortcuts", async () => {
+  const result = await run(["app", "update", "app_1", "--status", "disabled", "--revision", "7", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(result.json().error.code, "conflicting_flags");
+});

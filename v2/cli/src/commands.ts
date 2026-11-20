@@ -291,6 +291,8 @@ export async function appUpdate(ctx: Context, app: string, flags: Flags): Promis
   }
   if (!shortcuts.length)
     fail("invalid_input", "Name what to change: --name, --status, or --operations with --revision.", "Run agw app update --help.");
+  // The shortcuts read the current revision themselves.
+  if (flags.revision !== undefined) fail("conflicting_flags", "--revision goes with --operations, not with --name or --status.");
   for (let attempt = 0; ; attempt++) {
     const { data: current } = await ctx.call("getApp", { params: { app } });
     try {

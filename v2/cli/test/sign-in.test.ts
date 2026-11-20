@@ -380,6 +380,18 @@ test("a 401 retry that finds a sign-in to another gateway stored meanwhile answe
   assert.equal(again.url, URL_);
 });
 
+test("a 401 retry after another command connected to another gateway with no sign-in answers login_changed", async () => {
+  const started = signedInState(URL_, "agw_oat_old");
+  const store = memoryStore(started);
+  store.held = { schemaVersion: 1, active: { url: "https://console.other.example" } };
+  const transport = fakeTransport(() => {
+    throw new CliError("auth_required", "no", "", 3, { status: 401 });
+  });
+  const ctx = new Context(store, started, transport, {}, { env: {}, stderr: sinks().stderr });
+  await assert.rejects(ctx.call("getAdminSession"), hasCode("login_changed"));
+  assert.equal(ctx.url, URL_);
+});
+
 test("connecting with AGW_MANAGEMENT_KEY to a v1 gateway gets the agw 1.x message", async () => {
   const store = memoryStore();
   const transport = fakeTransport((path) => {
