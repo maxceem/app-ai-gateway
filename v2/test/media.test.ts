@@ -172,6 +172,42 @@ describe("transcription", () => {
     expect(parsedWhole).not.toHaveBeenCalled();
   });
 
+  it("serves forms the fast scanner cannot read through the platform's parser, with the model read right", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.transcription"] });
+    fetchSpy.mockImplementation(async () => Response.json({ text: "hi", usage: { type: "duration", seconds: 6 } }));
+    const parsedWhole = vi.spyOn(Request.prototype, "formData");
+    const boundary = "fallbackB";
+    const forms = [
+      // A folded Content-Disposition header.
+      `--${boundary}\r\nContent-Disposition: form-data;\r\n name="model"\r\n\r\nwhisper-1\r\n`,
+      // A filename in Latin-1, which is not UTF-8.
+      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="caf\u00e9.mp3"\r\n\r\naudio\r\n`,
+    ];
+    for (const [index, text] of forms.entries()) {
+      // Latin-1 bytes, one per character, so é is the single byte 0xE9.
+      const bytes = Uint8Array.from(`${text}--${boundary}--\r\n`, (character) => character.charCodeAt(0));
+      const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, bytes, { "content-type": `multipart/form-data; boundary=${boundary}` });
+      expect(response.status, `form ${index}`).toBe(200);
+      // Untouched: the client's own bytes go on.
+      expect(new Uint8Array(fetchSpy.mock.calls[index]![1]?.body as Uint8Array)).toEqual(bytes);
+    }
+    expect(parsedWhole).toHaveBeenCalledTimes(2);
+    expect(await chargesOf(appId)).toMatchObject([
+      { model: "whisper-1", unit: "audio_seconds", units: 6000 },
+      { model: "whisper-1", unit: "audio_seconds", units: 6000 },
+    ]);
+  });
+
+  it("refuses a form the platform's parser refuses too", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.transcription"] });
+    const { response, text } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, "--b\r\nno disposition\r\n\r\nx\r\n--b--", {
+      "content-type": "multipart/form-data; boundary=b",
+    });
+    expect(response.status).toBe(400);
+    expect(text).toContain("invalid_request");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("serves an xAI form with only the audio, billed as grok-transcribe and sent unchanged, as v1", async () => {
     const { appId, slug, key } = await setup("xai", { operations: ["xai.transcription"] });
     fetchSpy.mockResolvedValue(Response.json({ text: "hello", duration: 1.25 }));

@@ -12,8 +12,12 @@
  * (`src/workerd/api/form-data.c++`), which v1 used: the same framing, the
  * same `Content-Disposition` grammar, and the same order rules, so a form
  * means here what it meant in v1. Where workerd would refuse a form, so does
- * this; it is also stricter in a few places a provider could read
- * differently (a non-UTF-8 header, a repeated `Content-Disposition`).
+ * this; it is also stricter in a few places (a folded or non-UTF-8 header,
+ * a repeated `Content-Disposition`).
+ *
+ * It is a fast path only. A form it cannot read throws `MultipartError`, and
+ * the caller parses it with the platform's parser instead, so a form the
+ * platform reads is never refused here.
  */
 
 export class MultipartError extends Error {}
@@ -22,7 +26,7 @@ export class MultipartError extends Error {}
 export type FieldValue = string | null;
 
 /** The longest wanted value read, in bytes. A model name or a format is far shorter. */
-const MAX_VALUE_BYTES = 1024;
+export const MAX_VALUE_BYTES = 1024;
 
 const CR = 13;
 const LF = 10;

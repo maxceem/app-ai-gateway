@@ -37,7 +37,7 @@ import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
-import { multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
+import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
 import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
@@ -188,7 +188,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
     const bytes = await readBody();
     const contentType = c.req.header("content-type") ?? "";
-    const parsed = requestBody(bytes, contentType, operation, description);
+    const parsed = await requestBody(bytes, contentType, operation, description);
     const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
     if (parsed.kind === "json") refuseBackground(operation, body);
     model = requestModel(operation, body, match.parts);
@@ -232,7 +232,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       parsed.kind === "json"
         ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
         : format !== null
-          ? { form: await withFormat(bytes, contentType, format), contentType: null }
+          ? { form: await withFormat(parsed.form ?? bytes, contentType, format), contentType: null }
           : { bytes, contentType };
 
     // Admission comes last, once the request is known to be one that can be
@@ -314,7 +314,12 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
 
 type ParsedBody =
   | { readonly kind: "json"; readonly body: Record<string, unknown> }
-  | { readonly kind: "form"; readonly fields: ReadonlyMap<string, readonly FieldValue[]> };
+  | {
+      readonly kind: "form";
+      readonly fields: ReadonlyMap<string, readonly FieldValue[]>;
+      /** The form parsed whole, where the fast scanner could not read it. */
+      readonly form?: FormData;
+    };
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
 type OutgoingBody =
@@ -328,32 +333,41 @@ function isMultipart(contentType: string): boolean {
 /**
  * A request body, read by its content type: a multipart form, else JSON (v1).
  *
- * A form is never parsed whole: only the text fields the gateway reads (the
- * model, a transcription's format, the service mode) are read from the bytes
- * it holds, and the upload itself is not copied (`../http/multipart.ts`). A
- * form that names its model more than once is refused: pricing reads the
+ * A form is read by a fast scanner first: only the text fields the gateway
+ * reads (the model, a transcription's format, the service mode) are read from
+ * the bytes it holds, and the upload is not copied (`../http/multipart.ts`).
+ * A form the scanner cannot read is parsed whole by the platform's own parser
+ * instead, as v1 did, at the cost of one copy, so the scanner never refuses
+ * a form v1 served. Only a form the platform's parser also refuses is
+ * refused. A form that names its model more than once is refused: pricing reads the
  * first, and a provider that read another would run a model nobody priced.
  * A transcription to a provider that judges its format must be a form, since
  * only a form names the format where it can be read.
  */
-function requestBody(bytes: Uint8Array, contentType: string, operation: OperationDescription, description: ProviderDescription): ParsedBody {
+async function requestBody(
+  bytes: Uint8Array,
+  contentType: string,
+  operation: OperationDescription,
+  description: ProviderDescription,
+): Promise<ParsedBody> {
   if (isMultipart(contentType)) {
     const boundary = multipartBoundary(contentType);
     const location = operation.model;
     const modelField = location.in === "body" || location.in === "form" ? location.field : null;
     const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names)]);
     if (modelField !== null) wanted.add(modelField);
-    let fields: Map<string, FieldValue[]>;
+    let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };
     try {
       if (boundary === null) throw new MultipartError("The form names no boundary");
-      fields = scanMultipart(bytes, boundary, wanted);
+      parsed = { fields: scanMultipart(bytes, boundary, wanted) };
     } catch {
-      throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
+      const form = await parseForm(bytes, contentType);
+      parsed = { fields: formValues(form, wanted), form };
     }
-    if (modelField !== null && (fields.get(modelField)?.length ?? 0) > 1) {
+    if (modelField !== null && (parsed.fields.get(modelField)?.length ?? 0) > 1) {
       throw new GatewayError(400, "invalid_request", "The form names its model more than once");
     }
-    return { kind: "form", fields };
+    return { kind: "form", ...parsed };
   }
   if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
     throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
@@ -371,15 +385,10 @@ function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<
   return record;
 }
 
-/**
- * The upload with its `response_format` set, as v1 does: parsed whole, which
- * copies it, only on this path, where the body must change. fetch writes a
- * fresh boundary for it.
- */
-async function withFormat(bytes: Uint8Array, contentType: string, format: string): Promise<FormData> {
-  let form: FormData;
+/** A form parsed whole by the platform's parser, as v1 did. It copies the upload. */
+async function parseForm(bytes: Uint8Array, contentType: string): Promise<FormData> {
   try {
-    form = await new Request("https://local.invalid", {
+    return await new Request("https://local.invalid", {
       method: "POST",
       headers: { "content-type": contentType },
       body: bytes as Uint8Array<ArrayBuffer>,
@@ -387,6 +396,25 @@ async function withFormat(bytes: Uint8Array, contentType: string, format: string
   } catch {
     throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
   }
+}
+
+/** The `wanted` fields of a parsed form, as the scanner gives them: a file, or a value too long to be a name, is null. */
+function formValues(form: FormData, wanted: ReadonlySet<string>): Map<string, FieldValue[]> {
+  const values = new Map<string, FieldValue[]>();
+  for (const name of wanted) {
+    const found = form.getAll(name).map((value) => (typeof value === "string" && new TextEncoder().encode(value).length <= MAX_VALUE_BYTES ? value : null));
+    if (found.length > 0) values.set(name, found);
+  }
+  return values;
+}
+
+/**
+ * The upload with its `response_format` set, as v1 does: parsed whole, which
+ * copies it, only on this path, where the body must change, unless the
+ * fallback parsed it already. fetch writes a fresh boundary for it.
+ */
+async function withFormat(source: Uint8Array | FormData, contentType: string, format: string): Promise<FormData> {
+  const form = source instanceof FormData ? source : await parseForm(source, contentType);
   form.set("response_format", format);
   return form;
 }
