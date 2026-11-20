@@ -42,7 +42,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { billing } from "../pricing/billability.ts";
+import { billing, priceSources } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionSecret,
@@ -267,7 +267,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // The app's model list judges the model the request names; everything
       // after it, the price included, the model it is sent as.
       const model = rewrittenModel(app, operation, requested);
-      const bill = billing(operation, connection, model);
+      const bill = billing(operation, priceSources(connection), model);
       const price = bill.price;
       // Never served: a model with no price is refused, unless the app lists it
       // by name (its price may have gone since: it is served, and priced later).

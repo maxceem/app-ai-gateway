@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { changesAgainst, type StoredEntries } from "../src/admin/apps.ts";
 import type { AppConfig } from "../src/contracts/app-config.ts";
-import { billing, listedModelProblem, rewriteTargetBillable } from "../src/pricing/billability.ts";
+import { billing, listedModelProblem, priceSources, rewriteTargetBillable } from "../src/pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../src/providers/index.ts";
 import type { OperationDescription } from "../src/providers/operation.ts";
 
@@ -16,8 +16,8 @@ function operation(type: string, name: string): OperationDescription {
   return found;
 }
 
-const openai = { type: "openai", rates: null };
-const xai = { type: "xai", rates: null };
+const openai = priceSources({ type: "openai", rates: null });
+const xai = priceSources({ type: "xai", rates: null });
 const chat = operation("openai", "openai.chat");
 const transcription = operation("openai", "openai.transcription");
 const xaiChat = operation("xai", "xai.chat");
@@ -37,7 +37,7 @@ describe("billing", () => {
   });
 
   it("prefers the connection's own rate", () => {
-    const own = { type: "openai", rates: { "house-model": { input: 1_000, output: 2_000 } } };
+    const own = priceSources({ type: "openai", rates_json: JSON.stringify({ "house-model": { input: 1_000, output: 2_000 } }) });
     expect(billing(chat, own, "house-model").price?.source).toBe("customer_rate");
   });
 
@@ -142,5 +142,35 @@ describe("changesAgainst", () => {
     expect(changes.routing("main")).toBe(true);
     expect(changes.rewrite("a")).toBe(true);
     expect(changes.preset("p")).toBe(true);
+  });
+});
+
+describe("one place decides", () => {
+  // Every source file, as text, read when the test is built.
+  const sources = (import.meta as ImportMeta & {
+    glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
+  }).glob<string>("../src/**/*.ts", { query: "?raw", import: "default", eager: true });
+  const DECIDERS = ["resolvePrice", "pricesOperation", "reportsCost", "listPrice"];
+  const ALLOWED = new Set(["../src/pricing/billability.ts", "../src/pricing/tokens.ts", "../src/pricing/prices.ts"]);
+
+  it("no file but billability.ts reads the price list or a connection's rates to decide billing", () => {
+    const offenders: string[] = [];
+    for (const [file, text] of Object.entries(sources)) {
+      if (ALLOWED.has(file)) continue;
+      for (const statement of text.matchAll(/import\s+(?!type\b)\{([^}]*)\}\s+from\s+"[^"]*pricing\/prices\.ts"/gu)) {
+        const names = statement[1]!.split(",").map((name) => name.trim().replace(/^type\s+/u, "").split(/\s+as\s+/u)[0]!);
+        for (const name of names) if (DECIDERS.includes(name)) offenders.push(`${file}: ${name}`);
+      }
+    }
+    expect(sources["../src/pricing/billability.ts"]).toBeDefined();
+    expect(offenders).toEqual([]);
+  });
+
+  it("reads a connection's rates once, and only when asked", () => {
+    let parses = 0;
+    const row = { type: "openai", get rates_json() { parses += 1; return "{not json"; } };
+    const lazy = priceSources(row);
+    expect(parses).toBe(0);
+    expect(() => lazy.rates()).toThrow(SyntaxError);
   });
 });

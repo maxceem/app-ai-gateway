@@ -36,7 +36,7 @@ import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { admitRequest } from "../limits/admission.ts";
-import { billing } from "../pricing/billability.ts";
+import { billing, priceSources } from "../pricing/billability.ts";
 import { connectionDescription, connectionSecret, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
@@ -159,7 +159,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
   }
   const operation: OperationDescription = (input.streaming && streamingSibling(description, chosen)) || chosen;
   const model = target.model;
-  const bill = billing(operation, connection, model);
+  const bill = billing(operation, priceSources(connection), model);
   const price = bill.price;
   // Saving checked every target's price. A first target whose price has gone
   // since is still served, and priced later (`unresolved`), as a listed model

@@ -16,8 +16,16 @@
  * serving bills an unpriced mode at the closest price, never under standard,
  * as an estimate (`AGENTS.md`).
  *
+ * The mode a request was served in is priced on the serve side by
+ * `priceInServedMode` (`./tokens.ts`), the other half of this rule.
+ *
  * What each caller does with a "no" is its own rule, written where it is used:
- * saving refuses; serving refuses only what was never served.
+ * saving refuses; serving refuses only what was never served; the sweep leaves
+ * a charge unpriced.
+ *
+ * A new price source changes `billingAt` and `priceSources` only. No other
+ * file reads the price list or a connection's rates to decide this (a test
+ * guards it).
  */
 import type { OperationDescription } from "../providers/operation.ts";
 import { isStandardMode, type ServiceMode } from "../usage/service-modes.ts";
@@ -41,7 +49,7 @@ export type BillingProblem =
   /** A price, but none in the service mode asked for. */
   | "no_mode_price";
 
-type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind };
+export type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind };
 
 export interface Billing {
   /** The price the operation bills the model at, or null when it has none it can use. */
@@ -52,15 +60,44 @@ export interface Billing {
   readonly problem: BillingProblem | null;
 }
 
-/** One provider connection's price sources: its type and its own rates. */
+/**
+ * One provider connection's price sources: its type, and its own rates, read
+ * only when a decision needs them. Built by `priceSources` alone.
+ */
 export interface PriceSources {
   readonly type: string;
-  readonly rates: CustomerRates | null | undefined;
+  readonly rates: () => CustomerRates | null;
+}
+
+/**
+ * A connection's price sources, from a stored row (`rates_json`, text) or a
+ * loaded record (`rates`, parsed). The rates are read once, and only when
+ * asked for, so unreadable rates fail only a decision that needs them.
+ */
+export function priceSources(
+  connection: { readonly type: string } & ({ readonly rates_json: string | null } | { readonly rates: CustomerRates | null }),
+): PriceSources {
+  let read: { readonly value: CustomerRates | null } | undefined;
+  return {
+    type: connection.type,
+    rates: () => {
+      if (read === undefined) {
+        const value =
+          "rates_json" in connection
+            ? connection.rates_json === null
+              ? null
+              : (JSON.parse(connection.rates_json) as CustomerRates)
+            : connection.rates;
+        read = { value };
+      }
+      return read.value;
+    },
+  };
 }
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about. */
 export function billing(operation: OperationDescription, connection: PriceSources, model: string, mode?: ServiceMode): Billing {
-  return billingAt(operation, resolvePrice(connection.type, model, connection.rates), mode);
+  return billingAt(operation, resolvePrice(connection.type, model, connection.rates()), mode);
 }
 
 /** `billing`, given the model's resolved price: the one place the rule is written. */
@@ -94,7 +131,7 @@ export function listedModelProblem(
   model: string,
 ): { readonly operation?: string } | null {
   if (operations.length === 0) return null;
-  const resolved = resolvePrice(connection.type, model, connection.rates);
+  const resolved = resolvePrice(connection.type, model, connection.rates());
   if (resolved === null) {
     const refused = operations.find((operation) => billingAt(operation, null).problem !== null);
     return refused === undefined ? null : { operation: refused.name };
@@ -104,27 +141,35 @@ export function listedModelProblem(
 
 /**
  * Whether a rewrite's target has a price this account could bill it at. A
- * rewrite names no provider, so any source counts: our price for any provider
- * type, a connection's own rate, or a connection whose provider reports its
- * own cost (v1). Each route that lists the model, and each request, is judged
- * on its own.
+ * rewrite names no provider, so any source counts: some connection has some
+ * operation that could bill it (in any unit: each route that lists the model,
+ * and each request, judges the unit), or our price list lists it for any
+ * provider type (v1). A connection whose operations bill without a price is
+ * judged before its rates are read.
  */
 export function rewriteTargetBillable(
   model: string,
-  connections: readonly LazyPriceSources[],
+  connections: readonly PriceSources[],
   providerTypes: readonly string[],
   operationsOf: (type: string) => readonly OperationDescription[],
 ): boolean {
+  const couldBill = (problem: BillingProblem | null) => problem === null || problem === "wrong_unit";
   return (
     providerTypes.some((type) => listPrice(type, model) !== null) ||
-    connections.some(
-      (connection) => operationsOf(connection.type).some(reportsCost) || resolvePrice(connection.type, model, connection.rates()) !== null,
-    )
+    connections.some((connection) => {
+      const operations = operationsOf(connection.type);
+      if (operations.some((operation) => couldBill(billingAt(operation, null).problem))) return true;
+      const resolved = resolvePrice(connection.type, model, connection.rates());
+      return operations.some((operation) => couldBill(billingAt(operation, resolved).problem));
+    })
   );
 }
 
-/** A connection whose own rates are read only when a search reaches it. */
-export interface LazyPriceSources {
-  readonly type: string;
-  readonly rates: () => CustomerRates | null;
+/**
+ * The price a charge written unpriced is billed at later, by the sweep: the
+ * connection's own rate, else ours. Its stored measures decide the unit, so
+ * any price counts here; null when there is none yet.
+ */
+export function billingForCharge(connection: PriceSources, model: string): ResolvedPrice | null {
+  return resolvePrice(connection.type, model, connection.rates());
 }

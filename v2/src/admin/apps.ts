@@ -19,8 +19,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
-import { billing, listedModelProblem, rewriteTargetBillable } from "../pricing/billability.ts";
-import type { CustomerRates } from "../pricing/prices.ts";
+import { billing, listedModelProblem, priceSources, rewriteTargetBillable } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -198,7 +197,9 @@ export async function checkAppConfig(
         });
       }
     }
-    const sources = { type: connection.type, rates: connectionRates(connection) };
+    // Rates are read only if a listed model is judged, so an unchanged route
+    // whose connection has unreadable rates does not stop a rename.
+    const sources = priceSources(connection);
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
     const routeChanged = changed.routing(slug);
     for (const listed of routing.models ?? []) {
@@ -228,10 +229,6 @@ export async function checkAppConfig(
   return config;
 }
 
-function connectionRates(connection: { rates_json: string | null }): CustomerRates | null {
-  return connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
-}
-
 /** Each new or changed rewrite's target needs a price this account could bill it at (`rewriteTargetBillable`). */
 async function checkRewrites(db: D1Database, accountId: string, targets: readonly (readonly [string, string])[]): Promise<void> {
   if (targets.length === 0) return;
@@ -241,7 +238,7 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
     .all<{ type: string; rates_json: string | null }>();
   // Each connection's rates are read only if the search reaches it, so one
   // with unreadable rates cannot block a target the catalog alone allows.
-  const connections = results.map((row) => ({ type: row.type, rates: () => connectionRates(row) }));
+  const connections = results.map(priceSources);
   const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
   for (const [source, target] of targets) {
     if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {
@@ -306,7 +303,7 @@ async function checkPreset(
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
     }
-    const sources = { type: connection.type, rates: connectionRates(connection) };
+    const sources = priceSources(connection);
     if (billing(operation, sources, target.model).problem !== null) {
       throw new GatewayError(
         400,
