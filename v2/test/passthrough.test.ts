@@ -350,6 +350,8 @@ describe("judging a listing where the provider reads it", () => {
       return seed % n;
     };
     let saved = 0;
+    // Collected and checked once: an `expect` per check would cost more than the checks.
+    const failures: string[] = [];
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       const matcher = new ProviderMatcher(description);
       const refused = description.refused.map((entry) =>
@@ -371,9 +373,22 @@ describe("judging a listing where the provider reads it", () => {
       for (const connection of routesOf(description)) {
         const route = upstreamRoute(description, connection);
         const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
+        // Each operation's paths as the provider reads them on this route, worked out once.
+        const readings = operations.map(({ op, template, lists }) => ({
+          op,
+          lists,
+          templates:
+            prefix.length > 0 && !template.segments.slice(0, prefix.length).every((segment, index) => segment.kind === "literal" && segment.value === prefix[index])
+              ? [template, { source: "", segments: [...prefix.map((value) => ({ kind: "literal", value }) as const), ...template.segments] }]
+              : [template],
+        }));
+        // A listing drawn twice on one route is judged once.
+        const drawn = new Set<string>();
         for (let round = 0; round < 60; round += 1) {
           const method = (["GET", "POST", "DELETE", "PATCH"] as const)[random(4)]!;
           const path = Array.from({ length: 1 + random(4) }, () => shapes[random(shapes.length)]!).join("/");
+          if (drawn.has(`${method} ${path}`)) continue;
+          drawn.add(`${method} ${path}`);
           let listing;
           try {
             listing = compilePassthrough([{ method, path }])[0]!;
@@ -389,22 +404,20 @@ describe("judging a listing where the provider reads it", () => {
             const match = matcher.match(method, concrete, { passthrough: [listing], route });
             if (match.kind !== "passthrough") continue;
             for (const read of readAs(description, connection, match.upstream.path)) {
-              const where = `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
+              const where = () => `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
               for (const { template, methods } of refused) {
-                if (methods === null || methods.includes(method)) expect(matchTemplate(template, read, { ignoreCase: true }), where).toBeNull();
+                if ((methods === null || methods.includes(method)) && matchTemplate(template, read, { ignoreCase: true }) !== null) failures.push(`${where()} is refused by ${template.source}`);
               }
-              for (const { op, template, lists } of operations) {
+              for (const { op, lists, templates } of readings) {
                 if (op.match.method !== method) continue;
-                const readings = prefix.length > 0 && !template.segments.slice(0, prefix.length).every((segment, index) => segment.kind === "literal" && segment.value === prefix[index])
-                  ? [template, { source: "", segments: [...prefix.map((value) => ({ kind: "literal", value }) as const), ...template.segments] }]
-                  : [template];
-                for (const reading of readings) expect(matchTemplate(reading, read, { closedLists: lists }), `${where} reaches ${op.name}`).toBeNull();
+                if (templates.some((reading) => matchTemplate(reading, read, { closedLists: lists }) !== null)) failures.push(`${where()} reaches ${op.name}`);
               }
             }
           }
         }
       }
     }
+    expect(failures).toEqual([]);
     // The fuzz judged a real number of saved listings, not only refused ones.
     expect(saved).toBeGreaterThan(300);
   });
