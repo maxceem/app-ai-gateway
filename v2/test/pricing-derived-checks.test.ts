@@ -210,6 +210,19 @@ describe("Sol's review of the derived checks", () => {
     expect(priceInServedMode(price, both, STANDARD_MODE)).toMatchObject({ unit: "audio_seconds", cost: 6_000_000 });
   });
 
+  it("leaves a charge unresolved when its standard-price floor cannot be stored, never billing below it", () => {
+    // An unknown voice bills at a's $1 per second as an estimate; the floor, the model's own per-minute price, is too large to store.
+    const price = customerPrice({ m: { per_minute: 9_000_000_000_000_000, by: { voice: { a: { per_second: 1 } } } } }, "m")!;
+    expect(priceInServedMode(price, MINUTE, STANDARD_MODE)).toBeNull();
+  });
+
+  it("rounds only the chosen price, once, from its exact cost", () => {
+    const price = customerPrice({ m: { by: { voice: { a: { per_minute: 72_000 }, b: { per_minute: 114_000 } } } } }, "m")!;
+    const chosen = priceInServedMode(price, { ...NONE, units: { audio_seconds: 1 } }, STANDARD_MODE)!;
+    expect(chosen.exact).toEqual({ numerator: 114_000n, denominator: 60_000n });
+    expect(chosen.cost).toBe(2);
+  });
+
   it("rounds tokens with the one rounding code", () => {
     const next = random(99);
     for (let round = 0; round < 200; round += 1) {

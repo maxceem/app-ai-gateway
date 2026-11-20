@@ -18,7 +18,7 @@
  * image bills that measure instead (`priceUsage`).
  */
 import { log } from "../core/log.ts";
-import { compareExact, exactCost, MoneyError, rate, roundUp, toMilli, type ExactCost, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { assertStorable, compareExact, exactCost, MoneyError, rate, roundUp, toMilli, type ExactCost, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
@@ -45,6 +45,18 @@ export interface Pricing {
   readonly units: number;
   /** The measure billed was worked out from the request, not reported by the provider. */
   readonly fromEstimate: boolean;
+}
+
+/**
+ * A price before rounding: what candidates are compared on. Only the chosen
+ * one is rounded, once (`withCost`); a candidate whose cost could not be
+ * stored is refused before that (`assertStorable`).
+ */
+type Candidate = Omit<Pricing, "cost">;
+
+/** A candidate's cost rounded, once: it has passed `assertStorable`, so this cannot overflow. */
+function withCost<C extends Candidate>(candidate: C): C & { readonly cost: NanoDollars } {
+  return { ...candidate, cost: roundUp(candidate.exact) };
 }
 
 type Part = readonly [units: number, rate: RateNanoPerMillion];
@@ -147,6 +159,12 @@ function splitCachedModalities(usage: UsageObservation): { input: ModalityCounts
  * tokens: it has no input or output rate (a model priced per minute, say).
  */
 export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing | null {
+  const candidate = tokenCandidate(price, usage);
+  return candidate === null ? null : withCost(candidate);
+}
+
+/** `priceTokens` before rounding. */
+function tokenCandidate(price: ModelPrice, usage: UsageObservation): Candidate | null {
   const { rates } = price;
   if (rates.input === undefined || rates.output === undefined) return null;
   const prompt = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens;
@@ -164,7 +182,8 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
     ...sideParts(usage.outputTokens, buckets.output, modalityRates(price, OUTPUT_RATES, longContext, used), usage.modalityTokens?.output),
   ];
   const exact = exactCost(parts.map(([units, value]) => [units, value, 1_000_000] as const));
-  return { cost: roundUp(exact), exact, rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
+  assertStorable(exact);
+  return { exact, rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
 }
 
 /**
@@ -206,11 +225,11 @@ export function costAtRate(field: string, count: number, value: RateNanoPerMilli
 }
 
 /** A usage priced on one unit rate, for one unit it bills. */
-function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: number, usage: UsageObservation): Pricing {
+function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: number, usage: UsageObservation): Candidate {
   const value = price.rates[unitRate.field]!;
   const exact = exactOfRates([[unitRate.field, count, value]]);
+  assertStorable(exact);
   return {
-    cost: roundUp(exact),
     exact,
     rates: { [unitRate.field]: value },
     longContext: false,
@@ -231,11 +250,11 @@ function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: nu
  * as null: the counter was never sent, and pricing it would claim a confident
  * $0. A price that also bills tokens falls back to them.
  */
-function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
+function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | null | undefined {
   const stated = UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
   if (stated.length === 0) return undefined;
   const billsTokens = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
-  const options: Pricing[] = [];
+  const options: Candidate[] = [];
   for (const unitRate of stated) {
     for (const unit of unitRate.units) {
       const count = unitCount(usage, unit);
@@ -257,10 +276,16 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | nu
  * alone for a token-priced model, or tokens alone for a time-priced one.
  */
 export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
+  const candidate = usageCandidate(price, usage);
+  return candidate === null ? null : withCost(candidate);
+}
+
+/** `priceUsage` before rounding. */
+function usageCandidate(price: ModelPrice, usage: UsageObservation): Candidate | null {
   const unit = priceUnitRate(price, usage);
   if (unit !== undefined) return unit;
   if (usage.noTokens === true) return null;
-  return priceTokens(price, usage);
+  return tokenCandidate(price, usage);
 }
 
 /**
@@ -268,14 +293,14 @@ export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing 
  * for it or the usage does not report it: the standard floor is worked out on
  * the same measure the chosen price billed.
  */
-function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Pricing | null {
-  if (unit === "tokens") return usage.noTokens === true ? null : priceTokens(price, usage);
+function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Candidate | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : tokenCandidate(price, usage);
   const count = unitCount(usage, unit);
   if (count === undefined) return null;
-  const options = UNIT_RATES.filter((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined).flatMap((unitRate) => {
-    const option = isolated(() => atUnitRate(price, unitRate, unit, count, usage), { rate: unitRate.field, unit });
-    return option === null ? [] : [option];
-  });
+  // Not isolated: the floor is a minimum, so one that cannot be stored throws, and the caller leaves the charge unresolved.
+  const options = UNIT_RATES.filter((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined).map((unitRate) =>
+    atUnitRate(price, unitRate, unit, count, usage),
+  );
   return preferred(options);
 }
 
@@ -285,7 +310,7 @@ function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "t
  * measure the provider reported before any billing the request's estimate;
  * among those, the dearest. Null when there are none.
  */
-function preferred<P extends Pricing>(prices: readonly P[]): P | null {
+function preferred<P extends Candidate>(prices: readonly P[]): P | null {
   const reported = prices.filter((one) => !one.fromEstimate);
   const pool = reported.length > 0 ? reported : prices;
   let dearest: P | null = null;
@@ -342,7 +367,7 @@ export function priceInServedMode(
 ): ChargePricing | null {
   // The one candidate list, which eligibility judges too (`chargeCandidates`).
   const keyed = chargeCandidates(price, usage.priceKeys);
-  const priced: (Pricing & { readonly estimated: boolean })[] = [];
+  const priced: (Candidate & { readonly estimated: boolean })[] = [];
   for (const candidate of keyed.keyed) {
     const one = isolated(() => priceIn(candidate, usage, served), { candidate: "key" });
     if (one !== null) priced.push(one);
@@ -350,21 +375,32 @@ export function priceInServedMode(
   const standardPrice = keyed.fallback;
   const chosen = preferred(priced);
   if (chosen === null) {
-    const standard = isolated(() => priceUsage(standardPrice, usage), { candidate: "standard" });
-    return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
+    const standard = isolated(() => usageCandidate(standardPrice, usage), { candidate: "standard" });
+    if (standard === null) return null;
+    const standardMeasured: ChargePricing["measured"] = standard.fromEstimate ? "estimated" : "complete";
+    return withCost({ ...standard, estimated: true, measured: standardMeasured });
   }
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
-  const measured = chosen.fromEstimate ? "estimated" : "complete";
-  if (!estimated) return { ...chosen, estimated: false, measured };
+  const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
+  if (!estimated) return withCost({ ...chosen, estimated: false, measured });
   // The one floor: at least the model's own standard price on the same measure.
-  const floor = isolated(() => priceOnUnit(standardPrice, usage, chosen.unit), { candidate: "floor" });
-  return floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
+  // A floor that cannot be stored is never dropped for the lower estimate: the charge is left unresolved.
+  let floor: Candidate | null;
+  try {
+    floor = priceOnUnit(standardPrice, usage, chosen.unit);
+  } catch (error) {
+    if (!(error instanceof MoneyError)) throw error;
+    log("error", "price_floor_too_large", { unit: chosen.unit, error: error.message });
+    return null;
+  }
+  const billed = floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? floor : chosen;
+  return withCost({ ...billed, estimated: true, measured });
 }
 
-function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {
+function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Candidate & { readonly estimated: boolean }) | null {
   const served = priceInMode(price, mode);
   if (served !== undefined) {
-    const priced = priceUsage(served, usage);
+    const priced = usageCandidate(served, usage);
     return priced === null ? null : { ...priced, estimated: false };
   }
   // Priced on its own only: a tier or region that appears only inside a pair
@@ -375,17 +411,17 @@ function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode):
   const cheaper = SERVICE_TIERS[mode.tier].rank < SERVICE_TIERS.standard.rank;
   const tryTiers: ServiceTier[] = tierPriced ? [mode.tier] : cheaper ? ["standard"] : ["standard", ...tiers];
   const tryRegions: ServiceRegion[] = regionPriced ? [mode.region] : ["global", ...regions];
-  const tried: Pricing[] = [];
+  const tried: Candidate[] = [];
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
       const priced = isolated(() => {
         const candidate = priceInMode(price, { tier, region });
-        return candidate === undefined ? null : priceUsage(candidate, usage);
+        return candidate === undefined ? null : usageCandidate(candidate, usage);
       }, { tier, region });
       if (priced !== null) tried.push(priced);
     }
   }
-  const fallback = preferred(tried) ?? priceUsage(price, usage);
+  const fallback = preferred(tried) ?? usageCandidate(price, usage);
   return fallback === null ? null : { ...fallback, estimated: true };
 }
 

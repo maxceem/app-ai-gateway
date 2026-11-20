@@ -143,6 +143,14 @@ export function roundUp(cost: ExactCost): NanoDollars {
   return Number(rounded) as NanoDollars;
 }
 
+/**
+ * Throws `MoneyError` when an exact cost, once rounded, could not be stored.
+ * It rounds nothing: a candidate can be refused before the winner is rounded.
+ */
+export function assertStorable(cost: ExactCost): void {
+  if (cost.numerator > BigInt(Number.MAX_SAFE_INTEGER) * cost.denominator) throw new MoneyError("The cost is too large to store");
+}
+
 /** Compares two exact costs without rounding either: negative, zero or positive, as `a - b`. */
 export function compareExact(a: ExactCost, b: ExactCost): number {
   const left = a.numerator * b.denominator;
