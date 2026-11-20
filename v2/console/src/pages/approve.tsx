@@ -186,7 +186,7 @@ export function ApprovePage() {
         <Alert role="note">
           <AlertTitle>This request names its own address</AlertTitle>
           <AlertDescription>
-            The gateway will send the key to {review.destination}. Whoever controls that address receives the key. Approve only
+            The gateway will send the key to {review.destinations.join(", ")}. Whoever controls that address receives the key. Approve only
             if you trust it.
           </AlertDescription>
         </Alert>
@@ -203,7 +203,11 @@ export function ApprovePage() {
         <dt className="text-muted-foreground">Slug</dt>
         <dd className="font-mono break-all">{review.slug}</dd>
         <dt className="text-muted-foreground">Key sent to</dt>
-        <dd className="font-mono break-all">{review.destination}</dd>
+        <dd className="font-mono break-all">
+          {review.destinations.map((destination) => (
+            <div key={destination}>{destination}</div>
+          ))}
+        </dd>
         {review.secretHint ? (
           <>
             <dt className="text-muted-foreground">Current key</dt>

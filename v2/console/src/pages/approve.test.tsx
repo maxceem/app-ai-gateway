@@ -19,7 +19,7 @@ function details(overrides: Record<string, unknown> = {}) {
       state: "pending",
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
       account: { id: "acc_1234", name: "Acme" },
-      review: { type: "openai", name: "OpenAI production", slug: "openai-prod", baseUrl: null, destination: "https://api.openai.com/" },
+      review: { type: "openai", name: "OpenAI production", slug: "openai-prod", baseUrl: null, destinations: ["https://api.openai.com/"] },
       ...overrides,
     },
   };
@@ -71,7 +71,7 @@ describe("ApprovePage", () => {
   it("warns that a custom address receives the key, and promises nothing", async () => {
     stubApi({
       [DETAILS_URL]: details({
-        review: { type: "openai", name: "Self-hosted", slug: "own", baseUrl: "https://llm.example.net/", destination: "https://llm.example.net/" },
+        review: { type: "openai", name: "Self-hosted", slug: "own", baseUrl: "https://llm.example.net/", destinations: ["https://llm.example.net/"] },
       }),
     });
     renderApprove();
@@ -111,7 +111,7 @@ describe("ApprovePage", () => {
   });
 
   it("shows the key it replaces for a key replacement", async () => {
-    stubApi({ [DETAILS_URL]: details({ kind: "provider.rotate-key", review: { type: "openai", name: "Prod", slug: "openai", baseUrl: null, destination: "https://api.openai.com/", secretHint: "wxyz" } }) });
+    stubApi({ [DETAILS_URL]: details({ kind: "provider.rotate-key", review: { type: "openai", name: "Prod", slug: "openai", baseUrl: null, destinations: ["https://api.openai.com/"], secretHint: "wxyz" } }) });
     renderApprove();
 
     expect(await screen.findByText(/replace a provider key/i)).toBeTruthy();

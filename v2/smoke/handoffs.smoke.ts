@@ -64,7 +64,7 @@ test("a provider step opens with a console link, shows what it asks, and can be 
 
   const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof });
   assert.equal(shown.status, 200, JSON.stringify(shown.body));
-  assert.deepEqual(shown.body.review, { type: "openai", name: "Smoke handoff", slug, baseUrl: null });
+  assert.deepEqual(shown.body.review, { type: "openai", name: "Smoke handoff", slug, baseUrl: null, destinations: ["https://api.openai.com/"] });
   const wrong = await page(`/v2/console/handoffs/${opened.body.id}`, { proof: "x".repeat(43) });
   assert.equal(wrong.status, 403);
 

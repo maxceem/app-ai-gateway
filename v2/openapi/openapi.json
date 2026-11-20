@@ -3259,8 +3259,11 @@
                   "null"
                 ]
               },
-              "destination": {
-                "type": "string"
+              "destinations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               },
               "secretHint": {
                 "type": [
@@ -3274,7 +3277,7 @@
               "name",
               "slug",
               "baseUrl",
-              "destination"
+              "destinations"
             ]
           }
         },

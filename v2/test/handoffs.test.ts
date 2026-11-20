@@ -83,7 +83,14 @@ describe("adding a provider connection through a person", () => {
     const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof: proofOf(opened.body.url) });
     expect(shown.body.account.id).toBe(accountId);
     expect(typeof shown.body.account.name).toBe("string");
-    expect(shown.body.review.destination).toBe(shown.body.review.baseUrl);
+    expect(shown.body.review.destinations).toEqual(["https://llm.example.net/"]);
+  });
+
+  it("names every host a provider sends the key to", async () => {
+    const { caller } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "fal", name: "fal" });
+    const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof: proofOf(opened.body.url) });
+    expect(shown.body.review.destinations).toEqual(["https://fal.run/", "https://queue.fal.run/"]);
   });
 
   it("opens a step, lets the link's holder enter the key, and never answers the key", async () => {
@@ -99,7 +106,7 @@ describe("adding a provider connection through a person", () => {
     const proof = proofOf(opened.body.url);
     const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof });
     expect(shown.status).toBe(200);
-    expect(shown.body.review).toEqual({ type: "openai", name: "OpenAI", slug: "openai-person", baseUrl: null, destination: "https://api.openai.com/" });
+    expect(shown.body.review).toEqual({ type: "openai", name: "OpenAI", slug: "openai-person", baseUrl: null, destinations: ["https://api.openai.com/"] });
 
     const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret: KEY });
     expect(approved.status).toBe(200);
@@ -351,6 +358,9 @@ describe("creating an app once", () => {
     expect(repeated.status).toBe(200);
     expect(repeated.body).toMatchObject({ replayed: true, app: { id: created.body.app.id } });
     expect(repeated.body.reveal_url).toBeUndefined();
+    const status = await send(caller, "GET", `/v2/admin/operations/${created.body.id}`, undefined, { environment: noConsole });
+    expect(status.status).toBe(200);
+    expect(status.body.reveal_url).toBeUndefined();
   });
 
   it("creates an App Attest app with nothing to reveal", async () => {

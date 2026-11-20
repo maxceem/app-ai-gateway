@@ -281,7 +281,9 @@ export async function getHandoff(c: PageContext): Promise<Response> {
   const { proof } = await parseBody(c, HandoffProofSchema);
   const { details, kind, review, accountId } = await verifiedStep(c, proof);
   const baseUrl = typeof review.baseUrl === "string" ? review.baseUrl : null;
-  const host = builtInProvider(String(review.type))?.hosts.main;
+  // Every host the key goes to: a custom base URL replaces only the main one.
+  const hosts = builtInProvider(String(review.type))?.hosts ?? {};
+  const destinations = Object.entries(hosts).map(([key, host]) => (key === "main" && baseUrl !== null ? baseUrl : `https://${host}/`));
   return c.json({
     id: details.id,
     kind,
@@ -294,7 +296,7 @@ export async function getHandoff(c: PageContext): Promise<Response> {
       name: String(review.name),
       slug: String(review.slug),
       baseUrl,
-      destination: baseUrl ?? (host === undefined ? "" : `https://${host}/`),
+      destinations,
       ...(kind === "provider.rotate-key" ? { secretHint: typeof review.secretHint === "string" ? review.secretHint : null } : {}),
     },
   } satisfies OperationResponse<"getHandoff">);
@@ -341,8 +343,9 @@ export async function submitHandoff(c: PageContext): Promise<Response> {
   try {
     await engine.approve({ id: details.id, proof, input: { secret } });
   } catch (error) {
+    // Someone else's approval landed first: this key was not stored.
     if ((await engine.details({ id: details.id, proof })).state === "completed") {
-      return c.json({ state: "completed" } satisfies OperationResponse<"submitHandoff">);
+      throw new GatewayError(409, "conflict", "This request was already approved; the key you entered was not stored");
     }
     throw await write.refusal(error);
   } finally {
@@ -774,7 +777,7 @@ export async function getOperation(c: AdminContext): Promise<Response> {
     ...base,
     state: "completed",
     result,
-    ...(revealable ? { reveal_url: revealUrl(c.env, status.id) } : {}),
+    ...(revealable ? revealLink(c.env, status.id) : {}),
   } satisfies OperationResponse<"getOperation">);
 }
 

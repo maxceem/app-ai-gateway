@@ -186,8 +186,8 @@ export const HandoffDetailsResponseSchema = z
       name: z.string(),
       slug: z.string(),
       baseUrl: z.string().nullable(),
-      /** Where the gateway sends the key: the custom base URL, or the provider's own host. */
-      destination: z.string(),
+      /** Every address the gateway sends the key to: the provider's hosts, with the custom base URL in place of its main one. */
+      destinations: z.array(z.string()),
       /** For a key replacement: the last characters of the key it replaces. */
       secretHint: z.string().nullable().optional(),
     }),

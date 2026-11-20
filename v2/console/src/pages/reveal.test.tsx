@@ -114,13 +114,26 @@ describe("RevealPage", () => {
     expect(revealed(fetchMock)).toBe(false);
   });
 
-  it("explains an operation this account does not have", async () => {
-    stubApi({
+  it("lets the reveal decide when the status is read in another selected account", async () => {
+    const fetchMock = stubApi({
+      [REVEAL_URL]: REVEALED,
       [STATUS_URL]: { status: 404, body: { error: { code: "operation_not_found", message: "No operation of your account has this id" } } },
     });
     renderReveal();
 
-    expect(await screen.findByText(/cannot be revealed/i)).toBeTruthy();
-    expect(screen.getByText(/signed in to the account the key was created in/i)).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: /reveal the key/i }));
+    expect(await screen.findByDisplayValue(PLAINTEXT)).toBeTruthy();
+    expect(revealed(fetchMock)).toBe(true);
+  });
+
+  it("explains an operation none of the person's accounts has", async () => {
+    stubApi({
+      [REVEAL_URL]: { status: 404, body: { error: { code: "operation_not_found", message: "No operation of your account has this id" } } },
+      [STATUS_URL]: { status: 404, body: { error: { code: "operation_not_found", message: "No operation of your account has this id" } } },
+    });
+    renderReveal();
+
+    await userEvent.click(await screen.findByRole("button", { name: /reveal the key/i }));
+    expect(await screen.findByText(/signed in to the account the key was created in/i)).toBeTruthy();
   });
 });

@@ -81,7 +81,12 @@ export function RevealPage() {
     );
   }
 
-  if (status.isError || !status.data) {
+  // The status is read in the account the console has selected, so an
+  // operation of another of the person's accounts is not found there. The
+  // reveal itself is judged in the operation's own account: let it decide.
+  const elsewhere = status.isError && status.error instanceof ApiError && status.error.status === 404;
+
+  if (!elsewhere && (status.isError || !status.data)) {
     return (
       <RevealShell id={id}>
         <Alert variant="destructive" role="alert">
@@ -93,7 +98,7 @@ export function RevealPage() {
   }
 
   const data = status.data;
-  const { what, name } = described(data);
+  const { what, name } = data === undefined ? { what: "A key created for one of your accounts", name: null } : described(data);
 
   if (saved) {
     return (
@@ -119,7 +124,7 @@ export function RevealPage() {
         {name ? <p className="font-mono text-xs text-muted-foreground break-all">{name}</p> : null}
       </div>
 
-      {data.reveal_url === undefined ? (
+      {data !== undefined && data.reveal_url === undefined ? (
         <Alert role="status">
           <AlertTitle>{data.state === "completed" ? "No longer available" : "Nothing to reveal"}</AlertTitle>
           <AlertDescription>
