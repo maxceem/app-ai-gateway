@@ -30,10 +30,14 @@
 import { listedAs, type ListedModel } from "../providers/listing.ts";
 import type { OperationDescription } from "../providers/operation.ts";
 import { isStandardMode, type ServiceMode } from "../usage/service-modes.ts";
+import { MoneyError } from "../money.ts";
 import {
+  customerPrice,
+  effectivePrices,
   listPrice,
   priceInMode,
   pricesOperation,
+  ratesBill,
   reportsCost,
   resolvePrice,
   type CustomerRates,
@@ -180,4 +184,29 @@ export function rewriteTargetBillable(
  */
 export function billingForCharge(connection: PriceSources, model: string): ResolvedPrice | null {
   return resolve(connection, model);
+}
+
+/**
+ * Whether a customer's stored price for a model can be saved: every effective
+ * price run time could produce from it (each key value, each service mode,
+ * `effectivePrices`) has a rate that bills, and none holds a rate too large
+ * to store. Returns null, or what is wrong. The run-time functions decide;
+ * saving composes nothing of its own.
+ */
+export function savedPriceProblem(
+  stored: CustomerRates,
+  model: string,
+  providerType: string | undefined,
+): { readonly kind: "too_large" } | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string } | null {
+  const price = customerPrice(stored, model, providerType === undefined ? null : listPrice(providerType, model));
+  if (price === null) return null;
+  let effective;
+  try {
+    effective = effectivePrices(price);
+  } catch (error) {
+    if (error instanceof MoneyError) return { kind: "too_large" };
+    throw error;
+  }
+  const empty = effective.find((one) => !ratesBill(one.price.rates));
+  return empty === undefined ? null : { kind: "bills_nothing", values: empty.values, mode: empty.mode };
 }

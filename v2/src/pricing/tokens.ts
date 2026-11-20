@@ -22,7 +22,7 @@ import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { keyedPrices, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { keyCandidates, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
 import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
@@ -238,40 +238,81 @@ export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing 
 }
 
 /**
- * The cost of one usage in the service mode that served it (v1's
- * `computeCost`). A mode the model has no price in is billed at an estimate,
- * on the axis that lacks a price only: a tier cheaper than standard at
- * standard, a dearer tier at the dearest tier the model is priced in, a region
- * at the dearest priced region. `estimated` says so.
+ * A usage priced on one given unit only, or null when the price has no rate
+ * for it or the usage does not report it: the standard floor is worked out on
+ * the same measure the chosen price billed.
+ */
+function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Pricing | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : priceTokens(price, usage);
+  const count = unitCount(usage, unit);
+  if (count === undefined) return null;
+  const unitRate = UNIT_RATES.find((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined);
+  if (unitRate === undefined) return null;
+  const value = price.rates[unitRate.field]!;
+  return {
+    cost: priceUnitsPer(count, value, unitRate.per),
+    rates: { [unitRate.field]: value },
+    longContext: false,
+    unit,
+    units: count,
+    fromEstimate: usage.estimatedUnits?.includes(unit) === true,
+  };
+}
+
+/** A charge's price, as one result: what both a live charge and the sweep write. */
+export type ChargePricing = Pricing & {
+  /** Billed at an estimate: a mode or key value with no price, a missing report, or any other doubt. */
+  readonly estimated: boolean;
+  /** `estimated` when the measure billed was worked out from the request, else `complete`. */
+  readonly measured: "complete" | "estimated";
+};
+
+/**
+ * The price of one usage, chosen once (v1's `computeCost`, plus price keys
+ * and measures worked out from the request). The only place a charge's price,
+ * unit, count and labels are decided; the live charge and the sweep use it.
  *
- * `doubt` is any reason the gateway is not sure what it is pricing: a mode
- * value it does not know, a served model it cannot tell, or any later one.
- * The one rule for every estimate, whatever made it one, is applied once, at
- * the end, after every path: an estimate is never billed below what the same
- * usage costs at the model's standard price (`AGENTS.md`).
+ * 1. Each candidate (the price, or one per listed value of a price key the
+ *    request named no listed value for) is priced on its own, never merged,
+ *    in the service mode that served the request, billing the measure the
+ *    provider reported first, else the request's estimate.
+ * 2. The dearest candidate that bills a reported measure wins; only when none
+ *    can, the dearest that bills the estimate.
+ * 3. An estimate (a mode or key value with no price, a missing report, or
+ *    `doubt`: a mode value the gateway does not know, a served model it
+ *    cannot tell, ...) is floored at the model's own standard price, before
+ *    any key value or mode, worked out on the same measure (`AGENTS.md`).
+ * 4. When no candidate can bill, the model's own standard price bills, as an
+ *    estimate, if it can. Only otherwise is the usage unpriced (null).
  */
 export function priceInServedMode(
   price: ModelPrice,
   usage: UsageObservation,
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
-): (Pricing & { readonly estimated: boolean }) | null {
-  // Each candidate price the request's key values give: one, or one per listed
-  // value of a key the price does not list the request's value for.
-  const keyed = keyedPrices(price, usage.priceKeys);
-  let priced: (Pricing & { readonly estimated: boolean }) | null = null;
+): ChargePricing | null {
+  const keyed = keyCandidates(price, usage.priceKeys);
+  let reported: (Pricing & { readonly estimated: boolean }) | null = null;
+  let estimate: (Pricing & { readonly estimated: boolean }) | null = null;
   for (const candidate of keyed.candidates) {
-    const one = priceIn(candidate, usage, served);
-    if (one !== null && (priced === null || one.cost > priced.cost)) priced = one;
+    const one = priceIn(candidate.price, usage, served);
+    if (one === null) continue;
+    if (!one.fromEstimate) {
+      if (reported === null || one.cost > reported.cost) reported = one;
+    } else if (estimate === null || one.cost > estimate.cost) estimate = one;
   }
-  if (priced === null) return null;
-  const estimated = priced.estimated || doubt || keyed.estimated || usage.reportMissing === true;
-  if (!estimated) return { ...priced, estimated: false };
-  // The one floor, after every path: an estimate costs at least what the same
-  // usage costs at the model's own standard price, before any key value or
-  // mode was applied, whichever made it an estimate.
-  const standard = priceUsage(priceInMode(price, STANDARD_MODE) ?? price, usage);
-  return standard !== null && standard.cost > priced.cost ? { ...standard, estimated: true } : { ...priced, estimated: true };
+  const standardPrice = priceInMode(price, STANDARD_MODE) ?? price;
+  const chosen = reported ?? estimate;
+  if (chosen === null) {
+    const standard = priceUsage(standardPrice, usage);
+    return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
+  }
+  const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
+  const measured = chosen.fromEstimate ? "estimated" : "complete";
+  if (!estimated) return { ...chosen, estimated: false, measured };
+  // The one floor: at least the model's own standard price on the same measure.
+  const floor = priceOnUnit(standardPrice, usage, chosen.unit);
+  return floor !== null && floor.cost > chosen.cost ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {

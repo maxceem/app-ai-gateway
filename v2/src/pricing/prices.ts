@@ -253,45 +253,72 @@ function withValue(rates: RateSet, value: RateSet): RateSet {
   return Object.assign(merged, value);
 }
 
-/** At most this many candidate prices are worked out for unknown key values; beyond it, each key's dearest rates are merged. */
-const MAX_KEY_CANDIDATES = 64;
+/** A candidate price for a request: the price with one value applied for each of its keys. */
+export interface KeyCandidate {
+  /** The value used for each key: the request's, or one the price lists when the request's is unknown. */
+  readonly values: Readonly<Record<string, string>>;
+  readonly price: ModelPrice;
+}
 
 /**
- * The prices a request bills at, with its price keys applied (an operation's
- * `priceKeys`, a price's `by`). A value the request names and the price lists
- * gives one price. A value the price does not list, or a key the request did
- * not name and the operation gives no default for, gives one candidate per
- * value listed for that key: the caller bills the dearest, as an estimate,
- * then applies the standard floor (`AGENTS.md`: the closest known price,
- * never less).
+ * The prices a request may bill at, with its price keys applied (an
+ * operation's `priceKeys`, a price's `by`). A value the request names and the
+ * price lists gives one price. A value the price does not list, or a key the
+ * request did not name and the operation gives no default for, gives one
+ * candidate per value listed for that key, each applied on its own, never
+ * merged. `estimated` says a key's value was unknown. Without `values`, every
+ * value of every key: every price the model can bill at, which saving checks.
  */
-export function keyedPrices(price: ModelPrice, values: Readonly<Record<string, string>> | undefined): { candidates: ModelPrice[]; estimated: boolean } {
-  if (price.keyed === undefined) return { candidates: [price], estimated: false };
-  let candidates: RateSet[] = [price.rates];
+export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string, string>>): { candidates: KeyCandidate[]; estimated: boolean } {
+  if (price.keyed === undefined) return { candidates: [{ values: {}, price }], estimated: false };
+  let candidates: { values: Record<string, string>; rates: RateSet }[] = [{ values: {}, rates: price.rates }];
   let estimated = false;
   for (const [key, table] of Object.entries(price.keyed)) {
     const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
     if (value !== undefined && Object.hasOwn(table, value)) {
-      candidates = candidates.map((rates) => withValue(rates, table[value]!));
+      candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: value }, rates: withValue(candidate.rates, table[value]!) }));
       continue;
     }
     estimated = true;
-    const listed = Object.values(table);
+    const listed = Object.entries(table);
     if (listed.length === 0) continue;
-    if (candidates.length * listed.length > MAX_KEY_CANDIDATES) {
-      // Too many to try: each rate at its dearest listed value.
-      const dearest: Partial<Record<RateField, RateNanoPerMillion>> = {};
-      for (const rates of listed) {
-        for (const [field, amount] of Object.entries(rates)) {
-          if (amount !== undefined && (dearest[field] === undefined || amount > dearest[field]!)) dearest[field] = amount;
-        }
-      }
-      candidates = candidates.map((rates) => withValue(rates, dearest));
-      continue;
-    }
-    candidates = candidates.flatMap((rates) => listed.map((value) => withValue(rates, value)));
+    candidates = candidates.flatMap((candidate) =>
+      listed.map(([name, rates]) => ({ values: { ...candidate.values, [key]: name }, rates: withValue(candidate.rates, rates) })),
+    );
   }
-  return { candidates: candidates.map((rates) => ({ ...price, rates })), estimated };
+  return { candidates: candidates.map(({ values: used, rates }) => ({ values: used, price: { ...price, rates } })), estimated };
+}
+
+/** Whether rates can bill anything: input and output tokens, or a unit rate. */
+export function ratesBill(rates: RateSet): boolean {
+  return (rates.input !== undefined && rates.output !== undefined) || statesUnitRate(rates);
+}
+
+/**
+ * Every effective price a model's price can produce at run time: each key
+ * value (and so every unknown-value candidate) in each service mode the
+ * run-time selection can reach, resolved by the run-time functions themselves
+ * (`keyCandidates`, `priceInMode`). Saving checks each for billability and
+ * for rates that fit; there is no other composition. A rate that does not fit
+ * throws here, as it would at run time (`MoneyError`).
+ */
+export function effectivePrices(price: ModelPrice): { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] {
+  const listed = listedModes(price);
+  const tiers = new Set(listed.filter((mode) => mode.region === "global").map((mode) => mode.tier));
+  const regions = new Set(listed.filter((mode) => mode.tier === "standard").map((mode) => mode.region));
+  // Standard, each listed mode, and each tier in each region, which
+  // `priceInMode` resolves as run time does: an exact pair first, else the
+  // tier's price times the region's factor.
+  const modes: ServiceMode[] = [{ tier: "standard", region: "global" }, ...listed];
+  for (const tier of tiers) for (const region of regions) if (tier !== "standard") modes.push({ tier, region });
+  const out: { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] = [];
+  for (const candidate of keyCandidates(price).candidates) {
+    for (const mode of modes) {
+      const effective = priceInMode(candidate.price, mode);
+      if (effective !== undefined) out.push({ values: candidate.values, mode: serviceModeName(mode), price: effective });
+    }
+  }
+  return out;
 }
 
 /** A rate × factor, rounded up once, so a mode price is never under its true figure. */

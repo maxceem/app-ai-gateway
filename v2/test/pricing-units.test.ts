@@ -12,7 +12,7 @@ import { ModelPricingSchema } from "../src/contracts/admin.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
 import { MILLI_SCALE, rate } from "../src/money.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
-import { customerPrice, keyedPrices, type ModelPrice } from "../src/pricing/prices.ts";
+import { customerPrice, keyCandidates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
 import { requestBody } from "../src/proxy/serve.ts";
@@ -85,13 +85,13 @@ describe("price keys", () => {
   const sized = priced({ per_image: 40_000_000 }, { keyed: { size: { "1024x1024": { per_image: rate(40_000_000) }, "1792x1024": { per_image: rate(80_000_000) } } } });
 
   it("bills the rates the request's value names", () => {
-    expect(keyedPrices(sized, { size: "1792x1024" })).toMatchObject({ estimated: false, candidates: [{ rates: { per_image: 80_000_000 } }] });
+    expect(keyCandidates(sized, { size: "1792x1024" })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_image: 80_000_000 } } }] });
     const usage = { ...counted(undefined), images: 1, priceKeys: { size: "1792x1024" } };
     expect(priceInServedMode(sized, usage, STANDARD_MODE)).toMatchObject({ cost: 80_000_000, estimated: false });
   });
 
   it("bills a value it does not list at the dearest listed, as an estimate", () => {
-    expect(keyedPrices(sized, { size: "512x512" })).toMatchObject({ estimated: true, candidates: [{}, {}] });
+    expect(keyCandidates(sized, { size: "512x512" })).toMatchObject({ estimated: true, candidates: [{}, {}] });
     expect(priceInServedMode(sized, { ...counted(undefined), images: 2 }, STANDARD_MODE)).toMatchObject({ cost: 160_000_000, estimated: true });
   });
 
@@ -101,6 +101,29 @@ describe("price keys", () => {
     const timed = priced({ per_second: 1_000_000_000 }, { keyed: { quality: { draft: { per_minute: rate(1_000_000_000) } } } });
     const usage = { ...counted({ video_seconds: 60_000 }), priceKeys: { quality: "mystery" } };
     expect(priceInServedMode(timed, usage, STANDARD_MODE)).toMatchObject({ cost: 60_000_000_000, estimated: true, unit: "video_seconds" });
+  });
+
+  it("prices each of more than 64 candidates on its own, never merging their rates", () => {
+    // 100 values, each $100 per million tokens in all: merging each rate's dearest would bill $198.
+    const values = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`v${i}`, { input: rate(i * 1_000_000_000), output: rate((100 - i) * 1_000_000_000) }]));
+    const wide = priced({}, { keyed: { tone: values } });
+    const usage = { inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000_000, priceKeys: { tone: "unknown" } };
+    expect(priceInServedMode(wide, usage, STANDARD_MODE)).toMatchObject({ cost: 100_000_000_000, estimated: true });
+  });
+
+  it("bills the dearest candidate on a reported measure before any on the estimate", () => {
+    const keyed = priced({}, { keyed: { voice: { a: { per_credit: rate(1_000) }, b: { per_million_characters: rate(1_000_000_000_000) } } } });
+    const usage = { ...counted({ credits: 5_000, characters: 100 }), estimatedUnits: ["characters" as const], priceKeys: { voice: "unknown" } };
+    expect(priceInServedMode(keyed, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
+  });
+
+  it("falls back to the model's own standard price when no candidate can bill the measure", () => {
+    const keyed = priced({ per_image: 40_000_000 }, { keyed: { size: { big: { per_megapixel: rate(1) } } } });
+    expect(priceInServedMode(keyed, { ...counted(undefined), images: 2, priceKeys: { size: "huge" } }, STANDARD_MODE)).toMatchObject({
+      cost: 80_000_000,
+      unit: "images",
+      estimated: true,
+    });
   });
 
   it("charges a price set only per key value in the unit it bills, never unresolved", () => {
@@ -129,13 +152,16 @@ describe("customer rates in any unit", () => {
   it("accepts a price in a unit other than tokens, and refuses one that bills nothing", () => {
     expect(ModelPricingSchema.safeParse({ per_million_characters: 0.3 }).success).toBe(true);
     expect(ModelPricingSchema.safeParse({ by: { size: { "1024x1024": { per_image: 0.04 } } } }).success).toBe(true);
-    expect(ModelPricingSchema.safeParse({ cached_input: 1 }).success).toBe(false);
     expect(ModelPricingSchema.safeParse({ input: 1 }).success).toBe(false);
     expect(ModelPricingSchema.safeParse({ input: 1, output: 2, long_input: 3 }).success).toBe(false);
     expect(ModelPricingSchema.safeParse({ input: 1, output: 2, modes: { standard: { factor: 1 } } }).success).toBe(false);
-    // Each key value must leave a price that bills once applied: input alone does not.
-    expect(ModelPricingSchema.safeParse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }).success).toBe(false);
-    expect(ModelPricingSchema.safeParse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }).success).toBe(true);
+  });
+
+  it("refuses on save any key value whose effective price bills nothing, as run time resolves it", () => {
+    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/q x/u);
+    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }) })).not.toThrow();
+    // A price that bills nothing at all.
+    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ cached_input: 1 }) })).toThrow(/no rate that bills/u);
   });
 
   it("refuses rates that no longer fit once a mode's factor scales them, tier and region together", () => {
@@ -145,6 +171,20 @@ describe("customer rates in any unit", () => {
       ratesFromPricing({ m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 } } }) }),
     ).toThrow(/too large/u);
     expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } } }) })).not.toThrow();
+    // A key value's rate is scaled by the modes too.
+    expect(() =>
+      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } }, by: { q: { x: { input: 5_000_000, output: 1 } } } }) }),
+    ).toThrow(/too large/u);
+    // A tier's own rate in a region is scaled by the region's factor.
+    expect(() =>
+      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { input: 5_000_000 }, eu: { factor: 2 } } }) }),
+    ).toThrow(/too large/u);
+    // An explicit pair is used as it is: the tier times the region is never priced, so it cannot overflow.
+    expect(() =>
+      ratesFromPricing({
+        m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 }, "priority+eu": { factor: 2 } } }),
+      }),
+    ).not.toThrow();
   });
 
   it("stores each rate in nano-dollars, its modes and price keys too, and bills with them", () => {
@@ -323,9 +363,10 @@ describe("through the proxy", () => {
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
       .bind(JSON.stringify({ "house-voice": { per_million_characters: 15_000_000_000 } }), id)
       .run();
+    // The sweep writes the label its pricing result gives: characters were worked out from the request.
     expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({
       status: "priced",
-      correction: { costNano: 30_000_000, unit: "characters" },
+      correction: { costNano: 30_000_000, unit: "characters", measured: "estimated" },
     });
   });
 });

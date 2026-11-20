@@ -213,7 +213,7 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
   }
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
-  if (body.pricing !== undefined) ratesFromPricing(body.pricing);
+  if (body.pricing !== undefined) ratesFromPricing(body.pricing, body.type);
   await refuseTakenSlug(c.env.DB, actor.accountId, slug);
   await (await planCap(c.env, c.env.DB, actor.accountId, "provider")).assertNotReached();
   consoleAt(c.env);
@@ -397,7 +397,7 @@ async function providerAddWrite(
   const blob = await sealSecret(env, "providerKey", [accountId, id, review.type, review.baseUrl ?? ""], secret);
   const cap = await planCap(env, env.DB, accountId, "provider");
   const { guardedInsert } = await cfAuth();
-  const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0]);
+  const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   const statement = guardedInsert(
     database(env.DB) as never,
     providerConnection,

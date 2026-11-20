@@ -86,6 +86,8 @@ export function correctionOf(
     readonly estimate?: boolean;
     /** The unit the correction's cost is in, where the price bills another than the charge recorded. */
     readonly unit?: string;
+    /** How complete the measure the correction billed is: a pricing correction's comes from its pricing result. */
+    readonly measured?: "complete" | "estimated";
   },
 ): ChargeRow {
   return {
@@ -97,7 +99,7 @@ export function correctionOf(
     httpStatus: null,
     errorCode: null,
     costNano: input.costNano,
-    measured: "complete",
+    measured: input.measured ?? "complete",
     priceSource: input.priceSource,
     priceIsEstimate: input.kind === "pricing" ? (input.estimate ?? false) : original.priceIsEstimate,
     inputTokens: null,
@@ -319,6 +321,7 @@ export async function priceUnresolvedCharge(
     unit: billed.unit,
     now: input.now,
     estimate: priced.estimated,
+    measured: priced.measured,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

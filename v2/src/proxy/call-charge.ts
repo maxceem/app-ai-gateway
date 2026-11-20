@@ -197,8 +197,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const billed = priced !== null ? { unit: priced.unit, units: priced.units } : usage === null ? null : reportedUnits(usage);
   if (usage !== null && reported === null) {
     // Worked out from the request, not reported by the provider: estimated, whatever the price.
-    const fromEstimate = priced !== null ? priced.fromEstimate : billed !== null && billed.unit !== "tokens" && usage.estimatedUnits?.includes(billed.unit) === true;
-    measured = outcome.cut ? "partial" : fromEstimate ? "estimated" : "complete";
+    const unpricedEstimate = billed !== null && billed.unit !== "tokens" && usage.estimatedUnits?.includes(billed.unit) === true;
+    measured = outcome.cut ? "partial" : priced !== null ? priced.measured : unpricedEstimate ? "estimated" : "complete";
   }
   const charge: ChargeRow = {
     id,
