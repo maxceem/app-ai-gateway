@@ -196,10 +196,12 @@ export class Context {
    * renewed this same sign-in to meanwhile, or undefined when there is none.
    */
   private async newerToken(used: OAuthLogin): Promise<string | undefined> {
+    const url = this.url;
     const { state, result } = await this.store.update((disk) => {
-      const stored = disk.active?.url === this.url ? disk.active.login : undefined;
-      // Another sign-in took this one's place: its token is never used here.
-      if (stored && stored.id !== used.id) return "replaced" as const;
+      const stored = disk.active?.login;
+      // Another sign-in, or a sign-in to another gateway, took this one's
+      // place: nothing of it is used or adopted here.
+      if (stored && (stored.id !== used.id || disk.active?.url !== url)) return "replaced" as const;
       return stored;
     });
     if (result === "replaced") this.replaced();

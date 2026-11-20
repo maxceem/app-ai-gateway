@@ -357,6 +357,29 @@ test("a 401 retry that finds another sign-in stored in its place answers login_c
   assert.equal(ctx.active?.login?.id, "login_1");
 });
 
+test("a 401 retry that finds a sign-in to another gateway stored meanwhile answers login_changed and adopts nothing", async () => {
+  const started = signedInState(URL_, "agw_oat_old");
+  const store = memoryStore(started);
+  store.held = signedInState("https://console.other.example", "agw_oat_elsewhere");
+  store.held.active!.login!.id = "login_9";
+  const keys: (string | undefined)[] = [];
+  const transport = fakeTransport((_path, options) => {
+    keys.push(options.key);
+    throw new CliError("auth_required", "no", "", 3, { status: 401 });
+  });
+  const ctx = new Context(store, started, transport, {}, { env: {}, stderr: sinks().stderr });
+  await assert.rejects(ctx.call("getAdminSession"), hasCode("login_changed"));
+  assert.deepEqual(keys, ["agw_oat_old"]);
+  assert.equal(ctx.url, URL_);
+
+  // The same sign-in id, now stored for another gateway, is not this one either.
+  const moved = memoryStore(started);
+  moved.held = signedInState("https://console.other.example", "agw_oat_moved");
+  const again = new Context(moved, started, transport, {}, { env: {}, stderr: sinks().stderr });
+  await assert.rejects(again.call("getAdminSession"), hasCode("login_changed"));
+  assert.equal(again.url, URL_);
+});
+
 test("connecting with AGW_MANAGEMENT_KEY to a v1 gateway gets the agw 1.x message", async () => {
   const store = memoryStore();
   const transport = fakeTransport((path) => {
