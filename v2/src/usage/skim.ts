@@ -29,7 +29,10 @@
  * - a tree whose members are all `"max"` keeps, for an array, one object
  *   instead of a list: for each member, the largest number any element has
  *   there (Deepgram's last utterance `end`). It holds the same however long
- *   the array is, and never overflows. Elsewhere `"max"` is a leaf;
+ *   the array is, and never overflows: a value past `SKIM_VALUE_CAP`, or one
+ *   that is not a number, is skipped for that aggregate only, and an
+ *   aggregate no element gave a number stays empty. Elsewhere `"max"` is a
+ *   leaf;
  * - a key named twice keeps its last value, as `JSON.parse` does.
  *
  * A root object is one document. With `arrayDocuments`, a root array's
@@ -228,6 +231,8 @@ export class Skimmer {
   /** The key read last, when the frame's tree declares it, and what it declares. */
   private lastKey = "";
   private lastDeclared: PathTree | true | "max" | undefined = undefined;
+  /** The leaf being read is a `"max"` member of an aggregate's element. */
+  private leafAggregated = false;
   /** The innermost open document, if one is open. */
   private document: Holder | null = null;
   /** A value was too large to keep. */
@@ -449,7 +454,8 @@ export class Skimmer {
       const holder = this.targetHolder!;
       if (this.captureOverflow) {
         delete holder[this.targetKey];
-        this.overflow = true;
+        // An aggregate's value too large to be a number is skipped for that aggregate only.
+        if (!this.leafAggregated) this.overflow = true;
       } else {
         const raw = this.capture.length === 1 ? this.capture[0]! : this.capture.join("");
         // Parsed, which also gives the value storage of its own.
@@ -572,7 +578,10 @@ export class Skimmer {
     else {
       this.targetHolder = this.frames[this.frames.length - 1]!.value;
       this.targetKey = this.lastKey;
-      if (declared === true || declared === "max") this.target = Target.Leaf;
+      if (declared === true || declared === "max") {
+        this.target = Target.Leaf;
+        this.leafAggregated = declared === "max" && this.frames[this.frames.length - 1]!.inList?.aggregate != null;
+      }
       else {
         this.target = Target.Inner;
         this.targetTree = declared;

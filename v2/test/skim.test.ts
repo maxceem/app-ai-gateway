@@ -40,6 +40,36 @@ const STRINGS = [
 const SPACES = ["", "", "", " ", "\n", " \t\r\n "];
 
 /** A random JSON text, written by hand so keys can repeat and space can fall anywhere JSON allows. */
+/** A JSON number text: negative or not, with a decimal part or an exponent, now and then one too large to be finite. */
+function numberText(next: () => number): string {
+  const digits = (count: number) => Array.from({ length: count }, () => Math.floor(next() * 10)).join("");
+  const sign = next() < 0.4 ? "-" : "";
+  const whole = next() < 0.3 ? "0" : `${1 + Math.floor(next() * 9)}${digits(Math.floor(next() * 4))}`;
+  const fraction = next() < 0.5 ? `.${digits(1 + Math.floor(next() * 4))}` : "";
+  const roll = next();
+  const exponent = roll < 0.25 ? `${next() < 0.5 ? "e" : "E"}${["", "+", "-"][Math.floor(next() * 3)]}${Math.floor(next() * 5)}` : roll < 0.28 ? "e400" : "";
+  return `${sign}${whole}${fraction}${exponent}`;
+}
+
+/** An array for a `"max"` path: mostly objects whose `usage` is a number, among other members and elements. */
+function peakArray(next: () => number): string {
+  const elements = Array.from({ length: Math.floor(next() * 7) }, () => {
+    const roll = next();
+    if (roll < 0.1) return numberText(next);
+    if (roll < 0.15) return '"text"';
+    const members = [`"usage":${roll < 0.8 ? numberText(next) : pickFrom(next, ['"7"', "null", "[1]", "{}"])}`];
+    if (next() < 0.3) members.push(`"words":[{"usage":${numberText(next)}}]`);
+    if (next() < 0.2) members.push(`"usage":${numberText(next)}`);
+    if (next() < 0.5) members.reverse();
+    return `{${members.join(",")}}`;
+  });
+  return `[${elements.join(",")}]`;
+}
+
+function pickFrom<T>(next: () => number, items: readonly T[]): T {
+  return items[Math.floor(next() * items.length)]!;
+}
+
 function document(next: () => number, depth = 0): string {
   const pickOne = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
   const space = () => pickOne(SPACES);
@@ -56,7 +86,8 @@ function document(next: () => number, depth = 0): string {
   }
   const members = Array.from({ length: Math.floor(next() * 6) }, () => {
     const key = next() < 0.7 ? pickOne(KEYS.slice(0, 6)) : pickOne(KEYS);
-    return `${space()}"${key}"${space()}:${space()}${document(next, depth + 1)}${space()}`;
+    const value = key === "peak" && next() < 0.7 ? peakArray(next) : document(next, depth + 1);
+    return `${space()}"${key}"${space()}:${space()}${value}${space()}`;
   });
   return `{${members.join(",")}}`;
 }
@@ -66,12 +97,23 @@ function skim(text: string, pieces: readonly string[], options: { arrayDocuments
   const skimmer = new Skimmer(TREE, { ...options, onDocument: (value) => documents.push(value) });
   for (const piece of pieces) skimmer.push(piece);
   skimmer.end();
-  return { documents, complete: skimmer.complete, failed: skimmer.failed, text };
+  return { documents, complete: skimmer.complete, failed: skimmer.failed, overflow: skimmer.overflow, text };
 }
 
 /** What the contract says the skimmer keeps from `text`. */
 function expected(text: string, arrayDocuments: boolean): Record<string, unknown>[] {
   return pickText(text, TREE, arrayDocuments).documents;
+}
+
+/** `text` cut into random pieces of 1 to 4,096 characters. */
+function randomPieces(text: string, next: () => number): string[] {
+  const pieces: string[] = [];
+  for (let at = 0; at < text.length; ) {
+    const size = 1 + Math.floor(next() ** 3 * 4096);
+    pieces.push(text.slice(at, at + size));
+    at += size;
+  }
+  return pieces;
 }
 
 /** `text` split at every point (at most 300 of them, spread evenly), and into single characters. */
@@ -113,6 +155,28 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
     }
   });
 
+  it("keeps the largest number across a `max` array, as the reference does, for numbers of every form", () => {
+    const next = random(424242);
+    let aggregated = 0;
+    for (let round = 0; round < 400; round += 1) {
+      const text = `{"model":"m","peak":${peakArray(next)}}`;
+      const want = pickText(text, TREE);
+      // The largest finite `usage` each element ends with, worked out from JSON.parse too.
+      const elements = (JSON.parse(text) as { peak: unknown[] }).peak;
+      const numbers = elements.flatMap((element) => {
+        const usage = typeof element === "object" && element !== null && !Array.isArray(element) ? (element as { usage?: unknown }).usage : undefined;
+        return typeof usage === "number" && Number.isFinite(usage) ? [usage] : [];
+      });
+      expect(want.documents).toEqual([{ model: "m", peak: numbers.length === 0 ? {} : { usage: Math.max(...numbers) } }]);
+      if (numbers.length > 0) aggregated += 1;
+      for (let trial = 0; trial < 4; trial += 1) {
+        const got = skim(text, randomPieces(text, next));
+        expect({ documents: got.documents, overflow: got.overflow, complete: got.complete }, text).toEqual({ ...want, complete: true });
+      }
+    }
+    expect(aggregated).toBeGreaterThan(200);
+  });
+
   it("matches JSON.parse when split into many random pieces", () => {
     const next = random(7);
     for (let round = 0; round < 150; round += 1) {
@@ -146,10 +210,10 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
   });
 
   const UTTERANCES: PathTree = { results: { utterances: { end: true } } };
-  const skimWith = (tree: PathTree, text: string) => {
+  const skimWith = (tree: PathTree, text: string, pieces: readonly string[] = [text]) => {
     const documents: Record<string, unknown>[] = [];
     const skimmer = new Skimmer(tree, { onDocument: (value) => documents.push(value) });
-    skimmer.push(text);
+    for (const piece of pieces) skimmer.push(piece);
     skimmer.end();
     return { documents, overflow: skimmer.overflow, complete: skimmer.complete };
   };
@@ -181,6 +245,14 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
     const text = `{"results":{"utterances":[${ends.map((end) => `{"start":0,"end":${end},"words":[{"w":"x"}]}`).join(",")},{"end":"x"},7]}}`;
     expect(skimWith(tree, text)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false, complete: true });
     expect(pickText(text, tree)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false });
+    // A value too large to keep is skipped for the aggregate only: no overflow, and the rest still counts.
+    const big = `{"model":"m","results":{"utterances":[{"end":"${"9".repeat(SKIM_VALUE_CAP)}"},{"end":12.5},{"end":3}]}}`;
+    const withModel: PathTree = { ...tree, model: true };
+    const nextBig = random(5);
+    for (let trial = 0; trial < 10; trial += 1) {
+      expect(skimWith(withModel, big, randomPieces(big, nextBig))).toEqual({ documents: [{ model: "m", results: { utterances: { end: 12.5 } } }], overflow: false, complete: true });
+    }
+    expect(pickText(big, withModel)).toEqual({ documents: [{ model: "m", results: { utterances: { end: 12.5 } } }], overflow: false });
     // Outside an array, `max` keeps the value as a leaf does.
     expect(skimWith(tree, '{"results":{"utterances":{"end":3}}}').documents).toEqual([{ results: { utterances: { end: 3 } } }]);
   });
@@ -188,8 +260,9 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
   it("caps a leaf by its text as written, as the reference does", () => {
     // `[0]` padded past the cap: small written again, too large as sent.
     const text = `{"usage":[0${" ".repeat(SKIM_VALUE_CAP)}],"model":"m"}`;
-    for (const pieces of [[text], [text.slice(0, 9), text.slice(9)]]) {
-      expect(skimWith(TREE, pieces.join(""))).toEqual({ documents: [{ model: "m" }], overflow: true, complete: true });
+    const next = random(99);
+    for (let trial = 0; trial < 20; trial += 1) {
+      expect(skimWith(TREE, text, randomPieces(text, next))).toEqual({ documents: [{ model: "m" }], overflow: true, complete: true });
     }
     expect(pickText(text, TREE)).toEqual({ documents: [{ model: "m" }], overflow: true });
     // One character under the cap is kept.

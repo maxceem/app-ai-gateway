@@ -331,6 +331,15 @@ describe("Deepgram through the proxy", () => {
     ]);
   });
 
+  it("bills a duration exactly beside an utterance end too large to read", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(
+      Response.json({ metadata: { duration: 60, channels: 1 }, results: { channels: [], utterances: [{ end: "9".repeat(70 * 1024) }, { end: 59.5 }] } }),
+    );
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&utterances=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 0, cost_nano: 4_300_000 }]);
+  });
+
   it("refuses a request naming its model twice in the query, so the provider never runs a model nobody priced", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
     const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&model=base`, key, new Uint8Array([1]), { "content-type": "audio/wav" });

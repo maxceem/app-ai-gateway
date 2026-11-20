@@ -93,7 +93,8 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
     if (list.holder[list.key] === list.elements) delete list.holder[list.key];
     overflow = true;
   };
-  const object = (node: Node & { kind: "object" }, declaredTree: PathTree): Record<string, unknown> => {
+  /** `aggregated`: the node is an element of a `"max"` aggregate, whose oversized values are skipped without `overflow`. */
+  const object = (node: Node & { kind: "object" }, declaredTree: PathTree, aggregated = false): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
     for (const [key, member] of node.members) {
       if (!Object.hasOwn(declaredTree, key)) continue;
@@ -102,7 +103,7 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
         const length = member.end - member.start;
         if (length > SKIM_VALUE_CAP) {
           delete out[key];
-          overflow = true;
+          if (!(aggregated && declared === "max")) overflow = true;
           continue;
         }
         out[key] = JSON.parse(text.slice(member.start, member.end)) as unknown;
@@ -119,7 +120,7 @@ export function pickText(text: string, tree: PathTree, arrayDocuments = false): 
         out[key] = aggregate;
         for (const item of member.items) {
           if (item.kind !== "object") continue;
-          for (const [name, value] of Object.entries(object(item, declared))) {
+          for (const [name, value] of Object.entries(object(item, declared, true))) {
             if (typeof value === "number" && Number.isFinite(value) && !(typeof aggregate[name] === "number" && aggregate[name] >= value)) aggregate[name] = value;
           }
         }
