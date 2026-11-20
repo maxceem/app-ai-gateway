@@ -146,12 +146,12 @@ export function gatewayOperationKinds(identity: () => CfAuth): OperationKind[] {
     // agent that executed it, and not whoever holds the handle.
     deliver: "reveal",
     recordTtlMs: OPERATION_RECORD_TTL_MS,
-    // Only a key is ever revealed, and only one still active: a key revoked
-    // before anyone revealed it would be shown as though it worked, and an
-    // outcome with no key (an App Attest app) has nothing to reveal.
+    // A key revoked before anyone revealed it is not revealed: it would be a
+    // key that no longer works, shown as though it did. An outcome with no
+    // key is refused before the engine is asked (`revealOperation`).
     deliverable: ({ record }) => {
       const keyId = (record as { api_key?: { id?: unknown } | null } | null)?.api_key?.id;
-      return typeof keyId === "string" ? sql`exists (select 1 from app_key where id = ${keyId} and status = 'active')` : sql`0`;
+      return typeof keyId === "string" ? sql`exists (select 1 from app_key where id = ${keyId} and status = 'active')` : undefined;
     },
   }));
   return [...browser, ...reserved];

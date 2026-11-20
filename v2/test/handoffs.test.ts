@@ -311,6 +311,18 @@ describe("creating an app once", () => {
     expect((await send(caller, "GET", "/v2/admin/apps")).body.apps).toEqual([]);
   });
 
+  it("repeats a finished create's answer after the console origin was removed", async () => {
+    const { caller } = await person();
+    const reserved = await send(caller, "POST", "/v2/admin/reserved/apps", { name: "Later", config: apiKeyConfig });
+    const request = { name: "Later", config: apiKeyConfig, handle: reserved.body.handle };
+    const created = await send(caller, "POST", "/v2/admin/reserved/apps", request);
+    const noConsole = { ...env, CONSOLE_ORIGIN: "", DEPLOYMENT_ID: "test-deployment" } as unknown as Env;
+    const repeated = await send(caller, "POST", "/v2/admin/reserved/apps", request, { environment: noConsole });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body).toMatchObject({ replayed: true, app: { id: created.body.app.id } });
+    expect(repeated.body.reveal_url).toBeUndefined();
+  });
+
   it("creates an App Attest app with nothing to reveal", async () => {
     const { caller } = await person();
     const config = { authentication: attestAuthentication(), routing: { providers: {} } };
@@ -320,8 +332,10 @@ describe("creating an app once", () => {
     expect(created.body).toMatchObject({ state: "created", api_key: null });
     expect(created.body.reveal_url).toBeUndefined();
     // Nothing to reveal is refused, not answered with an empty key.
-    const revealed = await send(caller, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
-    expect(revealed.status).toBe(410);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const revealed = await send(caller, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
+      expect(revealed.status).toBe(410);
+    }
   });
 
   it("refuses the creation when the plan's ceiling filled after the reservation", async () => {

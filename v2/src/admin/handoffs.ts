@@ -89,6 +89,11 @@ export function revealUrl(env: Env, id: string): string {
   return `${consoleAt(env)}${REVEAL_PAGE_PATH}/${encodeURIComponent(id)}`;
 }
 
+/** The reveal page's link, left out where no console origin is set (a repeat answered after it was removed). */
+function revealLink(env: Env, id: string): { reveal_url?: string } {
+  return consoleOrigin(env) === null ? {} : { reveal_url: revealUrl(env, id) };
+}
+
 async function engineOf(c: { get(key: "identity"): Promise<CfAuth> }): Promise<CfAuthOperations> {
   return (await c.get("identity")).operations;
 }
@@ -583,12 +588,12 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
   // account's current state, so a repeat matches whatever has changed since.
   const payload = { name: request.name, config: parseAppConfig(request.config), status: request.status ?? "active" };
   const apiKeyApp = payload.config.authentication.type === "api_key";
-  // Before anything is reserved or written: a key needs a page to be revealed on.
-  if (apiKeyApp) consoleAt(c.env);
   const digest = await requestDigest("app.add", payload);
 
   /** What `createApp` checks against the account as it stands: when reserving, and before a fresh write. */
   const liveChecks = async () => {
+    // A key needs a page to be revealed on, checked before anything is written.
+    if (apiKeyApp) consoleAt(c.env);
     await checkAppConfig(c.env.DB, actor.accountId, request.config);
     // The first key is not counted against the key ceiling, as v1, except
     // when the plan allows no keys at all.
@@ -665,7 +670,7 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
     replayed: executed.replayed,
     app: executed.record.app,
     api_key: executed.record.api_key ?? null,
-    ...(executed.revealable ? { reveal_url: revealUrl(c.env, executed.id) } : {}),
+    ...(executed.revealable ? revealLink(c.env, executed.id) : {}),
   } as OperationResponse<"createReservedApp">);
 }
 
@@ -674,10 +679,10 @@ export async function createReservedAppKey(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const appId = c.req.param("app")!;
   const { handle, name } = await parseBody(c, ReservedAppKeyRequestSchema);
-  consoleAt(c.env);
   const digest = await requestDigest("app.key.add", { app: appId, name });
 
   const liveChecks = async () => {
+    consoleAt(c.env);
     requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
     return planCap(c.env, c.env.DB, actor.accountId, "appKey", appId);
   };
@@ -722,7 +727,7 @@ export async function createReservedAppKey(c: AdminContext): Promise<Response> {
     replayed: executed.replayed,
     app_id: appId,
     api_key: executed.record.api_key,
-    ...(executed.revealable ? { reveal_url: revealUrl(c.env, executed.id) } : {}),
+    ...(executed.revealable ? revealLink(c.env, executed.id) : {}),
   } as OperationResponse<"createReservedAppKey">);
 }
 
@@ -784,8 +789,17 @@ export async function revealOperation(c: AdminContext): Promise<Response> {
     throw new GatewayError(403, "forbidden", "Reveal a key on the console's own page");
   }
   const session = requireConsoleSession(c.get("authState"));
+  const id = c.req.param("id") ?? "";
+  const engine = await engineOf(c);
   try {
-    const revealed = await (await engineOf(c)).reveal({ id: c.req.param("id") ?? "", actor: session });
+    // An outcome with no key has nothing to reveal, on every try: refused
+    // before the engine would hand over, and drop, what it holds.
+    const status = await engine.status({ id, opener: session });
+    const apiKey = isRecord(status.record) ? status.record.api_key : undefined;
+    if (status.state === "completed" && isReservedKindName(status.kind) && !isRecord(apiKey)) {
+      throw new GatewayError(410, "operation_expired", "This operation created no key to reveal");
+    }
+    const revealed = await engine.reveal({ id, actor: session });
     c.header("Cache-Control", "no-store");
     return c.json({
       id: revealed.id,
