@@ -387,6 +387,42 @@ describe("validate and check", () => {
     expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "active", revision: 2 })).status).toBe(200);
   });
 
+  it("refuses a rate save that removes the service mode a preset selects (PR #199 Astra A1)", async () => {
+    const key = await seedManagementKey();
+    const flex = { input: 1, output: 2, modes: { flex: { input: 0.5, output: 1 } } };
+    const { body: provider } = await createProvider(key, { pricing: { house: flex } });
+    const slug = provider.provider.slug as string;
+    const config = { ...apiKeyConfig(), presets: { support: { provider: slug, operation: "openai.chat", model: "house", params: { service_tier: "flex" } } } };
+    expect((await createApp(key, config)).status).toBe(201);
+    const path = `/v2/admin/providers/${provider.provider.id}`;
+    const removed = await request(key, "PUT", path, { revision: 1, pricing: { house: { input: 1, output: 2 } } });
+    expect(removed).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+    expect(removed.body.error.message).toContain("flex");
+    // A preset with no params selects no mode: the same edit saves for it.
+    expect((await createApp(key, { ...apiKeyConfig(), presets: { plain: { provider: slug, operation: "openai.chat", model: "house" } } })).status).toBe(201);
+    expect((await request(key, "PUT", path, { revision: 1, pricing: { house: { ...flex, input: 2 } } })).status).toBe(200);
+  });
+
+  it("saves a disabled app whose preset only lowers its output cap, though its target lost its price (PR #199 Astra A2)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const slug = provider.provider.slug as string;
+    const preset = { provider: slug, operation: "openai.chat", model: "house", max_output_tokens: 500 };
+    const config = { ...apiKeyConfig(), presets: { support: preset } };
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}`;
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "disabled", revision: 1 })).status).toBe(200);
+    // The price goes while the app is off.
+    expect((await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, { revision: 1, pricing: null })).status).toBe(200);
+    const lowered = { ...apiKeyConfig(), presets: { support: { ...preset, max_output_tokens: 200 } } };
+    expect((await request(key, "PUT", path, { name: "Mgmt", config: lowered, revision: 2 })).status).toBe(200);
+    // Turning it on prices every call: refused until the price is back.
+    expect(await request(key, "PUT", path, { name: "Mgmt", config: lowered, status: "active", revision: 3 })).toMatchObject({
+      status: 400,
+      body: { error: { code: "pricing_not_configured" } },
+    });
+  });
+
   it("keeps an unchanged entry's allowances when a disabled app is turned on (PR #199 round 5 F3)", async () => {
     const key = await seedManagementKey();
     const { body: gone } = await createProvider(key);

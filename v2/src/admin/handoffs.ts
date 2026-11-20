@@ -399,7 +399,7 @@ async function providerAddWrite(
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
-  await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type }, rates);
+  await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type, baseUrl: review.baseUrl ?? null }, rates);
   const statement = guardedInsert(
     database(env.DB) as never,
     providerConnection,

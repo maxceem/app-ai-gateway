@@ -40,6 +40,7 @@ import { declaredOperation, presetOperation, streamingSibling } from "../provide
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
+import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   effectivePrices,
   keyCandidates,
@@ -209,6 +210,8 @@ export interface Gap {
   readonly values: Readonly<Record<string, string>>;
   readonly mode: string;
   readonly operation?: string;
+  /** The gap is the mode the call selects (`ReachableCall.mode`), which its price lacks. */
+  readonly selectedMode?: true;
 }
 
 /**
@@ -328,6 +331,12 @@ export interface ReachableCall {
   readonly requested: string;
   readonly model: string;
   readonly bill: Billing;
+  /**
+   * The service mode the call selects whatever the request says: a preset's
+   * `params`, read with its connection's region. Set only when it is not
+   * standard; a request's own mode is never refused (`AGENTS.md`).
+   */
+  readonly mode?: ServiceMode;
 }
 
 /** A call an app lets through, and where it comes in: a proxy route, a preset target, or a model a request names besides its own. */
@@ -428,6 +437,8 @@ export type PresetTargetResolution =
  *   API style a preset can use (`presetOperation`); a caller asking for
  *   Gemini's stream gets its streaming sibling (`streamingSibling`);
  * - the model is the target's own: an app's rewrites never apply;
+ * - with `select`, the call carries the service mode the preset's `params`
+ *   select (`requestedServiceMode`), which saving judges (`callGap`);
  * - the first target is served even when its price has gone since the preset
  *   was saved, and priced later; a fallback that cannot be billed is left out.
  */
@@ -436,7 +447,11 @@ export function resolvePresetTarget(
   style: ApiStyle,
   target: { readonly operation?: string | undefined; readonly model: string },
   sources: PriceSources,
-  options: { readonly primary: boolean; readonly streaming: boolean },
+  options: {
+    readonly primary: boolean;
+    readonly streaming: boolean;
+    readonly select?: { readonly params: Readonly<Record<string, unknown>>; readonly baseUrl: string | null } | undefined;
+  },
 ): PresetTargetResolution {
   const chosen = presetOperation(description, style, target.operation);
   if (chosen === null) return { kind: "refused", reason: "no_operation" };
@@ -444,7 +459,9 @@ export function resolvePresetTarget(
   const model = target.model;
   const bill = billing(operation, sources, model);
   if (bill.problem !== null && !options.primary) return { kind: "refused", reason: "unbillable", operation, model, bill };
-  return { kind: "admitted", operation, requested: model, model, bill };
+  const select = options.select;
+  const mode = select === undefined ? undefined : requestedServiceMode(description, select.baseUrl, select.params as Record<string, unknown>, model).mode;
+  return { kind: "admitted", operation, requested: model, model, bill, ...(mode !== undefined && !isStandardMode(mode) ? { mode } : {}) };
 }
 
 /** Each allowlist as a set, built once per list: a route's config is one object for the Worker's life, so serving and saving share it. */
@@ -489,6 +506,8 @@ function routeNames(route: RouteModels, rewrites: Readonly<Record<string, string
 export interface ConnectionView {
   readonly sources: PriceSources;
   readonly description: ProviderDescription;
+  /** Its base URL, whose region a selected service mode takes (`requestedServiceMode`). */
+  readonly baseUrl?: string | null | undefined;
 }
 
 /** The parts of an app's configuration that decide which calls it lets through, read loosely. */
@@ -505,6 +524,7 @@ export interface AppCallConfig {
             readonly provider: string;
             readonly operation: string;
             readonly model: string;
+            readonly params?: Readonly<Record<string, unknown>> | undefined;
             readonly fallback?: readonly { readonly provider: string; readonly operation?: string | undefined; readonly model: string }[] | undefined;
           }
         >
@@ -527,7 +547,9 @@ export const RESOLVED_CALLS = { count: 0 };
  * - each model a request may name besides its own (`resolveAlternative`,
  *   Vercel's fallback models);
  * - each preset target (`resolvePresetTarget`), on the operation it picks and
- *   its streaming sibling.
+ *   its streaming sibling, in the service mode its `params` select. A
+ *   fallback serving cannot bill is included: serving would drop it without
+ *   a word, so saving judges it (`callGap`) and refuses it.
  *
  * Operations this build does not serve yet are judged as if they were.
  *
@@ -587,7 +609,9 @@ export function reachableCalls(
         const found: AppCall[] = [];
         for (const streaming of [false, true]) {
           RESOLVED_CALLS.count += 1;
-          const call = resolvePresetTarget(view.description, style, target, view.sources, { primary: index === 0, streaming });
+          const select = preset.params === undefined ? undefined : { params: preset.params, baseUrl: view.baseUrl ?? null };
+          // Every target as serving bills it once reached: serving leaves out a fallback it cannot bill without a word, so saving judges it instead.
+          const call = resolvePresetTarget(view.description, style, target, view.sources, { primary: true, streaming, select });
           if (call.kind !== "admitted" || found.some((one) => one.operation === call.operation)) continue;
           found.push({ ...call, slug: target.provider, entry: `preset:${name}:${index}` });
         }
@@ -598,9 +622,9 @@ export function reachableCalls(
   return { calls, unreadable };
 }
 
-/** A call's identity across a save: where it comes in, the connection, the operation, the model the request names and the one it is sent as. */
+/** A call's identity across a save: where it comes in, the connection, the operation, the model the request names, the one it is sent as, and the mode it selects. */
 export function callKey(call: AppCall): string {
-  return [call.entry, call.slug, call.operation.name, call.requested, call.model].join("\u0000");
+  return [call.entry, call.slug, call.operation.name, call.requested, call.model, call.mode === undefined ? "" : serviceModeName(call.mode)].join("\u0000");
 }
 
 /**
@@ -608,11 +632,16 @@ export function callKey(call: AppCall): string {
  * is charged. An operation that reports its own cost charges it whatever the
  * price (`billingAt`); otherwise the call's price must charge every way, at
  * every key value and mode (`chargeGap`), and a call with no price at all
- * (a listed model whose price is gone) cannot. Returns the gap, or null.
+ * (a listed model whose price is gone) cannot. A call that selects a
+ * service mode (`mode`) also needs a price in that mode (`no_mode_price`).
+ * Returns the gap, or null.
  */
 export function callGap(call: ReachableCall): Gap | null {
   if (call.bill.reportsCost) return null;
   if (call.bill.price === null) return { values: {}, mode: "standard", operation: call.operation.name };
+  if (call.mode !== undefined && billingAt(call.operation, call.bill.price, call.mode).problem === "no_mode_price") {
+    return { values: {}, mode: serviceModeName(call.mode), operation: call.operation.name, selectedMode: true };
+  }
   return chargeGap(call.operation, call.bill.price.price);
 }
 

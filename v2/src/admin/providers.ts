@@ -290,7 +290,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const servingJson = servingProvidersJson(description, body.servingProviders);
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
-  await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type }, newRates);
+  await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type, baseUrl }, newRates);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
@@ -429,7 +429,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         return null;
       }
     })();
-    await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type }, before, newRates);
+    await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type, baseUrl }, before, newRates);
   }
   const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(

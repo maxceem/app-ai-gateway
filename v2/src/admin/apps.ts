@@ -20,7 +20,6 @@ import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../co
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
 import {
-  billing,
   callGap,
   callKey,
   listedModelRefusal,
@@ -38,7 +37,6 @@ import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
-import { serviceModeName } from "../usage/service-modes.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
@@ -235,7 +233,7 @@ export async function checkAppConfig(
     const row = await connectionRow(slug);
     const description = row === null ? null : builtInProvider(row.type);
     // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
-    views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description });
+    views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description, baseUrl: row.base_url });
   }
   judgeApp(config, stored, priced, (slug) => views.get(slug) ?? null);
   return config;
@@ -254,14 +252,15 @@ function storedCallConfig(stored: StoredEntries): AppCallConfig | null {
     const rewrites = Object.fromEntries(Object.entries(stored.rewrites).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
     const presets = Object.fromEntries(
       Object.entries(stored.presets).flatMap(([slug, entry]) => {
-        const preset = entry as { provider?: unknown; operation?: unknown; model?: unknown; fallback?: unknown };
+        const preset = entry as { provider?: unknown; operation?: unknown; model?: unknown; params?: unknown; fallback?: unknown };
         if (typeof preset.provider !== "string" || typeof preset.operation !== "string" || typeof preset.model !== "string") return [];
         const fallback = (Array.isArray(preset.fallback) ? preset.fallback : []).flatMap((one: { provider?: unknown; operation?: unknown; model?: unknown }) =>
           typeof one?.provider === "string" && typeof one.model === "string"
             ? [{ provider: one.provider, model: one.model, ...(typeof one.operation === "string" ? { operation: one.operation } : {}) }]
             : [],
         );
-        return [[slug, { provider: preset.provider, operation: preset.operation, model: preset.model, fallback }]];
+        const params = typeof preset.params === "object" && preset.params !== null && !Array.isArray(preset.params) ? (preset.params as Record<string, unknown>) : undefined;
+        return [[slug, { provider: preset.provider, operation: preset.operation, model: preset.model, fallback, ...(params === undefined ? {} : { params }) }]];
       }),
     );
     return { routing: { providers, model_rewrites: rewrites }, presets };
@@ -332,6 +331,15 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
   if (call.entry.startsWith("preset:")) {
     const [, name, index] = call.entry.split(":");
     const where = `config.presets.${name}${index === "0" ? "" : `.fallback.${Number(index) - 1}`}`;
+    if (gap.selectedMode) {
+      return new GatewayError(
+        400,
+        "pricing_not_configured",
+        `${where}.model: ${call.model} has no price in the ${gap.mode} service mode the preset's params name`,
+        undefined,
+        { data: { ...data, preset: name ?? "" } },
+      );
+    }
     return new GatewayError(
       400,
       "pricing_not_configured",
@@ -377,15 +385,15 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
  * a rate no call needs still saves. A disabled app is judged in full when it
  * is turned on again.
  *
- * A call the new rates no longer let through is judged only when serving
- * would drop it without a word: a preset fallback, left out of its chain. A
- * proxy call or a fallback model serving refuses openly instead, so deleting
- * or renaming a rate it needed still saves.
+ * A preset fallback the new rates could no longer bill is judged too:
+ * serving would leave it out of its chain without a word. A proxy call or a
+ * fallback model the new rates no longer let through is not: serving refuses
+ * it openly, so deleting or renaming a rate it needed still saves.
  */
 export async function checkConnectionRates(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string },
+  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
   before: CustomerRates | null,
   after: CustomerRates | null,
 ): Promise<void> {
@@ -396,7 +404,7 @@ export async function checkConnectionRates(
     [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
   );
   if (models.size === 0) return;
-  await judgeConnectionApps(db, accountId, connection, after, { before, models });
+  await judgeConnectionApps(db, accountId, connection, after, { models });
 }
 
 /**
@@ -407,7 +415,7 @@ export async function checkConnectionRates(
 export async function checkNewConnection(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string },
+  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
   rates: CustomerRates | null,
 ): Promise<void> {
   await judgeConnectionApps(db, accountId, connection, rates, null);
@@ -417,9 +425,9 @@ export async function checkNewConnection(
 async function judgeConnectionApps(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string },
+  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
   after: CustomerRates | null,
-  change: { readonly before: CustomerRates | null; readonly models: ReadonlySet<string> } | null,
+  change: { readonly models: ReadonlySet<string> } | null,
 ): Promise<void> {
   const description = builtInProvider(connection.type);
   if (description === null) return;
@@ -427,8 +435,7 @@ async function judgeConnectionApps(
     .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
     .bind(accountId)
     .all<{ name: string; status: string; config_json: string }>();
-  const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description };
-  const previous: ConnectionView | null = change === null ? null : { sources: priceSources({ type: connection.type, rates: change.before }), description };
+  const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description, baseUrl: connection.baseUrl };
   const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
   for (const app of results) {
     if (app.status !== "active") continue;
@@ -439,14 +446,8 @@ async function judgeConnectionApps(
       continue;
     }
     if (config === null) continue;
-    const { calls } = reachableCalls(config, only(next));
-    const nowKeys = new Set(calls.map(callKey));
-    // A preset fallback the old rates let through and the new do not is judged on the new rates: serving would leave it out silently.
-    const dropped =
-      previous === null
-        ? []
-        : reachableCalls(config, only(previous)).calls.filter((call) => call.entry.startsWith("preset:") && !nowKeys.has(callKey(call)));
-    const judged = [...calls, ...dropped.map((call) => ({ ...call, bill: billing(call.operation, next.sources, call.model) }))];
+    // Every preset target is among the calls, a fallback the new rates could no longer bill included (`reachableCalls`).
+    const judged = reachableCalls(config, only(next)).calls;
     for (const call of judged) {
       if (change !== null && !change.models.has(call.model)) continue;
       const gap = callGap(call);
@@ -461,9 +462,11 @@ function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): Gatew
   return new GatewayError(
     400,
     "pricing_not_configured",
-    `pricing.${model}: the app ${app} routes ${model} to ${slug}, and ${operation} could bill ${
-      call.bill.price === null ? "no price of it" : "this price only partly"
-    }; give it a rate for every way it answers`,
+    `pricing.${model}: the app ${app} routes ${model} to ${slug}, and ${
+      gap.selectedMode
+        ? `a preset selects the ${gap.mode} service mode, which this price lacks; give it a rate in that mode`
+        : `${operation} could bill ${call.bill.price === null ? "no price of it" : "this price only partly"}; give it a rate for every way it answers`
+    }`,
     undefined,
     { data: { model, slug, app, operation } },
   );
@@ -494,10 +497,12 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
 }
 
 /**
- * A preset and each fallback: the connection exists, its type has an
- * operation of the preset's API style a preset can use, and the model has a
- * price that operation can bill, in any service mode the preset's parameters
- * name.
+ * A preset and each fallback, for their shape: the connection exists, its
+ * type has an operation of the preset's API style a preset can use, the
+ * output cap and parameters fit it, and any service mode the parameters name
+ * exists. Their pricing, in the mode the parameters select, is judged with
+ * every other call the app lets through (`judgeApp`), once, when the call is
+ * new or changed.
  */
 async function checkPreset(
   slug: string,
@@ -526,9 +531,8 @@ async function checkPreset(
     if (description === null) {
       throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
     }
-    const sources = priceSources(connection);
-    // Resolved as serving resolves the first target (`resolvePresetTarget`), so every target is judged as it would be served.
-    const call = resolvePresetTarget(description, style, target, sources, { primary: true, streaming: false });
+    // The operation serving picks for the target (`resolvePresetTarget`).
+    const call = resolvePresetTarget(description, style, target, priceSources(connection), { primary: true, streaming: false });
     if (call.kind === "refused" && call.reason === "no_operation") {
       const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
       throw invalid(
@@ -546,15 +550,6 @@ async function checkPreset(
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
     }
-    if (call.kind === "refused" || callGap(call) !== null) {
-      throw new GatewayError(
-        400,
-        "pricing_not_configured",
-        `${target.label}.model: ${target.model} has no price that ${operation.name} can bill; add one to the provider connection first`,
-        undefined,
-        { data: { slug, model: target.model, operation: operation.name } },
-      );
-    }
     // The parameters are sent to every target, so each judges them as a
     // request would be judged: a background option, or an output field over
     // the preset's own cap, is refused now rather than on every call.
@@ -569,20 +564,11 @@ async function checkPreset(
       }
     }
     // Naming a service mode in the parameters chooses it for every target, so
-    // each must know it and be able to bill it.
+    // each must know it. Its price is judged with the target's call (`callGap`).
     if (preset.params !== undefined) {
       const mode = requestedServiceMode(description, connection.base_url, preset.params, target.model);
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
-      }
-      if (billing(operation, sources, target.model, mode.mode).problem === "no_mode_price") {
-        throw new GatewayError(
-          400,
-          "pricing_not_configured",
-          `${target.label}.model: ${target.model} has no price in the ${serviceModeName(mode.mode)} service mode the preset's params name`,
-          undefined,
-          { data: { slug, model: target.model } },
-        );
       }
     }
   }
