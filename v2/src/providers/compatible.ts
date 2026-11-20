@@ -88,6 +88,7 @@ export const mistral = defineProvider({
   type: "mistral",
   label: "Mistral",
   hosts: { main: "api.mistral.ai" },
+  otherHosts: ["api.eu.mistral.ai", "api.us.mistral.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "v1/models" },
@@ -112,6 +113,7 @@ export const together = defineProvider({
   label: "Together AI",
   // `api.together.ai`, not the `.xyz` host older SDKs default to.
   hosts: { main: "api.together.ai" },
+  otherHosts: ["us-api.together.ai", "api.together.xyz"],
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "v1/models" },
@@ -170,6 +172,8 @@ export const moonshot = defineProvider({
   label: "Moonshot AI",
   // The international host. `api.moonshot.cn` is a separate platform.
   hosts: { main: "api.moonshot.ai" },
+  // The China platform speaks the same API.
+  otherHosts: ["api.moonshot.cn"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // The account's balance.
   refused: ["v1/users/*"],

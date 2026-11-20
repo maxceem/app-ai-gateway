@@ -50,7 +50,7 @@ describe("usage readers", () => {
       "openai-chat",
     );
     expect(shed.reportedModes).toEqual({ service_tier: "default" });
-    expect(servedServiceMode(openai, { tier: "fast", region: "global" }, shed, new Headers()).mode).toEqual(STANDARD_MODE);
+    expect(servedServiceMode(openai, undefined, { tier: "fast", region: "global" }, shed, new Headers()).mode).toEqual(STANDARD_MODE);
     const mixed = read(
       sse([
         { choices: [], service_tier: "priority" },
@@ -61,7 +61,7 @@ describe("usage readers", () => {
     );
     expect(mixed.reportedModes).toEqual({ service_tier: "(other)" });
     // Flagged here; pricing bills any doubt at standard at least (`priceInServedMode`).
-    expect(servedServiceMode(openai, { tier: "flex", region: "global" }, mixed, new Headers())).toMatchObject({
+    expect(servedServiceMode(openai, undefined, { tier: "flex", region: "global" }, mixed, new Headers())).toMatchObject({
       mode: { tier: "flex" },
       unknown: { field: "service_tier" },
     });
@@ -387,20 +387,20 @@ describe("service modes", () => {
   const usage: UsageObservation = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 };
 
   it("reads the mode a request asks for with the provider's own table, and the region its base URL serves", () => {
-    expect(requestedServiceMode(openai, null, { service_tier: "priority" })).toEqual({ mode: { tier: "fast", region: "global" } });
-    expect(requestedServiceMode(anthropic, null, { speed: "fast", inference_geo: "us" })).toEqual({ mode: { tier: "fast", region: "us" } });
+    expect(requestedServiceMode(openai, undefined, null, { service_tier: "priority" })).toEqual({ mode: { tier: "fast", region: "global" } });
+    expect(requestedServiceMode(anthropic, undefined, null, { speed: "fast", inference_geo: "us" })).toEqual({ mode: { tier: "fast", region: "us" } });
     // A request that asked for no region: real answers report "not_available" (T27).
-    expect(servedServiceMode(anthropic, STANDARD_MODE, { reportedModes: { speed: "standard", service_tier: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({ mode: STANDARD_MODE });
+    expect(servedServiceMode(anthropic, undefined, STANDARD_MODE, { reportedModes: { speed: "standard", service_tier: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({ mode: STANDARD_MODE });
     // A request that asked for the US: the answer does not say where it was served, so the US rate stands, flagged.
     const us = { tier: "standard", region: "us" } as const;
-    expect(servedServiceMode(anthropic, us, { reportedModes: { speed: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({
+    expect(servedServiceMode(anthropic, undefined, us, { reportedModes: { speed: "standard", inference_geo: "not_available" } } as never, new Headers())).toEqual({
       mode: us,
       unknown: { field: "inference_geo", value: "not_available" },
     });
-    expect(requestedServiceMode(gemini, null, { serviceTier: "flex" })).toEqual({ mode: { tier: "flex", region: "global" } });
-    expect(requestedServiceMode(mistral, "https://api.eu.mistral.ai/", {})).toEqual({ mode: { tier: "standard", region: "eu" } });
+    expect(requestedServiceMode(gemini, undefined, null, { serviceTier: "flex" })).toEqual({ mode: { tier: "flex", region: "global" } });
+    expect(requestedServiceMode(mistral, undefined, "https://api.eu.mistral.ai/", {})).toEqual({ mode: { tier: "standard", region: "eu" } });
     // A value the table does not know leaves the tier at standard, and is reported.
-    expect(requestedServiceMode(openai, null, { service_tier: "turbo" })).toEqual({
+    expect(requestedServiceMode(openai, undefined, null, { service_tier: "turbo" })).toEqual({
       mode: STANDARD_MODE,
       unknown: { field: "service_tier", value: "turbo" },
     });
@@ -433,32 +433,32 @@ describe("service modes", () => {
     const body = `{"model":"gpt-5.6-luna","service_tier":99,"choices":[{"message":{"content":"${"a".repeat(2_000_000)}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`;
     const usage = readBody(body, "application/json", "openai-chat").usage!;
     const flex = { tier: "flex", region: "global" } as const;
-    expect(servedServiceMode(openai, flex, usage, new Headers()).unknown).toBeDefined();
+    expect(servedServiceMode(openai, undefined, flex, usage, new Headers()).unknown).toBeDefined();
   });
 
   it("believes the mode the response says served the request", () => {
     const fast = { tier: "fast", region: "global" } as const;
     // OpenAI sheds fast traffic to `default`, and bills it as standard.
-    expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
+    expect(servedServiceMode(openai, undefined, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
     // Sources that disagree, or one the table does not know, are flagged; pricing gives them the standard floor.
     const flex = { tier: "flex", region: "global" } as const;
-    const unknownHeader = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "turbo" }));
+    const unknownHeader = servedServiceMode(gemini, undefined, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "turbo" }));
     expect(unknownHeader.mode).toEqual(flex);
     expect(unknownHeader.unknown).toBeDefined();
     // A tier value that is not a usable string counts as one the table does not know.
     const numeric = read(JSON.stringify({ usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, serviceTier: 99 } }), "application/json", "gemini-generate");
-    const odd = servedServiceMode(gemini, flex, numeric, new Headers({ "x-gemini-service-tier": "flex" }));
+    const odd = servedServiceMode(gemini, undefined, flex, numeric, new Headers({ "x-gemini-service-tier": "flex" }));
     expect(odd.mode).toEqual(flex);
     expect(odd.unknown).toBeDefined();
-    const disagree = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "priority" }));
+    const disagree = servedServiceMode(gemini, undefined, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "priority" }));
     expect(disagree.mode.tier).toBe("priority");
     expect(disagree.unknown).toBeDefined();
     // Anthropic's `speed` and `service_tier` answer different questions, so they never disagree.
-    const both = servedServiceMode(anthropic, fast, { ...usage, reportedModes: { speed: "fast", service_tier: "standard" } }, new Headers());
+    const both = servedServiceMode(anthropic, undefined, fast, { ...usage, reportedModes: { speed: "fast", service_tier: "standard" } }, new Headers());
     expect(both).toEqual({ mode: fast });
     // Gemini says it in a header too.
     const priority = { tier: "priority", region: "global" } as const;
-    expect(servedServiceMode(gemini, priority, usage, new Headers({ "x-gemini-service-tier": "standard" })).mode).toEqual(STANDARD_MODE);
+    expect(servedServiceMode(gemini, undefined, priority, usage, new Headers({ "x-gemini-service-tier": "standard" })).mode).toEqual(STANDARD_MODE);
   });
 
   it("prices a mode the model lists, by its factor", () => {

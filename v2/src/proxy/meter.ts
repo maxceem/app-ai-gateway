@@ -12,7 +12,7 @@
  */
 import { builtInProvider } from "../providers/index.ts";
 import { listedAs } from "../providers/listing.ts";
-import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
@@ -79,11 +79,13 @@ function fieldsFor(
  */
 export function requestedServiceMode(
   description: ProviderDescription,
+  operation: OperationDescription | undefined,
   baseUrl: string | null,
   body: Record<string, unknown>,
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const reading = readServiceMode(fieldsFor(description, description.serviceModes, model, true), (name) =>
+  const rules = readingRules(description, operation);
+  const reading = readServiceMode(fieldsFor(description, rules.serviceModes, model, true), (name) =>
     Object.hasOwn(body, name) ? body[name] : undefined,
   );
   const region = baseUrlRegion(description, baseUrl);
@@ -100,12 +102,14 @@ export function requestedServiceMode(
  */
 export function servedServiceMode(
   description: ProviderDescription,
+  operation: OperationDescription | undefined,
   requested: ServiceMode,
   usage: UsageObservation | null,
   headers: Headers,
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const fields = fieldsFor(description, description.servedModes ?? description.serviceModes, model, false);
+  const rules = readingRules(description, operation);
+  const fields = fieldsFor(description, rules.servedModes ?? rules.serviceModes, model, false);
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
@@ -214,7 +218,7 @@ export function responseReader(
   const style: ApiStyle | undefined = usageStyle ?? operation.style;
   if (style === undefined) return null;
   const body: BodyReader = bodyReader(contentType, style, {
-    counted: description.countedInputModalities,
+    counted: readingRules(description, operation).countedInputModalities,
     maxEvents: budget.documents,
     ...(meter.kind === "response_json" && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
   });

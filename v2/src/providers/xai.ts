@@ -12,6 +12,7 @@ export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
+  otherHosts: ["us.api.x.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // Key management lives on a separate host the gateway never calls. The
   // key's own details, and the short-lived secrets for live sessions, refused

@@ -485,7 +485,7 @@ export function resolvePresetTarget(
   const bill = billing(operation, sources, model);
   if (bill.problem !== null && !options.primary) return { kind: "refused", reason: "unbillable", operation, model, bill };
   const select = options.select;
-  const mode = select === undefined ? undefined : requestedServiceMode(description, select.baseUrl, select.params as Record<string, unknown>, model).mode;
+  const mode = select === undefined ? undefined : requestedServiceMode(description, operation, select.baseUrl, select.params as Record<string, unknown>, model).mode;
   return { kind: "admitted", operation, requested: model, model, bill, ...(mode !== undefined && !isStandardMode(mode) ? { mode } : {}) };
 }
 

@@ -466,6 +466,29 @@ export interface OperationDescription {
   readonly responseDeadlineMs?: number;
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
+  /**
+   * How this operation's requests and answers are read, over its provider's
+   * (`readingRules`): a custom provider's path of an API style carries the
+   * rules of the built-in provider its definition comes from (`./custom.ts`),
+   * so one connection may list styles of different providers.
+   */
+  readonly rules?: ReadingRules;
+}
+
+/**
+ * The rules a provider states once for reading its operations' requests and
+ * answers: its service modes, the modes its answers name, the transcription
+ * formats that carry a measure, and the input modalities its usage counts.
+ */
+export type ReadingRules = Pick<ProviderDescription, "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities">;
+
+/**
+ * The reading rules for `operation` of `description`: its own when it carries
+ * them, else its provider's. The one place they are chosen, so every reader
+ * of modes, formats and counted modalities agrees.
+ */
+export function readingRules(description: ProviderDescription, operation: OperationDescription | undefined): ReadingRules {
+  return operation?.rules ?? description;
 }
 
 /** How the provider's key is sent. */
@@ -492,6 +515,14 @@ export interface ProviderDescription {
    * upstream path is sent under.
    */
   readonly hosts: { readonly main: string } & Readonly<Record<string, string>>;
+  /**
+   * Every other host name the provider serves the same API on: regional,
+   * data-residency or older names. With `hosts`, the one declared list of
+   * the provider's hosts, apart from what any of them costs
+   * (`regionalOrigins`). A base URL on any of them is this provider's, and
+   * gets its refused paths (`./custom.ts`).
+   */
+  readonly otherHosts?: readonly string[];
   readonly auth: ProviderAuth;
   /**
    * The request fields this provider reads a service mode from, such as a

@@ -397,20 +397,85 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
   );
 }
 
+/** A connection whose apps are judged: its description is its built-in type's unless given (a custom provider's). */
+export interface JudgedConnection {
+  readonly slug: string;
+  readonly type: string;
+  readonly baseUrl: string | null;
+  readonly description?: ProviderDescription;
+}
+
+/** What a connection is, as far as which calls it serves and at what price: before or after a save. */
+export interface ConnectionState {
+  readonly description: ProviderDescription;
+  readonly baseUrl: string | null;
+  readonly rates: CustomerRates | null;
+}
+
 /**
- * A connection's rates are about to change: each active app that routes to
- * it is judged on the calls the change can affect, at every entry point
- * (`reachableCalls`), by the same rule as an app save (`callGap`), so a rate
- * added after an app was saved cannot leave its calls charged only partly.
- * Only models whose rates are new, changed or deleted are judged, so deleting
- * a rate no call needs still saves. A disabled app is judged in full when it
- * is turned on again.
+ * A connection is about to change, or to be created: each active app that
+ * routes to it is judged by the same rule as an app save (`callGap`), at every
+ * entry point (`reachableCalls`), presets and their fallbacks included. One
+ * rule for every change that affects which calls it serves or their price:
+ * its rates, its paths, a custom provider's API styles, its base URL.
+ *
+ * A call is judged when the change makes it reachable (it is not among the
+ * calls `before` serves: a new connection's are all new), or when its model's
+ * rate is new, changed or deleted. A call that was served before at an
+ * unchanged rate is not judged again, so a save never starts failing on what
+ * already worked.
  *
  * A preset fallback the new rates could no longer bill is judged too:
  * serving would leave it out of its chain without a word. A proxy call or a
- * fallback model the new rates no longer let through is not: serving refuses
- * it openly, so deleting or renaming a rate it needed still saves.
+ * fallback model the change no longer lets through is not: serving refuses
+ * it openly, so deleting a rate or a path it needed still saves. A disabled
+ * app is judged in full when it is turned on again.
  */
+export async function checkConnectionChange(
+  db: D1Database,
+  accountId: string,
+  connection: { readonly slug: string; readonly type: string },
+  before: ConnectionState | null,
+  after: ConnectionState,
+): Promise<void> {
+  const was = before?.rates ?? {};
+  const now = after.rates ?? {};
+  const repriced = new Set(
+    [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
+  );
+  const view = (state: ConnectionState): ConnectionView => ({
+    sources: priceSources({ type: connection.type, rates: state.rates }),
+    description: state.description,
+    baseUrl: state.baseUrl,
+  });
+  const only = (one: ConnectionView) => (slug: string) => (slug === connection.slug ? one : null);
+  const next = view(after);
+  const previous = before === null ? null : view(before);
+  const { results } = await db
+    .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
+    .bind(accountId)
+    .all<{ name: string; status: string; config_json: string }>();
+  for (const app of results) {
+    if (app.status !== "active") continue;
+    let config: AppCallConfig | null;
+    try {
+      config = storedCallConfig(storedRouting({ config_json: app.config_json } as AppRow));
+    } catch {
+      continue;
+    }
+    if (config === null) continue;
+    if (!Object.hasOwn(config.routing.providers, connection.slug) && !Object.values(config.presets ?? {}).some((preset) =>
+      [preset.provider, ...(preset.fallback ?? []).map((one) => one.provider)].includes(connection.slug))) continue;
+    const served = previous === null ? new Set<string>() : new Set(reachableCalls(config, only(previous)).calls.map(callKey));
+    for (const call of reachableCalls(config, only(next)).calls) {
+      if (served.has(callKey(call)) && !repriced.has(call.model)) continue;
+      const gap = callGap(call);
+      if (gap !== null) throw ratesRefused(call, app.name, connection.slug, gap);
+    }
+  }
+}
+
+/** A connection's rates are about to change, and nothing else (a hand-off's review): `checkConnectionChange`. */
 export async function checkConnectionRates(
   db: D1Database,
   accountId: string,
@@ -418,22 +483,9 @@ export async function checkConnectionRates(
   before: CustomerRates | null,
   after: CustomerRates | null,
 ): Promise<void> {
-  // New, changed and deleted rates alike: a deleted rate can drop a call that worked.
-  const was = before ?? {};
-  const now = after ?? {};
-  const models = new Set(
-    [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
-  );
-  if (models.size === 0) return;
-  await judgeConnectionApps(db, accountId, connection, after, { models });
-}
-
-/** A connection whose apps are judged: its description is its built-in type's unless given (a custom provider's). */
-export interface JudgedConnection {
-  readonly slug: string;
-  readonly type: string;
-  readonly baseUrl: string | null;
-  readonly description?: ProviderDescription;
+  const description = connection.description ?? builtInProvider(connection.type);
+  if (description === null) return;
+  await checkConnectionChange(db, accountId, connection, { description, baseUrl: connection.baseUrl, rates: before }, { description, baseUrl: connection.baseUrl, rates: after });
 }
 
 /**
@@ -447,42 +499,9 @@ export async function checkNewConnection(
   connection: JudgedConnection,
   rates: CustomerRates | null,
 ): Promise<void> {
-  await judgeConnectionApps(db, accountId, connection, rates, null);
-}
-
-/** Judges each active app's calls on one connection with `after` rates: all of them, or, with `change`, those on the models it changes. */
-async function judgeConnectionApps(
-  db: D1Database,
-  accountId: string,
-  connection: JudgedConnection,
-  after: CustomerRates | null,
-  change: { readonly models: ReadonlySet<string> } | null,
-): Promise<void> {
   const description = connection.description ?? builtInProvider(connection.type);
   if (description === null) return;
-  const { results } = await db
-    .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
-    .bind(accountId)
-    .all<{ name: string; status: string; config_json: string }>();
-  const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description, baseUrl: connection.baseUrl };
-  const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
-  for (const app of results) {
-    if (app.status !== "active") continue;
-    let config: AppCallConfig | null;
-    try {
-      config = storedCallConfig(storedRouting({ config_json: app.config_json } as AppRow));
-    } catch {
-      continue;
-    }
-    if (config === null) continue;
-    // Every preset target is among the calls, a fallback the new rates could no longer bill included (`reachableCalls`).
-    const judged = reachableCalls(config, only(next)).calls;
-    for (const call of judged) {
-      if (change !== null && !change.models.has(call.model)) continue;
-      const gap = callGap(call);
-      if (gap !== null) throw ratesRefused(call, app.name, connection.slug, gap);
-    }
-  }
+  await checkConnectionChange(db, accountId, connection, null, { description, baseUrl: connection.baseUrl, rates });
 }
 
 function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): GatewayError {
@@ -596,7 +615,7 @@ async function checkPreset(
     // Naming a service mode in the parameters chooses it for every target, so
     // each must know it. Its price is judged with the target's call (`callGap`).
     if (preset.params !== undefined) {
-      const mode = requestedServiceMode(description, connection.base_url, preset.params, target.model);
+      const mode = requestedServiceMode(description, operation, connection.base_url, preset.params, target.model);
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
       }

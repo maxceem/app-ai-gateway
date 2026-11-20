@@ -11,7 +11,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { CUSTOM_PATH_STYLES } from "../src/contracts/admin.ts";
 import { describeConnection } from "../src/providers/connections.ts";
-import { CUSTOM_STYLES, customAuthProblem, customDescription, customOperationName, knownHostOwner } from "../src/providers/custom.ts";
+import { CUSTOM_STYLES, customAuthProblem, customDescription, customOperationName, declaredHostNames, knownHostOwner } from "../src/providers/custom.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
+import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
+import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
 import { ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
@@ -74,6 +77,38 @@ describe("a custom provider's description", () => {
     expect(description.operations.map((operation) => [operation.name, operation.match.path])).toEqual([["custom.openai-chat", "chat/completions"]]);
   });
 
+  it("declares every host a provider prices apart among its hosts, and finds the owner of each", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const origin of Object.keys(description.regionalOrigins ?? {})) {
+        expect(declaredHostNames(description), origin).toContain(new URL(origin).hostname);
+        expect(knownHostOwner(origin)?.type).toBe(description.type);
+      }
+    }
+    expect(knownHostOwner("https://eu.api.openai.com/v1/")?.type).toBe("openai");
+    expect(knownHostOwner("https://api.eu.residency.elevenlabs.io/")?.type).toBe("elevenlabs");
+  });
+
+  it("builds an API-style path from a built-in definition, with that provider's rules for reading it", () => {
+    const unknown = customDescription({
+      baseUrl: BASE,
+      auth: AUTH,
+      paths: [
+        { method: "POST", path: "chat", style: "openai-chat" },
+        { method: "POST", path: "messages", style: "anthropic-messages" },
+        { method: "POST", path: "stt", style: "openai-transcription" },
+      ],
+    });
+    const [chatOp, messagesOp, sttOp] = unknown.operations as [OperationDescription, OperationDescription, OperationDescription];
+    expect(readingRules(unknown, chatOp).serviceModes).toBe(openai.serviceModes);
+    expect(readingRules(unknown, messagesOp).serviceModes).toBe(BUILT_IN_PROVIDERS.anthropic!.serviceModes);
+    expect(readingRules(unknown, sttOp).transcriptionFormats).toBe(openai.transcriptionFormats);
+    // OpenAI's own Chat Completions writes its cap where OpenAI reads it.
+    expect(chatOp.policy?.outputCap).toBe(BUILT_IN_PROVIDERS.openai!.operations.find((one) => one.name === "openai.chat")!.policy?.outputCap);
+    // On a known host, that provider's own definition and rules.
+    const groq = customDescription({ baseUrl: "https://api.groq.com/openai/v1/", auth: AUTH, paths: [{ method: "POST", path: "chat/completions", style: "openai-chat" }] });
+    expect(readingRules(groq, groq.operations[0]).serviceModes).toBe(BUILT_IN_PROVIDERS.groq!.serviceModes);
+  });
+
   it("is null for a custom row without its base URL or key header, which no save stores", () => {
     expect(describeConnection({ type: "custom", baseUrl: null, customAuth: AUTH })).toBeNull();
     expect(describeConnection({ type: "custom", baseUrl: BASE, customAuth: null })).toBeNull();
@@ -99,6 +134,7 @@ describe("a custom provider's description", () => {
     [{ header: "content-type", format: "{key}" }, "cannot carry the key"],
     [{ header: "cf-aig-authorization", format: "{key}" }, "cannot carry the key"],
     [{ header: "x api key", format: "{key}" }, "header name"],
+    [{ header: "x-end-user-id", format: "{key}" }, "reads who is calling from it"],
     [{ header: "x-api-key", format: "Bearer key" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "{key}{key}" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "Bearer\n{key}" }, "printable ASCII"],
@@ -206,14 +242,6 @@ describe("saving a custom provider", () => {
       { passthrough: [{ method: "POST", path: "a/chat", style: "openai-chat" }, { method: "POST", path: "b/chat", style: "openai-chat" }], pricing: PRICING },
       "one path per API style",
     ],
-    [{ passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }] }, "give at least one model a rate"],
-    [
-      {
-        passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "POST", path: "images/generations", style: "openai-images" }],
-        pricing: { "img-model": { per_image: 0.04 } },
-      },
-      "custom.openai-chat (chat/completions) bills its models at your rates",
-    ],
     [
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "POST", path: "chat/{what}" }], pricing: PRICING },
       "custom.openai-chat",
@@ -223,6 +251,16 @@ describe("saving a custom provider", () => {
       "can match the requests of the custom.",
     ],
     [{ baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
+    [{ baseUrl: "https://eu.api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
+    [{ baseUrl: "https://api.openai.com/v1%2Forganization/", passthrough: [{ method: "GET", path: "users" }] }, "encoded /"],
+    [{ baseUrl: "https://llm.example.com/v1//chat/" }, "empty segment"],
+    [{ baseUrl: "https://llm.example.com/v1/%E0%A4%A/" }, "broken percent-encoding"],
+    [{ auth: { header: "x-end-user-id", format: "{key}" } }, "reads who is calling from it"],
+    [{ auth: { header: "x-appattest-proof", format: "{key}" } }, "reads who is calling from it"],
+    [
+      { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
+      "no path this provider lists reads the us mode",
+    ],
     [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "never allows"],
   ])("refuses %j", async (fields, message) => {
     const key = await seedManagementKey();
@@ -307,6 +345,39 @@ describe("saving a custom provider", () => {
     expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
   });
 
+  it("judges the calls a change makes reachable again: an API style re-listed for a model with no rate is refused", async () => {
+    const key = await seedManagementKey();
+    const chatPath = { method: "POST", path: "chat/completions", style: "openai-chat" };
+    const created = await createCustom(key, { passthrough: [chatPath], pricing: PRICING });
+    const id = created.body.provider.id as string;
+    const slug = created.body.provider.slug as string;
+    const config = {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["custom.openai-chat"], models: ["local-llm"] } } },
+    };
+    expect((await admin(key, "POST", "/v2/admin/apps", { name: "Chat", config })).status).toBe(201);
+    // The style goes, then its model's rate: no call of the app reaches it, so both save.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, passthrough: [{ method: "GET", path: "models" }] })).status).toBe(200);
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, pricing: { "other-llm": { input: 1, output: 2 } } })).status).toBe(200);
+    // Listing the style again makes the app's call reachable with no rate.
+    const back = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 3, passthrough: [chatPath] });
+    expect(back.status, JSON.stringify(back.body)).toBe(400);
+    expect(back.body.error.code).toBe("pricing_not_configured");
+    // With its rate, it saves.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 3, passthrough: [chatPath], pricing: PRICING })).status).toBe(200);
+  });
+
+  it("saves an API-style path with no rate yet: an app that routes it is judged when saved", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }] });
+    expect(created.status).toBe(201);
+    const app = await admin(key, "POST", "/v2/admin/apps", {
+      name: "Unpriced",
+      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [created.body.provider.slug]: { operations: ["custom.openai-chat"], models: ["local-llm"] } } } },
+    });
+    expect(app.status).toBe(400);
+  });
+
   it("is never taken from a handoff: a custom provider is a person's choice", async () => {
     const key = await seedManagementKey();
     const handoff = await admin(key, "POST", "/v2/admin/provider-handoffs", { type: "custom", name: "Mine", baseUrl: BASE });
@@ -319,12 +390,13 @@ async function setup(
   paths: readonly { method: string; path: string; priceNano?: number; style?: string }[],
   operations: readonly string[],
   baseUrl = BASE,
+  ratesJson: Record<string, unknown> = { "local-llm": { input: 1_000_000_000, output: 2_000_000_000 } },
 ) {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `custom-${id.slice(0, 6)}`;
   const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "custom", baseUrl], SECRET);
-  const rates = JSON.stringify({ "local-llm": { input: 1_000_000_000, output: 2_000_000_000 } });
+  const rates = JSON.stringify(ratesJson);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -441,6 +513,43 @@ describe("serving a custom provider", () => {
       expect(response.status, path).toBe(403);
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("bills the service tier the answer names, at the connection's rate in that mode", async () => {
+    const { appId, slug, key } = await setup(paths, ["custom.openai-chat"], BASE, {
+      "local-llm": { input: 1_000_000_000, output: 2_000_000_000, modes: { fast: { input: 2_000_000_000, output: 4_000_000_000 } } },
+    });
+    fetchSpy.mockResolvedValueOnce(
+      Response.json({ id: "c1", service_tier: "priority", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } }),
+    );
+    const { response } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "local-llm", service_tier: "priority", messages: [] }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status).toBe(200);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ operation: "custom.openai-chat", cost_nano: 4_000_000 });
+    expect(JSON.parse(String(charge!.measures_json))).toMatchObject({ service_mode: "fast" });
+  });
+
+  it("refuses a transcription format whose answer carries no measure, and sends nothing", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "audio/transcriptions", style: "openai-transcription" }], ["custom.openai-transcription"]);
+    const form = new FormData();
+    form.append("model", "local-llm");
+    form.append("response_format", "text");
+    form.append("file", new Blob([new Uint8Array(64)], { type: "audio/mpeg" }), "a.mp3");
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/audio/transcriptions`, key, { body: form });
+    expect(response.status, text).toBe(400);
+    expect(text).toContain("response_format");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("never reads the app key from a header the app reads its end user from, even when it is the provider's key header", async () => {
+    const auth = clientAuth({ authentication: { type: "api_key", end_user: { source: "header", header: "x-user" } } } as never);
+    const headers = new Headers({ "x-user": "agw_looks_like_a_key" });
+    expect(() => requestCredential(headers, auth, "x-user")).toThrow(/access token is required/);
+    expect(() => requestCredential(new Headers({ "x-end-user-id": "agw_x" }), auth, "x-end-user-id")).toThrow(/access token is required/);
+    expect(requestCredential(new Headers({ "x-api-key": "agw_key" }), auth, "x-api-key")).toEqual({ token: "agw_key", headerName: "x-api-key" });
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

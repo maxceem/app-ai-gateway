@@ -56,7 +56,7 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRout
 import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { upstreamRequest } from "../providers/route.ts";
-import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -329,7 +329,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         }
       }
       // Read, never judged: a service mode is never refused (`./meter.ts`).
-      const mode = requestedServiceMode(description, connection.baseUrl, body, model);
+      const mode = requestedServiceMode(description, operation, connection.baseUrl, body, model);
       // What the meter takes from the request, and the values its rates depend on.
       const fields = { body, query: url.searchParams };
       const facts = requestFacts(operation, fields, price?.price ?? null, caller.facts);
@@ -571,7 +571,7 @@ export async function requestBody(
     }
     const boundary = multipartBoundary(contentType);
     const modelField = location.in === "body" || location.in === "form" ? location.field : null;
-    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
+    const wanted = new Set(["response_format", ...readingRules(description, operation).serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
     if (modelField !== null) wanted.add(modelField);
     let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };
     try {
@@ -588,7 +588,7 @@ export async function requestBody(
   }
   // An operation that takes raw bytes (audio) reads a body only when it says it is JSON.
   if (operation.rawBody === true && !isJson(contentType)) return { kind: "raw" };
-  if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
+  if (operation.style === "openai-transcription" && readingRules(description, operation).transcriptionFormats !== undefined) {
     throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
   }
   return { kind: "json", body: jsonBody(bytes) };
@@ -656,7 +656,7 @@ export function meteredTranscriptionFormat(
   description: ProviderDescription,
   fields: ReadonlyMap<string, readonly FieldValue[]>,
 ): string | null {
-  const formats = description.transcriptionFormats;
+  const formats = readingRules(description, operation).transcriptionFormats;
   if (operation.style !== "openai-transcription" || formats === undefined) return null;
   const requested = fields.get("response_format") ?? [];
   const named = requested[0];
@@ -1080,7 +1080,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
         // A passthrough answer is not read, so it names no mode: it is billed as asked, at its flat price.
         const served: ReturnType<typeof servedServiceMode> = isPassthrough(operation)
           ? { mode: charged.requestedMode }
-          : servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
+          : servedServiceMode(description, operation, charged.requestedMode, usage, upstream.headers, charged.model);
         const outcome: AttemptOutcome = ok
           ? {
               // A stream the provider broke, or ended early, is a failed attempt, not one the app left.

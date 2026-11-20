@@ -12,6 +12,7 @@ import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys.ts";
 import { GatewayError } from "../core/errors.ts";
 import { verifyGatewayToken } from "./gateway-token.ts";
 import { PROOF_HEADER, verifyRequestProof } from "./request-proof.ts";
+import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
 import type {
   AppleAppAttestAuthentication,
   AuthenticationConfig,
@@ -37,7 +38,9 @@ export function authorizationCredential(headers: Headers): RequestCredential | n
 /**
  * The credential, from `Authorization`, the provider's own key header (so an
  * official SDK pointed at the gateway works unchanged), or the app's issuer
- * token header.
+ * token header. A provider key header is never read when it is a header the
+ * gateway or this app reads identity or proof from: a value there is a user
+ * id or a proof, and would otherwise be taken as the app key too.
  */
 export function requestCredential(
   headers: Headers,
@@ -46,7 +49,9 @@ export function requestCredential(
 ): RequestCredential {
   const candidates: string[] = ["authorization"];
   const provider = providerAuthHeader?.toLowerCase();
-  if (provider !== undefined && !candidates.includes(provider)) candidates.push(provider);
+  if (provider !== undefined && !candidates.includes(provider) && !GATEWAY_IDENTITY_HEADERS.has(provider) && !auth.identityHeaders.includes(provider)) {
+    candidates.push(provider);
+  }
   if (auth.tokenHeader !== undefined && !candidates.includes(auth.tokenHeader)) candidates.push(auth.tokenHeader);
   for (const name of candidates) {
     const token = tokenFromHeader(headers.get(name));
@@ -82,6 +87,8 @@ export interface ClientAuth {
   readonly tokenHeader: string | undefined;
   /** Headers the gateway reads and does not pass to the provider. */
   readonly consumedHeaders: readonly string[];
+  /** Headers this app's identity or proof is read from: never read as its app key. */
+  readonly identityHeaders: readonly string[];
   /** Every request carries `X-AppAttest-Proof`. */
   readonly verifiesEveryRequest: boolean;
   verifier(env: Env, appId: string, headers: Headers, credential: RequestCredential): () => Promise<GatewayIdentity>;
@@ -93,6 +100,7 @@ function apiKeyAuth(endUserHeader: string | null): ClientAuth {
     tokenHeader: undefined,
     verifiesEveryRequest: false,
     consumedHeaders: endUserHeader === null ? [PROOF_HEADER] : [endUserHeader, PROOF_HEADER],
+    identityHeaders: endUserHeader === null ? [PROOF_HEADER] : [endUserHeader.toLowerCase(), PROOF_HEADER],
     verifier(env, appId, headers, credential) {
       const userId = endUserHeader === null ? null : requiredEndUserId(headers, endUserHeader);
       return () => verifyApiKey(credential.token, env, appId, userId);
@@ -110,6 +118,7 @@ function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication 
     tokenHeader,
     verifiesEveryRequest,
     consumedHeaders: tokenHeader === undefined ? [PROOF_HEADER] : [tokenHeader, PROOF_HEADER],
+    identityHeaders: [PROOF_HEADER],
     verifier(env, appId, _headers, credential) {
       return async () => {
         const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId);

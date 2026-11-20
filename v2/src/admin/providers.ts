@@ -20,9 +20,13 @@
  * - A custom provider (type `custom`, `../providers/custom.ts`) needs its
  *   base URL and the header its key is sent in. Its listed paths are its
  *   whole API; one that names an API style is an operation of that style,
- *   priced at the connection's rates, which must bill it when it is listed.
- *   It takes neither Cloudflare AI Gateway nor serving providers. Only a
- *   person or key with the manage grant can save one, as any base URL.
+ *   priced at the connection's rates. It takes neither Cloudflare AI Gateway
+ *   nor serving providers. Only a person or key with the manage grant can
+ *   save one, as any base URL.
+ * - A base URL's path is normalized as request paths are (`checkedBaseUrl`).
+ * - Every change that affects which calls a connection serves or their price
+ *   (rates, paths, API styles, base URL) is judged against the apps that
+ *   route to it by one rule (`checkConnectionChange`).
  */
 import type { Context } from "hono";
 import {
@@ -37,8 +41,9 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, priceSources, resolveCall, resolvePassthrough, savedPriceProblem } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
+import { parseServiceModeName } from "../usage/service-modes.ts";
 import {
   describeConnection,
   keyOrigin,
@@ -64,13 +69,13 @@ import {
   type PassthroughPath,
   type UpstreamRoute,
 } from "../providers/matcher.ts";
-import type { OperationDescription, ProviderAuth, ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type OperationDescription, type ProviderAuth, type ProviderDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
-import { TemplateError } from "../providers/path.ts";
+import { normalizePath, TemplateError, type PathRefusal } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
-import { checkConnectionRates, checkNewConnection, parseBody } from "./apps.ts";
+import { checkConnectionChange, checkNewConnection, parseBody } from "./apps.ts";
 import { planCap } from "./plan-caps.ts";
 import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
@@ -235,8 +240,6 @@ type ListingSubject =
 interface CheckedListing {
   readonly stored: string | null;
   readonly description: ProviderDescription;
-  /** The API-style paths not listed before, whose operations need a price that bills (`assertStylesPriced`). */
-  readonly newStyles: readonly OperationDescription[];
 }
 
 /**
@@ -352,32 +355,38 @@ function passthroughJson(
       );
     }
   }
-  const newStyles = checked.flatMap(({ listed, isNew }) => {
-    const style = listed.style;
-    if (!isNew || style === undefined || !isCustomStyle(style)) return [];
-    return description.operations.filter((operation) => operation.name === customOperationName(style));
-  });
-  return { stored: storedPassthrough(paths, subject.kind === "custom" ? subject.auth : null), description, newStyles };
+  return { stored: storedPassthrough(paths, subject.kind === "custom" ? subject.auth : null), description };
 }
 
 /**
- * Each newly listed API-style path needs a model of the connection that it
- * bills at the connection's rates: it is metered by its style and has no
- * price of ours. A path no model can be served on is refused now, not on a
- * live request.
+ * A custom provider's rates in a service mode no path of it can be read in:
+ * refused. A mode is billed only when a request or answer names it in a field
+ * its API style reads (`readingRules`), or a regional host serves it, so a
+ * rate in any other mode would never bill and the call would be billed at
+ * standard instead. A built-in provider's modes are judged by its own tables
+ * (`savedPriceProblem`).
  */
-function assertStylesPriced(operations: readonly OperationDescription[], rates: CustomerRates | null): void {
-  const sources = priceSources({ type: CUSTOM_TYPE, rates });
-  for (const operation of operations) {
-    const billed = Object.keys(rates ?? {}).some((model) => {
-      const call = resolveCall({}, undefined, sources, operation, model, null, { asIfServed: true });
-      return call.kind === "admitted" && callGap(call) === null;
-    });
-    if (!billed) {
+function assertModesReadable(description: ProviderDescription, baseUrl: string, rates: CustomerRates | null): void {
+  const tiers = new Set<string>(["standard"]);
+  const regions = new Set<string>(["global"]);
+  for (const operation of description.operations) {
+    const rules = readingRules(description, operation);
+    for (const field of [...rules.serviceModes, ...(rules.servedModes ?? [])]) {
+      for (const value of Object.values(field.values)) (field.axis === "tier" ? tiers : regions).add(value);
+    }
+  }
+  const origin = `${new URL(baseUrl).origin}/`;
+  const regional = description.regionalOrigins !== undefined && Object.hasOwn(description.regionalOrigins, origin) ? description.regionalOrigins[origin] : undefined;
+  if (regional !== undefined) regions.add(regional);
+  for (const [model, entry] of Object.entries(rates ?? {})) {
+    const modes = (entry as { modes?: Record<string, unknown> }).modes;
+    for (const name of Object.keys(modes ?? {})) {
+      const mode = parseServiceModeName(name);
+      if (mode !== null && tiers.has(mode.tier) && regions.has(mode.region)) continue;
       throw new GatewayError(
         400,
-        "pricing_not_configured",
-        `pricing: ${operation.name} (${operation.match.path}) bills its models at your rates; give at least one model a rate for every unit it reports`,
+        "invalid_request",
+        `pricing.${model}.modes.${name}: no path this provider lists reads the ${name} mode, so the rate would never bill`,
       );
     }
   }
@@ -516,9 +525,32 @@ function assertFieldsFit(
   }
 }
 
-export function checkedBaseUrl(raw: string): string {
+/** Why a base URL's path could reach another path at the provider than the one judged, in words. */
+const BASE_PATH_PROBLEMS: Readonly<Record<PathRefusal, string>> = {
+  bad_encoding: "has broken percent-encoding",
+  dot_segment: "has a . or .. segment",
+  encoded_separator: "has an encoded / or \\",
+  control_character: "has a control character",
+};
+
+/**
+ * A base URL, checked when saved: the origin guard, then its path through
+ * the same normalization request paths get (`normalizePath`). Refused paths
+ * are judged on its segments (`upstreamTargets`), so an encoded slash, a
+ * backslash, a dot segment, broken encoding or an empty segment, which the
+ * provider could read as other segments, is refused. A stored base URL sent
+ * back unchanged (`unchanged`) is not judged again.
+ */
+export function checkedBaseUrl(raw: string, unchanged: string | null = null): string {
   const checked = checkOperatorBaseUrl(raw);
   if (!checked.ok) throw new GatewayError(400, "invalid_request", `baseUrl: ${checked.message}`);
+  if (checked.baseUrl === unchanged) return checked.baseUrl;
+  const pathname = new URL(checked.baseUrl).pathname;
+  const normalized = normalizePath(pathname);
+  if (!normalized.ok) throw new GatewayError(400, "invalid_request", `baseUrl: its path ${BASE_PATH_PROBLEMS[normalized.reason]}`);
+  if (pathname.length > 1 && pathname.slice(1, -1).split("/").includes("")) {
+    throw new GatewayError(400, "invalid_request", "baseUrl: its path has an empty segment (//)");
+  }
   return checked.baseUrl;
 }
 
@@ -578,7 +610,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const passthroughStored = listing?.stored ?? null;
   const operations = listing?.description.operations ?? builtIn!.operations;
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type, operations);
-  if (listing !== null) assertStylesPriced(listing.newStyles, newRates);
+  if (customSetting !== null && listing !== null) assertModesReadable(listing.description, customSetting.baseUrl, newRates);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
   await checkNewConnection(
     c.env.DB,
@@ -637,7 +669,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   const custom = current.type === CUSTOM_TYPE;
   const description = builtInProvider(current.type);
   assertFieldsFit(current.type, body);
-  const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl);
+  const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl, current.base_url);
   const storedAuth = custom ? readCustomAuth(current.passthrough_json) : null;
   const customSetting = custom ? checkedCustom(baseUrl, body.auth ?? storedAuth) : null;
 
@@ -741,7 +773,6 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   const askedPaths = body.passthrough === null ? (custom ? [] : null) : (body.passthrough ?? kept);
   // The description the connection has once saved: its paths decide a custom provider's operations.
   let operationsDescription: ProviderDescription | null = custom ? newDescription : description;
-  let newStyles: readonly OperationDescription[] = [];
   if (askedPaths === null) passthroughStored = null;
   else if (askedPaths !== undefined) {
     const priorPaths = routeMoved ? [] : storedPaths;
@@ -753,32 +784,31 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
     }
     passthroughStored = checked.stored;
     operationsDescription = checked.description;
-    newStyles = checked.newStyles;
   }
   const newRates =
     body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type, operationsDescription?.operations ?? []);
-  if (newStyles.length > 0) {
-    const ratesNow = body.pricing === undefined ? (current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates)) : newRates;
-    assertStylesPriced(newStyles, ratesNow);
-  }
-  if (body.pricing !== undefined) {
-    // Every change of rates, whatever its shape (a replacement, a deletion inside it, or `null`, every
-    // model's rate deleted), is judged against the apps that route to this connection.
-    const before = (() => {
+  if (customSetting !== null && operationsDescription !== null && body.pricing !== undefined) assertModesReadable(operationsDescription, customSetting.baseUrl, newRates);
+  // Every change that affects which calls the connection serves, or their price, is judged against the
+  // apps that route to it, by one rule (`checkConnectionChange`): its rates (a replacement, a deletion
+  // inside it, or `null`), its paths and a custom provider's API styles, its base URL.
+  if (body.pricing !== undefined || askedPaths !== undefined || baseUrl !== current.base_url) {
+    const oldRates = (() => {
       try {
         return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
       } catch {
         return null;
       }
     })();
-    const judged = custom ? (operationsDescription ?? undefined) : undefined;
-    await checkConnectionRates(
-      c.env.DB,
-      actor.accountId,
-      { slug: current.slug, type: current.type, baseUrl, ...(judged !== undefined ? { description: judged } : {}) },
-      before,
-      newRates,
-    );
+    const finalRates = body.pricing === undefined ? oldRates : newRates;
+    if (oldDescription !== null && operationsDescription !== null) {
+      await checkConnectionChange(
+        c.env.DB,
+        actor.accountId,
+        { slug: current.slug, type: current.type },
+        { description: oldDescription, baseUrl: current.base_url, rates: oldRates },
+        { description: operationsDescription, baseUrl, rates: finalRates },
+      );
+    }
   }
   const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(

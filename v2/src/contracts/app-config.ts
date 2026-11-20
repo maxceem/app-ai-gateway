@@ -67,6 +67,22 @@ const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "host",
 ]);
 
+/**
+ * The headers the gateway reads who is calling and their proof from, besides
+ * `Authorization`: the conventional end-user header, App Attest's proof, and
+ * the client SDK's own headers. A provider key header may never be one of
+ * them (a custom provider's is refused when saved, `src/providers/custom.ts`),
+ * and a request's app key is never read from one (`src/client-auth/client-auth.ts`).
+ */
+export const GATEWAY_IDENTITY_HEADERS: ReadonlySet<string> = new Set([
+  "x-end-user-id",
+  "x-appattest-proof",
+  "x-app-version",
+  "x-client-sdk",
+  "x-client-trace-id",
+  "x-conversation-storage",
+]);
+
 /** Every built-in provider's key header, so a provider key is never read as a user id. */
 const PROVIDER_KEY_HEADERS: ReadonlySet<string> = new Set(
   Object.values(BUILT_IN_PROVIDERS).map((provider) => provider.auth.header.toLowerCase()),

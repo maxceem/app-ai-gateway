@@ -20,8 +20,13 @@
  * - **Its paths.** Refused paths are judged on every way its base URL may be
  *   read (`customerPaths`), for its API-style operations as for its plain
  *   listings: the customer, not the gateway, chose those paths.
+ * - **Its styles.** An API-style path is a built-in provider's own operation
+ *   of that style, at the listed path, with that provider's rules for reading
+ *   it (`rules`: service modes, metered transcription formats): the base URL's
+ *   own provider where it declares the style, else the style's home provider.
  */
 import type { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
+import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
 import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
@@ -35,10 +40,11 @@ export const CUSTOM_TYPE = "custom";
 export const CUSTOM_LABEL = "Custom provider";
 
 /**
- * The API styles a custom path may name, each with the builder a built-in
- * provider uses for it. The styles whose model is in the body or a form
- * field: a style that reads its model from the path (Gemini's) or from a
- * provider's own answer shape is not offered.
+ * The API styles a custom path may name: the styles whose model is in the
+ * body or a form field. A style that reads its model from the path
+ * (Gemini's) is not offered. Each builder is the shared one built-in
+ * providers use (`./llm.ts`), for a style its source provider does not
+ * declare itself.
  */
 const STYLE_BUILDERS: Readonly<Record<(typeof CUSTOM_PATH_STYLES)[number], (name: string, path: string) => OperationDescription>> = {
   "openai-chat": (name: string, path: string) => chat(name, path),
@@ -56,6 +62,23 @@ export type CustomStyle = (typeof CUSTOM_PATH_STYLES)[number];
 const EVERY_STYLE_IS_AN_API_STYLE: readonly ApiStyle[] = [] as CustomStyle[];
 void EVERY_STYLE_IS_AN_API_STYLE;
 
+/**
+ * The built-in provider whose API defines each style: its operation of the
+ * style, and its rules for reading it (service modes, metered transcription
+ * formats), are what a custom path of the style is, on a host the gateway
+ * does not know.
+ */
+const STYLE_HOME: Readonly<Record<CustomStyle, string>> = {
+  "openai-chat": "openai",
+  "openai-completions": "openai",
+  "openai-responses": "openai",
+  "anthropic-messages": "anthropic",
+  "openai-embeddings": "openai",
+  "openai-images": "openai",
+  "openai-transcription": "openai",
+  "openai-speech": "openai",
+};
+
 export const CUSTOM_STYLES = Object.keys(STYLE_BUILDERS) as readonly CustomStyle[];
 
 export function isCustomStyle(value: string): value is CustomStyle {
@@ -71,9 +94,45 @@ export function customOperationName(style: CustomStyle): string {
   return `${CUSTOM_TYPE}.${style}`;
 }
 
-/** The operation a custom path of `style` is served as. */
-export function customOperation(style: CustomStyle, path: string): OperationDescription {
-  return STYLE_BUILDERS[style](customOperationName(style), path);
+/** A provider's own operation of `style` that a custom path can be: a call, a POST, its model in the body or a form field. */
+function definitionOf(provider: ProviderDescription, style: CustomStyle): OperationDescription | null {
+  return (
+    provider.operations.find(
+      (operation) =>
+        operation.style === style &&
+        operation.lifecycle === "call" &&
+        operation.match.method === "POST" &&
+        (operation.model.in === "body" || operation.model.in === "form") &&
+        operation.upstream === undefined &&
+        operation.multiSegment === undefined,
+    ) ?? null
+  );
+}
+
+/**
+ * The operation a custom path of `style` is served as: a built-in
+ * provider's own definition of the style, at the listed path, with that
+ * provider's rules for reading it (`rules`), so its service modes and metered
+ * transcription formats come with it. The provider is the base URL's own
+ * (`owner`) where it declares the style, else the style's home provider.
+ */
+export function customOperation(style: CustomStyle, path: string, owner: ProviderDescription | null = null): OperationDescription {
+  const name = customOperationName(style);
+  const ownDefinition = owner === null ? null : definitionOf(owner, style);
+  const source = ownDefinition !== null ? owner! : BUILT_IN_PROVIDERS[STYLE_HOME[style]]!;
+  const definition = ownDefinition ?? definitionOf(source, style) ?? STYLE_BUILDERS[style](name, path);
+  const { upstream: _upstream, multiSegment: _multiSegment, rules: _rules, ...rest } = definition;
+  return {
+    ...rest,
+    name,
+    match: { method: "POST", path },
+    rules: {
+      serviceModes: source.serviceModes,
+      ...(source.servedModes !== undefined ? { servedModes: source.servedModes } : {}),
+      ...(source.transcriptionFormats !== undefined ? { transcriptionFormats: source.transcriptionFormats } : {}),
+      ...(source.countedInputModalities !== undefined ? { countedInputModalities: source.countedInputModalities } : {}),
+    },
+  };
 }
 
 /**
@@ -95,22 +154,23 @@ function hostOf(baseUrl: string): string | null {
 /** Cloudflare AI Gateway's host: it reaches every provider it serves, so no custom provider may use it. */
 export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
 
+/** A provider's declared host names, lower-cased: its `hosts` and its `otherHosts`. */
+export function declaredHostNames(description: ProviderDescription): readonly string[] {
+  return [
+    ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
+    ...(description.otherHosts ?? []).map((value) => value.toLowerCase()),
+  ];
+}
+
 /**
- * The built-in provider whose host a base URL is on, or null: any of its
- * hosts, or a regional host it prices apart. Compared on the host name alone,
- * so a base URL with its own path on that host is still that provider's.
+ * The built-in provider whose host a base URL is on, or null: any host it
+ * declares (`declaredHostNames`). Compared on the host name alone, so a base
+ * URL with its own path on that host is still that provider's.
  */
 export function knownHostOwner(baseUrl: string): ProviderDescription | null {
   const host = hostOf(baseUrl);
   if (host === null) return null;
-  for (const description of Object.values(BUILT_IN_PROVIDERS)) {
-    const hosts = [
-      ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
-      ...Object.keys(description.regionalOrigins ?? {}).map((origin) => hostOf(origin)),
-    ];
-    if (hosts.includes(host)) return description;
-  }
-  return null;
+  return Object.values(BUILT_IN_PROVIDERS).find((description) => declaredHostNames(description).includes(host)) ?? null;
 }
 
 /** What a custom provider connection stores, as its description is built from. */
@@ -130,7 +190,7 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
   const owner = knownHostOwner(setting.baseUrl);
   const host = hostOf(setting.baseUrl) ?? "";
   const operations = setting.paths.flatMap((listed) =>
-    listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST" ? [customOperation(listed.style, listed.path)] : [],
+    listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST" ? [customOperation(listed.style, listed.path, owner)] : [],
   );
   return {
     type: CUSTOM_TYPE,
@@ -140,6 +200,8 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     auth: setting.auth,
     serviceModes: NO_SERVICE_TIERS,
     refused: owner === null ? [] : owner.refused,
+    // A known provider's regional hosts serve at its regional prices, as for its own connections.
+    ...(owner?.regionalOrigins !== undefined ? { regionalOrigins: owner.regionalOrigins } : {}),
     customerPaths: true,
     operations,
   };
@@ -184,6 +246,8 @@ export function customAuthProblem(auth: ProviderAuth): string | null {
   if (RESERVED_KEY_HEADERS.has(header) || header.startsWith("cf-") || header.startsWith("x-agw-") || header.startsWith("sec-")) {
     return `auth.header: ${header} cannot carry the key`;
   }
+  // A header the gateway reads who is calling from would carry the key and a user id at once.
+  if (GATEWAY_IDENTITY_HEADERS.has(header)) return `auth.header: ${header} cannot carry the key: the gateway reads who is calling from it`;
   const format = auth.format;
   if (format.split("{key}").length !== 2) return "auth.format: must hold {key} exactly once";
   if (!/^[\x20-\x7e]*$/u.test(format)) return "auth.format: may hold only printable ASCII characters";

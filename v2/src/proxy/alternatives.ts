@@ -65,7 +65,7 @@ export function judgedAlternatives(
     const bill = call.bill;
     // Read with that model's provider's table: one request may name an
     // Anthropic model and a Gemini one, whose tiers mean different things.
-    judged.set(model, { billing: bill, requestedMode: requestedServiceMode(description, policy.baseUrl, body, model) });
+    judged.set(model, { billing: bill, requestedMode: requestedServiceMode(description, operation, policy.baseUrl, body, model) });
   }
   return judged;
 }

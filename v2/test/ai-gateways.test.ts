@@ -191,20 +191,20 @@ describe("Vercel's models, priced and read as their provider's", () => {
     const vercel = BUILT_IN_PROVIDERS.vercel!;
     const body = { providerOptions: { gateway: { serviceTier: "priority" } } };
     // `priority` is fast on OpenAI's models and priority on Gemini's.
-    expect(requestedServiceMode(vercel, null, body, "openai/gpt-4o-mini").mode.tier).toBe("fast");
-    expect(requestedServiceMode(vercel, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
+    expect(requestedServiceMode(vercel, undefined, null, body, "openai/gpt-4o-mini").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
     // The model's provider's own fields are read too, with its table (S5).
-    expect(requestedServiceMode(vercel, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
     // A provider's own options never carry to another provider's model (S9).
     const anthropicFast = { providerOptions: { anthropic: { speed: "fast" } } };
-    expect(requestedServiceMode(vercel, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
-    expect(requestedServiceMode(vercel, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
+    expect(requestedServiceMode(vercel, undefined, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
     // Only the model's provider's table counts, as v1: `fast` is no Gemini tier (F3).
-    const fast = requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "fast" } } }, "google/gemini-4-neon");
+    const fast = requestedServiceMode(vercel, undefined, null, { providerOptions: { gateway: { serviceTier: "fast" } } }, "google/gemini-4-neon");
     expect(fast.mode.tier).toBe("standard");
     expect(fast.unknown).toBeDefined();
     // A value the provider's table lacks is unknown, at the standard floor.
-    expect(requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
+    expect(requestedServiceMode(vercel, undefined, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
       "standard",
     );
   });

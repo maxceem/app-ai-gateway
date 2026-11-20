@@ -13,6 +13,8 @@ export const openai = defineProvider({
   type: "openai",
   label: "OpenAI",
   hosts: { main: "api.openai.com" },
+  // Its data residency host for Europe.
+  otherHosts: ["eu.api.openai.com"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // The admin API (keys, projects, users, usage and costs) lives under
   // `v1/organization`. The others mint short-lived secrets for live sessions

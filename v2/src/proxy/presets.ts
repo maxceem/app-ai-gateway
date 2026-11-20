@@ -228,7 +228,7 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
       return { form, contentType: null };
     };
   }
-  const mode = requestedServiceMode(description, connection.baseUrl, fields, model);
+  const mode = requestedServiceMode(description, operation, connection.baseUrl, fields, model);
   // What the meter takes from the request, and the values its rates depend on, as on the proxy.
   // A preset sends no client query.
   const facts = requestFacts(operation, { body: fields, query: new URLSearchParams() }, price?.price ?? null, input.caller.facts);
