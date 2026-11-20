@@ -485,6 +485,25 @@ importers:
         specifier: ^4.156.2
         version: 4.156.2(@cloudflare/workers-types@5.20261103.1)(@types/node@24.13.3)
 
+  v2/cli:
+    dependencies:
+      zod:
+        specifier: ^4.0.0
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      '@typescript/native-preview':
+        specifier: 7.0.0-dev.20260707.2
+        version: 7.0.0-dev.20260707.2
+      esbuild:
+        specifier: 0.27.7
+        version: 0.27.7
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   v2/console:
     dependencies:
       '@tanstack/react-query':

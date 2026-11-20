@@ -5,6 +5,7 @@ packages:
   - smoke
   - v2
   - v2/console
+  - v2/cli
 
 allowBuilds:
   cbor-extract: true

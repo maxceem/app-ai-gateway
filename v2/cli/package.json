@@ -1,0 +1,35 @@
+{
+  "name": "@app-ai-gateway/agw-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "agw 2: manage an App AI Gateway v2 from a terminal or coding agent. Published as @maxceem/agw 2.0 at the v2 release.",
+  "license": "Apache-2.0",
+  "bin": {
+    "agw": "dist/agw.mjs"
+  },
+  "files": [
+    "dist/agw.mjs",
+    "README.md",
+    "COMPATIBILITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.ts",
+    "typecheck:tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "esbuild": "0.27.7",
+    "typescript": "^5.9.0"
+  }
+}
