@@ -51,7 +51,7 @@ async function send(caller: Caller, method: string, path: string, body?: unknown
   );
   await waitOnExecutionContext(ctx);
   const text = await response.text();
-  return { status: response.status, text, body: (text ? JSON.parse(text) : null) as Record<string, any> };
+  return { status: response.status, headers: response.headers, text, body: (text ? JSON.parse(text) : null) as Record<string, any> };
 }
 
 /** The approval page's call: from the console's own origin, with nobody signed in. */
@@ -268,6 +268,36 @@ describe("creating an app once", () => {
     expect((await send(caller, "GET", `/v2/admin/operations/${created.body.id}`)).body.reveal_url).toBeUndefined();
   });
 
+  it("reveals to an admin of the operation's account while another account is selected", async () => {
+    const human = await person();
+    const reserved = await send(human.caller, "POST", "/v2/admin/reserved/apps", { name: "Elsewhere", config: apiKeyConfig });
+    const created = await send(human.caller, "POST", "/v2/admin/reserved/apps", { name: "Elsewhere", config: apiKeyConfig, handle: reserved.body.handle });
+
+    // The same person also owns another account, and the console selects it.
+    const other = `acc_other_${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Other', ?, ?, ?)").bind(other, human.userId, now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)",
+      ).bind(`mem_${other}`, other, human.userId, now),
+    ]);
+    const selected = await send(human.caller, "POST", "/v2/admin/accounts/select", { accountId: other });
+    expect(selected.status).toBe(200);
+    // The browser keeps the cookies the answer set, in place of those of the same name.
+    const jar = new Map(human.cookie.split(/;\s*/u).map((pair) => [pair.split("=")[0]!, pair] as const));
+    for (const set of selected.headers.getSetCookie()) {
+      const pair = set.split(";")[0]!;
+      jar.set(pair.split("=")[0]!, pair);
+    }
+    const switched = { cookie: [...jar.values()].join("; ") };
+    expect((await send(switched, "GET", "/v2/admin/session")).body.session.account.id).toBe(other);
+
+    const revealed = await send(switched, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
+    expect(revealed.status).toBe(200);
+    expect(revealed.body.result.api_key.id).toBe(created.body.api_key.id);
+  });
+
   it("refuses a management key on the reveal page's call", async () => {
     const key = await seedManagementKey();
     const reserved = await send({ key }, "POST", "/v2/admin/reserved/apps", { name: "Keyed", config: apiKeyConfig });
@@ -332,10 +362,10 @@ describe("creating an app once", () => {
     expect(created.body).toMatchObject({ state: "created", api_key: null });
     expect(created.body.reveal_url).toBeUndefined();
     // Nothing to reveal is refused, not answered with an empty key.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const revealed = await send(caller, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
-      expect(revealed.status).toBe(410);
-    }
+    const reveal = () => send(caller, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
+    expect((await reveal()).status).toBe(410);
+    // cf-auth drops what failed to be revealed, so a second try is told it is gone.
+    expect((await reveal()).status).toBe(409);
   });
 
   it("refuses the creation when the plan's ceiling filled after the reservation", async () => {

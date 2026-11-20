@@ -789,17 +789,10 @@ export async function revealOperation(c: AdminContext): Promise<Response> {
     throw new GatewayError(403, "forbidden", "Reveal a key on the console's own page");
   }
   const session = requireConsoleSession(c.get("authState"));
-  const id = c.req.param("id") ?? "";
-  const engine = await engineOf(c);
   try {
-    // An outcome with no key has nothing to reveal, on every try: refused
-    // before the engine would hand over, and drop, what it holds.
-    const status = await engine.status({ id, opener: session });
-    const apiKey = isRecord(status.record) ? status.record.api_key : undefined;
-    if (status.state === "completed" && isReservedKindName(status.kind) && !isRecord(apiKey)) {
-      throw new GatewayError(410, "operation_expired", "This operation created no key to reveal");
-    }
-    const revealed = await engine.reveal({ id, actor: session });
+    // cf-auth checks the person's owner or admin role in the operation's own
+    // account, whichever account the console has selected.
+    const revealed = await (await engineOf(c)).reveal({ id: c.req.param("id") ?? "", actor: session });
     c.header("Cache-Control", "no-store");
     return c.json({
       id: revealed.id,
