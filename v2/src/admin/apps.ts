@@ -363,9 +363,9 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
  * The calls judged are those reachable under the old rates and under the
  * new, all priced with the new: a preset fallback the new rates would drop
  * is judged too, and refused, as its first target would be. Only models
- * whose rates are new or changed are judged: a removed rate is served and
- * priced later, as before. A disabled app is judged in full when it is
- * turned on again.
+ * whose rates are new, changed or deleted are judged, so deleting a rate no
+ * call needs still saves. A disabled app is judged in full when it is turned
+ * on again.
  */
 export async function checkConnectionRates(
   db: D1Database,
@@ -375,8 +375,13 @@ export async function checkConnectionRates(
   after: CustomerRates | null,
 ): Promise<void> {
   const description = builtInProvider(connection.type);
-  if (description === null || after === null) return;
-  const changedModels = new Set(Object.keys(after).filter((model) => before === null || !Object.hasOwn(before, model) || !sameJson(before[model], after[model])));
+  if (description === null) return;
+  // New, changed and deleted rates alike: a deleted rate can drop a call that worked.
+  const was = before ?? {};
+  const now = after ?? {};
+  const changedModels = new Set(
+    [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
+  );
   if (changedModels.size === 0) return;
   const { results } = await db
     .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")

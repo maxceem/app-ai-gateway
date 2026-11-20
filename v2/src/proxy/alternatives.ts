@@ -14,7 +14,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { admissionProblem, billing, type Billing, type PriceSources } from "../pricing/billability.ts";
+import { admissionProblem, billing, modelSet, type Billing, type PriceSources } from "../pricing/billability.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { fieldValue, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
@@ -50,8 +50,9 @@ export function judgedAlternatives(
     throw new GatewayError(400, "invalid_request", `${field} must be a list of model ids`);
   }
   const judged = new Map<string, Alternative>();
+  const allowed = modelSet(policy.allowed);
   for (const model of listed as string[]) {
-    if (policy.allowed !== undefined && !policy.allowed.includes(model)) {
+    if (allowed !== null && !allowed.has(model)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });
     }
     const bill = billing(operation, policy.sources, model);

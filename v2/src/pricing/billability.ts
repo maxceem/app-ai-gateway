@@ -360,17 +360,23 @@ export function resolveCall(
 /** Each allowlist as a set, built once per list: a route's config is one object for the Worker's life, so serving and saving share it. */
 const LISTS = new WeakMap<readonly string[], ReadonlySet<string>>();
 
+/** A model list as a set for membership, the one cached set for that list; null when there is no list. */
+export function modelSet(models: readonly string[] | undefined): ReadonlySet<string> | null {
+  if (models === undefined) return null;
+  let set = LISTS.get(models);
+  if (set === undefined) LISTS.set(models, (set = new Set(models)));
+  return set;
+}
+
 /** A route's model names, a set for membership; null when it has no list. */
 function listOf(route: RouteModels): ReadonlySet<string> | null {
-  if (route.models === undefined) return null;
-  let set = LISTS.get(route.models);
-  if (set === undefined) LISTS.set(route.models, (set = new Set(route.models)));
-  return set;
+  return modelSet(route.models);
 }
 
 /** The model names a request to a route can carry: its model list, or, with none, every model it could name that has a price of the connection's own or a rewrite. */
 function candidateModels(route: RouteModels, rewrites: Readonly<Record<string, string>> | undefined, sources: PriceSources): readonly string[] {
-  if (route.models !== undefined) return [...new Set(route.models)];
+  const listed = listOf(route);
+  if (listed !== null) return [...listed];
   return [...new Set([...Object.keys(sources.rates() ?? {}), ...Object.keys(rewrites ?? {}), ...Object.values(rewrites ?? {})])];
 }
 
