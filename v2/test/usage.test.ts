@@ -13,16 +13,14 @@ import { bytedance, mistral } from "../src/providers/compatible.ts";
 import { gemini } from "../src/providers/gemini.ts";
 import { openai } from "../src/providers/openai.ts";
 import { requestedServiceMode, servedServiceMode } from "../src/proxy/meter.ts";
-import { streamClosed } from "../src/proxy/observe.ts";
-import { readProviderCost } from "../src/usage/cost-reports.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
-import { readUsage, responseValues, withHeaderVariants } from "../src/usage/readers.ts";
+import { readBody, withHeaderVariants, type BodyReaderOptions } from "../src/usage/readers.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import type { ApiStyle } from "../src/providers/operation.ts";
 
-function read(text: string, contentType: string, style: ApiStyle, counted?: Parameters<typeof readUsage>[2]): UsageObservation {
-  const usage = readUsage(responseValues({ head: text, tail: "", truncated: false }, contentType), style, counted);
+function read(text: string, contentType: string, style: ApiStyle, counted?: BodyReaderOptions["counted"]): UsageObservation {
+  const usage = readBody(text, contentType, style, counted === undefined ? {} : { counted }).usage;
   expect(usage).not.toBeNull();
   return usage!;
 }
@@ -162,19 +160,19 @@ describe("usage readers", () => {
   });
 
   it("refuses a count that is not a whole number, in every shape", () => {
-    const values = (value: unknown) => responseValues({ head: JSON.stringify(value), tail: "", truncated: false }, "application/json");
-    expect(readUsage(values({ usage: { prompt_tokens: 1.5, completion_tokens: 1 } }), "openai-chat")).toBeNull();
-    expect(readUsage(values({ usage: { input_tokens: 2, output_tokens: 1.5 } }), "anthropic-messages")).toBeNull();
-    expect(readUsage(values({ usageMetadata: { promptTokenCount: 2.5 } }), "gemini-generate")).toBeNull();
+    const usage = (value: unknown, style: ApiStyle) => readBody(JSON.stringify(value), "application/json", style).usage;
+    expect(usage({ usage: { prompt_tokens: 1.5, completion_tokens: 1 } }, "openai-chat")).toBeNull();
+    expect(usage({ usage: { input_tokens: 2, output_tokens: 1.5 } }, "anthropic-messages")).toBeNull();
+    expect(usage({ usageMetadata: { promptTokenCount: 2.5 } }, "gemini-generate")).toBeNull();
   });
 
   it("reports no usage for a body that carries none it can price", () => {
-    const values = (value: unknown) => responseValues({ head: JSON.stringify(value), tail: "", truncated: false }, "application/json");
-    expect(readUsage(values({ usage: { billed_units: { input_tokens: 5 } } }), "openai-chat")).toBeNull();
-    expect(readUsage(values({ choices: [] }), "openai-chat")).toBeNull();
-    expect(readUsage(responseValues({ head: sse([{ type: "message_stop" }]), tail: "", truncated: false }, "text/event-stream"), "anthropic-messages")).toBeNull();
+    const usage = (value: unknown) => readBody(JSON.stringify(value), "application/json", "openai-chat").usage;
+    expect(usage({ usage: { billed_units: { input_tokens: 5 } } })).toBeNull();
+    expect(usage({ choices: [] })).toBeNull();
+    expect(readBody(sse([{ type: "message_stop" }]), "text/event-stream", "anthropic-messages").usage).toBeNull();
     // A reported zero is a measured zero, not an unreadable answer.
-    expect(readUsage(values({ usage: { prompt_tokens: 0, completion_tokens: 0 } }), "openai-chat")).toEqual({
+    expect(usage({ usage: { prompt_tokens: 0, completion_tokens: 0 } })).toEqual({
       inputTokens: 0,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
@@ -182,17 +180,21 @@ describe("usage readers", () => {
     });
   });
 
-  it("reads a truncated JSON answer's usage and served tier from its tail", () => {
-    const tail = `"padding"]},"service_tier":"flex","usage":{"input_tokens":7,"output_tokens":3}}`;
-    const usage = readUsage(responseValues({ head: '{"id":"resp_1","object":"response"', tail, truncated: true }, "application/json"), "openai-responses");
-    expect(usage).toMatchObject({ inputTokens: 7, outputTokens: 3, reportedModes: { service_tier: "flex" }, modesScanned: true });
+  it("reads a large JSON answer's usage and served tier at its end", () => {
+    const body = `{"id":"resp_1","object":"response","output":["${"padding".repeat(200_000)}"],"service_tier":"flex","usage":{"input_tokens":7,"output_tokens":3}}`;
+    const usage = readBody(body, "application/json", "openai-responses").usage;
+    expect(usage).toMatchObject({ inputTokens: 7, outputTokens: 3, reportedModes: { service_tier: "flex" } });
   });
 
-  it("reads a truncated Anthropic stream from both of its ends", () => {
-    const head = sse([{ type: "message_start", message: { usage: { input_tokens: 500, output_tokens: 1 } } }, { type: "content_block_delta", delta: { text: "x" } }]);
-    const tail = `"text":"y"}}\n\n${sse([{ type: "message_delta", usage: { output_tokens: 250 } }, { type: "message_stop" }])}`;
-    const usage = readUsage(responseValues({ head, tail, truncated: true }, "text/event-stream"), "anthropic-messages");
-    expect(usage).toMatchObject({ inputTokens: 500, outputTokens: 250 });
+  it("reads a long Anthropic stream's input tokens at its start and output tokens at its end", () => {
+    const middle = Array.from({ length: 5_000 }, () => ({ type: "content_block_delta", delta: { text: "x".repeat(100) } }));
+    const body = sse([
+      { type: "message_start", message: { usage: { input_tokens: 500, output_tokens: 1 } } },
+      ...middle,
+      { type: "message_delta", usage: { output_tokens: 250 } },
+      { type: "message_stop" },
+    ]);
+    expect(readBody(body, "text/event-stream", "anthropic-messages").usage).toMatchObject({ inputTokens: 500, outputTokens: 250 });
   });
 });
 
@@ -257,27 +259,27 @@ describe("a Gemini prompt partly from the cache", () => {
 });
 
 describe("the end of a stream", () => {
-  const body = (head: string) => ({ head, tail: "", truncated: false });
+  const streamClosed = (text: string, style: ApiStyle) => readBody(text, "text/event-stream", style).closed;
 
   it("closes only on a whole closing frame", () => {
     // A cut payload is not a closing event, even if it names one.
-    expect(streamClosed(body('data: {"type":"response.completed","response":{"usage":\n\n'), "openai-responses")).toBe(false);
+    expect(streamClosed('data: {"type":"response.completed","response":{"usage":\n\n', "openai-responses")).toBe(false);
     // A closing event named only by its event line counts, when its data is whole.
-    expect(streamClosed(body('event: response.completed\ndata: {"response":{}}\n\n'), "openai-responses")).toBe(true);
+    expect(streamClosed('event: response.completed\ndata: {"response":{}}\n\n', "openai-responses")).toBe(true);
     // A comment after the closing event changes nothing.
-    expect(streamClosed(body("data: [DONE]\n\n: keep-alive\n\n"), "openai-chat")).toBe(true);
-    expect(streamClosed(body('event: message_stop\ndata: {"type":"message_stop"}\n\n'), "anthropic-messages")).toBe(true);
+    expect(streamClosed("data: [DONE]\n\n: keep-alive\n\n", "openai-chat")).toBe(true);
+    expect(streamClosed('event: message_stop\ndata: {"type":"message_stop"}\n\n', "anthropic-messages")).toBe(true);
     // A frame still arriving is not one.
-    expect(streamClosed(body("data: [DONE]"), "openai-chat")).toBe(false);
-    // A kept tail starts mid-frame: a clipped comment that reads like [DONE] is not a closing frame.
-    expect(streamClosed({ head: "", tail: "data: [DONE]\n\n", truncated: true }, "openai-chat")).toBe(false);
-    expect(streamClosed({ head: "", tail: 'x"}\n\ndata: [DONE]\n\n', truncated: true }, "openai-chat")).toBe(true);
+    expect(streamClosed("data: [DONE]", "openai-chat")).toBe(false);
+    // A comment that reads like [DONE] is never data.
+    expect(streamClosed('data: {"x":1}\n\n: data: [DONE]\n\n', "openai-chat")).toBe(false);
+    expect(streamClosed('data: {"x":"y"}\n\ndata: [DONE]\n\n', "openai-chat")).toBe(true);
     // Some services send [DONE] after a Responses or Messages stream's own closing event.
-    expect(streamClosed(body('data: {"type":"response.completed","response":{}}\n\ndata: [DONE]\n\n'), "openai-responses")).toBe(true);
-    expect(streamClosed(body('data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'), "anthropic-messages")).toBe(true);
-    expect(streamClosed(body("data: [DONE]\n\n"), "anthropic-messages")).toBe(false);
+    expect(streamClosed('data: {"type":"response.completed","response":{}}\n\ndata: [DONE]\n\n', "openai-responses")).toBe(true);
+    expect(streamClosed('data: {"type":"message_stop"}\n\ndata: [DONE]\n\n', "anthropic-messages")).toBe(true);
+    expect(streamClosed("data: [DONE]\n\n", "anthropic-messages")).toBe(false);
     // Gemini's stream has no closing event.
-    expect(streamClosed(body("data: {}\n\n"), "gemini-generate")).toBeNull();
+    expect(streamClosed("data: {}\n\n", "gemini-generate")).toBeNull();
   });
 });
 
@@ -354,7 +356,9 @@ describe("token variants", () => {
 });
 
 describe("provider cost reports", () => {
-  const values = (...events: unknown[]) => responseValues({ head: sse(events), tail: "", truncated: false }, "text/event-stream").backwards();
+  const readProviderCost = (events: string, providerCost: NonNullable<BodyReaderOptions["providerCost"]>) =>
+    readBody(events, "text/event-stream", "openai-chat", { providerCost }).providerCostUsd;
+  const values = (...events: unknown[]) => sse(events);
 
   it("reads OpenRouter's cost from a stream's last chunk, adding the upstream's charge on a BYOK request", () => {
     expect(readProviderCost(values({ choices: [] }, { choices: [], usage: { cost: 0.0012 } }), "openrouter")).toBe(0.0012);
@@ -411,18 +415,16 @@ describe("service modes", () => {
   });
 
   it("reads a large answer's root fields raw: a numeric tier is present but unknown (3c S10)", () => {
-    const head = `{"model":"gpt-5.6-luna","service_tier":99,"choices":[{"message":{"content":"${"a".repeat(64)}`;
-    const tail = `${"a".repeat(64)}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`;
-    const usage = readUsage(responseValues({ head, tail, truncated: true }, "application/json"), "openai-chat")!;
+    const body = `{"model":"gpt-5.6-luna","service_tier":99,"choices":[{"message":{"content":"${"a".repeat(2_000_000)}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`;
+    const usage = readBody(body, "application/json", "openai-chat").usage!;
     const flex = { tier: "flex", region: "global" } as const;
     expect(servedServiceMode(openai, flex, usage, new Headers()).unknown).toBeDefined();
   });
 
-  it("believes the mode the response says served the request, but a scanned one only when it is dearer", () => {
+  it("believes the mode the response says served the request", () => {
     const fast = { tier: "fast", region: "global" } as const;
     // OpenAI sheds fast traffic to `default`, and bills it as standard.
     expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
-    expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" }, modesScanned: true }, new Headers()).mode).toEqual(fast);
     // Sources that disagree, or one the table does not know, are flagged; pricing gives them the standard floor.
     const flex = { tier: "flex", region: "global" } as const;
     const unknownHeader = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "turbo" }));

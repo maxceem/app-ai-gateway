@@ -13,18 +13,17 @@
 import { builtInProvider } from "../providers/index.ts";
 import { listedAs } from "../providers/listing.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { readProviderCost } from "../usage/cost-reports.ts";
+import { errorFacts } from "../core/error-facts.ts";
+import { log } from "../core/log.ts";
 import type { UsageObservation } from "../usage/observation.ts";
-import { readUsage, responseValues, withHeaderVariants } from "../usage/readers.ts";
+import { bodyReader, withHeaderVariants, type BodyReader } from "../usage/readers.ts";
 import {
   readServiceMode,
-  SERVICE_TIERS,
   type ServiceMode,
   type ServiceModeField,
   type ServiceModeValue,
   type ServiceRegion,
 } from "../usage/service-modes.ts";
-import type { ObservedText } from "./observe.ts";
 
 /** The region a connection's base URL pins its requests to, or `global`. */
 function baseUrlRegion(description: ProviderDescription, baseUrl: string | null): ServiceRegion {
@@ -109,16 +108,6 @@ export function servedServiceMode(
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
   const { named, unknown } = readServiceMode(fields, read);
   let tier = named.tier ?? requested.tier;
-  // A tier found by scanning text the client can have a hand in (its own
-  // metadata, echoed back) may say a dearer tier served the request, never a
-  // cheaper one than asked. A header, or a value parsed whole, is believed.
-  if (
-    usage?.modesScanned === true &&
-    SERVICE_TIERS[tier].rank < SERVICE_TIERS[requested.tier].rank &&
-    readServiceMode(fields, (name) => header(name)).named.tier === undefined
-  ) {
-    tier = requested.tier;
-  }
   // A tier the response names in a value the table does not know, or in two
   // sources that disagree, says nothing the gateway can price: it may be
   // dearer than asked. It is flagged; pricing bills any doubt at least at
@@ -165,40 +154,87 @@ export interface ResponseReading {
    * that may serve it with another model the request names (`alternativeModels`).
    */
   readonly servedModel?: string | null;
+  /** For a stream: whether it ended with its style's closing event. Null when its style has none, or it is no stream. */
+  readonly closed: boolean | null;
 }
 
 /**
- * The model an answer names: its root `model`, or a stream event's
- * `response.model` (Responses) or `message.model` (Messages), latest first.
+ * How much reading for usage one answer may cost. Reading costs CPU for every
+ * byte and every event (`scripts/bench-usage-reading.ts`): about 4 GB/s over a
+ * large body (a base64 image, a number array), and about 2 µs per SSE event.
+ * Past either limit, reading stops: the call is recorded unresolved and the
+ * stop is logged, and the answer itself is never touched.
+ *
+ * - 32 MiB of body: about 8 ms of CPU, more than any answer the gateway
+ *   meters today.
+ * - 25,000 events: about 50 ms of CPU, a streamed answer of some 25,000
+ *   tokens. A Worker on the Free plan has 10 ms of CPU per request, which a
+ *   stream reaches at about 4,000 events.
  */
-function answeredModel(documents: Iterable<unknown>): string | null {
-  for (const document of documents) {
-    if (typeof document !== "object" || document === null || Array.isArray(document)) continue;
-    const root = document as Record<string, unknown>;
-    for (const holder of [root, root.response, root.message]) {
-      if (typeof holder !== "object" || holder === null || Array.isArray(holder)) continue;
-      const model = (holder as Record<string, unknown>).model;
-      if (typeof model === "string" && model.length > 0) return model;
-    }
-  }
-  return null;
+export const READ_BUDGET = { bytes: 32 * 1024 * 1024, documents: 25_000 } as const;
+
+/** Reads a response as it streams past (`./observe.ts` hands it each piece), then gives its reading. */
+export interface ResponseReader {
+  push(chunk: Uint8Array): void;
+  finish(headers: Headers): ResponseReading;
 }
 
-/** Reads a response with the operation's meter. A body no reader can make sense of reads as nothing. */
-export function readResponse(
-  body: ObservedText,
+/**
+ * The reader of a response with the operation's meter, or null when there is
+ * nothing to read: no usage meter, and no API style whose stream has a
+ * closing event. Any failure while reading turns it off and is logged: the
+ * call is then recorded unresolved, never as free, and the answer is never
+ * touched.
+ */
+export function responseReader(
   contentType: string,
-  headers: Headers,
   description: ProviderDescription,
   operation: OperationDescription,
-): ResponseReading {
+  facts: Readonly<Record<string, unknown>>,
+  budget: { readonly bytes: number; readonly documents: number } = READ_BUDGET,
+): ResponseReader | null {
   const { meter } = operation;
-  if (meter.kind !== "response_json") return { usage: null, providerCostUsd: null };
-  const style: ApiStyle = meter.style;
-  const values = responseValues(body, contentType);
-  const read = readUsage(values, style, description.countedInputModalities);
-  const usage = read === null ? null : withHeaderVariants(read, headers, contentType, description.type, style);
-  const providerCostUsd = meter.providerCost === undefined ? null : readProviderCost(values.backwards(), meter.providerCost);
-  if (description.alternativeModels === undefined) return { usage, providerCostUsd };
-  return { usage, providerCostUsd, servedModel: answeredModel(values.backwards()) };
+  const metered = meter.kind === "response_json";
+  const style: ApiStyle | undefined = metered ? meter.style : operation.style;
+  if (style === undefined) return null;
+  const body: BodyReader = bodyReader(contentType, style, {
+    counted: description.countedInputModalities,
+    ...(metered && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
+  });
+  const decoder = new TextDecoder();
+  let read = 0;
+  let stopped: "budget" | "failed" | null = null;
+  const stop = (why: "budget" | "failed", error?: unknown) => {
+    stopped = why;
+    if (why === "budget") log("warn", "usage_read_budget_exceeded", { ...facts, budgetBytes: budget.bytes, budgetEvents: budget.documents });
+    else log("error", "usage_read_failed", { ...facts, error: errorFacts(error) });
+  };
+  return {
+    push(chunk) {
+      if (stopped !== null) return;
+      read += chunk.byteLength;
+      if (read > budget.bytes) return stop("budget");
+      try {
+        body.push(decoder.decode(chunk, { stream: true }));
+      } catch (error) {
+        return stop("failed", error);
+      }
+      if (body.documents > budget.documents) stop("budget");
+    },
+    finish(headers) {
+      if (stopped !== null) return { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+      let reading;
+      try {
+        body.push(decoder.decode());
+        reading = body.end();
+      } catch (error) {
+        stop("failed", error);
+        return { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+      }
+      if (reading.overflow) log("warn", "usage_value_too_large", facts);
+      const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, description.type, style);
+      const base = { usage, providerCostUsd: metered ? reading.providerCostUsd : null, closed: reading.closed };
+      return description.alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
+    },
+  };
 }
