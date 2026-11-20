@@ -188,6 +188,28 @@ describe("validate and check", () => {
     });
   });
 
+  it("judges the apps that route to a connection when its rates change, so a rate added later cannot be charged only partly", async () => {
+    const key = await seedManagementKey();
+    const slug = `el-${crypto.randomUUID().slice(0, 6)}`;
+    const { body: provider } = await createProvider(key, { type: "elevenlabs", name: "ElevenLabs", slug });
+    // An app with text to speech and no model list: any model with a price is served.
+    const { body: app } = await createApp(key, apiKeyConfig({ [slug]: { operations: ["elevenlabs.tts"] } }));
+    expect(app.app.id).toBeDefined();
+    // Credits alone cannot charge an answer that comes without its header.
+    const partly = await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, {
+      revision: 1,
+      pricing: { custom_x: { per_credit: 0.0001, per_hour: 0.2 } },
+    });
+    expect(partly).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+    expect(partly.body.error.message).toContain("elevenlabs.tts");
+    // A rate for every way text to speech answers saves.
+    const full = await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, {
+      revision: 1,
+      pricing: { custom_x: { per_credit: 0.0001, per_million_characters: 80 } },
+    });
+    expect(full.status).toBe(200);
+  });
+
   it("reports each named connection's status, and ready only with an active one", async () => {
     const key = await seedManagementKey();
     const { body: first } = await createProvider(key);

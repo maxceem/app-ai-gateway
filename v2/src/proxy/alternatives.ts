@@ -14,7 +14,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { billing, type Billing, type PriceSources } from "../pricing/billability.ts";
+import { admissionProblem, billing, type Billing, type PriceSources } from "../pricing/billability.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { fieldValue, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
@@ -57,7 +57,7 @@ export function judgedAlternatives(
     const bill = billing(operation, policy.sources, model);
     // The request's own model's rule: a model never served is refused; one the
     // app lists by name is served, and priced later if its price has gone.
-    if (bill.problem === "wrong_unit" || (bill.problem === "no_price" && policy.allowed === undefined)) {
+    if (admissionProblem(bill, policy.allowed !== undefined) !== null) {
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
         data: { model, field },
       });

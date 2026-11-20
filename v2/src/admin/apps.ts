@@ -19,8 +19,10 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
-import { billing, listedModelProblem, partialCustomerModel, priceSources, rewriteTargetBillable } from "../pricing/billability.ts";
+import { billing, callGap, priceSources, reachableCalls, rewriteTargetBillable, type PriceSources, type ReachableCall } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
+import type { OperationDescription } from "../providers/operation.ts";
+import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
@@ -122,8 +124,6 @@ interface ConnectionRow {
 export interface Changes {
   readonly routing: (slug: string) => boolean;
   readonly rewrite: (source: string) => boolean;
-  /** Any rewrite is new, changed or removed: which models a route reaches may have changed. */
-  readonly anyRewrite: boolean;
   readonly preset: (slug: string) => boolean;
 }
 
@@ -144,11 +144,9 @@ export function changesAgainst(stored: StoredEntries, config: AppConfig): Change
       return answers.get(key)!;
     };
   };
-  const rewrite = once((source) => differs(stored.rewrites, rewrites, source));
   return {
     routing: once((slug) => differs(stored.providers, config.routing.providers, slug)),
-    rewrite,
-    anyRewrite: [...Object.keys(stored.rewrites), ...Object.keys(rewrites)].some(rewrite),
+    rewrite: once((source) => differs(stored.rewrites, rewrites, source)),
     preset: once((slug) => differs(stored.presets, config.presets ?? {}, slug)),
   };
 }
@@ -206,48 +204,12 @@ export async function checkAppConfig(
         });
       }
     }
-    // Rates are read only if a listed model is judged, so an unchanged route
-    // whose connection has unreadable rates does not stop a rename.
-    const sources = priceSources(connection);
+    // Rates are read only when a call is judged, so an unchanged route whose
+    // connection has unreadable rates does not stop a rename.
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    const routeChanged = changed.routing(slug);
-    for (const listed of routing.models ?? []) {
-      // A listed model is judged when its route or its rewrite is new or changed.
-      if (!routeChanged && !changed.rewrite(listed)) continue;
-      // A listed model is sent, and priced, as the model it is rewritten to.
-      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-      const problem = listedModelProblem(enabled, sources, model);
-      if (problem !== null) {
-        throw new GatewayError(
-          400,
-          "pricing_not_configured",
-          `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that ${
-            problem.operation ?? `any of ${enabled.map((operation) => operation.name).join(", ")}`
-          } can bill; add one to the provider connection first`,
-          undefined,
-          { data: { slug, model, ...(problem.operation !== undefined ? { operation: problem.operation } : {}) } },
-        );
-      }
-    }
-  }
-  for (const [slug, routing] of Object.entries(config.routing.providers)) {
-    // A route with no model list allows any model, the connection's own included: none may be charged only partly.
-    // Judged whenever which models it reaches may change: the route (its model list included) or any rewrite.
-    if (routing.models !== undefined || (!changed.routing(slug) && !changed.anyRewrite)) continue;
-    const connection = await connectionRow(slug);
-    const description = connection === null ? null : builtInProvider(connection.type);
-    if (connection === null || description === null) continue;
-    const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    const partial = partialCustomerModel(enabled, priceSources(connection), rewrites);
-    if (partial !== null) {
-      throw new GatewayError(
-        400,
-        "pricing_not_configured",
-        `config.routing.providers.${slug}: ${partial.model} has a price that ${partial.operation} can bill only partly; give it a rate for every way it answers, or list the route's models`,
-        undefined,
-        { data: { slug, model: partial.model, operation: partial.operation } },
-      );
-    }
+    judgeRoute(slug, { operations: enabled, models: routing.models }, rewrites, priceSources(connection), () =>
+      storedCalls(stored, slug, description.operations, priceSources(connection)),
+    );
   }
   for (const [slug, preset] of Object.entries(config.presets ?? {})) {
     // Unchanged, it may keep a connection deleted since, as routing does.
@@ -255,6 +217,163 @@ export async function checkAppConfig(
     await checkPreset(slug, preset, connectionRow);
   }
   return config;
+}
+
+/** A call's identity across a save: the operation, the model the request names and the one it is sent as. */
+function callKey(call: ReachableCall): string {
+  return `${call.operation.name}\u0000${call.requested}\u0000${call.model}`;
+}
+
+/** What a stored route let through: its calls, and the models it listed. */
+interface StoredCalls {
+  readonly keys: ReadonlySet<string>;
+  readonly listed: ReadonlySet<string>;
+}
+
+/**
+ * The calls a stored route let through, read loosely: it was valid when
+ * saved. Null when it cannot be read, which judges nothing on it, so a
+ * rename never fails on a route stored long ago.
+ */
+function storedCalls(
+  stored: StoredEntries,
+  slug: string,
+  operations: readonly OperationDescription[],
+  sources: PriceSources,
+): StoredCalls | null {
+  try {
+    const entry = stored.providers[slug] as { operations?: unknown; models?: unknown } | undefined;
+    if (entry === undefined) return { keys: new Set(), listed: new Set() };
+    const names = Array.isArray(entry.operations) ? entry.operations.filter((name): name is string => typeof name === "string") : [];
+    const models = Array.isArray(entry.models) ? entry.models.filter((model): model is string => typeof model === "string") : undefined;
+    const rewrites = Object.fromEntries(Object.entries(stored.rewrites).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
+    const enabled = operations.filter((operation) => names.includes(operation.name));
+    return { keys: new Set(reachableCalls({ operations: enabled, models }, rewrites, sources).map(callKey)), listed: new Set(models ?? []) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Judges a route's calls on save, by the one rule for a call serving admits
+ * (`callGap`): only the calls the save makes reachable, those a stored route
+ * did not let through. Each model the route lists must also be served by
+ * some operation it enables.
+ */
+function judgeRoute(
+  slug: string,
+  route: { readonly operations: readonly OperationDescription[]; readonly models?: readonly string[] | undefined },
+  rewrites: Readonly<Record<string, string>>,
+  sources: PriceSources,
+  before: () => StoredCalls | null,
+): void {
+  // The stored side first: when it cannot be read (rates unreadable since), nothing is judged.
+  const was = before();
+  if (was === null) return;
+  const calls = reachableCalls(route, rewrites, sources);
+  const fresh = calls.filter((call) => !was.keys.has(callKey(call)));
+  for (const call of fresh) {
+    const gap = callGap(call);
+    if (gap === null) continue;
+    throw callRefused(slug, route, call.requested, call.model, gap.operation ?? call.operation.name, route.models !== undefined);
+  }
+  for (const listed of route.models ?? []) {
+    const served = calls.filter((call) => call.requested === listed);
+    if (served.length > 0) continue;
+    // Judged when this save could have changed it: newly listed, or listed before and served then.
+    const servedBefore = [...was.keys].some((key) => key.split("\u0000")[1] === listed);
+    if (was.listed.has(listed) && !servedBefore) continue;
+    const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
+    throw callRefused(slug, route, listed, model, undefined, true);
+  }
+}
+
+function callRefused(
+  slug: string,
+  route: { readonly operations: readonly OperationDescription[] },
+  listed: string,
+  model: string,
+  operation: string | undefined,
+  inList: boolean,
+): GatewayError {
+  if (!inList && operation !== undefined) {
+    return new GatewayError(
+      400,
+      "pricing_not_configured",
+      `config.routing.providers.${slug}: ${model} has a price that ${operation} can bill only partly; give it a rate for every way it answers, or list the route's models`,
+      undefined,
+      { data: { slug, model, operation } },
+    );
+  }
+  return new GatewayError(
+    400,
+    "pricing_not_configured",
+    `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that ${
+      operation ?? `any of ${route.operations.map((one) => one.name).join(", ")}`
+    } can bill; add one to the provider connection first`,
+    undefined,
+    { data: { slug, model, ...(operation !== undefined ? { operation } : {}) } },
+  );
+}
+
+/**
+ * A connection's rates are about to change: each app that routes to it is
+ * judged on the calls the change can affect, by the same rule as an app save
+ * (`callGap`), so a rate added after an app was saved cannot leave its calls
+ * charged only partly. Only models whose rates are new or changed are judged:
+ * a removed rate is served and priced later, as before.
+ */
+export async function checkConnectionRates(
+  db: D1Database,
+  accountId: string,
+  connection: { readonly slug: string; readonly type: string },
+  before: CustomerRates | null,
+  after: CustomerRates | null,
+): Promise<void> {
+  const description = builtInProvider(connection.type);
+  if (description === null || after === null) return;
+  const changedModels = new Set(Object.keys(after).filter((model) => before === null || !Object.hasOwn(before, model) || !sameJson(before[model], after[model])));
+  if (changedModels.size === 0) return;
+  const { results } = await db.prepare("SELECT name, config_json FROM app WHERE account_id = ?").bind(accountId).all<{ name: string; config_json: string }>();
+  const sources = priceSources({ type: connection.type, rates: after });
+  for (const app of results) {
+    let stored: StoredEntries;
+    try {
+      stored = storedRouting({ config_json: app.config_json } as AppRow);
+    } catch {
+      continue;
+    }
+    const entry = stored.providers[connection.slug] as { operations?: unknown; models?: unknown } | undefined;
+    if (entry === undefined) continue;
+    const names = Array.isArray(entry.operations) ? entry.operations.filter((name): name is string => typeof name === "string") : [];
+    const models = Array.isArray(entry.models) ? entry.models.filter((model): model is string => typeof model === "string") : undefined;
+    const rewrites = Object.fromEntries(Object.entries(stored.rewrites).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
+    const operations = description.operations.filter((operation) => names.includes(operation.name));
+    const calls = reachableCalls({ operations, models }, rewrites, sources);
+    for (const call of calls) {
+      if (!changedModels.has(call.model)) continue;
+      const gap = callGap(call);
+      if (gap === null) continue;
+      throw ratesRefused(call.model, app.name, connection.slug, gap.operation ?? call.operation.name);
+    }
+    for (const listed of models ?? []) {
+      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
+      if (!changedModels.has(model) || calls.some((call) => call.requested === listed)) continue;
+      throw ratesRefused(model, app.name, connection.slug, undefined);
+    }
+  }
+}
+
+function ratesRefused(model: string, app: string, slug: string, operation: string | undefined): GatewayError {
+  return new GatewayError(
+    400,
+    "pricing_not_configured",
+    `pricing.${model}: the app ${app} routes ${model} to ${slug}${
+      operation === undefined ? ", and no operation it enables could bill this price" : `, and ${operation} could bill this price only partly`
+    }; give it a rate for every way it answers`,
+    undefined,
+    { data: { model, slug, app, ...(operation !== undefined ? { operation } : {}) } },
+  );
 }
 
 /** Each new or changed rewrite's target needs a price this account could bill it at (`rewriteTargetBillable`). */
