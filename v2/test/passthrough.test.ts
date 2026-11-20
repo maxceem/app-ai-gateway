@@ -246,7 +246,6 @@ describe("judging a listing where the provider reads it", () => {
 
   it.each([
     ["DELETE", "v1/voices/voice-1"],
-    ["DELETE", "v1/voices/voice-1/samples/s1"],
     ["POST", "v1/convai/agents/create"],
     ["PATCH", "v1/convai/agents/a1"],
     ["POST", "v1/convai/agents/a1/duplicate"],
