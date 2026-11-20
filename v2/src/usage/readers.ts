@@ -246,6 +246,21 @@ export function elevenLabsTranscriptionUsage(value: unknown): UsageObservation |
 }
 
 /**
+ * Deepgram's prerecorded speech to text: the audio's length
+ * (`metadata.duration`) times its channels (`metadata.channels`, 1 when not
+ * named). Deepgram bills multichannel audio by the total processed across
+ * channels: a ten-minute stereo file bills as twenty minutes.
+ */
+export function deepgramListenUsage(value: unknown): UsageObservation | null {
+  const metadata = asRecord(asRecord(value)?.metadata);
+  const duration = nonNegativeNumber(metadata?.duration);
+  if (duration === null) return null;
+  const reported = metadata?.channels;
+  const channels = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 1 ? reported : 1;
+  return { ...EMPTY_USAGE, audioSeconds: duration * channels, noTokens: true };
+}
+
+/**
  * An image API's usage: the OpenAI shape, with image tokens apart, plus the
  * images BytePlus Seedream bills per image and counts as `generated_images`
  * (v1).
@@ -402,6 +417,7 @@ export const READ_PATHS: PathTree = {
   response_service_tier: true,
   duration: true,
   audio_duration_secs: true,
+  metadata: { duration: true, channels: true },
   type: true,
   response: { usage: true, model: true, service_tier: true, response_service_tier: true },
   message: { usage: true, model: true },
@@ -538,6 +554,8 @@ export function usageReducer(style: ApiStyle, counted: readonly Modality[] = NOT
       return lastRead((value) => audioUsage(value, counted));
     case "elevenlabs-transcription":
       return lastRead(elevenLabsTranscriptionUsage);
+    case "deepgram-listen":
+      return lastRead(deepgramListenUsage);
     case "openai-images":
       return lastRead((value) => imagesUsage(value, counted));
     case "openai-embeddings":
@@ -579,6 +597,7 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
   "gemini-embed": null,
   "openai-speech": null,
   "elevenlabs-transcription": null,
+  "deepgram-listen": null,
 };
 
 /**

@@ -79,6 +79,8 @@ export interface CallAttempt {
   readonly requestUsage?: UsageObservation | null;
   /** The request's price key values (`./request-fields.ts`), kept on its usage so it is priced, and priced later, with them. */
   readonly priceKeys?: Readonly<Record<string, string>>;
+  /** Options the request named that the provider bills on top at a price the gateway does not have: the charge is an estimate. */
+  readonly unpricedOptions?: readonly string[];
 }
 
 export interface AttemptOutcome {
@@ -135,6 +137,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     attempt.requestedModeUnknown !== undefined ||
     outcome.servedModeUnknown !== undefined ||
     attempt.servedModelUnknown === true ||
+    (attempt.unpricedOptions?.length ?? 0) > 0 ||
     usage?.finalEventUnread === true;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);

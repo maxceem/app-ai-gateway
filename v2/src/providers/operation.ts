@@ -67,6 +67,9 @@ export type Transport =
  * - `gemini-embed`: Gemini's own `embedContent`, usage in `usageMetadata`.
  * - `elevenlabs-transcription`: ElevenLabs' speech to text, whose answer
  *   names the audio's length in `audio_duration_secs`.
+ * - `deepgram-listen`: Deepgram's prerecorded speech to text, whose answer
+ *   names the audio's length (`metadata.duration`) and its channels
+ *   (`metadata.channels`). Deepgram bills the total across channels.
  * - `openai-speech`: text to speech. Usage in the OpenAI shape when the answer
  *   is a stream of events. A plain audio answer reports none, so its cost is
  *   unknown, as in v1, until step 4 measures the request.
@@ -83,6 +86,7 @@ export const API_STYLES = [
   "gemini-embed",
   "openai-speech",
   "elevenlabs-transcription",
+  "deepgram-listen",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
 
@@ -347,6 +351,20 @@ export interface OperationDescription {
    * by its price alone.
    */
   readonly modelKinds?: readonly string[];
+  /**
+   * The request body may be raw bytes, such as audio, sent as they are with
+   * their own content type, never read or copied. A JSON body is still read
+   * (Deepgram takes either audio or `{ "url": ... }`). Without it, a body
+   * is JSON or a multipart form.
+   */
+  readonly rawBody?: true;
+  /**
+   * Request options the provider bills on top, at a price of their own that
+   * the gateway does not have yet, such as Deepgram's redaction. A request
+   * naming one is served, billed at the model's price as an estimate and
+   * logged (AGENTS.md: estimate, never bill as free).
+   */
+  readonly unpricedOptions?: readonly FieldRef[];
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }

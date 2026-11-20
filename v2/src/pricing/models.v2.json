@@ -78,5 +78,51 @@
       "per_hour": 0.2,
       "author": "ElevenLabs"
     }
+  },
+  "deepgram": {
+    "nova-3": {
+      "kind": "transcription",
+      "per_minute": 0.0043,
+      "by": {
+        "language": {
+          "multi": {
+            "per_minute": 0.0052
+          },
+          "*": {}
+        }
+      },
+      "author": "Deepgram"
+    },
+    "whisper-large": {
+      "kind": "transcription",
+      "per_minute": 0.0048,
+      "author": "Deepgram"
+    }
+  },
+  "fal": {
+    "fal-ai/flux/schnell": {
+      "kind": "image",
+      "per_unit": 0.003,
+      "per_image": 0.003,
+      "author": "fal"
+    },
+    "fal-ai/flux/dev": {
+      "kind": "image",
+      "per_unit": 0.025,
+      "per_image": 0.025,
+      "author": "fal"
+    },
+    "fal-ai/flux/krea": {
+      "kind": "image",
+      "per_unit": 0.025,
+      "per_image": 0.025,
+      "author": "fal"
+    },
+    "fal-ai/flux-pro/v1.1": {
+      "kind": "image",
+      "per_unit": 0.04,
+      "per_image": 0.04,
+      "author": "fal"
+    }
   }
 }

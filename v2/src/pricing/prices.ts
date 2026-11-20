@@ -245,6 +245,9 @@ function withValue(rates: RateSet, value: RateSet): RateSet {
   return Object.assign(merged, value);
 }
 
+/** A price key value that stands for every value its table does not list by name. */
+export const OTHER_VALUES = "*";
+
 /** A candidate price for a request: the price with one value applied for each of its keys. */
 export interface KeyCandidate {
   /** The value used for each key: the request's, or one the price lists when the request's is unknown. */
@@ -269,6 +272,13 @@ export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string
     const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
     if (value !== undefined && Object.hasOwn(table, value)) {
       candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: value }, rates: withValue(candidate.rates, table[value]!) }));
+      continue;
+    }
+    // `*` is the rate of every value the table does not list by name, such
+    // as each language Deepgram bills at its monolingual rate: a known
+    // price, not an estimate.
+    if (value !== undefined && Object.hasOwn(table, OTHER_VALUES)) {
+      candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: OTHER_VALUES }, rates: withValue(candidate.rates, table[OTHER_VALUES]!) }));
       continue;
     }
     estimated = true;

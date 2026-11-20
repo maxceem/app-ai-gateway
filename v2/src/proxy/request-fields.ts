@@ -137,6 +137,21 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
   return values;
 }
 
+/**
+ * The options a request names that the provider bills on top at a price the
+ * gateway does not have (`unpricedOptions`): each counts when present with a
+ * value other than an explicit false, so `redact=false` is not one.
+ */
+export function unpricedOptionsNamed(operation: OperationDescription, fields: RequestFields): string[] {
+  const named: string[] = [];
+  for (const ref of operation.unpricedOptions ?? []) {
+    const value = fieldValue(fields, ref);
+    if (value === undefined || value === null || value === false || value === "false" || value === "") continue;
+    named.push(ref.field);
+  }
+  return named;
+}
+
 /** Deletes a dot path from a JSON body. True if it was there. */
 function deleteAt(body: Record<string, unknown>, path: string): boolean {
   const keys = path.split(".");

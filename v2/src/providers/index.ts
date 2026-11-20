@@ -13,6 +13,7 @@ import {
   perplexity,
   together,
 } from "./compatible.ts";
+import { deepgram } from "./deepgram.ts";
 import { elevenlabs } from "./elevenlabs.ts";
 import { fal } from "./fal.ts";
 import { gemini } from "./gemini.ts";
@@ -41,6 +42,7 @@ const ALL: readonly ProviderDescription[] = [
   openrouter,
   vercel,
   elevenlabs,
+  deepgram,
   fal,
 ];
 
