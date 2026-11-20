@@ -206,7 +206,10 @@ function reportedUnit(unitRate: UnitRate, usage: UsageObservation, reportedOnly 
 function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
   const stated = statedUnitRates(price);
   if (stated.length === 0) return undefined;
+  const tokensReported = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
   for (const reportedOnly of [true, false]) {
+    // Reported tokens the price bills come before a unit worked out from the request.
+    if (!reportedOnly && tokensReported) return undefined;
     for (const unitRate of stated) {
       const reported = reportedUnit(unitRate, usage, reportedOnly);
       if (reported === null) continue;

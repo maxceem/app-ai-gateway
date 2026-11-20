@@ -472,3 +472,34 @@ it("publishes the console's price list from the same merge the gateway prices wi
   expect(PRICE_FILE).toEqual(mergePriceFiles(v1, overlay));
   expect(Object.keys(PRICE_FILE.openai ?? {})).toEqual(expect.arrayContaining(["tts-1", "tts-1-hd"]));
 });
+
+describe("Astra's review", () => {
+  const fields = (body: Record<string, unknown>) => ({ body, query: new URLSearchParams() });
+  const imagesOp = openai.operations.find((op) => op.name === "openai.images")!;
+
+  it("reads an image's size and quality as price keys, so a sized price bills exactly", () => {
+    const keys = priceKeyValues(imagesOp, fields({ model: "m", size: "1792x1024", quality: "hd" }));
+    expect(keys).toEqual({ size: "1792x1024", quality: "hd" });
+    const sized = priced({}, { keyed: { size: { "1024x1024": { per_image: rate(40_000_000) }, "1792x1024": { per_image: rate(80_000_000) } } } });
+    expect(priceInServedMode(sized, { ...counted(undefined), images: 1, priceKeys: { size: "1792x1024" } }, STANDARD_MODE)).toMatchObject({
+      cost: 80_000_000,
+      estimated: false,
+    });
+  });
+
+  it("keeps the request's measure beside reported tokens, for a price in the request's unit", () => {
+    const speechOp = openai.operations.find((op) => op.name === "openai.speech")!;
+    const tokens = { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    const usage = attemptUsage(speechOp, { requestUsage: requestUsage(speechOp, fields({ input: "hello" })) }, tokens, new Headers())!;
+    expect(priceInServedMode(priced({ per_million_characters: 1_000_000_000 }), usage, STANDARD_MODE)).toMatchObject({ unit: "characters", units: 5, measured: "estimated" });
+    // A token price still bills the reported tokens, exactly.
+    expect(priceInServedMode(priced({ input: 1, output: 1, per_million_characters: 1 }), usage, STANDARD_MODE)).toMatchObject({ unit: "tokens", measured: "complete" });
+  });
+
+  it("counts rates a service mode supplies when judging whether an operation can bill a model", () => {
+    const chat = openai.operations.find((op) => op.name === "openai.chat")!;
+    const sources = priceSources({ type: "openai", rates: { m: { per_image: 1, modes: { fast: { input: 1_000_000_000, output: 1_000_000_000 } } } } });
+    expect(billing(chat, sources, "m").problem).toBeNull();
+    expect(billing(chat, priceSources({ type: "openai", rates: { m: { per_image: 1 } } }), "m").problem).toBe("wrong_unit");
+  });
+});

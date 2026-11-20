@@ -131,6 +131,11 @@ export function images(name: string, path: string, options: TextOptions = {}): O
     model: { in: "body", field: "model" },
     background: DETACHED,
     meter: { ...meter("openai-images", options), units: ["images"] },
+    // What an image's price varies by on the providers' own lists: its size and quality.
+    priceKeys: [
+      { name: "size", from: { in: "body", field: "size" } },
+      { name: "quality", from: { in: "body", field: "quality" } },
+    ],
   });
 }
 

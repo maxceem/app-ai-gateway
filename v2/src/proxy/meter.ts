@@ -274,6 +274,24 @@ export function headerUsage(headers: Headers, header: string, unit: Unit): Usage
 }
 
 /**
+ * A reported usage with the request's measure kept beside it, for every meter
+ * that takes one: the request's units are added as estimates, never over a
+ * unit the provider reported. With no report, the request's measure alone.
+ */
+function withRequestMeasure(reported: UsageObservation | null, fromRequest: UsageObservation | null): UsageObservation | null {
+  if (fromRequest === null) return reported;
+  if (reported === null) return fromRequest;
+  const reportedUnits = reported.units ?? {};
+  const estimatedUnits = (fromRequest.estimatedUnits ?? []).filter((unit) => reportedUnits[unit] === undefined);
+  const added = Object.fromEntries(Object.entries(fromRequest.units ?? {}).filter(([unit]) => reportedUnits[unit as Unit] === undefined));
+  return {
+    ...reported,
+    units: { ...added, ...reportedUnits },
+    ...(estimatedUnits.length > 0 ? { estimatedUnits: [...(reported.estimatedUnits ?? []), ...estimatedUnits] } : {}),
+  };
+}
+
+/**
  * The usage a successful attempt is billed by, by its meter kind (plan
  * section 4.1, "Meter"), with the request's price key values on it:
  *
@@ -294,20 +312,17 @@ export function attemptUsage(
   let usage: UsageObservation | null;
   switch (meter.kind) {
     case "response_json":
-      usage = reading ?? (meter.requestMeasure !== undefined ? fromRequest : null);
+      // What the request measured is kept next to what the answer reported,
+      // so a price in the request's unit can still bill (streamed speech that
+      // reports tokens, at a per-character price).
+      usage = withRequestMeasure(reading, meter.requestMeasure !== undefined ? fromRequest : null);
       break;
     case "response_header": {
       // Both measures are kept: the amount the header reports, and the
       // request's estimate. The price bills the reported one where it can,
-      // else the estimate (`priceUnitRate`).
+      // else the estimate (`priceInServedMode`).
       const reported = headerUsage(headers, meter.header, meter.unit);
-      if (reported === null) usage = fromRequest === null ? null : { ...fromRequest, reportMissing: true };
-      else if (fromRequest === null) usage = reported;
-      else {
-        // A unit the header reported is not an estimate, even when the request estimate shares it.
-        const estimatedUnits = (fromRequest.estimatedUnits ?? []).filter((unit) => reported.units?.[unit] === undefined);
-        usage = { ...reported, units: { ...fromRequest.units, ...reported.units }, ...(estimatedUnits.length > 0 ? { estimatedUnits } : {}) };
-      }
+      usage = reported === null ? (fromRequest === null ? null : { ...fromRequest, reportMissing: true }) : withRequestMeasure(reported, fromRequest);
       break;
     }
     case "request_measure":

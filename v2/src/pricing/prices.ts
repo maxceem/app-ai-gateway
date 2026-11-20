@@ -207,45 +207,52 @@ export function resolvePrice(
   return ours === null ? null : { price: ours, source: "list_rate" };
 }
 
-/** A price's rates, with every rate any price-key value states: what it can bill at all. */
-function everyRate(price: ModelPrice): RateSet {
-  const merged: Partial<Record<RateField, RateNanoPerMillion>> = { ...price.rates };
-  for (const table of Object.values(price.keyed ?? {})) {
-    for (const rates of Object.values(table)) Object.assign(merged, rates);
-  }
-  return merged;
-}
-
 /** Whether rates bill tokens: they have input and output rates. */
 function billsTokens(rates: RateSet): boolean {
   return rates.input !== undefined && rates.output !== undefined;
 }
 
+/** Whether rates bill a unit: a unit rate for it, or input and output for tokens. */
+function billsUnit(rates: RateSet, unit: Unit | "tokens"): boolean {
+  if (unit === "tokens") return billsTokens(rates);
+  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.includes(unit));
+}
+
 /**
- * Whether a price is in a unit an operation measures (`operationUnits`):
- * tokens, or a unit rate for one of its units. A price-key value's rates
- * count, since a request may name that value.
+ * Every effective price a request may be charged at (`effectivePrices`: each
+ * key value in each mode run time reaches), or, for a price whose rates do
+ * not fit once a mode scales them (saving refuses it), its key candidates.
+ */
+function chargeablePrices(price: ModelPrice): readonly { readonly price: ModelPrice }[] {
+  try {
+    return effectivePrices(price);
+  } catch {
+    return keyCandidates(price).candidates;
+  }
+}
+
+/**
+ * Whether an operation can bill a model at this price: the one definition,
+ * used at save and on every request. It is judged on the effective prices the
+ * charge itself can use (each key value, each service mode), so a rate a key
+ * value or a mode supplies counts, and a key value that replaces the base's
+ * unit rates is judged as it bills.
+ *
+ * - Usually: some effective price bills one of the units the operation
+ *   measures (`operationUnits`).
+ * - A header meter with an estimate: every effective price bills both the
+ *   header's unit and the estimate's, so a missing header falls back to a
+ *   measure the price can still bill.
  */
 export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
-  const rates = everyRate(price);
+  const effective = chargeablePrices(price);
   const { meter } = operation;
-  // A header meter's price bills both the header's unit and its estimate's, so
-  // a missing header falls back to a measure the price can still bill. Judged
-  // on each effective price, since a key value's unit rate replaces the base's.
   if (meter.kind === "response_header" && meter.estimate !== undefined) {
     const estimate = meter.estimate;
-    const bills = (one: RateSet, unit: Unit) => UNIT_RATES.some((unitRate) => one[unitRate.field] !== undefined && unitRate.units.includes(unit));
-    let effective: readonly { readonly price: ModelPrice }[];
-    try {
-      effective = effectivePrices(price);
-    } catch {
-      effective = keyCandidates(price).candidates;
-    }
-    return effective.every((one) => bills(one.price.rates, meter.unit) && bills(one.price.rates, estimate.unit));
+    return effective.every((one) => billsUnit(one.price.rates, meter.unit) && billsUnit(one.price.rates, estimate.unit));
   }
   const units = operationUnits(operation);
-  if (units.includes("tokens") && billsTokens(rates)) return true;
-  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.some((unit) => units.includes(unit)));
+  return effective.some((one) => units.some((unit) => billsUnit(one.price.rates, unit)));
 }
 
 /** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */
