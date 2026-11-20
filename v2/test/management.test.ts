@@ -175,6 +175,19 @@ describe("validate and check", () => {
     expect((await request(key, "PUT", `/v2/admin/apps/${appId}`, { name: "Kept", config: other, revision: 2 })).status).toBe(400);
   });
 
+  it("renames an app whose unchanged route's connection has unreadable rates", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key);
+    const slug = provider.provider.slug as string;
+    const routed = apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } });
+    const { body } = await createApp(key, routed);
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind("{not json", provider.provider.id).run();
+    expect(await request(key, "PUT", `/v2/admin/apps/${body.app.id}`, { name: "Renamed", config: routed, revision: 1 })).toMatchObject({
+      status: 200,
+      body: { app: { name: "Renamed" } },
+    });
+  });
+
   it("reports each named connection's status, and ready only with an active one", async () => {
     const key = await seedManagementKey();
     const { body: first } = await createProvider(key);

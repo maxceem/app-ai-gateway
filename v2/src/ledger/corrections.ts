@@ -24,7 +24,7 @@
  *   stops once a final settlement exists; the settlement already includes it.
  */
 import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
-import { resolvePrice, type CustomerRates } from "../pricing/prices.ts";
+import { billingForCharge, priceSources } from "../pricing/billability.ts";
 import { billedUnits, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
@@ -296,11 +296,7 @@ export async function priceUnresolvedCharge(
           .prepare("SELECT rates_json FROM provider_connection WHERE id = ?")
           .bind(original.providerConnectionId)
           .first<{ rates_json: string | null }>();
-  const customer =
-    connection?.rates_json === null || connection?.rates_json === undefined
-      ? null
-      : (JSON.parse(connection.rates_json) as CustomerRates);
-  const resolved = resolvePrice(original.providerType, original.model, customer);
+  const resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
   if (resolved === null) return { status: "no_price" };
   // Priced exactly as the request would have been: the stored usage, with its
   // modalities and variants, in the service mode that served it.
