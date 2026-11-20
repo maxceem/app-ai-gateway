@@ -29,6 +29,9 @@ import { clearStoredProof, readStoredProof, writeStoredProof } from "@/lib/store
  * console-wide rule in `v2/console/public/_headers`).
  */
 
+/** How long a step waits for its person, until its details say exactly. */
+const PENDING_WINDOW_MS = 15 * 60_000;
+
 function storageKeyFor(id: string): string {
   return `app-ai-gateway:approve:${id}`;
 }
@@ -53,8 +56,15 @@ export function ApprovePage() {
   const navigate = useNavigate();
   const storageKey = storageKeyFor(id);
 
-  /* Resolved once, before the effect below rewrites the address bar. */
-  const [proof] = useState(() => location.hash.replace(/^#/, "") || readStoredProof(storageKey)?.token || "");
+  /*
+    Resolved once, before the effect below rewrites the address bar, and kept
+    in storage at once, so a reload while the details load still has it.
+  */
+  const [proof] = useState(() => {
+    const fromLink = location.hash.replace(/^#/, "");
+    if (fromLink) writeStoredProof(storageKey, { token: fromLink, expiresAt: Date.now() + PENDING_WINDOW_MS });
+    return fromLink || readStoredProof(storageKey)?.token || "";
+  });
 
   useEffect(() => {
     if (!location.hash) return;

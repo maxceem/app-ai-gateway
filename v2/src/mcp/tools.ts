@@ -637,6 +637,16 @@ export const MCP_TOOLS: readonly McpTool[] = [
     keyMetadataAt: [["api_key"]],
     cli: { command: "app add", requires: ["reservation"] },
     next: reservationNext("add_app"),
+    // The document is exactly the body `createApp` takes, read strictly, so a
+    // `handle` inside it can never pass for the tool's own.
+    check: (input) => {
+      const parsed = CATALOG.createApp.request.safeParse(input.config);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const where = ["config", ...(issue?.path ?? []).map(String)].join(".");
+        throw new GatewayError(400, "invalid_request", `${where}: ${issue?.message ?? "is invalid"}`);
+      }
+    },
     request: (input) => ({
       operation: "createReservedApp",
       body: { ...(input.config as object), ...(input.handle === undefined ? {} : { handle: input.handle }) },

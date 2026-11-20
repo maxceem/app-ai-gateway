@@ -127,6 +127,13 @@ describe("ApprovePage", () => {
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
   });
 
+  it("keeps the proof for a reload before the details have loaded", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const { router } = renderApprove();
+    await waitFor(() => expect(router.location.hash).toBe(""));
+    expect(sessionStorage.getItem(`app-ai-gateway:approve:${ID}`)).toContain(PROOF);
+  });
+
   it("asks for nothing without the link's proof", async () => {
     const fetchMock = stubApi({ [DETAILS_URL]: details() });
     renderApprove(`/approve/${ID}`);

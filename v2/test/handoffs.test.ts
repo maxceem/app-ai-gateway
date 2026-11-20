@@ -429,6 +429,17 @@ describe("the tools", () => {
     expect(status.body.result.result.api_key.key).toBeUndefined();
   });
 
+  it("never takes a handle from inside the app document", async () => {
+    const key = await seedManagementKey();
+    const tool = (body: unknown) => send({ key }, "POST", "/v2/cli/tools/add_app", body);
+    const reserved = await tool({ config: { name: "Smuggled", config: apiKeyConfig } });
+    const smuggled = await tool({ config: { name: "Smuggled", config: apiKeyConfig, handle: reserved.body.result.handle } });
+    expect(smuggled.status).toBe(400);
+    expect(smuggled.body.error.message).toContain("config");
+    const apps = await env.DB.prepare("SELECT COUNT(*) AS n FROM app WHERE name = 'Smuggled'").first<{ n: number }>();
+    expect(apps!.n).toBe(0);
+  });
+
   it("answers an approval link from add_provider, and refuses a key as an argument", async () => {
     const key = await seedManagementKey();
     const opened = await send({ key }, "POST", "/v2/cli/tools/add_provider", { type: "openai", name: "Tool", slug: "tool-openai" });
