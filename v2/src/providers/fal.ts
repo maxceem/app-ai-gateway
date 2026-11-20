@@ -30,23 +30,28 @@ const FETCH_KEPT = [
  * Up front, and when the units header is missing, the units are worked out
  * from the request: fal bills each image by its megapixels, rounded up
  * (T15), so a 1440 × 1440 image is two units. fal's size names are all one
- * megapixel or less. It stays an estimate.
+ * megapixel or less, and a size object's missing side is 512. The image
+ * count is kept beside it, so a price per image (a customer's own) still
+ * bills. Either stays an estimate.
  */
-const estimate = {
-  measure: "image_megapixels",
-  field: "num_images",
-  default: 1,
-  size: "image_size",
-  sizes: {
-    square_hd: [1024, 1024],
-    square: [512, 512],
-    portrait_4_3: [768, 1024],
-    portrait_16_9: [576, 1024],
-    landscape_4_3: [1024, 768],
-    landscape_16_9: [1024, 576],
+const estimate = [
+  {
+    measure: "image_megapixels",
+    field: "num_images",
+    default: 1,
+    size: "image_size",
+    sizes: {
+      square_hd: [1024, 1024],
+      square: [512, 512],
+      portrait_4_3: [768, 1024],
+      portrait_16_9: [576, 1024],
+      landscape_4_3: [1024, 768],
+      landscape_16_9: [1024, 576],
+    },
+    unit: "model_units",
   },
-  unit: "model_units",
-} as const;
+  { measure: "image_count", field: "num_images", default: 1, unit: "images" },
+] as const;
 
 export const fal = defineProvider({
   type: "fal",

@@ -142,6 +142,13 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
     expect(skim(text, [text]).documents).toEqual(expected(text, false));
   });
 
+  it("keeps the declared members of each object in an array, and leaves its other elements out", () => {
+    const text = '{"response":[{"model":"a","x":[1,{"model":"no"}]},7,"s",[{"model":"nested"}],{"usage":{"n":2}},{}],"message":[]}';
+    const want = [{ response: [{ model: "a" }, { usage: { n: 2 } }, {}], message: [] }];
+    for (const pieces of splits(text)) expect(skim(text, pieces).documents).toEqual(want);
+    expect(expected(text, false)).toEqual(want);
+  });
+
   it("decodes escaped keys, as JSON.parse does", () => {
     const text = '{"us\\u0061ge":{"n":1},"x":"\\"usage\\": 9"}';
     expect(skim(text, Array.from(text)).documents).toEqual([{ usage: { n: 1 } }]);

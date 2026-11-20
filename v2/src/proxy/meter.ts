@@ -367,7 +367,11 @@ function withRequestMeasure(reported: UsageObservation | null, fromRequest: Usag
  */
 export function attemptUsage(
   operation: OperationDescription,
-  attempt: { readonly requestUsage?: UsageObservation | null; readonly priceKeys?: Readonly<Record<string, string>> },
+  attempt: {
+    readonly requestUsage?: UsageObservation | null;
+    readonly priceKeys?: Readonly<Record<string, string>>;
+    readonly answeredKeys?: readonly string[];
+  },
   reading: UsageObservation | null,
   headers: Headers,
 ): UsageObservation | null {
@@ -397,5 +401,13 @@ export function attemptUsage(
     default:
       usage = reading;
   }
-  return usage !== null && attempt.priceKeys !== undefined ? { ...usage, priceKeys: attempt.priceKeys } : usage;
+  if (usage === null) return null;
+  // A key the provider chose for this request takes the value its answer reports (`answeredWhen`).
+  const answered: Record<string, string> = {};
+  for (const key of attempt.answeredKeys ?? []) {
+    const value = usage.reportedPriceKeys?.[key];
+    if (value !== undefined) answered[key] = value;
+  }
+  const priceKeys = attempt.priceKeys === undefined && Object.keys(answered).length === 0 ? undefined : { ...attempt.priceKeys, ...answered };
+  return priceKeys === undefined ? usage : { ...usage, priceKeys };
 }

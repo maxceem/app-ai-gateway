@@ -245,19 +245,59 @@ export function elevenLabsTranscriptionUsage(value: unknown): UsageObservation |
   return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
 }
 
+/** A short name an answer reports (a language, a model): kept only when it looks like one, so no answer text is stored. */
+const REPORTED_NAME = /^[A-Za-z0-9_.-]{1,64}$/u;
+
 /**
  * Deepgram's prerecorded speech to text: the audio's length
  * (`metadata.duration`) times its channels (`metadata.channels`, 1 when not
  * named). Deepgram bills multichannel audio by the total processed across
  * channels: a ten-minute stereo file bills as twenty minutes.
+ *
+ * - With no duration, the latest utterance end (`results.utterances[].end`,
+ *   with `utterances=true`) stands for it, times the channels: worked out,
+ *   so billed as an estimate (`measureWorkedOut`).
+ * - The language it detected (`results.channels[].detected_language`, with
+ *   `detect_language`), when every channel names the same one.
+ * - The models that served it (`metadata.model_info`: each one's `arch` and
+ *   `name`), so a fallback to another model is seen.
  */
 export function deepgramListenUsage(value: unknown): UsageObservation | null {
-  const metadata = asRecord(asRecord(value)?.metadata);
-  const duration = nonNegativeNumber(metadata?.duration);
-  if (duration === null) return null;
+  const root = asRecord(value);
+  const metadata = asRecord(root?.metadata);
+  const results = asRecord(root?.results);
   const reported = metadata?.channels;
   const channels = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 1 ? reported : 1;
-  return { ...EMPTY_USAGE, audioSeconds: duration * channels, noTokens: true };
+  let duration = nonNegativeNumber(metadata?.duration);
+  let workedOut = false;
+  if (duration === null) {
+    // A loop, not Math.max(...): a long recording has many utterances.
+    for (const utterance of Array.isArray(results?.utterances) ? results.utterances : []) {
+      const end = nonNegativeNumber(asRecord(utterance)?.end);
+      if (end !== null && (duration === null || end > duration)) duration = end;
+    }
+    if (duration === null) return null;
+    workedOut = true;
+  }
+  const languages = new Set(
+    (Array.isArray(results?.channels) ? results.channels : []).map((channel) => {
+      const language = asRecord(channel)?.detected_language;
+      return typeof language === "string" && REPORTED_NAME.test(language) ? language : null;
+    }),
+  );
+  const language = languages.size === 1 ? [...languages][0]! : null;
+  const models = Object.values(asRecord(metadata?.model_info) ?? {}).flatMap((info) => {
+    const record = asRecord(info);
+    return [record?.arch, record?.name].filter((name): name is string => typeof name === "string" && REPORTED_NAME.test(name));
+  });
+  return {
+    ...EMPTY_USAGE,
+    audioSeconds: duration * channels,
+    noTokens: true,
+    ...(workedOut ? { measureWorkedOut: true as const } : {}),
+    ...(language !== null ? { reportedPriceKeys: { language } } : {}),
+    ...(models.length > 0 ? { reportedModels: models } : {}),
+  };
 }
 
 /**
@@ -417,7 +457,9 @@ export const READ_PATHS: PathTree = {
   response_service_tier: true,
   duration: true,
   audio_duration_secs: true,
-  metadata: { duration: true, channels: true },
+  metadata: { duration: true, channels: true, model_info: true },
+  // Deepgram: the language each channel detected, and the utterances' ends.
+  results: { channels: { detected_language: true }, utterances: { end: true } },
   type: true,
   response: { usage: true, model: true, service_tier: true, response_service_tier: true },
   message: { usage: true, model: true },

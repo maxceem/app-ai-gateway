@@ -94,6 +94,19 @@ export interface UsageObservation extends TokenCounts {
    * an earlier event's count, say. Billed as an estimate, never as exact.
    */
   readonly finalEventUnread?: true;
+  /**
+   * The answer did not report its measure, and the reader worked it out from
+   * what it did report (Deepgram's last utterance end, with no duration).
+   * Billed as an estimate, and logged.
+   */
+  readonly measureWorkedOut?: true;
+  /**
+   * Price key values the answer reports, for a key the provider may choose
+   * itself (`answeredWhen`): the language Deepgram detected.
+   */
+  readonly reportedPriceKeys?: Readonly<Record<string, string>>;
+  /** The models the answer says served it, for a model the provider may change (`answeredWhen`). */
+  readonly reportedModels?: readonly string[];
 }
 
 /** Whether a usage measures anything a price could bill: tokens, or a count above 0 in another unit. */

@@ -177,7 +177,9 @@ export type Meter =
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
-   * before the answer and when the header is missing. `providerCost` names a
+   * before the answer and when the header is missing: one measure, or
+   * several in different units (fal's megapixels beside its image count), so
+   * a price in any of them can bill. `providerCost` names a
    * header with the provider's own cost in dollars (ElevenLabs' speech to text
    * sends `fiat-cost-before-overages`), which wins over our price as a JSON
    * report does.
@@ -186,7 +188,7 @@ export type Meter =
       readonly kind: "response_header";
       readonly header: string;
       readonly unit: Unit;
-      readonly estimate?: RequestMeasure & { readonly unit: Unit };
+      readonly estimate?: (RequestMeasure & { readonly unit: Unit }) | readonly (RequestMeasure & { readonly unit: Unit })[];
       readonly providerCost?: HeaderCostReport;
       /**
        * A reader of the answer's body, whose measures are kept beside the
@@ -278,22 +280,54 @@ export interface BackgroundOption {
 }
 
 /**
+ * How a request field that turns on a charge is read. Each is reduced to one
+ * decision, on or off, before it is priced or stored:
+ *
+ * - `flag`: a switch. On when present, unless its value is false (`false`,
+ *   `"false"`, null or empty). `redact=pii` is on; `redact=false` is off.
+ * - `text`: free text that may repeat, such as Deepgram's `keyterm`. On when
+ *   present with any value, even the text `false`. Its text is never stored.
+ */
+export type SwitchKind = "flag" | "text";
+
+/** A request field that turns on a charge, and how it is read. */
+export type SwitchRef = FieldRef & { readonly kind: SwitchKind };
+
+/**
  * A rate that depends on a request field, such as image size or video
  * resolution. The price names its rates per value under `by.<name>`
  * (`src/pricing/prices.ts`). `default` is the value the provider uses when
  * the request names none.
+ *
+ * With `kind`, the field is a switch (`SwitchKind`), and its value is `true`
+ * or `false`, never the request's own text: an add-on the price adds on top
+ * (`by.redact.true.add`).
+ *
+ * `answeredWhen` names a flag that lets the provider choose the value itself
+ * (Deepgram's `detect_language`). Then the value the answer reports is billed
+ * (the reader's `reportedPriceKeys`), or, when it reports none, the dearest
+ * value as an estimate, logged.
  */
 export interface PriceKey {
   readonly name: string;
   readonly from: FieldRef;
   readonly default?: string;
+  readonly kind?: SwitchKind;
+  readonly answeredWhen?: FieldRef;
 }
 
 /** Where the model is in the request. `Part` is a part name of the match template. */
 export type ModelLocation<Part extends string = string> =
   | { readonly in: "body"; readonly field: string; readonly default?: string }
   | { readonly in: "form"; readonly field: string; readonly default?: string }
-  | { readonly in: "query"; readonly name: string; readonly default?: string }
+  /**
+   * In the query. `answeredWhen` names a flag that lets the provider serve
+   * another model than the one asked for (Deepgram's `detect_language` falls
+   * back to an older model for a language the asked one lacks): the answer
+   * must then name the billed model (the reader's `reportedModels`), or the
+   * charge is an estimate, logged.
+   */
+  | { readonly in: "query"; readonly name: string; readonly default?: string; readonly answeredWhen?: FieldRef }
   | { readonly in: "path"; readonly part: Part }
   /** The operation has one model, or none the request names. */
   | { readonly in: "fixed"; readonly model: string };
@@ -378,7 +412,7 @@ export interface OperationDescription {
    * naming one is served, billed at the model's price as an estimate and
    * logged (AGENTS.md: estimate, never bill as free).
    */
-  readonly unpricedOptions?: readonly FieldRef[];
+  readonly unpricedOptions?: readonly SwitchRef[];
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }
@@ -575,4 +609,16 @@ export function defineOperation<const P extends string, const U extends string =
 /** Declares a provider. */
 export function defineProvider<const D extends ProviderDescription>(provider: D): D {
   return provider;
+}
+
+/** The request measures a meter takes: none, one, or several in different units (a header meter's `estimate`). */
+export function requestMeasuresOf(meter: Meter): readonly (RequestMeasure & { readonly unit: Unit })[] {
+  if (meter.kind === "request_measure") return [meter];
+  if (meter.kind === "response_header") {
+    const { estimate } = meter;
+    if (estimate === undefined) return [];
+    return Array.isArray(estimate) ? (estimate as readonly (RequestMeasure & { readonly unit: Unit })[]) : [estimate as RequestMeasure & { readonly unit: Unit }];
+  }
+  if (meter.kind === "response_json") return meter.requestMeasure === undefined ? [] : [meter.requestMeasure];
+  return [];
 }

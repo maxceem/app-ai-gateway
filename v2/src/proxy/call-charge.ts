@@ -81,6 +81,10 @@ export interface CallAttempt {
   readonly priceKeys?: Readonly<Record<string, string>>;
   /** Options the request named that the provider bills on top at a price the gateway does not have: the charge is an estimate. */
   readonly unpricedOptions?: readonly string[];
+  /** Price keys the provider chooses for this request (`answeredWhen`): the answer's values are billed (`./meter.ts`). */
+  readonly answeredKeys?: readonly string[];
+  /** The provider may serve another model than the one asked for (`answeredWhen` on the model): the answer must name it. */
+  readonly modelAnswered?: true;
 }
 
 export interface AttemptOutcome {
@@ -138,8 +142,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     outcome.servedModeUnknown !== undefined ||
     attempt.servedModelUnknown === true ||
     (attempt.unpricedOptions?.length ?? 0) > 0 ||
-    usage?.finalEventUnread === true;
+    usage?.finalEventUnread === true ||
+    usage?.measureWorkedOut === true ||
+    (usage !== null && servedModelInDoubt(attempt, usage, facts));
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
+  if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
+  // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).
+  const unanswered = (attempt.answeredKeys ?? []).filter((key) => usage !== null && usage.priceKeys?.[key] === undefined);
+  if (unanswered.length > 0) log("warn", "price_key_unanswered", { ...facts, keys: unanswered.join(",") });
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
   let priced = usage === null || attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, servedMode, modeUnknown);
   if (priced === null && attempt.price !== null && usage !== null && reported === null && usage.reportMissing !== true) {
@@ -299,4 +309,19 @@ function logModes(
   if (!estimated || isStandardMode(served)) return;
   const asked = serviceModeName(served) === serviceModeName(attempt.requestedMode);
   log("warn", asked ? "service_mode_unpriced" : "served_mode_unpriced", { ...facts, serviceMode: serviceModeName(served) });
+}
+
+/**
+ * Whether the model that served an answer is in doubt: the provider may
+ * serve another model for this request (`modelAnswered`), and the answer
+ * names none, or none that is the billed one. A reported name matches the
+ * billed model when it is the same, or the billed model is a variant of it
+ * (`nova-3-general` of `nova-3`). Logged; the charge is then an estimate.
+ */
+function servedModelInDoubt(attempt: CallAttempt, usage: UsageObservation, facts: Readonly<Record<string, unknown>>): boolean {
+  if (attempt.modelAnswered !== true) return false;
+  const reported = usage.reportedModels ?? [];
+  if (reported.some((name) => name === attempt.model || attempt.model.startsWith(`${name}-`))) return false;
+  log("warn", reported.length === 0 ? "served_model_unknown" : "served_model_unexpected", facts);
+  return true;
 }

@@ -18,7 +18,10 @@
  *   once it closes, up to `SKIM_VALUE_CAP` characters of JSON text; a larger
  *   one is left out and `overflow` is set;
  * - an inner tree keeps the member as an object holding only its declared
- *   members, and only when the member is an object;
+ *   members, when the member is an object; when it is an array, it keeps a
+ *   list of its object elements, each with only its declared members (other
+ *   elements are left out), so a value inside a list of objects, such as
+ *   Deepgram's `results.channels[].detected_language`, can be declared;
  * - a key named twice keeps its last value, as `JSON.parse` does.
  *
  * A root object is one document. With `arrayDocuments`, a root array's
@@ -31,7 +34,7 @@
  */
 import { keep } from "./keep.ts";
 
-/** Declared paths: `true` keeps a member's whole value; a tree keeps an object member's declared members. */
+/** Declared paths: `true` keeps a member's whole value; a tree keeps an object member's declared members, or each object element's of an array member. */
 export type PathTree = { readonly [key: string]: PathTree | true };
 
 /** The largest value kept, in characters of JSON text. A usage report is a few hundred. */
@@ -79,16 +82,22 @@ const Target = {
   Document: 3,
   /** The root value. */
   Root: 4,
+  /** An element of a kept array: kept with the array's tree when it is an object. */
+  Element: 5,
 } as const;
 type Target = (typeof Target)[keyof typeof Target];
 
 interface Frame {
-  /** An object kept with its declared members, or null for a root array of documents. */
+  /** An object kept with its declared members, or null for an array (a root array of documents, or a kept array). */
   readonly tree: PathTree | null;
   readonly keys: Compiled | null;
   readonly value: Holder | null;
   /** A document's own object. */
   readonly document: boolean;
+  /** A kept array: its object elements, as they are kept. */
+  readonly list?: unknown[];
+  /** A kept array: the tree each object element is kept with. */
+  readonly elementTree?: PathTree;
 }
 
 const Mode = {
@@ -288,14 +297,30 @@ export class Skimmer {
     ) {
       return this.fail();
     }
-    if (character === 123 /* { */ && (target === Target.Inner || target === Target.Document || target === Target.Root)) {
+    if (character === 123 /* { */ && target !== Target.Skip && target !== Target.Leaf) {
       const value: Holder = {};
-      const document = target !== Target.Inner;
-      if (document) this.document = value;
-      else this.targetHolder![this.targetKey] = value;
-      const tree = document ? this.tree : this.targetTree!;
+      const document = target === Target.Document || target === Target.Root;
+      let tree: PathTree;
+      if (document) {
+        this.document = value;
+        tree = this.tree;
+      } else if (target === Target.Element) {
+        const frame = this.frames[this.frames.length - 1]!;
+        frame.list!.push(value);
+        tree = frame.elementTree!;
+      } else {
+        this.targetHolder![this.targetKey] = value;
+        tree = this.targetTree!;
+      }
       this.frames.push({ tree, keys: compiled(tree), value, document });
       this.mode = Mode.KeyOrClose;
+      return index + 1;
+    }
+    if (character === 91 /* [ */ && target === Target.Inner) {
+      const list: unknown[] = [];
+      this.targetHolder![this.targetKey] = list;
+      this.frames.push({ tree: null, keys: null, value: null, document: false, list, elementTree: this.targetTree! });
+      this.mode = Mode.ValueOrClose;
       return index + 1;
     }
     if (character === 91 /* [ */ && target === Target.Root && this.options.arrayDocuments === true) {
@@ -518,7 +543,7 @@ export class Skimmer {
     if (character === 44 /* , */) {
       if (frame.tree !== null) this.mode = Mode.Key;
       else {
-        this.target = Target.Document;
+        this.target = frame.list !== undefined ? Target.Element : Target.Document;
         this.mode = Mode.Value;
       }
       return index + 1;
@@ -531,7 +556,7 @@ export class Skimmer {
     const index = nonSpace(text, at);
     if (index === -1) return text.length;
     if (text.charCodeAt(index) === 93 /* ] */) return this.close(index);
-    this.target = Target.Document;
+    this.target = this.frames[this.frames.length - 1]!.list !== undefined ? Target.Element : Target.Document;
     this.mode = Mode.Value;
     return index;
   }
@@ -558,6 +583,11 @@ export function pick(value: unknown, tree: PathTree): Holder | null {
     const member = (value as Holder)[key];
     if (declared === true) {
       if (JSON.stringify(member).length <= SKIM_VALUE_CAP) out[key] = member;
+    } else if (Array.isArray(member)) {
+      out[key] = member.flatMap((element) => {
+        const inner = pick(element, declared);
+        return inner === null ? [] : [inner];
+      });
     } else {
       const inner = pick(member, declared);
       if (inner !== null) out[key] = inner;

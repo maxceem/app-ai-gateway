@@ -92,7 +92,7 @@
         },
         "redact": {
           "false": {},
-          "*": {
+          "true": {
             "add": {
               "per_minute": 0.002
             }
@@ -100,7 +100,7 @@
         },
         "detect_entities": {
           "false": {},
-          "*": {
+          "true": {
             "add": {
               "per_minute": 0.0017
             }
@@ -108,7 +108,44 @@
         },
         "keyterm": {
           "false": {},
-          "*": {
+          "true": {
+            "add": {
+              "per_minute": 0.0013
+            }
+          }
+        }
+      },
+      "author": "Deepgram"
+    },
+    "nova-3-general": {
+      "kind": "transcription",
+      "per_minute": 0.0043,
+      "by": {
+        "language": {
+          "multi": {
+            "per_minute": 0.0052
+          },
+          "*": {}
+        },
+        "redact": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        },
+        "detect_entities": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.0017
+            }
+          }
+        },
+        "keyterm": {
+          "false": {},
+          "true": {
             "add": {
               "per_minute": 0.0013
             }
@@ -120,6 +157,16 @@
     "whisper-large": {
       "kind": "transcription",
       "per_minute": 0.0048,
+      "by": {
+        "redact": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        }
+      },
       "author": "Deepgram"
     }
   },

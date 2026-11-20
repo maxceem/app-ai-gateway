@@ -23,7 +23,8 @@
  * - `POST /v1/audio/speech`: audio bytes, or, with `stream_format: "sse"`,
  *   events ending with usage.
  * - `POST /v1/listen`: Deepgram's transcript of 30 seconds of audio, on two
- *   channels with `multichannel=true` in the query.
+ *   channels with `multichannel=true` in the query, served by the model the
+ *   query names, and in French with `detect_language=true`.
  * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
  *   `x-fal-billable-units`, or none with `mock_no_units: true`.
  *
@@ -266,10 +267,13 @@ const elevenStt: Answer = ({ body }) =>
  */
 const deepgramListen: Answer = ({ query }) => {
   const channels = query.get("multichannel") === "true" ? 2 : 1;
+  const model = query.get("model") ?? "base";
+  // With `detect_language=true`, every channel says it heard French.
+  const detected = query.get("detect_language") === "true" ? { detected_language: "fr" } : {};
   return Response.json(
     {
-      metadata: { request_id: "dg-mock", duration: 30, channels, models: ["mock"] },
-      results: { channels: Array.from({ length: channels }, () => ({ alternatives: [{ transcript: "hello", confidence: 0.99 }] })) },
+      metadata: { request_id: "dg-mock", duration: 30, channels, models: ["mock"], model_info: { mock: { arch: model, name: `general-${model}`, version: "1" } } },
+      results: { channels: Array.from({ length: channels }, () => ({ ...detected, alternatives: [{ transcript: "hello", confidence: 0.99 }] })) },
     },
     { headers: { "x-mock-callback-received": String(query.has("callback")), "x-mock-model": query.get("model") ?? "" } },
   );

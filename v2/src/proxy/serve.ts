@@ -59,7 +59,15 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
-import { priceKeyValues, removeOutbound, requestFormFields, requestUsage, unpricedOptionsNamed } from "./request-fields.ts";
+import {
+  answeredPriceKeys,
+  modelAnswered,
+  priceKeyValues,
+  removeOutbound,
+  requestFormFields,
+  requestUsage,
+  unpricedOptionsNamed,
+} from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
@@ -305,6 +313,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const fields = { body, query: url.searchParams };
       const measured = requestUsage(operation, fields);
       const priceKeys = priceKeyValues(operation, fields);
+      const answeredKeys = answeredPriceKeys(operation, fields);
       // Options the provider bills on top at a price the gateway does not have: served, billed as an estimate.
       const unpriced = unpricedOptionsNamed(operation, fields, price?.price ?? null);
       if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...caller.facts, options: unpriced.join(",") });
@@ -378,6 +387,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         ...(measured !== null ? { requestUsage: measured } : {}),
         ...(priceKeys !== undefined ? { priceKeys } : {}),
         ...(unpriced.length > 0 ? { unpricedOptions: unpriced } : {}),
+        ...(answeredKeys.length > 0 ? { answeredKeys } : {}),
+        ...(modelAnswered(operation, fields) ? { modelAnswered: true as const } : {}),
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;

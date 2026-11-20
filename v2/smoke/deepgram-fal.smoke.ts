@@ -132,6 +132,15 @@ test("Deepgram bills a priced add-on on top of the model's rate", { skip }, asyn
   assert.equal((await usageOf(user)).cost_nano, 3_150_000);
 });
 
+test("Deepgram bills the language it detected", { skip }, async () => {
+  const user = `smoke-dg-detect-${run}`;
+  const response = await call(deepgramSlug, "v1/listen?model=nova-3&detect_language=true", AUDIO, user, "audio/wav");
+  assert.equal(response.status, 200, await response.clone().text());
+  await response.json();
+  // French, at the monolingual $0.0043 a minute, not the multilingual rate.
+  assert.equal((await usageOf(user)).cost_nano, 2_150_000);
+});
+
 test("fal.run bills the units its header reports", { skip }, async () => {
   const user = `smoke-fal-${run}`;
   const response = await call(falSlug, "run/fal-ai/flux/dev", JSON.stringify({ prompt: "a lighthouse", num_images: 2 }), user, "application/json");
