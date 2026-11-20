@@ -13,6 +13,7 @@
  * entry with `unlisted_since`, and is still priced.
  */
 import models from "./models.json";
+import type { OperationDescription } from "../providers/operation.ts";
 import { MoneyError, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
 import {
   isStandardMode,
@@ -135,21 +136,29 @@ export function resolvePrice(
   return listed === null ? null : { price: listed, source: "list_rate" };
 }
 
-/** Whether a price can bill something: tokens (input and output rates), or a time or image rate. */
-export function isComplete(price: ModelPrice): boolean {
-  const { rates } = price;
-  return (
-    rates.per_minute !== undefined ||
-    rates.per_hour !== undefined ||
-    rates.per_image !== undefined ||
-    (rates.input !== undefined && rates.output !== undefined)
-  );
+/** Whether a price bills tokens: it has input and output rates. */
+function pricesTokens(price: ModelPrice): boolean {
+  return price.rates.input !== undefined && price.rates.output !== undefined;
 }
 
-/** Whether a model has a price, ours or the customer's, that a call can be billed at. */
-export function hasModelPrice(providerType: string, model: string, customer: CustomerRates | null | undefined): boolean {
-  const resolved = resolvePrice(providerType, model, customer);
-  return resolved !== null && isComplete(resolved.price);
+/** Whether a price can bill something: tokens, or a time or image rate. */
+function isComplete(price: ModelPrice): boolean {
+  const { rates } = price;
+  return rates.per_minute !== undefined || rates.per_hour !== undefined || rates.per_image !== undefined || pricesTokens(price);
+}
+
+/**
+ * Whether a price is in the unit an operation measures: an operation read by
+ * a usage reader is billed in tokens, so a price per minute or per image
+ * cannot bill it. The units of other meters arrive with their providers.
+ */
+export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
+  return operation.meter.kind === "response_json" ? pricesTokens(price) : isComplete(price);
+}
+
+/** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */
+export function reportsCost(operation: OperationDescription): boolean {
+  return operation.meter.kind === "response_json" && operation.meter.providerCost !== undefined;
 }
 
 /** A rate × factor, rounded up once, so a mode price is never under its true figure. */

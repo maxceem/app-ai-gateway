@@ -85,23 +85,84 @@ export function bodyWindows(): { push(chunk: Uint8Array): void; read(): Observed
   };
 }
 
+/** One whole SSE frame: its event name and its data, comment lines skipped. */
+interface SseFrame {
+  readonly event: string | null;
+  readonly data: string;
+}
+
 /**
- * How each API style's stream says it has sent everything: its last event.
- * Gemini has no closing event; its last chunk names why the answer ended.
+ * The last frame of a kept stream, or null when there is none. A frame ends
+ * with a blank line, so text after the last blank line is a frame still
+ * arriving, and is not one.
  */
-const LAST_EVENT: Readonly<Record<ApiStyle, RegExp>> = {
-  "openai-chat": /^data:\s*\[DONE\]$/u,
-  "openai-completions": /^data:\s*\[DONE\]$/u,
-  "openai-responses": /"type"\s*:\s*"response\.(?:completed|incomplete|failed)"/u,
-  "anthropic-messages": /"type"\s*:\s*"message_stop"/u,
-  "gemini-generate": /"finishReason"\s*:/u,
+function lastFrame(text: string): SseFrame | null {
+  const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
+  // The last block is whatever follows the last blank line: an unfinished frame, or nothing.
+  for (let index = blocks.length - 2; index >= 0; index -= 1) {
+    let event: string | null = null;
+    const data: string[] = [];
+    for (const line of blocks[index]!.split("\n")) {
+      if (line === "" || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (event !== null || data.length > 0) return { event, data: data.join("\n") };
+  }
+  return null;
+}
+
+/** The `type` of a frame's data, when the data is a whole JSON object. */
+function dataType(frame: SseFrame): string | null {
+  try {
+    const value = JSON.parse(frame.data) as unknown;
+    const type = typeof value === "object" && value !== null ? (value as { type?: unknown }).type : undefined;
+    return typeof type === "string" ? type : null;
+  } catch {
+    return null;
+  }
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a frame is one of `names`, by its data's `type`, else by its event
+ * name. Its data must be whole JSON either way: a cut payload never closes a
+ * stream.
+ */
+function namedFrame(frame: SseFrame, names: readonly string[]): boolean {
+  const type = dataType(frame);
+  if (type !== null) return names.includes(type);
+  return frame.event !== null && names.includes(frame.event) && isJson(frame.data);
+}
+
+/** Whether a frame is its style's closing event. Null for a style whose stream has none. */
+const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>> = {
+  "openai-chat": (frame) => frame.data === "[DONE]",
+  "openai-completions": (frame) => frame.data === "[DONE]",
+  "openai-responses": (frame) => namedFrame(frame, ["response.completed", "response.incomplete", "response.failed"]),
+  "anthropic-messages": (frame) => namedFrame(frame, ["message_stop"]),
+  // Gemini's stream has no closing event: it simply ends.
+  "gemini-generate": null,
 };
 
-/** Whether a kept stream ends with its style's last event: the provider had sent everything. */
-export function streamFinished(body: ObservedText, style: ApiStyle): boolean {
-  const text = (body.truncated ? body.tail : body.head).replace(/\r\n/gu, "\n").trimEnd();
-  const last = text.slice(text.lastIndexOf("\n\n") + 1).trim();
-  return LAST_EVENT[style].test(last.split("\n").find((line) => line.startsWith("data:")) ?? "");
+/**
+ * Whether a kept stream ended with its style's closing event: the provider
+ * had sent everything. Null for a style whose stream has no closing event, so
+ * only the end of the stream says it is whole.
+ */
+export function streamClosed(body: ObservedText, style: ApiStyle): boolean | null {
+  const closing = CLOSING[style];
+  if (closing === null) return null;
+  const frame = lastFrame(body.truncated ? body.tail : body.head);
+  return frame !== null && closing(frame);
 }
 
 /**

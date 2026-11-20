@@ -254,6 +254,7 @@ function tokenColumns(charge: ChargeRow): ReturnType<typeof usageFromMeasures> {
       outputTokens: charge.outputTokens,
     },
     mode: STANDARD_MODE,
+    modeUnknown: false,
   };
 }
 
@@ -314,7 +315,7 @@ export async function priceUnresolvedCharge(
     rates: priced.rates,
     measures: { tokens: totalTokens(usage) },
     now: input.now,
-    estimate: priced.estimated,
+    estimate: priced.estimated || stored.modeUnknown,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

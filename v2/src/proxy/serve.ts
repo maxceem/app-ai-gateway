@@ -37,7 +37,7 @@ import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejectio
 import { bodyOnce } from "../http/body.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { isComplete, resolvePrice } from "../pricing/prices.ts";
+import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
 import {
   connectionDescription,
   connectionSecret,
@@ -52,7 +52,7 @@ import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge
 import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders } from "./headers.ts";
 import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
-import { observeBody, streamFinished } from "./observe.ts";
+import { observeBody, streamClosed } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -75,10 +75,6 @@ function servedNow(operation: OperationDescription): boolean {
   return operation.lifecycle === "call" && operation.meter.kind === "response_json";
 }
 
-/** Whether the operation's answers carry the provider's own cost, so it can be served without a price of ours. */
-function reportsCost(operation: OperationDescription): boolean {
-  return operation.meter.kind === "response_json" && operation.meter.providerCost !== undefined;
-}
 
 /** The parts of the URL after `/v2/apps/{app}/proxy/`, still encoded. */
 function proxyTarget(url: URL): { slug: string; path: string } {
@@ -195,7 +191,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
     }
     const resolved = resolvePrice(connection.type, model, connection.rates);
-    const price = resolved !== null && isComplete(resolved.price) ? resolved : null;
+    // A price in another unit (per minute, say) cannot bill this operation.
+    const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
     if (price === null && routing.models === undefined && !reportsCost(operation)) {
       // Never served: a model with no price is refused, and nothing is listed by name.
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
@@ -430,14 +427,19 @@ async function sendUpstream(
       (body) => {
         const reading = ok ? readResponse(body, contentType, upstream.headers, description, operation) : null;
         const usage = reading?.usage ?? null;
-        // A stream closed right after its `[DONE]`, with its usage read, was
-        // whole: the end of stream simply had not arrived yet.
-        const finished = usage !== null && operation.style !== undefined && streamFinished(body, operation.style);
-        const cut = !finished && (body.clientAborted || body.upstreamFailed);
+        // A stream is whole once its style's closing event arrived, even if the
+        // app went away right after. One that ended without it was cut short,
+        // however it ended. A style with no closing event, and an answer that
+        // is not a stream, are whole when they were read to the end.
+        const closed =
+          ok && operation.style !== undefined && contentType.toLowerCase().includes("text/event-stream")
+            ? streamClosed(body, operation.style)
+            : null;
+        const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
         const served = servedServiceMode(description, attempt.requestedMode, usage, upstream.headers);
         const outcome: AttemptOutcome = ok
           ? {
-              // A stream the provider broke is a failed attempt, not one the app left.
+              // A stream the provider broke, or ended early, is a failed attempt, not one the app left.
               status: !cut ? "ok" : body.clientAborted ? "client_aborted" : "network_error",
               httpStatus: upstream.status,
               errorCode: null,

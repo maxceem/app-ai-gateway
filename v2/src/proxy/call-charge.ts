@@ -68,7 +68,7 @@ export interface AttemptOutcome {
   readonly providerCostUsd?: number | null;
   /** The mode that served the attempt, from the response. The request's mode when absent. */
   readonly servedMode?: ServiceMode;
-  /** A value of the response's mode the gateway does not know. Logged only. */
+  /** A value of the response's mode the gateway does not know: billed at least at standard, as an estimate. */
   readonly servedModeUnknown?: ServiceModeValue;
   /** The app or the provider ended the answer before it was complete. */
   readonly cut: boolean;
@@ -96,6 +96,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const facts = { app: attempt.appId, charge: id, providerType: attempt.providerType, providerSlug: attempt.providerSlug, model: attempt.model };
 
   const reported = outcome.providerCostUsd ?? null;
+  // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
+  const modeUnknown = attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined;
   const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode);
 
   let costed: Costed;
@@ -111,7 +113,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       costed = {
         costNano: priced.cost,
         priceSource: attempt.price!.source,
-        estimate: priced.estimated || attempt.requestedModeUnknown !== undefined,
+        estimate: priced.estimated || modeUnknown,
         rates: priced.rates,
       };
       logModes(attempt, servedMode, outcome.servedModeUnknown, priced.estimated, facts);
@@ -182,7 +184,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     outputTokens: usage?.outputTokens ?? null,
     unit: usage === null ? null : "tokens",
     units: usage === null ? null : totalTokens(usage),
-    measures: usage === null ? {} : usageMeasures(usage, servedMode),
+    measures: usage === null ? {} : usageMeasures(usage, servedMode, modeUnknown),
     rates: costed.rates,
     sessionMs: null,
     correctionKind: null,

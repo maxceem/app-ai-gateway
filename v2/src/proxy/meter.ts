@@ -75,6 +75,11 @@ export function servedServiceMode(
   ) {
     tier = requested.tier;
   }
+  // A tier value the table does not know says nothing the gateway can price:
+  // it may be dearer than asked. It is billed at least at standard, never at
+  // a cheaper tier the request asked for, and marked as an estimate.
+  const unknownTier = unknown !== undefined && fields.some((field) => field.axis === "tier" && field.names.includes(unknown.field));
+  if (unknownTier && named.tier === undefined && SERVICE_TIERS[tier].rank < SERVICE_TIERS.standard.rank) tier = "standard";
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
   return unknown ? { mode, unknown } : { mode };

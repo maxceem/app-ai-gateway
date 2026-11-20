@@ -13,6 +13,7 @@ import { bytedance, mistral } from "../src/providers/compatible.ts";
 import { gemini } from "../src/providers/gemini.ts";
 import { openai } from "../src/providers/openai.ts";
 import { requestedServiceMode, servedServiceMode } from "../src/proxy/meter.ts";
+import { streamClosed } from "../src/proxy/observe.ts";
 import { readProviderCost } from "../src/usage/cost-reports.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
@@ -168,6 +169,84 @@ describe("usage readers", () => {
   });
 });
 
+describe("a Gemini prompt partly from the cache", () => {
+  const price = (rates: Record<string, number>): ModelPrice => ({ rates: rates as ModelPrice["rates"], raw: {} });
+
+  it("takes cached image tokens out of the uncached split, a deliberate change from v1", () => {
+    const usage = read(
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 1000,
+          cachedContentTokenCount: 900,
+          candidatesTokenCount: 1,
+          promptTokensDetails: [
+            { modality: "TEXT", tokenCount: 100 },
+            { modality: "IMAGE", tokenCount: 900 },
+          ],
+          cacheTokensDetails: [{ modality: "IMAGE", tokenCount: 900 }],
+        },
+      }),
+      "application/json",
+      "gemini-generate",
+    );
+    expect(usage).toMatchObject({ inputTokens: 100, cachedInputTokens: 900, modalityTokens: { input: { image: 0 } } });
+    const rates = price({ input: 1000, cached_input: 100, image_input: 5000, output: 2000 });
+    // The 100 uncached tokens are text; the 900 cached ones bill at the cached rate.
+    expect(priceTokens(rates, usage)?.cost).toBe(cost([[100, rate(1000)], [900, rate(100)], [1, rate(2000)]]));
+  });
+
+  it("bills cached audio at the cached audio rate", () => {
+    const usage = read(
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 1000,
+          cachedContentTokenCount: 600,
+          candidatesTokenCount: 0,
+          promptTokensDetails: [
+            { modality: "TEXT", tokenCount: 200 },
+            { modality: "AUDIO", tokenCount: 800 },
+          ],
+          cacheTokensDetails: [
+            { modality: "TEXT", tokenCount: 100 },
+            { modality: "AUDIO", tokenCount: 500 },
+          ],
+        },
+      }),
+      "application/json",
+      "gemini-generate",
+    );
+    expect(usage.tokenVariants).toEqual({ cached_input: { audio: 500 } });
+    const rates = price({ input: 1000, cached_input: 100, audio_input: 3000, cached_input_audio: 300, output: 2000 });
+    // Uncached: 100 text and 300 audio. Cached: 100 text and 500 audio.
+    expect(priceTokens(rates, usage)?.cost).toBe(
+      cost([
+        [300, rate(3000)],
+        [100, rate(1000)],
+        [500, rate(300)],
+        [100, rate(100)],
+      ]),
+    );
+  });
+});
+
+describe("the end of a stream", () => {
+  const body = (head: string) => ({ head, tail: "", truncated: false });
+
+  it("closes only on a whole closing frame", () => {
+    // A cut payload is not a closing event, even if it names one.
+    expect(streamClosed(body('data: {"type":"response.completed","response":{"usage":\n\n'), "openai-responses")).toBe(false);
+    // A closing event named only by its event line counts, when its data is whole.
+    expect(streamClosed(body('event: response.completed\ndata: {"response":{}}\n\n'), "openai-responses")).toBe(true);
+    // A comment after the closing event changes nothing.
+    expect(streamClosed(body("data: [DONE]\n\n: keep-alive\n\n"), "openai-chat")).toBe(true);
+    expect(streamClosed(body('event: message_stop\ndata: {"type":"message_stop"}\n\n'), "anthropic-messages")).toBe(true);
+    // A frame still arriving is not one.
+    expect(streamClosed(body("data: [DONE]"), "openai-chat")).toBe(false);
+    // Gemini's stream has no closing event.
+    expect(streamClosed(body("data: {}\n\n"), "gemini-generate")).toBeNull();
+  });
+});
+
 describe("token variants", () => {
   it("bills Anthropic's one-hour cache write at its own rate, and the rest at the default write rate", () => {
     const usage = read(
@@ -233,7 +312,8 @@ describe("token variants", () => {
     };
     const measures = usageMeasures(usage, { tier: "flex", region: "global" });
     expect(measures.service_mode).toBe("flex");
-    expect(usageFromMeasures(measures)).toEqual({ usage, mode: { tier: "flex", region: "global" } });
+    expect(usageFromMeasures(measures)).toEqual({ usage, mode: { tier: "flex", region: "global" }, modeUnknown: false });
+    expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE, true))?.modeUnknown).toBe(true);
     const seed = listed("bytedance", "seed-2-0-lite-260428");
     expect(priceTokens(seed, usageFromMeasures(measures)!.usage)?.cost).toBe(priceTokens(seed, usage)?.cost);
   });

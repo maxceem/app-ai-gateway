@@ -248,6 +248,50 @@ describe("text APIs through the proxy", () => {
   });
 });
 
+describe("streams that end before their closing event", () => {
+  it("books a Messages stream that ended cleanly without message_stop as cut short, never complete", async () => {
+    const { appId, slug, key } = await setup("anthropic", { operations: ["anthropic.messages"] });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const events = sse([
+      { type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 1 } } },
+      { type: "message_delta", usage: { output_tokens: 2 } },
+    ]);
+    fetchSpy.mockResolvedValue(new Response(events, { headers: { "content-type": "text/event-stream" } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/messages`, key, { model: "claude-sonnet-5", stream: true });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ status: "network_error", measured: "partial" }]);
+  });
+
+  it("books a Chat Completions stream that ended without [DONE] as cut short", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.chat"] });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const events = sse([{ choices: [{ delta: { content: "Hi" } }] }]);
+    fetchSpy.mockResolvedValue(new Response(events, { headers: { "content-type": "text/event-stream" } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "gpt-4o-mini", stream: true });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ status: "network_error", measured: "partial", price_source: "unresolved" }]);
+  });
+});
+
+describe("stored apps", () => {
+  it("still serves an app saved before a provider's key header was reserved", async () => {
+    const { slug } = await setup("openai", { operations: ["openai.chat"] });
+    const appId = await seedRoutedApp(
+      { type: "api_key", end_user: { source: "header", header: "x-api-key" } },
+      { providers: { [slug]: { operations: ["openai.chat"] } } },
+    );
+    const { key } = await seedAppKey(appId);
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "gpt-4o-mini" }, { "x-api-key": "user-9" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ end_user_id: "user-9", status: "ok" }]);
+  });
+});
+
 describe("service modes through the proxy", () => {
   const usage = { prompt_tokens: 1000, completion_tokens: 100 };
   const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 };
@@ -286,6 +330,19 @@ describe("service modes through the proxy", () => {
     await waitOnExecutionContext(ctx);
     expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 1, cost_nano: listedCost("openai", "gpt-5.6-luna", tokens) }]);
     expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("service_mode_unknown"));
+  });
+
+  it("bills a flex request whose answer names a tier it does not know at standard, as an estimate", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.chat"] });
+    fetchSpy.mockResolvedValue(Response.json({ choices: [], service_tier: "hyperflex", usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "gpt-5.6-luna", service_tier: "flex" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_is_estimate: 1, cost_nano: listedCost("openai", "gpt-5.6-luna", tokens) });
+    const measures = JSON.parse(String(charge!.measures_json)) as Record<string, unknown>;
+    expect(measures).toMatchObject({ service_mode_unknown: 1 });
+    expect(measures).not.toHaveProperty("service_mode");
   });
 
   it("estimates a mode the model has no price in, never under standard", async () => {

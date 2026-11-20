@@ -14,7 +14,12 @@ import { VARIANTS } from "./token-rates.ts";
 const SIDES = ["input", "output"] as const;
 const COUNTED = ["image", "audio", "video", "unknown"] as const;
 
-export function usageMeasures(usage: UsageObservation, mode: ServiceMode): Record<string, number | string> {
+/**
+ * `modeUnknown`: the request or the response named a mode value the gateway
+ * does not know, so any price of it is an estimate. Kept, so a later pricing
+ * is marked the same way.
+ */
+export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUnknown = false): Record<string, number | string> {
   const measures: Record<string, number | string> = {
     input_tokens: usage.inputTokens,
     cached_input_tokens: usage.cachedInputTokens,
@@ -37,6 +42,7 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode): Recor
     if (count !== undefined && count > 0) measures[`${variant.field}_tokens`] = count;
   }
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
+  if (modeUnknown) measures.service_mode_unknown = 1;
   return measures;
 }
 
@@ -46,7 +52,9 @@ function count(measures: Readonly<Record<string, number | string>>, key: string)
 }
 
 /** The usage and service mode a charge's measures hold, or null when it has no token counts. */
-export function usageFromMeasures(measures: Readonly<Record<string, number | string>>): { usage: UsageObservation; mode: ServiceMode } | null {
+export function usageFromMeasures(
+  measures: Readonly<Record<string, number | string>>,
+): { usage: UsageObservation; mode: ServiceMode; modeUnknown: boolean } | null {
   const input = count(measures, "input_tokens");
   const output = count(measures, "output_tokens");
   if (input === undefined || output === undefined) return null;
@@ -76,5 +84,9 @@ export function usageFromMeasures(measures: Readonly<Record<string, number | str
     ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
     ...(tokenVariants !== undefined ? { tokenVariants: tokenVariants as TokenVariants } : {}),
   };
-  return { usage, mode: (typeof modeName === "string" ? parseServiceModeName(modeName) : null) ?? STANDARD_MODE };
+  return {
+    usage,
+    mode: (typeof modeName === "string" ? parseServiceModeName(modeName) : null) ?? STANDARD_MODE,
+    modeUnknown: count(measures, "service_mode_unknown") !== undefined,
+  };
 }

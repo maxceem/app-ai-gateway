@@ -13,7 +13,7 @@ import {
   toMilli,
   type NanoDollars,
 } from "../src/money.ts";
-import { hasModelPrice, listPrice, PRICE_LIST, resolvePrice } from "../src/pricing/prices.ts";
+import { listPrice, PRICE_LIST, resolvePrice } from "../src/pricing/prices.ts";
 import { priceTokens } from "../src/pricing/tokens.ts";
 
 describe("money (plan D20)", () => {
@@ -99,8 +99,8 @@ describe("the price list", () => {
     expect(resolvePrice("openai", "gpt-4o-mini", null)?.source).toBe("list_rate");
     const customer = { "gpt-4o-mini": { input: 1, output: 2 } };
     expect(resolvePrice("openai", "gpt-4o-mini", customer)).toMatchObject({ source: "customer_rate", price: { rates: { input: 1 } } });
-    expect(hasModelPrice("openai", "no-such-model", null)).toBe(false);
-    expect(hasModelPrice("openai", "no-such-model", { "no-such-model": { input: 1, output: 1 } })).toBe(true);
+    expect(resolvePrice("openai", "no-such-model", null)).toBeNull();
+    expect(resolvePrice("openai", "no-such-model", { "no-such-model": { input: 1, output: 1 } })?.source).toBe("customer_rate");
   });
 
   it("prices tokens by bucket, cached and cache writes at the input rate when they have none", () => {

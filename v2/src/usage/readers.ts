@@ -233,22 +233,66 @@ const GEMINI_MODALITIES = new Map<unknown, Modality>([
   ["VIDEO", "video"],
 ]);
 
-/** One side of a Gemini usage by modality. Only what the entries account for is believed. */
-function geminiModalities(details: unknown, total: number): ModalityCounts | undefined {
+type GeminiKind = Modality | "unknown" | "text";
+
+/** A Gemini details list as counts per kind, or undefined when it is not a list. */
+function geminiCounts(details: unknown): Map<GeminiKind, number> | undefined {
   if (!Array.isArray(details)) return undefined;
-  const counts: Partial<Record<Modality | "unknown", number>> = {};
-  let accounted = 0;
+  const counts = new Map<GeminiKind, number>();
   for (const detail of details) {
     const entry = asRecord(detail);
     if (!entry) continue;
-    const tokens = numberAt(entry, "tokenCount");
-    accounted += tokens;
-    if (entry.modality === "TEXT") continue;
-    const modality = GEMINI_MODALITIES.get(entry.modality) ?? "unknown";
-    counts[modality] = (counts[modality] ?? 0) + tokens;
+    const kind: GeminiKind = entry.modality === "TEXT" ? "text" : (GEMINI_MODALITIES.get(entry.modality) ?? "unknown");
+    counts.set(kind, (counts.get(kind) ?? 0) + numberAt(entry, "tokenCount"));
   }
-  if (accounted < total) counts.unknown = (counts.unknown ?? 0) + total - accounted;
   return counts;
+}
+
+/** One side of a Gemini usage by modality. Only what the entries account for is believed. */
+function geminiModalities(details: unknown, total: number): ModalityCounts | undefined {
+  const counts = geminiCounts(details);
+  if (counts === undefined) return undefined;
+  const split: Partial<Record<Modality | "unknown", number>> = {};
+  let accounted = 0;
+  for (const [kind, tokens] of counts) {
+    accounted += tokens;
+    if (kind !== "text") split[kind] = (split[kind] ?? 0) + tokens;
+  }
+  if (accounted < total) split.unknown = (split.unknown ?? 0) + total - accounted;
+  return split;
+}
+
+/**
+ * A prompt's split when part of it came from the cache. `cacheTokensDetails`
+ * says what the cache held, by modality; the prompt's own details cover the
+ * whole prompt. v1 read only the prompt's, so cached image or video tokens
+ * were billed again as uncached ones: a deliberate change from v1.
+ *
+ * - Image, video and unknown tokens: the cached ones are taken out of the
+ *   split, so only uncached ones bill at their rates. The cached ones bill
+ *   at the cached rate.
+ * - Audio has a cached rate of its own (`cached_input_audio`): its count stays
+ *   whole, and its cached share is the variant, as the pricing reads it.
+ */
+function geminiCachedSplit(
+  prompt: unknown,
+  cache: unknown,
+  uncachedTotal: number,
+): { input: ModalityCounts; tokenVariants?: TokenVariants } | undefined {
+  const whole = geminiCounts(prompt);
+  const cached = geminiCounts(cache);
+  if (whole === undefined || cached === undefined) return undefined;
+  const split: Partial<Record<Modality | "unknown", number>> = {};
+  let accounted = 0;
+  for (const [kind, tokens] of whole) {
+    const uncached = Math.max(0, tokens - (cached.get(kind) ?? 0));
+    accounted += uncached;
+    if (kind === "text") continue;
+    split[kind] = (split[kind] ?? 0) + (kind === "audio" ? tokens : uncached);
+  }
+  if (accounted < uncachedTotal) split.unknown = (split.unknown ?? 0) + uncachedTotal - accounted;
+  const audio = Math.min(cached.get("audio") ?? 0, whole.get("audio") ?? 0);
+  return { input: split, ...(audio > 0 ? { tokenVariants: { cached_input: { audio } } } : {}) };
 }
 
 const GEMINI_COUNTS = ["promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount", "thoughtsTokenCount"] as const;
@@ -263,7 +307,9 @@ export function geminiUsage(value: unknown): UsageObservation | null {
   const cached = numberAt(usage, "cachedContentTokenCount");
   const candidates = numberAt(usage, "candidatesTokenCount");
   const thoughts = numberAt(usage, "thoughtsTokenCount");
-  const input = geminiModalities(usage.promptTokensDetails ?? usage.promptTokenDetails, promptTotal);
+  const promptDetails = usage.promptTokensDetails ?? usage.promptTokenDetails;
+  const cachedSplit = cached > 0 ? geminiCachedSplit(promptDetails, usage.cacheTokensDetails, Math.max(0, promptTotal - cached)) : undefined;
+  const input = cachedSplit?.input ?? geminiModalities(promptDetails, promptTotal);
   // Thinking is text even where the candidates are not broken down, so it
   // never bills at an image rate for want of a breakdown.
   const output = geminiModalities(usage.candidatesTokensDetails, candidates) ?? (thoughts > 0 ? { unknown: candidates } : undefined);
@@ -276,6 +322,7 @@ export function geminiUsage(value: unknown): UsageObservation | null {
     // Thinking is not part of the candidates, and Gemini bills it as output.
     outputTokens: candidates + thoughts,
     ...(input || output ? { modalityTokens: { ...(input ? { input } : {}), ...(output ? { output } : {}) } } : {}),
+    ...(cachedSplit?.tokenVariants ? { tokenVariants: cachedSplit.tokenVariants } : {}),
   };
 }
 
