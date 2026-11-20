@@ -226,8 +226,10 @@ export function responseReader(
       try {
         body.push(decoder.decode(chunk, { stream: true }));
       } catch (error) {
-        stop("failed", error);
+        return stop("failed", error);
       }
+      // Past the event limit: stop now, so nothing more is decoded.
+      if (body.stopped) stop("budget");
     },
     finish(headers, clean) {
       const unread = { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };

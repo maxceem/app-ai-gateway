@@ -319,6 +319,20 @@ describe("the response reader", () => {
     warnings.mockRestore();
   });
 
+  it("stops decoding as soon as the event limit is reached (Astra A2)", () => {
+    const decode = vi.spyOn(TextDecoder.prototype, "decode");
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const reader = responseReader(SSE, openai, chat, {}, { bytes: 1024 * 1024, documents: 2 })!;
+    reader.push(new TextEncoder().encode(sse([{ choices: [] }, { choices: [] }, { choices: [] }])));
+    const calls = decode.mock.calls.length;
+    for (let piece = 0; piece < 5; piece += 1) reader.push(new TextEncoder().encode(sse([{ choices: [] }])));
+    expect(decode.mock.calls.length).toBe(calls);
+    expect(reader.finish(new Headers(), true).usage).toBeNull();
+    expect(warnings.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("usage_read_budget_exceeded"))).toHaveLength(1);
+    decode.mockRestore();
+    warnings.mockRestore();
+  });
+
   it("never lets a failing reader touch the answer", async () => {
     const source = new ReadableStream<Uint8Array>({
       start(controller) {
