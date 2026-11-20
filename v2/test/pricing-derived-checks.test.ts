@@ -36,8 +36,11 @@ function threeWays(operation: OperationDescription, stored: CustomerRates) {
 describe("Fable's cases: save, eligibility and the charge agree", () => {
   it("a header price in credits only: served for the header, refused on save since a missing header cannot be charged", () => {
     expect(threeWays(tts, { m: { per_credit: 50_000_000 } })).toEqual({ save: "wrong_unit", serve: null, present: true, missing: false });
-    // Saving the rates on the connection refuses it too, for the same reason.
-    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "bills_nothing" });
+    // Saving the rates on a connection that can only speak refuses it too, for the same reason.
+    const speaking = elevenlabs.operations.filter((op) => op.name.startsWith("elevenlabs.tts"));
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", speaking)).toMatchObject({ kind: "bills_nothing" });
+    // Speech to text reports credits with no estimate beside them, so credits alone bill it: the connection's rates save.
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
   });
 
   it("both rates, plus a key value stating only credits: every case is charged, so all three accept", () => {

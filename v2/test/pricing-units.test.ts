@@ -15,10 +15,9 @@ import { billing, priceSources } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
-import { requestBody, servedNow } from "../src/proxy/serve.ts";
+import { requestBody } from "../src/proxy/serve.ts";
 import { PRICE_LIST, listPrice } from "../src/pricing/prices.ts";
 import { V1_PRICE_FILE, V2_PRICE_OVERLAY } from "../src/pricing/price-file.ts";
-import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import type { ProviderDescription } from "../src/providers/operation.ts";
 import { meterCases, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
@@ -487,9 +486,6 @@ describe("review fixes", () => {
     expect(parsed.kind === "form" && parsed.fields.get("size")).toEqual(["large"]);
   });
 
-  it("keeps response-header operations unserved until their own step", () => {
-    for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(false);
-  });
 });
 
 it("publishes the console's price list from the same merge the gateway prices with", async () => {

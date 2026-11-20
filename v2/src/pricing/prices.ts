@@ -225,7 +225,8 @@ export function chargeCandidates(
 
 /** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */
 export function reportsCost(operation: OperationDescription): boolean {
-  return operation.meter.kind === "response_json" && operation.meter.providerCost !== undefined;
+  const { meter } = operation;
+  return (meter.kind === "response_json" || meter.kind === "response_header") && meter.providerCost !== undefined;
 }
 
 /** Whether rates state a unit rate. */

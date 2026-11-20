@@ -58,7 +58,7 @@ import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
-import { attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
+import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { priceKeyValues, removeOutbound, requestFormFields, requestUsage } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
@@ -78,13 +78,12 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
   return matcher;
 }
 
-/** Whether this build can serve an operation: a call measured from its response body. */
+/** Whether this build can serve an operation: a call measured from its response or its request. */
 export function servedNow(operation: OperationDescription): boolean {
   const { kind } = operation.meter;
   return (
     operation.lifecycle === "call" &&
-    // A response header meter (ElevenLabs) is served from step 4b, with its tests.
-    (kind === "response_json" || kind === "request_measure" || kind === "request_count")
+    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
   );
 }
 
@@ -932,6 +931,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
       httpStatus: upstream.status,
       errorCode: null,
       usage: ok ? attemptUsage(operation, attempt, null, upstream.headers) : null,
+      providerCostUsd: ok ? attemptCostUsd(operation, null, upstream.headers) : null,
       cut: false,
       latencyMs,
     });
@@ -968,7 +968,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
               httpStatus: upstream.status,
               errorCode: null,
               usage,
-              providerCostUsd: reading?.providerCostUsd ?? null,
+              providerCostUsd: attemptCostUsd(operation, reading, upstream.headers),
               servedMode: served.mode,
               ...(served.unknown !== undefined ? { servedModeUnknown: served.unknown } : {}),
               cut,

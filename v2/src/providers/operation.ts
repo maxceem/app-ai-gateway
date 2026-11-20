@@ -92,6 +92,16 @@ export type ApiStyle = (typeof API_STYLES)[number];
 export const PROVIDER_COST_REPORTS = ["openrouter", "xai"] as const;
 export type ProviderCostReport = (typeof PROVIDER_COST_REPORTS)[number];
 
+/**
+ * A provider's own cost in dollars, sent as a response header (read in
+ * `src/proxy/meter.ts`). `currency`, when given, is a header that must name
+ * US dollars: a figure in another currency is no report.
+ */
+export interface HeaderCostReport {
+  readonly header: string;
+  readonly currency?: { readonly header: string; readonly value: string };
+}
+
 /** Billed units. Fractional units are stored at a fixed scale (plan section 4.2, Money). */
 export const UNITS = [
   "tokens",
@@ -146,13 +156,17 @@ export type Meter =
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
-   * before the answer and when the header is missing.
+   * before the answer and when the header is missing. `providerCost` names a
+   * header with the provider's own cost in dollars (ElevenLabs' speech to text
+   * sends `fiat-cost-before-overages`), which wins over our price as a JSON
+   * report does.
    */
   | {
       readonly kind: "response_header";
       readonly header: string;
       readonly unit: Unit;
       readonly estimate?: RequestMeasure & { readonly unit: Unit };
+      readonly providerCost?: HeaderCostReport;
     }
   /** For providers that report no usage: measured from the request. */
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)

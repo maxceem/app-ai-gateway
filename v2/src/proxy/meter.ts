@@ -274,6 +274,25 @@ export function headerUsage(headers: Headers, header: string, unit: Unit): Usage
 }
 
 /**
+ * What the provider says an attempt cost, in dollars, or null when it says
+ * nothing usable. One place for both kinds of report: a JSON cost report is
+ * read with the body (`reading`), a header cost report from the headers. A
+ * figure that is not a number 0 or more, or in another currency than the
+ * report names, is no report: the call is priced at our rate instead.
+ */
+export function attemptCostUsd(operation: OperationDescription, reading: ResponseReading | null, headers: Headers): number | null {
+  const { meter } = operation;
+  if (meter.kind === "response_json") return reading?.providerCostUsd ?? null;
+  if (meter.kind !== "response_header" || meter.providerCost === undefined) return null;
+  const { header, currency } = meter.providerCost;
+  if (currency !== undefined && headers.get(currency.header)?.trim().toLowerCase() !== currency.value.toLowerCase()) return null;
+  const text = headers.get(header);
+  if (text === null || text.trim() === "") return null;
+  const value = Number(text);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
  * A reported usage with the request's measure kept beside it, for every meter
  * that takes one: the request's units are added as estimates, never over a
  * unit the provider reported. With no report, the request's measure alone.
