@@ -5,7 +5,7 @@ import { Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
 import { AppDetailPage, routingOf, scopeOf } from "./app-detail";
 import { testApp } from "@/test/fixtures";
-import { renderAuthenticated } from "@/test/render";
+import { renderAuthenticated, settled } from "@/test/render";
 
 const APP_URL = "/v2/admin/apps/my-app";
 
@@ -236,7 +236,7 @@ describe("AppDetailPage", () => {
         return new Response(JSON.stringify({ app: current }));
       }),
     );
-    renderTab("settings");
+    const { client } = renderTab("settings");
     // The draft leaves out `limits`, which the gateway fills in on save.
     const { limits: _omitted, ...withoutLimits } = testApp().config;
     const mine = { ...withoutLimits, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-a"] } } } };
@@ -251,7 +251,7 @@ describe("AppDetailPage", () => {
     await waitFor(() => expect(screen.queryByText(/changed since you started editing/i)).toBeNull());
     const next = { ...mine, routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-b"] } } } };
     fireEvent.change(screen.getByLabelText("Configuration"), { target: { value: JSON.stringify(next) } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settled(client);
     expect(screen.queryByText(/changed since you started editing/i)).toBeNull();
   });
 
@@ -319,7 +319,7 @@ describe("AppDetailPage", () => {
         return new Response(JSON.stringify({ app: current }));
       }),
     );
-    renderTab("settings");
+    const { client } = renderTab("settings");
     const editor = await screen.findByLabelText("Configuration");
     await userEvent.clear(editor);
     await userEvent.type(editor, '{{"mine":true}');
@@ -333,7 +333,7 @@ describe("AppDetailPage", () => {
     await userEvent.type(screen.getByLabelText("Name"), "Renamed again");
     await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
     await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).disabled).toBe(false));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settled(client);
     expect(screen.getByText(/changed since you started editing/i)).toBeTruthy();
   });
 
@@ -371,7 +371,7 @@ describe("AppDetailPage", () => {
         return new Response(JSON.stringify({ app: current }));
       }),
     );
-    renderTab("settings");
+    const { client } = renderTab("settings");
     const rename = await screen.findByLabelText("Name");
     await userEvent.clear(rename);
     await userEvent.type(rename, "Mobile");
@@ -384,7 +384,7 @@ describe("AppDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
     await waitFor(() => expect(puts).toBe(2));
     await waitFor(() => expect((screen.getByLabelText("Configuration") as HTMLTextAreaElement).disabled).toBe(false));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settled(client);
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Mobile");
     expect(screen.getByText(/changed since you started editing/i)).toBeTruthy();
   });

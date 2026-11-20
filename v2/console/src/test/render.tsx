@@ -1,6 +1,6 @@
-import { waitFor } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryRouter, Route, RouterProvider, Routes, useLocation } from "react-router-dom";
 import { render } from "@testing-library/react";
@@ -33,6 +33,17 @@ export const CAPABILITIES_URL = "/v2/console/capabilities";
 
 export function capabilities(overrides: Partial<Capabilities> = {}): StubRoute {
   return { body: { billing: false, registrationOpen: true, googleAuth: false, oauth: true, ...overrides } };
+}
+
+/**
+ * Waits until nothing is loading or saving, then lets React finish its
+ * updates. A test that checks something did not happen calls this instead of
+ * sleeping: once the client is idle and React has settled, anything that
+ * was going to change already has.
+ */
+export async function settled(client: QueryClient): Promise<void> {
+  await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0));
+  await act(async () => undefined);
 }
 
 export function testQueryClient() {

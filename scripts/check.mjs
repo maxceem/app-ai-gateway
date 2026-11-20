@@ -46,6 +46,7 @@ const steps = [
   { name: "v2:console:test", tier: "test" },
   { name: "v2:cli:check", tier: "check" },
   { name: "v2:cli:test", tier: "test" },
+  { name: "v2:timers:check", tier: "check" },
 ];
 
 const tier = process.argv[2];
