@@ -23,8 +23,14 @@
  * One that was not whole holds only the values that were whole when it
  * stopped. How the body ended is reported as facts (`cut`, `overflow`,
  * `stopped`), for the reader to judge the whole reading by.
+ *
+ * What the framer holds after a `push()` returns (a line's field name, an
+ * event's name, the data it keeps to check, a frame's data) goes through
+ * `keep` (`./keep.ts`): nothing it holds shares memory with a piece of the
+ * body.
  */
-import { copyString, Skimmer, type PathTree } from "./skim.ts";
+import { keep } from "./keep.ts";
+import { Skimmer, type PathTree } from "./skim.ts";
 
 export interface BodyDocument {
   /** The document's declared values. */
@@ -148,6 +154,8 @@ interface OpenEvent {
   dataLength: number;
   /** The data, kept while it is small, to check it is valid JSON. */
   checked: string[] | null;
+  /** How many of `checked` are already kept (`keep`); the rest came in this push. */
+  settled: number;
   /** The value of its `event:` line, so far. */
   name: string | null;
 }
@@ -172,7 +180,9 @@ class SseFramer implements Framer {
   private events = 0;
   overflow = false;
   stopped = false;
-  /** The last event with data (not `[DONE]`), and whether it ended. */
+  /** The frames made in this push, whose data is still a slice of it. */
+  private readonly unsettled: EventEnd[] = [];
+  /** The last event with data (not a whole `[DONE]`), and whether it ended. */
   private last: { readonly ended: boolean; readonly frame: EventEnd } | null = null;
 
   get cut(): boolean {
@@ -191,6 +201,22 @@ class SseFramer implements Framer {
 
   push(text: string): void {
     if (this.stopped || text === "") return;
+    this.read(text);
+    this.settle();
+  }
+
+  /** What this push left held, kept past it. */
+  private settle(): void {
+    const event = this.event;
+    if (event?.checked != null) {
+      for (let index = event.settled; index < event.checked.length; index += 1) event.checked[index] = keep(event.checked[index]!);
+      event.settled = event.checked.length;
+    }
+    for (const frame of this.unsettled) frame.settle();
+    this.unsettled.length = 0;
+  }
+
+  private read(text: string): void {
     let at = 0;
     if (this.afterReturn) {
       this.afterReturn = false;
@@ -229,7 +255,7 @@ class SseFramer implements Framer {
       this.stopped = true;
       return null;
     }
-    this.event = { skimmer: null, document: null, dataLines: 0, dataLength: 0, checked: [], name: null };
+    this.event = { skimmer: null, document: null, dataLines: 0, dataLength: 0, checked: [], settled: 0, name: null };
     return this.event;
   }
 
@@ -248,7 +274,7 @@ class SseFramer implements Framer {
     event.dataLength += text.length;
     if (event.checked !== null) {
       if (event.dataLength > MAX_CHECKED_DATA) event.checked = null;
-      // Kept only until the event ends, so no copy is needed.
+      // Kept as a slice while this push lasts; `settle` keeps it past the push.
       else event.checked.push(text);
     }
     event.skimmer ??= new Skimmer(this.tree, { onDocument: (value) => (event.document = value) });
@@ -274,7 +300,7 @@ class SseFramer implements Framer {
             at = text.length;
             break;
           }
-          this.field = copyString(this.field + text.slice(at, end));
+          this.field = keep(this.field + text.slice(at, end));
           if (colon === -1) {
             at = text.length;
             break;
@@ -302,7 +328,7 @@ class SseFramer implements Framer {
         case Line.Event: {
           const event = this.event!;
           if (event.name !== null && event.name.length < MAX_EVENT_NAME) {
-            event.name = copyString((event.name + text.slice(at)).slice(0, MAX_EVENT_NAME));
+            event.name = keep((event.name + text.slice(at)).slice(0, MAX_EVENT_NAME));
           }
           at = text.length;
           break;
@@ -325,7 +351,7 @@ class SseFramer implements Framer {
         if (event !== null) event.name = "";
       }
     } else if (this.line === Line.Event && this.event?.name != null) {
-      this.event.name = this.event.name.trim();
+      this.event.name = keep(this.event.name.trim());
     }
     this.line = Line.Field;
     this.field = "";
@@ -341,12 +367,14 @@ class SseFramer implements Framer {
     if (skimmer?.overflow === true) this.overflow = true;
     const text = event.checked === null ? null : event.checked.join("");
     // `[DONE]` is read as before: space before it on any line does not matter.
-    const done = text !== null && text.length <= 64 && text.split("\n").map((part) => part.trimStart()).join("\n") === DONE;
+    const done = text !== null && text.endsWith(DONE) && text.split("\n").map((part) => part.trimStart()).join("\n") === DONE;
     const structural = skimmer !== null && skimmer.complete;
     const frame = new EventEnd(event.name, event.dataLines, done, structural, text, event.document);
     const value = event.document ?? skimmer?.openDocument ?? null;
-    // An event with data says whether the answer ended whole; `[DONE]` says nothing about the events before it.
-    if (event.dataLines > 0 && !done) this.last = { ended, frame };
+    // An event with data says whether the answer ended whole. A whole `[DONE]` says nothing about
+    // the events before it; one the stream stopped inside (no blank line after it) was cut.
+    if (event.dataLines > 0 && (!done || !ended)) this.last = { ended, frame };
+    this.unsettled.push(frame);
     // A document is whole when its root object closed with nothing but space after it.
     if (value !== null && !done) this.listener.onDocument({ value, whole: event.document !== null && structural });
     if (ended) this.listener.onFrame?.(frame);
@@ -375,6 +403,11 @@ class EventEnd implements SseFrame {
     this.structural = structural;
     this.text = text;
     this.document = document;
+  }
+
+  /** Keeps the data past the push it came in, while it may still be asked. */
+  settle(): void {
+    if (this.text !== null) this.text = keep(this.text);
   }
 
   json(): boolean {

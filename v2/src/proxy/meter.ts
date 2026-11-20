@@ -161,16 +161,16 @@ export interface ResponseReading {
 /**
  * How much reading for usage one answer may cost. Reading costs CPU for every
  * byte and every event (`scripts/bench-usage-reading.ts`): about 4 GB/s over a
- * large body (a base64 image, a number array), and about 3 µs per SSE event.
+ * large body (a base64 image, a number array), and about 3.5 µs per SSE event.
  * Past either limit, reading stops: the call is recorded unresolved and the
  * stop is logged, and the answer itself is never touched. Events are counted
  * by the framer, every one, before it is read.
  *
  * - 32 MiB of body: about 8 ms of CPU, more than any answer the gateway
  *   meters today.
- * - 25,000 events: about 70 ms of CPU, a streamed answer of some 25,000
+ * - 25,000 events: about 90 ms of CPU, a streamed answer of some 25,000
  *   tokens. A Worker on the Free plan has 10 ms of CPU per request, which a
- *   stream reaches at about 3,500 events.
+ *   stream reaches at about 3,000 events.
  */
 export const READ_BUDGET = { bytes: 32 * 1024 * 1024, documents: 25_000 } as const;
 

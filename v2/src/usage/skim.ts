@@ -24,7 +24,12 @@
  * A root object is one document. With `arrayDocuments`, a root array's
  * object elements are documents too (Gemini's JSON-array stream). Any other
  * root holds no document.
+ *
+ * What it holds after a `push()` returns, part of a value or of a key, goes
+ * through `keep` (`./keep.ts`), and every value it keeps is built by
+ * `JSON.parse`: nothing it holds shares memory with a piece of the body.
  */
+import { keep } from "./keep.ts";
 
 /** Declared paths: `true` keeps a member's whole value; a tree keeps an object member's declared members. */
 export type PathTree = { readonly [key: string]: PathTree | true };
@@ -117,18 +122,6 @@ function nonSpace(text: string, at: number): number {
     if (code !== 32 && code !== 10 && code !== 13 && code !== 9) return index;
   }
   return -1;
-}
-
-/** A slice of at most this many characters is copied, never shared (V8 shares only longer ones). */
-const SHORT_SLICE = 12;
-
-/**
- * `text` in storage of its own. A string cut from a larger one may share that
- * one's memory, so keeping a short value could keep a whole large piece of
- * the body alive: what is kept past the piece it came from is copied first.
- */
-export function copyString(text: string): string {
-  return text.length === 0 ? "" : (JSON.parse(JSON.stringify(text)) as string);
 }
 
 /** Whether `text` has a backslash between `from` and `to`. Keys are short. */
@@ -242,7 +235,7 @@ export class Skimmer {
       this.capture.length = 0;
       return;
     }
-    if (!this.captureOverflow) this.capture.push(outlives ? copyString(text.slice(from, to)) : text.slice(from, to));
+    if (!this.captureOverflow) this.capture.push(outlives ? keep(text.slice(from, to)) : text.slice(from, to));
   }
 
   /** One step from `at`; returns where to go on. */
@@ -385,15 +378,11 @@ export class Skimmer {
         this.overflow = true;
       } else {
         const raw = this.capture.length === 1 ? this.capture[0]! : this.capture.join("");
-        // A short plain string, the usual leaf, needs no parser: a slice this short is a copy.
-        // Anything else is parsed, which also gives it storage of its own.
-        if (raw.length <= SHORT_SLICE && raw.charCodeAt(0) === 34 && !raw.includes("\\")) holder[this.targetKey] = raw.slice(1, -1);
-        else {
-          try {
-            holder[this.targetKey] = JSON.parse(raw) as unknown;
-          } catch {
-            return this.fail();
-          }
+        // Parsed, which also gives the value storage of its own.
+        try {
+          holder[this.targetKey] = JSON.parse(raw) as unknown;
+        } catch {
+          return this.fail();
         }
       }
       this.capture = null;
@@ -477,7 +466,7 @@ export class Skimmer {
     if (this.keyLength > MAX_KEY) {
       this.keyTooLong = true;
       this.keyPieces = null;
-    } else this.keyPieces!.push(copyString(text.slice(from, to)));
+    } else this.keyPieces!.push(keep(text.slice(from, to)));
   }
 
   private decodedKey(): string | null {

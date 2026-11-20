@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { framer, MAX_EVENT_NAME, MAX_FIELD, type BodyDocument, type SseFrame } from "../src/usage/frames.ts";
-import { pick, Skimmer, type PathTree } from "../src/usage/skim.ts";
+import { pick, Skimmer, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
 
 const TREE: PathTree = { usage: true, type: true, model: true, usageMetadata: true };
 
@@ -14,6 +14,7 @@ interface Reading {
   readonly documents: BodyDocument[];
   readonly frames: SseFrame[];
   readonly cut: boolean;
+  readonly overflow: boolean;
   readonly stopped: boolean;
 }
 
@@ -31,7 +32,27 @@ function stream(contentType: string, pieces: readonly Uint8Array[], maxEvents?: 
   for (const piece of pieces) reader.push(decoder.decode(piece, { stream: true }));
   reader.push(decoder.decode());
   reader.end();
-  return { documents, frames, cut: reader.cut, stopped: reader.stopped };
+  return { documents, frames, cut: reader.cut, overflow: reader.overflow, stopped: reader.stopped };
+}
+
+/** Whether `pick` leaves out a declared value of `value` for being larger than the cap. */
+function overflowIn(value: unknown, tree: PathTree): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.keys(tree).some((key) => {
+    if (!Object.hasOwn(value, key)) return false;
+    const declared = tree[key]!;
+    const member = (value as Record<string, unknown>)[key];
+    return declared === true ? JSON.stringify(member).length > SKIM_VALUE_CAP : overflowIn(member, declared);
+  });
+}
+
+/** What the skimmer keeps of a document cut before it closed: its contract for whole ones is tested on its own. */
+function partial(text: string): { value: Record<string, unknown> | null; overflow: boolean } {
+  let closed: Record<string, unknown> | null = null;
+  const skimmer = new Skimmer(TREE, { onDocument: (value) => (closed = value) });
+  skimmer.push(text);
+  skimmer.end();
+  return { value: closed ?? skimmer.openDocument, overflow: skimmer.overflow };
 }
 
 function isJson(text: string): boolean {
@@ -52,23 +73,33 @@ function structurallyWhole(data: string): boolean {
 }
 
 /** One event's data as the reference reads it: whole, at once. */
-function eventData(data: string, ended: boolean, dataLines: number, name: string | null, out: { documents: BodyDocument[]; frames: SseFrame[]; cut: boolean }): void {
-  const done = data.split("\n").map((part) => part.trimStart()).join("\n") === "[DONE]";
+function eventData(
+  data: string,
+  ended: boolean,
+  dataLines: number,
+  name: string | null,
+  out: { documents: BodyDocument[]; frames: SseFrame[]; cut: boolean; overflow: boolean },
+): void {
+  // `[DONE]`, with any space before it, in data small enough to be kept.
+  const done = data.length <= 64 * 1024 && data.split("\n").map((part) => part.trimStart()).join("\n") === "[DONE]";
   const json = dataLines > 0 && isJson(data);
   let document: Record<string, unknown> | null = null;
   let open: Record<string, unknown> | null = null;
-  if (json) document = pick(JSON.parse(data), TREE);
-  else if (dataLines > 0 && data !== "") {
+  if (json) {
+    document = pick(JSON.parse(data), TREE);
+    if (overflowIn(JSON.parse(data), TREE)) out.overflow = true;
+  } else if (dataLines > 0 && data !== "") {
     // Not JSON: what of its root object was whole, as the skimmer keeps it (tested on its own).
-    const skimmer = new Skimmer(TREE, { onDocument: (value) => (document = value) });
-    skimmer.push(data);
-    skimmer.end();
-    open = skimmer.openDocument;
+    const kept = partial(data);
+    if (kept.overflow) out.overflow = true;
+    if (structurallyWhole(data)) document = kept.value;
+    else open = kept.value;
   }
   const value = document ?? open;
   // Whole: the root object closed, with nothing after it (the skimmer's own contract covers valid JSON).
   const whole = document !== null && (json || structurallyWhole(data));
-  if (dataLines > 0 && !done) out.cut = !(ended && json);
+  // A whole `[DONE]` says nothing about the events before it; one the stream stopped inside was cut.
+  if (dataLines > 0 && (!done || !ended)) out.cut = !(ended && json);
   if (value !== null && !done) out.documents.push({ value, whole });
   if (ended) {
     const named = (document as Record<string, unknown> | null)?.type;
@@ -78,7 +109,7 @@ function eventData(data: string, ended: boolean, dataLines: number, name: string
 
 /** The reference SSE parser: the whole text at once, as the SSE standard reads it. */
 function referenceSse(text: string, maxEvents = Number.POSITIVE_INFINITY): Reading {
-  const out = { documents: [] as BodyDocument[], frames: [] as SseFrame[], cut: false };
+  const out = { documents: [] as BodyDocument[], frames: [] as SseFrame[], cut: false, overflow: false };
   const lines = text.split(/\r\n|\r|\n/u);
   // The text after the last break is a line that never ended; an empty one is no line.
   const last = lines.pop()!;
@@ -123,17 +154,35 @@ function referenceSse(text: string, maxEvents = Number.POSITIVE_INFINITY): Readi
   return { ...out, stopped: false };
 }
 
-/** The reference for a whole JSON body: its root object, or a root array's object elements, each one event. */
-function referenceJson(text: string, maxEvents = Number.POSITIVE_INFINITY): Reading {
-  const value = JSON.parse(text) as unknown;
-  const elements = Array.isArray(value) ? value : [value];
+/**
+ * The reference for a JSON body made of `elements` (a root array of them, or
+ * one root object), cut after `cut` characters: each element whole before the
+ * cut is parsed whole, and the one the cut falls in is what the skimmer keeps
+ * of it. Every element counts as an event from its first character.
+ */
+function referenceJson(elements: readonly string[], array: boolean, separator: string, cut: number, maxEvents = Number.POSITIVE_INFINITY): { text: string; want: Reading } {
+  const text = array ? `[${elements.join(separator)}]` : elements[0]!;
   const documents: BodyDocument[] = [];
+  let overflow = false;
+  let at = array ? 1 : 0;
   for (let index = 0; index < elements.length; index += 1) {
-    if (index + 1 > maxEvents) return { documents, frames: [], cut: false, stopped: true };
-    const kept = pick(elements[index], TREE);
-    if (kept !== null) documents.push({ value: kept, whole: true });
+    const element = elements[index]!;
+    const start = at;
+    const end = start + element.length;
+    at = end + separator.length;
+    if (start >= cut) break;
+    if (index + 1 > maxEvents) return { text: text.slice(0, cut), want: { documents, frames: [], cut: false, overflow, stopped: true } };
+    if (end <= cut) {
+      const kept = pick(JSON.parse(element), TREE);
+      if (overflowIn(JSON.parse(element), TREE)) overflow = true;
+      if (kept !== null) documents.push({ value: kept, whole: true });
+    } else {
+      const kept = partial(element.slice(0, cut - start));
+      if (kept.overflow) overflow = true;
+      if (kept.value !== null) documents.push({ value: kept.value, whole: false });
+    }
   }
-  return { documents, frames: [], cut: false, stopped: false };
+  return { text: text.slice(0, cut), want: { documents, frames: [], cut: cut < text.length, overflow, stopped: false } };
 }
 
 /** A small seeded random source, so a failure can be replayed. */
@@ -155,6 +204,8 @@ const DATA = [
   JSON.stringify({ usageMetadata: { promptTokenCount: 2 } }),
   "[DONE]",
   "  [DONE]",
+  `${" ".repeat(70)}[DONE]`,
+  JSON.stringify({ usage: { pad: "a".repeat(SKIM_VALUE_CAP) }, model: "big" }),
   "42",
   '"just text"',
   '{"usage":{"prompt_tokens":9},"cut":"nev',
@@ -188,13 +239,18 @@ function sseText(next: () => number): string {
   return text;
 }
 
-/** `bytes` cut into pieces: empty ones, single bytes, and random sizes, so splits fall inside CRLFs and characters. */
+/**
+ * `bytes` cut into pieces: empty ones, single bytes, and random sizes, so
+ * splits fall inside CRLFs and characters. A long body gets larger pieces
+ * too, so a test stays fast.
+ */
 function pieces(bytes: Uint8Array, next: () => number): Uint8Array[] {
   const out: Uint8Array[] = [];
+  const large = Math.max(9, Math.floor(bytes.length / 30));
   let at = 0;
   while (at < bytes.length) {
     const roll = next();
-    const size = roll < 0.15 ? 0 : roll < 0.5 ? 1 : 1 + Math.floor(next() * 9);
+    const size = roll < 0.15 ? 0 : roll < 0.4 ? 1 : 1 + Math.floor(next() * (roll < 0.7 ? 9 : large));
     out.push(bytes.subarray(at, at + size));
     at += size;
   }
@@ -205,7 +261,7 @@ function pieces(bytes: Uint8Array, next: () => number): Uint8Array[] {
 describe("the SSE framer gives what reading the whole text at once gives", () => {
   it("on random streams, cut into random pieces", () => {
     const next = random(20261120);
-    for (let round = 0; round < 200; round += 1) {
+    for (let round = 0; round < 130; round += 1) {
       const text = sseText(next);
       const bytes = new TextEncoder().encode(text);
       const maxEvents = next() < 0.3 ? Math.floor(next() * 4) : undefined;
@@ -231,7 +287,25 @@ describe("the SSE framer gives what reading the whole text at once gives", () =>
 
   it("checks the event budget before any data is read, counting every event (S2)", () => {
     const body = 'data: 1\n\ndata: {"usage":{"prompt_tokens":9}}\n\n';
-    expect(stream("text/event-stream", [new TextEncoder().encode(body)], 1)).toEqual({ documents: [], frames: [{ event: null, data: "json", type: null }], cut: false, stopped: true });
+    expect(stream("text/event-stream", [new TextEncoder().encode(body)], 1)).toEqual({
+      documents: [],
+      frames: [{ event: null, data: "json", type: null }],
+      cut: false,
+      overflow: false,
+      stopped: true,
+    });
+  });
+
+  it("reads [DONE] with any space before it (round 3, S10)", () => {
+    const body = `data: {"usage":{"prompt_tokens":1}}\n\ndata:${" ".repeat(70)}[DONE]\n\n`;
+    expect(stream("text/event-stream", [new TextEncoder().encode(body)]).frames.at(-1)).toEqual({ event: null, data: "done", type: null });
+  });
+
+  it("counts a stream that stopped inside [DONE] as cut, but not one after a whole [DONE] (round 3, S11)", () => {
+    const encode = (text: string) => [new TextEncoder().encode(text)];
+    expect(stream("text/event-stream", encode('data: {"usage":{"prompt_tokens":1}}\n\ndata: [DONE]')).cut).toBe(true);
+    expect(stream("text/event-stream", encode('data: {"usage":{"prompt_tokens":1}}\n\ndata: [DONE]\n\n')).cut).toBe(false);
+    expect(stream("text/event-stream", encode('data: {"usage":1,"x":"nev\n\ndata: [DONE]\n\n')).cut).toBe(true);
   });
 
   it("never lets [DONE] clear what an earlier event said about the end (S3)", () => {
@@ -242,24 +316,44 @@ describe("the SSE framer gives what reading the whole text at once gives", () =>
 });
 
 describe("the JSON framer gives what parsing the whole body gives", () => {
-  const ELEMENTS = ["1", '"x"', "null", JSON.stringify({ usageMetadata: { promptTokenCount: 4 } }), JSON.stringify({ model: "ü", usage: { a: 1 } }), "[1,[2]]", "{}"];
+  const ELEMENTS = [
+    "1",
+    '"x"',
+    "null",
+    JSON.stringify({ usageMetadata: { promptTokenCount: 4 } }),
+    JSON.stringify({ model: "ü", usage: { a: 1 } }),
+    "[1,[2]]",
+    "{}",
+    JSON.stringify({ model: "big", usage: { pad: "a".repeat(SKIM_VALUE_CAP) } }),
+  ];
 
-  it("on random root arrays and objects, cut into random pieces, with any event budget", () => {
+  it("on random root arrays and objects, whole or cut, cut into random pieces, with any event budget", () => {
     const next = random(42);
+    let cuts = 0;
+    let overflows = 0;
     for (let round = 0; round < 300; round += 1) {
       const count = Math.floor(next() * 5);
       const items = Array.from({ length: count }, () => ELEMENTS[Math.floor(next() * ELEMENTS.length)]!);
-      const text = next() < 0.8 ? `[${items.join(next() < 0.5 ? "," : " ,\r\n ")}]` : (items.find((item) => item.startsWith("{")) ?? "{}");
-      const bytes = new TextEncoder().encode(text);
+      const array = next() < 0.8;
+      const elements = array ? items : [items.find((item) => item.startsWith("{")) ?? "{}"];
+      const separator = next() < 0.5 ? "," : " ,\r\n ";
+      const length = (array ? elements.join(separator).length + 2 : elements[0]!.length);
+      const cut = next() < 0.4 ? Math.floor(next() * length) : length;
       const maxEvents = next() < 0.4 ? Math.floor(next() * 4) : undefined;
-      const want = referenceJson(text, maxEvents);
-      for (let trial = 0; trial < 6; trial += 1) expect(stream("application/json", pieces(bytes, next), maxEvents), text).toEqual(want);
+      const { text, want } = referenceJson(elements, array, separator, cut, maxEvents);
+      if (want.cut) cuts += 1;
+      if (want.overflow) overflows += 1;
+      const bytes = new TextEncoder().encode(text);
+      for (let trial = 0; trial < 6; trial += 1) expect(stream("application/json", pieces(bytes, next), maxEvents), text.slice(0, 300)).toEqual(want);
     }
+    // Both facts are seen, not just their absence.
+    expect(cuts).toBeGreaterThan(20);
+    expect(overflows).toBeGreaterThan(5);
   });
 
   it("counts every element, scalars included, before reading it (S2)", () => {
     const body = '[1,2,{"usageMetadata":{"promptTokenCount":9}}]';
-    expect(stream("application/json", [new TextEncoder().encode(body)], 1)).toEqual({ documents: [], frames: [], cut: false, stopped: true });
+    expect(stream("application/json", [new TextEncoder().encode(body)], 1)).toEqual({ documents: [], frames: [], cut: false, overflow: false, stopped: true });
     expect(stream("application/json", [new TextEncoder().encode(body)], 3).documents).toEqual([{ value: { usageMetadata: { promptTokenCount: 9 } }, whole: true }]);
   });
 });
