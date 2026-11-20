@@ -59,12 +59,12 @@ describe("anchors in responses", () => {
     expect(readUsage(responseValues(rooted, "application/json"), "openai-chat")).toMatchObject({ inputTokens: 10, outputTokens: 2 });
   });
 
-  it("reads a cut SSE event's data lines only, never a comment holding JSON (S13)", () => {
-    const usage = { prompt_tokens: 7, completion_tokens: 3 };
-    // The tail window starts inside the event's data line; a comment with JSON follows it.
-    const event = `,"usage":${JSON.stringify(usage)}}\n: {"usage":{"prompt_tokens":999,"completion_tokens":999}}`;
-    const tail = `${event}\n\ndata: [DONE]\n\n`;
-    const values = responseValues({ head: 'data: {"choices":[]', tail, truncated: true }, "text/event-stream");
+  it("drops a cut SSE event's partial first line, of unknown kind, and reads only whole data lines (S13)", () => {
+    // One event's data spans two data lines, with a comment between them. The
+    // head window ends inside the comment; the tail window starts inside it.
+    const head = 'data: {"choices":[]}\n\ndata: {"usage":{"prompt_tokens":7,"completion_tokens":3},\n: commen';
+    const tail = 't","usage":{"prompt_tokens":999,"completion_tokens":999},\ndata: "model":"m"}\n\ndata: [DONE]\n\n';
+    const values = responseValues({ head, tail, truncated: true }, "text/event-stream");
     expect(readUsage(values, "openai-chat")).toMatchObject({ inputTokens: 7, outputTokens: 3 });
   });
 

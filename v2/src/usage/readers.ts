@@ -390,14 +390,15 @@ const NO_VALUE = Symbol("no SSE value");
  * one space after it, joined with line breaks as SSE does. Comments and other
  * fields are dropped. The one place an event's data is taken, for whole events
  * and cut ones alike. `cutAtStart` is for an event a window cut at its start:
- * its first line is the rest of a line whose field name was cut off, taken as
- * data. Reading a root then fails on its own if it was not.
+ * its first line is the rest of a line whose field name was cut off, of
+ * unknown kind (a `data:` line or a comment), so it is dropped, as for any kept
+ * tail. Only whole lines after a line break the reader saw are classified.
  */
 function sseData(block: string, cutAtStart = false): string | null {
   const data = block
     .split("\n")
     .flatMap((line, index) => {
-      if (index === 0 && cutAtStart) return [line];
+      if (index === 0 && cutAtStart) return [];
       if (!line.startsWith("data:")) return [];
       const value = line.slice(5);
       return [value.startsWith(" ") ? value.slice(1) : value];
