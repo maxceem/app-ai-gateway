@@ -1,0 +1,92 @@
+import type { CliTool } from "../src/catalog.ts";
+import { Context, type ContextStore } from "../src/context.ts";
+import type { CliState } from "../src/state.ts";
+import { providerCapability, type ProviderType } from "../../src/shared/providers.ts";
+
+/** The route and capability a direct provider row of this type is served with. */
+export const served = (type: ProviderType) => {
+  const capability = providerCapability(type);
+  return {
+    route: "direct" as const,
+    capability: {
+      apiStyles: [...capability.apiStyles],
+      endpointStyles: [...capability.endpointStyles],
+      modelPrefix: null,
+      paths: "provider" as const,
+    },
+  };
+};
+
+export const fresh = (): CliState => ({
+  schemaVersion: 2,
+  active: null,
+  operations: {},
+});
+
+export const makeStore = (): ContextStore => ({
+  write: async () => {},
+  // The real store looks under its lock; with no file to share, this is the same.
+  reserve: async (state, find, create) => find(state) ?? create(state),
+  directory: "/unused",
+  keyOutput: () => {
+    throw new Error("keyOutput is not stubbed in this test");
+  },
+  vaultKey: async () => {
+    throw new Error("vaultKey is not stubbed in this test");
+  },
+});
+
+/**
+ * A `Context` with some of its methods replaced.
+ *
+ * `Object.defineProperty` rather than `Object.assign`, because `url` and
+ * `active` are accessors on the prototype and assigning through them would
+ * throw. The single cast is the point of this helper: every test that needs a
+ * stub declares it here instead of building a lookalike object.
+ */
+export function stubContext(parts: Record<string, unknown>): Context {
+  const ctx: object = Object.create(Context.prototype) as object;
+  for (const [key, value] of Object.entries(parts)) {
+    Object.defineProperty(ctx, key, {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+  return ctx as Context;
+}
+
+/** The `code` a rejected CLI promise carries, for `assert.rejects` predicates. */
+export function hasCode(code: string): (error: unknown) => boolean {
+  return (error: unknown) =>
+    typeof error === "object" && error !== null && "code" in error &&
+    (error as { code: unknown }).code === code;
+}
+
+export function errorOf(error: unknown): { code?: string; details?: Record<string, unknown> } {
+  return error as { code?: string; details?: Record<string, unknown> };
+}
+
+/** A tool as `GET /v1/cli/tools` lists it, with the parts a test does not care about filled in. */
+export function cliTool(
+  name: string,
+  cli: CliTool["cli"],
+  input: { properties?: Record<string, unknown>; required?: string[] } = {},
+  annotations: Partial<CliTool["annotations"]> = {},
+): CliTool {
+  return {
+    name,
+    title: name.replaceAll("_", " "),
+    description: `Runs ${name}.`,
+    inputSchema: { type: "object", properties: input.properties ?? {}, ...(input.required ? { required: input.required } : {}) },
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false, ...annotations },
+    cli,
+  };
+}
+
+/** `get_account`, as a gateway offers it as `agw account status`. */
+export const ACCOUNT_TOOL = cliTool("get_account", {
+  command: "account status",
+  view: { record: "account", columns: ["name=Account", "id", "claimed"] },
+});
