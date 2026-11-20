@@ -241,7 +241,8 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
 
   it("keeps only the largest number across a long array declared `max`, holding the same however long it is", () => {
     const tree: PathTree = { results: { utterances: { end: "max" } } };
-    const ends = Array.from({ length: 100_000 }, (_, index) => (index === 4_321 ? 9_999.5 : index % 1_000));
+    // More elements than a kept list may hold (`MAX_LIST_ELEMENTS`), so only an aggregate can read them all.
+    const ends = Array.from({ length: 2 * MAX_LIST_ELEMENTS }, (_, index) => (index === 4_321 ? 9_999.5 : index % 1_000));
     const text = `{"results":{"utterances":[${ends.map((end) => `{"start":0,"end":${end},"words":[{"w":"x"}]}`).join(",")},{"end":"x"},7]}}`;
     expect(skimWith(tree, text)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false, complete: true });
     expect(pickText(text, tree)).toEqual({ documents: [{ results: { utterances: { end: 9_999.5 } } }], overflow: false });
