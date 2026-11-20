@@ -18,7 +18,8 @@ export const V1_PRICE_FILE = models as PriceFile;
 /** The prices only v2 has. */
 export const V2_PRICE_OVERLAY = overlay as PriceFile;
 
-function merged(base: PriceFile, extra: PriceFile): PriceFile {
+/** v1's file with v2's overlay added: the overlay only adds, so v1's entry wins. The console's published file uses it too. */
+export function mergePriceFiles(base: PriceFile, extra: PriceFile): PriceFile {
   const out: Record<string, Record<string, Readonly<Record<string, unknown>>>> = {};
   for (const [provider, entries] of Object.entries(base)) out[provider] = { ...entries };
   for (const [provider, entries] of Object.entries(extra)) {
@@ -29,4 +30,4 @@ function merged(base: PriceFile, extra: PriceFile): PriceFile {
 }
 
 /** The whole price file: v1's, plus v2's own prices. */
-export const PRICE_FILE: PriceFile = merged(V1_PRICE_FILE, V2_PRICE_OVERLAY);
+export const PRICE_FILE: PriceFile = mergePriceFiles(V1_PRICE_FILE, V2_PRICE_OVERLAY);

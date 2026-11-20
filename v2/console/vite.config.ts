@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
+import { PRICE_FILE } from "../src/pricing/price-file.ts";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
@@ -11,6 +11,7 @@ const BASE = "/v2/";
 /**
  * The v2 Worker's price list, published beside the console as
  * `/v2/models.json`, as v1 publishes its own: a static file anyone can read.
+ * The same merged file the gateway prices with: v1's, plus v2's own prices.
  */
 function modelPrices(): Plugin {
   return {
@@ -20,7 +21,7 @@ function modelPrices(): Plugin {
       this.emitFile({
         type: "asset",
         fileName: "models.json",
-        source: readFileSync(path.resolve(import.meta.dirname, "../src/pricing/models.json"), "utf8"),
+        source: `${JSON.stringify(PRICE_FILE, null, 2)}\n`,
       });
     },
   };

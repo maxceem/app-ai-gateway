@@ -442,6 +442,8 @@ describe("review fixes", () => {
     const sources = (rates: Record<string, number>) => priceSources({ type: "openai", rates: { m: rates } });
     expect(billing(op, sources({ per_credit: 1 }), "m").problem).toBe("wrong_unit");
     expect(billing(op, sources({ per_credit: 1, per_million_characters: 1 }), "m").problem).toBeNull();
+    // A key value's unit rate replaces the base's: that price bills no credits.
+    expect(billing(op, priceSources({ type: "openai", rates: { m: { per_credit: 1, by: { x: { a: { per_million_characters: 1 } } } } } }), "m").problem).toBe("wrong_unit");
   });
 
   it("ignores a header figure too large to count exactly, so the estimate bills", () => {
@@ -463,4 +465,10 @@ describe("review fixes", () => {
   it("keeps response-header operations unserved until their own step", () => {
     for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(false);
   });
+});
+
+it("publishes the console's price list from the same merge the gateway prices with", async () => {
+  const { PRICE_FILE, mergePriceFiles, V1_PRICE_FILE: v1, V2_PRICE_OVERLAY: overlay } = await import("../src/pricing/price-file.ts");
+  expect(PRICE_FILE).toEqual(mergePriceFiles(v1, overlay));
+  expect(Object.keys(PRICE_FILE.openai ?? {})).toEqual(expect.arrayContaining(["tts-1", "tts-1-hd"]));
 });

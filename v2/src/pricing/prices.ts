@@ -230,10 +230,18 @@ export function pricesOperation(operation: OperationDescription, price: ModelPri
   const rates = everyRate(price);
   const { meter } = operation;
   // A header meter's price bills both the header's unit and its estimate's, so
-  // a missing header falls back to a measure the price can still bill.
+  // a missing header falls back to a measure the price can still bill. Judged
+  // on each effective price, since a key value's unit rate replaces the base's.
   if (meter.kind === "response_header" && meter.estimate !== undefined) {
-    const bills = (unit: Unit) => UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.includes(unit));
-    return bills(meter.unit) && bills(meter.estimate.unit);
+    const estimate = meter.estimate;
+    const bills = (one: RateSet, unit: Unit) => UNIT_RATES.some((unitRate) => one[unitRate.field] !== undefined && unitRate.units.includes(unit));
+    let effective: readonly { readonly price: ModelPrice }[];
+    try {
+      effective = effectivePrices(price);
+    } catch {
+      effective = keyCandidates(price).candidates;
+    }
+    return effective.every((one) => bills(one.price.rates, meter.unit) && bills(one.price.rates, estimate.unit));
   }
   const units = operationUnits(operation);
   if (units.includes("tokens") && billsTokens(rates)) return true;
