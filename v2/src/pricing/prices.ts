@@ -2,7 +2,8 @@
  * The price file and the rates the gateway prices with (plan section 4.2,
  * "Prices"; D12, D20).
  *
- * `models.json` is v1's price file, copied as it is: price updates on v1's
+ * The price file is v1's `models.json`, copied as it is, plus v2's own
+ * prices (`./price-file.ts`): price updates on v1's
  * main branch are copied here, never merged (D16). It writes dollars per
  * million units, and per minute, per hour or per image for the models priced
  * that way. Each number is converted once, when this module loads, to an
@@ -12,8 +13,8 @@
  * A price is never removed: a model the providers stopped listing keeps its
  * entry with `unlisted_since`, and is still priced.
  */
-import models from "./models.json";
-import type { OperationDescription } from "../providers/operation.ts";
+import { PRICE_FILE } from "./price-file.ts";
+import type { OperationDescription, Unit } from "../providers/operation.ts";
 import { MoneyError, NANO_PER_DOLLAR, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
 import {
   isStandardMode,
@@ -109,7 +110,7 @@ function loadPriceFile(file: PriceFile): ReadonlyMap<string, ReadonlyMap<string,
 }
 
 /** Our price list, converted once. */
-export const PRICE_LIST = loadPriceFile(models as PriceFile);
+export const PRICE_LIST = loadPriceFile(PRICE_FILE as PriceFile);
 
 /**
  * A customer's own rates for one connection, as stored in `rates_json`, keyed
@@ -227,6 +228,13 @@ function billsTokens(rates: RateSet): boolean {
  */
 export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
   const rates = everyRate(price);
+  const { meter } = operation;
+  // A header meter's price bills both the header's unit and its estimate's, so
+  // a missing header falls back to a measure the price can still bill.
+  if (meter.kind === "response_header" && meter.estimate !== undefined) {
+    const bills = (unit: Unit) => UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.includes(unit));
+    return bills(meter.unit) && bills(meter.estimate.unit);
+  }
   const units = operationUnits(operation);
   if (units.includes("tokens") && billsTokens(rates)) return true;
   return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.some((unit) => units.includes(unit)));

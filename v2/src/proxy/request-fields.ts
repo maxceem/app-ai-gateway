@@ -81,8 +81,12 @@ function measuredAmount(measure: RequestMeasure, fields: RequestFields): number 
   }
 }
 
-/** A usage worked out from the request alone: one count in one unit, no tokens. */
-function requestUsageOf(unit: Unit, count: number): UsageObservation {
+/**
+ * A usage taken from the request alone: one count in one unit, no tokens. A
+ * measure (characters, a requested length) is an estimate of what the
+ * provider bills; a request count is exact.
+ */
+function requestUsageOf(unit: Unit, count: number, estimated: boolean): UsageObservation {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -90,7 +94,7 @@ function requestUsageOf(unit: Unit, count: number): UsageObservation {
     outputTokens: 0,
     noTokens: true,
     units: { [unit]: count },
-    estimatedUnits: [unit],
+    ...(estimated ? { estimatedUnits: [unit] } : {}),
   };
 }
 
@@ -100,17 +104,23 @@ function requestUsageOf(unit: Unit, count: number): UsageObservation {
  * A request count is always one request.
  */
 export function requestUsage(operation: OperationDescription, fields: RequestFields): UsageObservation | null {
-  if (operation.meter.kind === "request_count") return requestUsageOf("requests", 1);
+  if (operation.meter.kind === "request_count") return requestUsageOf("requests", 1, false);
   const measure = requestMeasureOf(operation.meter);
   if (measure === null) return null;
   const amount = measuredAmount(measure, fields);
-  return amount === null ? null : requestUsageOf(measure.unit, scaledCount(measure.unit, amount));
+  if (amount === null) return null;
+  const count = scaledCount(measure.unit, amount);
+  return Number.isSafeInteger(count) ? requestUsageOf(measure.unit, count, true) : null;
 }
 
+/** A price key value longer than this is treated as unknown, and never stored. */
+const MAX_PRICE_KEY_VALUE = 100;
+
 /**
- * The values of an operation's price keys in the request, as text, with each
- * key's default where the request names none. A value that is not a string
- * or a number is left out: the price bills it as an unknown value.
+ * The values of an operation's price keys in the request, as text (a boolean
+ * as `true` or `false`, as fal's `generate_audio`), with each key's default
+ * where the request names none. Any other value, or one longer than 100
+ * characters, is left out: the price bills it as an unknown value.
  */
 export function priceKeyValues(operation: OperationDescription, fields: RequestFields): Record<string, string> | undefined {
   const keys = operation.priceKeys;
@@ -118,8 +128,11 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
   const values: Record<string, string> = {};
   for (const key of keys) {
     const value = fieldValue(fields, key.from);
-    if (typeof value === "string" || (typeof value === "number" && Number.isFinite(value))) values[key.name] = String(value);
-    else if (value === undefined && key.default !== undefined) values[key.name] = key.default;
+    const text =
+      typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) ? String(value) : undefined;
+    if (text !== undefined) {
+      if (text.length <= MAX_PRICE_KEY_VALUE) values[key.name] = text;
+    } else if (value === undefined && key.default !== undefined) values[key.name] = key.default;
   }
   return values;
 }
@@ -141,11 +154,6 @@ function deleteAt(body: Record<string, unknown>, path: string): boolean {
  */
 export function removeOutboundForm(operation: OperationDescription, form: FormData): void {
   for (const ref of outboundRemoved(operation)) if (ref.in === "form" || ref.in === "body") form.delete(ref.field);
-}
-
-/** Whether an operation removes any field of a form, so its uploads must be read and rebuilt. */
-export function removesFormFields(operation: OperationDescription): boolean {
-  return outboundRemoved(operation).some((ref) => ref.in !== "query");
 }
 
 /** Fields an operation removes before sending: every webhook field, and fetch fields it does not need. */
@@ -173,8 +181,8 @@ export function removeOutbound(
       queryChanged ||= kept.has(ref.field);
       kept.delete(ref.field);
     }
-    // A form names a body field the same way: both are dropped from a form.
-    else if (ref.in === "form" || body === null) formFields.push(ref.field);
+    // A form and a JSON body name a field the same way: each is dropped from either.
+    else if (body === null) formFields.push(ref.field);
     else if (deleteAt(body, ref.field)) bodyChanged = true;
   }
   return { bodyChanged, query: queryChanged ? kept : null, formFields };

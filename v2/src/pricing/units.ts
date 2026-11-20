@@ -63,8 +63,8 @@ export const UNIT_RATE_FIELDS: readonly string[] = UNIT_RATES.map((rate) => rate
  * The units an operation can measure, so the price of a model it serves must
  * be in one of them (or bill tokens, where `tokens` is listed).
  *
- * - Usage in the response: tokens, plus what its API style also reports (a
- *   transcription's duration, the images an image API made), plus the request
+ * - Usage in the response: tokens, plus the units its meter declares its
+ *   reader reports (a transcription's duration, an image API's images), plus the request
  *   measure that bills an answer that reports no usage.
  * - A response header: its unit, and its request estimate's.
  * - A request measure: its unit.
@@ -74,9 +74,8 @@ export function operationUnits(operation: OperationDescription): readonly (Unit 
   const { meter } = operation;
   switch (meter.kind) {
     case "response_json": {
-      const units: (Unit | "tokens")[] = ["tokens"];
-      if (meter.style === "openai-transcription") units.push("audio_seconds");
-      if (meter.style === "openai-images") units.push("images");
+      // The units its reader reports are declared on the meter, never inferred from the style.
+      const units: (Unit | "tokens")[] = ["tokens", ...(meter.units ?? [])];
       if (meter.requestMeasure !== undefined) units.push(meter.requestMeasure.unit);
       return units;
     }

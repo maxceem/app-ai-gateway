@@ -113,7 +113,7 @@ export function transcription(name: string, path: string, options: { readonly de
     transport: "upload",
     style: "openai-transcription",
     model: { in: "form", field: "model", ...(options.defaultModel !== undefined ? { default: options.defaultModel } : {}) },
-    meter: { kind: "response_json", style: "openai-transcription" },
+    meter: { kind: "response_json", style: "openai-transcription", units: ["audio_seconds"] },
   });
 }
 
@@ -130,7 +130,7 @@ export function images(name: string, path: string, options: TextOptions = {}): O
     style: "openai-images",
     model: { in: "body", field: "model" },
     background: DETACHED,
-    meter: meter("openai-images", options),
+    meter: { ...meter("openai-images", options), units: ["images"] },
   });
 }
 

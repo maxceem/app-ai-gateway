@@ -137,6 +137,11 @@ export type Meter =
       readonly style: ApiStyle;
       readonly providerCost?: ProviderCostReport;
       readonly requestMeasure?: RequestMeasure & { readonly unit: Unit };
+      /**
+       * The units other than tokens its reader reports, which a price may bill
+       * instead: a transcription's `audio_seconds`, an image API's `images`.
+       */
+      readonly units?: readonly Unit[];
     }
   /**
    * A response header with the billed amount, such as ElevenLabs'

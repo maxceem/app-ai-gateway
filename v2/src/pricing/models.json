@@ -70,18 +70,6 @@
       "release_date": "2025-03-20",
       "retirement_date": "2027-01-06"
     },
-    "tts-1": {
-      "kind": "speech",
-      "per_million_characters": 15.0,
-      "author": "OpenAI",
-      "release_date": "2023-11-06"
-    },
-    "tts-1-hd": {
-      "kind": "speech",
-      "per_million_characters": 30.0,
-      "author": "OpenAI",
-      "release_date": "2023-11-06"
-    },
     "gpt-4o-transcribe-diarize": {
       "kind": "transcription",
       "input": 2.5,

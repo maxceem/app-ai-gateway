@@ -59,7 +59,7 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
-import { priceKeyValues, removeOutbound, removesFormFields, requestFormFields, requestUsage } from "./request-fields.ts";
+import { priceKeyValues, removeOutbound, requestFormFields, requestUsage } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
@@ -83,7 +83,8 @@ export function servedNow(operation: OperationDescription): boolean {
   const { kind } = operation.meter;
   return (
     operation.lifecycle === "call" &&
-    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
+    // A response header meter (ElevenLabs) is served from step 4b, with its tests.
+    (kind === "response_json" || kind === "request_measure" || kind === "request_count")
   );
 }
 
@@ -463,8 +464,9 @@ export async function requestBody(
     // The path names the model and no format is judged: as v1, the form is
     // not read at all, so it is never refused for its shape. A service mode
     // it names is not read either, as in v1: the response says which served.
-    // An operation with outbound form fields always reads its form, so they are removed.
-    if (location.in === "path" && operation.style !== "openai-transcription" && !removesFormFields(operation)) {
+    // An operation that reads a form field (a price key, a request measure, an
+    // outbound field to remove) always reads its form.
+    if (location.in === "path" && operation.style !== "openai-transcription" && requestFormFields(operation).length === 0) {
       return { kind: "form", fields: new Map() };
     }
     const boundary = multipartBoundary(contentType);

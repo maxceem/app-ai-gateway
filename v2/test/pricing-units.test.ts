@@ -15,7 +15,10 @@ import { billing, priceSources } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
-import { requestBody } from "../src/proxy/serve.ts";
+import { requestBody, servedNow } from "../src/proxy/serve.ts";
+import { PRICE_LIST, listPrice } from "../src/pricing/prices.ts";
+import { V1_PRICE_FILE, V2_PRICE_OVERLAY } from "../src/pricing/price-file.ts";
+import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import type { ProviderDescription } from "../src/providers/operation.ts";
 import { operationUnits, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
@@ -286,7 +289,11 @@ describe("outbound fields", () => {
     const body = { webhook_url: "https://hook", options: { image_url: "https://img", n: 1 }, audio_url: "https://audio", text: "hi" };
     const result = removeOutbound(op, body, new URLSearchParams("fal_webhook=https%3A%2F%2Fhook&keep=1"));
     expect(body).toEqual({ options: { n: 1 }, audio_url: "https://audio", text: "hi" });
-    expect(result).toMatchObject({ bodyChanged: true, formFields: ["callback"] });
+    // A field declared for a form is removed from a JSON body too.
+    expect(result).toMatchObject({ bodyChanged: true, formFields: [] });
+    const withForm = { callback: "https://hook", text: "hi" };
+    expect(removeOutbound(op, withForm, new URLSearchParams())).toMatchObject({ bodyChanged: true });
+    expect(withForm).toEqual({ text: "hi" });
     expect(result.query?.toString()).toBe("keep=1");
     // A request with none of them is sent as it came.
     expect(removeOutbound(op, { text: "hi" }, new URLSearchParams("keep=1"))).toMatchObject({ bodyChanged: false, query: null });
@@ -391,5 +398,69 @@ describe("through the proxy", () => {
       status: "priced",
       correction: { costNano: 30_000_000, unit: "characters", measured: "estimated" },
     });
+  });
+});
+
+describe("review fixes", () => {
+  const fields = (body: Record<string, unknown>) => ({ body, query: new URLSearchParams() });
+
+  it("keeps v2's own prices in an overlay that a copy of v1's file never drops", () => {
+    for (const [provider, entries] of Object.entries(V2_PRICE_OVERLAY)) {
+      for (const model of Object.keys(entries)) {
+        // Merged into the price list…
+        expect(listPrice(provider, model), `${provider}/${model}`).not.toBeNull();
+        // …and only v2's: once v1's file lists it, the overlay's copy is removed.
+        expect(Object.hasOwn(V1_PRICE_FILE[provider] ?? {}, model), `${provider}/${model} is in v1's file`).toBe(false);
+      }
+    }
+    expect(PRICE_LIST.get("openai")?.get("tts-1")?.rates.per_million_characters).toBe(15_000_000_000);
+  });
+
+  it("takes the units a meter's reader reports from the meter, never from its style's name", () => {
+    expect(operationUnits(openai.operations.find((op) => op.name === "openai.transcription")!)).toContain("audio_seconds");
+    expect(operationUnits(operation({ kind: "response_json", style: "openai-chat", units: ["audio_seconds"] }))).toEqual(["tokens", "audio_seconds"]);
+  });
+
+  it("reads a boolean price key value, and treats one over 100 characters as unknown", () => {
+    const op = operation({ kind: "request_count" }, { priceKeys: [{ name: "audio", from: { in: "body", field: "generate_audio" } }] });
+    expect(priceKeyValues(op, fields({ generate_audio: true }))).toEqual({ audio: "true" });
+    expect(priceKeyValues(op, fields({ generate_audio: "x".repeat(101) }))).toEqual({});
+  });
+
+  it("labels nothing estimated that a header reported or a request count counted", () => {
+    const op = operation({ kind: "response_header", header: "x-chars", unit: "characters", estimate: { measure: "characters", field: "text", unit: "characters" } });
+    const usage = attemptUsage(op, { requestUsage: requestUsage(op, fields({ text: "hello" })) }, null, new Headers({ "x-chars": "7" }))!;
+    expect(usage.estimatedUnits).toBeUndefined();
+    expect(priceInServedMode(priced({ per_million_characters: 1 }), usage, STANDARD_MODE)).toMatchObject({ units: 7, measured: "complete" });
+    const counted = requestUsage(operation({ kind: "request_count" }), fields({}))!;
+    expect(counted.estimatedUnits).toBeUndefined();
+    expect(priceInServedMode(priced({ per_request: 1 }), counted, STANDARD_MODE)).toMatchObject({ measured: "complete" });
+  });
+
+  it("requires a header meter's price to bill both the header's unit and its estimate's", () => {
+    const op = operation({ kind: "response_header", header: "x-cost", unit: "credits", estimate: { measure: "characters", field: "text", unit: "characters" } });
+    const sources = (rates: Record<string, number>) => priceSources({ type: "openai", rates: { m: rates } });
+    expect(billing(op, sources({ per_credit: 1 }), "m").problem).toBe("wrong_unit");
+    expect(billing(op, sources({ per_credit: 1, per_million_characters: 1 }), "m").problem).toBeNull();
+  });
+
+  it("ignores a header figure too large to count exactly, so the estimate bills", () => {
+    expect(headerUsage(new Headers({ "x-cost": "1e300" }), "x-cost", "credits")).toBeNull();
+  });
+
+  it("reads a path-model form for its price keys and request measures too", async () => {
+    const op = defineOperation({
+      name: "test.keyed", match: { method: "POST", path: "v1/{model}/run" }, lifecycle: "call", transport: "upload",
+      model: { in: "path", part: "model" }, meter: { kind: "request_count" }, priceKeys: [{ name: "size", from: { in: "form", field: "size" } }],
+    });
+    const form = new FormData();
+    form.append("size", "large");
+    const request = new Request("https://local.invalid", { method: "POST", body: form });
+    const parsed = await requestBody(new Uint8Array(await request.arrayBuffer()), request.headers.get("content-type")!, op, { serviceModes: [] } as unknown as ProviderDescription);
+    expect(parsed.kind === "form" && parsed.fields.get("size")).toEqual(["large"]);
+  });
+
+  it("keeps response-header operations unserved until their own step", () => {
+    for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(false);
   });
 });

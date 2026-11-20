@@ -267,7 +267,10 @@ export function headerUsage(headers: Headers, header: string, unit: Unit): Usage
   if (text === null || text.trim() === "") return null;
   const value = Number(text);
   if (!Number.isFinite(value) || value < 0) return null;
-  return { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { [unit]: scaledCount(unit, value) } };
+  // A figure too large to count exactly is no report: the estimate bills instead.
+  const count = scaledCount(unit, value);
+  if (!Number.isSafeInteger(count)) return null;
+  return { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { [unit]: count } };
 }
 
 /**
@@ -300,7 +303,11 @@ export function attemptUsage(
       const reported = headerUsage(headers, meter.header, meter.unit);
       if (reported === null) usage = fromRequest === null ? null : { ...fromRequest, reportMissing: true };
       else if (fromRequest === null) usage = reported;
-      else usage = { ...reported, units: { ...fromRequest.units, ...reported.units }, estimatedUnits: fromRequest.estimatedUnits ?? [] };
+      else {
+        // A unit the header reported is not an estimate, even when the request estimate shares it.
+        const estimatedUnits = (fromRequest.estimatedUnits ?? []).filter((unit) => reported.units?.[unit] === undefined);
+        usage = { ...reported, units: { ...fromRequest.units, ...reported.units }, ...(estimatedUnits.length > 0 ? { estimatedUnits } : {}) };
+      }
       break;
     }
     case "request_measure":
