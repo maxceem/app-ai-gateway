@@ -1,7 +1,7 @@
 /**
  * Reading what a newer gateway writes.
  *
- * A deployment is updated underneath the `agw` that manages it, and every
+ * A gateway is updated underneath the `agw` that manages it, and every
  * release may add an optional field to an application's configuration or a
  * value to one of its enums. The schemas this CLI was built with are strict, so
  * a plain parse refuses the whole answer for one setting it has never heard

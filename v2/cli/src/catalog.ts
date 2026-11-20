@@ -2,7 +2,7 @@
  * The commands this CLI does not implement itself, as the connected gateway
  * describes them.
  *
- * A gateway serves its MCP tools at `GET /v1/cli/tools`, each with the command
+ * A gateway serves its MCP tools at `GET /v2/cli/tools`, each with the command
  * it is offered as. That list is kept per gateway in the cache directory and
  * is what every such command is parsed, explained and run against, so a tool
  * added to a gateway is a command of this CLI as soon as the gateway is
@@ -42,6 +42,10 @@ const FETCH_MS = 10_000;
  * naming one this release does not know is a command for a newer `agw`.
  */
 export const CLI_FEATURES: ReadonlySet<string> = new Set<string>([]);
+// The tools that need `browser-step` or `reservation` (adding a provider or an
+// app, creating a key) are offered under the same words as built-in commands,
+// which always win: the CLI takes a key from a hidden prompt, or writes a new
+// one to a private file, itself.
 
 /** The features a tool needs that this release does not have. */
 export function missingFeatures(tool: CliTool): string[] {
@@ -156,8 +160,10 @@ export function findTool(
 /** Where a list comes from: the selected gateway, asked with a timeout. */
 export interface CatalogSource {
   url: string;
-  /** The body of `GET /v1/cli/tools`, unparsed. */
+  /** The body of `GET /v2/cli/tools`, unparsed. */
   fetchList(timeoutMs: number): Promise<unknown>;
+  /** Called when the gateway has no tool list at all, before that is reported; may throw its own refusal. */
+  onMissing?(): Promise<void>;
 }
 
 export class ToolCatalog {
@@ -203,13 +209,15 @@ export class ToolCatalog {
       data = await this.source.fetchList(FETCH_MS);
     } catch (error) {
       // A gateway from before this list existed answers it as a route it does not have.
-      if (error instanceof CliError && error.details?.status === 404)
+      if (error instanceof CliError && error.details?.status === 404) {
+        await this.source.onMissing?.();
         fail(
           "gateway_outdated",
-          "This gateway is older than this agw and does not describe its commands.",
-          "Update the gateway with agw deployment update, or use the agw release it was deployed with.",
+          "This gateway does not describe its commands, so it is not a v2 gateway this agw can manage.",
+          "Check the gateway URL with agw deployment status.",
           3,
         );
+      }
       throw error;
     }
     const list = readList(data);

@@ -3,7 +3,11 @@ import type { z } from "zod";
 import type { CliErrorDetails } from "./errors.ts";
 
 export { VERSION } from "./manifest.ts";
-export const CLOUD = "https://api.appaigateway.com";
+/**
+ * The hosted gateway. The CLI talks to a gateway's console host: its OAuth
+ * server, its tool list and its management API all answer there, under `/v2`.
+ */
+export const CLOUD = "https://console.appaigateway.com";
 
 /**
  * The environment variable that, when set, is the management credential for
@@ -59,7 +63,7 @@ export function origin(value: string): string {
   try {
     u = new URL(value);
   } catch {
-    fail("invalid_url", "Supply a valid deployment HTTPS URL.");
+    fail("invalid_url", "Supply a valid gateway HTTPS URL.");
   }
   if (
     u.username ||
@@ -70,7 +74,7 @@ export function origin(value: string): string {
   )
     fail(
       "invalid_url",
-      "Deployment URL must be an origin without credentials, path, query or fragment.",
+      "The gateway URL must be an origin without credentials, path, query or fragment.",
     );
   if (
     u.protocol !== "https:" &&
@@ -81,7 +85,7 @@ export function origin(value: string): string {
   )
     fail(
       "invalid_url",
-      "Public deployments require HTTPS; HTTP is permitted only on loopback.",
+      "A gateway must use HTTPS; HTTP is allowed only on loopback.",
     );
   return u.origin;
 }

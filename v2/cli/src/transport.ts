@@ -103,6 +103,12 @@ function nextActionFor(status: number, code: string, details: CliErrorDetails): 
   return "Review command configuration and account status.";
 }
 
+/** An OAuth endpoint's answer: its status and JSON body, whatever the status. */
+export interface FormResponse {
+  status: number;
+  data: Record<string, unknown>;
+}
+
 export class Transport {
   private readonly fetch: FetchLike;
 
@@ -136,7 +142,7 @@ export class Transport {
     } catch {
       fail(
         "connection_failed",
-        "Could not reach the selected deployment.",
+        "Could not reach the selected gateway.",
         "Check connectivity and the selected URL; no fallback was attempted.",
         3,
       );
@@ -145,7 +151,7 @@ export class Transport {
       fail(
         "redirect_refused",
         "API redirects are refused to keep credentials bound to their origin.",
-        "Connect explicitly to the intended deployment.",
+        "Connect explicitly to the intended gateway.",
         3,
       );
     if (binary && response.ok) return { data: new Uint8Array(await response.arrayBuffer()), headers: response.headers };
@@ -155,8 +161,8 @@ export class Transport {
     } catch {
       fail(
         "invalid_response",
-        "Deployment returned an invalid JSON response.",
-        "Check deployment version and connectivity.",
+        "The gateway returned an invalid JSON response.",
+        "Check the gateway URL and its release.",
         3,
         // The status this arrived with, which is the whole difference between
         // an edge error page in front of a Worker that is not serving yet and
@@ -187,7 +193,7 @@ export class Transport {
       const explanation = reported(wire.error?.message ?? wire.message, body);
       const refusal = new CliError(
         code,
-        `Deployment rejected the request (HTTP ${response.status})` +
+        `The gateway refused the request (HTTP ${response.status})` +
           (explanation ? `: ${explanation}` : "."),
         nextActionFor(response.status, code, details),
         3,
@@ -197,5 +203,42 @@ export class Transport {
       throw refusal;
     }
     return { data, headers: response.headers };
+  }
+
+  /**
+   * Posts a form to one of the gateway's OAuth endpoints. Their refusals are
+   * part of the protocol (`authorization_pending`, `slow_down`, `invalid_grant`),
+   * so any status comes back as data rather than as a `CliError`. Redirects
+   * are refused, as everywhere.
+   */
+  async postForm(url: string, path: string, fields: Record<string, string>, timeoutMs = 30000): Promise<FormResponse> {
+    const base = origin(url);
+    if (!path.startsWith("/") || path.startsWith("//")) fail("invalid_request", "Invalid API path.");
+    let response: Response;
+    try {
+      response = await this.fetch(base + path, {
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          accept: "application/json",
+          "user-agent": `agw/${VERSION}`,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(fields).toString(),
+      });
+    } catch {
+      fail("connection_failed", "Could not reach the selected gateway.", "Check connectivity and the selected URL.", 3);
+    }
+    if (response.status >= 300 && response.status < 400)
+      fail("redirect_refused", "API redirects are refused to keep credentials bound to their origin.", "Connect explicitly to the intended gateway.", 3);
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch {
+      data = undefined;
+    }
+    const body = data !== null && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+    return { status: response.status, data: body };
   }
 }

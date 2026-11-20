@@ -1,5 +1,4 @@
 import { Writable } from "node:stream";
-import { appCommand } from "./apps.ts";
 import {
   FileCatalogCache,
   findTool,
@@ -9,11 +8,10 @@ import {
   type CatalogCache,
   type CliTool,
 } from "./catalog.ts";
-import { conversationsCommand } from "./conversations.ts";
+import { appAdd, appKeyAdd, appUpdate, providerAdd, providerRotateKey, waitFor } from "./commands.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
-import { Context, noticeText, type ContextIo, type Notice } from "./context.ts";
-import { deploymentCommand } from "./deployment.ts";
+import { Context, type ContextIo, type Notice } from "./context.ts";
 import { CliErrorDetailsSchema } from "./errors.ts";
 import {
   argumentsAfter,
@@ -23,6 +21,7 @@ import {
   runGatewayCommand,
 } from "./gateway-commands.ts";
 import { humanResult, type OutputContext } from "./human.ts";
+import { refuseOlderGateway } from "./oauth.ts";
 import {
   builtInEntries,
   builtInHelp,
@@ -33,15 +32,11 @@ import {
   type HelpEntry,
   type ParseResult,
 } from "./parser.ts";
-import { required, resourceCommand } from "./resources.ts";
-import type { CommandResult, RenderedResult } from "./results.ts";
+import type { CommandResult, DeploymentStatusResult } from "./results.ts";
 import { StateStore } from "./state.ts";
-import { supportCommand } from "./support.ts";
 import { styleFor, type Style } from "./style.ts";
 import { clean, humanToolResult, mentions, toolHelp, usageLine } from "./tool-output.ts";
 import { Transport } from "./transport.ts";
-import { positive } from "./usage.ts";
-import { versionNotice } from "./versions.ts";
 
 /** Anything stdout can be pointed at, including the test suite's own sinks. */
 export interface OutputSink {
@@ -49,14 +44,11 @@ export interface OutputSink {
 }
 
 export interface MainOptions {
-  store?: Pick<
-    StateStore,
-    "read" | "write" | "reserve" | "directory" | "keyOutput" | "vaultKey"
-  >;
-  transport?: Pick<Transport, "request">;
+  store?: Pick<StateStore, "read" | "update" | "keyOutput">;
+  transport?: Pick<Transport, "request" | "postForm">;
   stdout?: OutputSink;
   stderr?: OutputSink;
-  /** The browser, the loopback listener and the environment; `stderr` is the option above. */
+  /** The browser, the loopback listener, the clock and the environment; `stderr` is the option above. */
   io?: Partial<Omit<ContextIo, "stderr">>;
   /**
    * Where the gateway's tool list is kept between runs: the cache directory,
@@ -80,41 +72,51 @@ export class MemoryCatalogCache implements CatalogCache {
   }
 }
 
+/** The required positional argument a parsed command carries. */
+const first = (args: readonly string[]): string => args[0] ?? "";
+
+/** `agw deployment status`: the selected gateway, and who commands run as. */
+async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
+  const credential = ctx.environmentKey ? "environment" : ctx.active?.login ? "oauth" : null;
+  const base: DeploymentStatusResult = { url: ctx.url, connected: true, credential, signedIn: false };
+  if (!credential) return base;
+  try {
+    const { data } = await ctx.call("getAdminSession");
+    const { user, account, role, grant } = data.session;
+    return { ...base, signedIn: true, user: { id: user.id, email: user.email, name: user.name }, account, role, grant };
+  } catch (error) {
+    if (error instanceof CliError && (error.code === "login_required" || error.details?.status === 401)) return base;
+    throw error;
+  }
+}
+
 export async function execute(parsed: ParsedCommand, ctx: Context): Promise<CommandResult> {
   const { command, flags, args } = parsed;
-  if (command.startsWith("provider"))
-    return resourceCommand(ctx, command, args, flags);
-  if (command === "app conversations") return conversationsCommand(ctx, args[0] ?? "", flags);
-  if (command.startsWith("app ")) return appCommand(ctx, command, args, flags);
-  if (command === "support send") return supportCommand(ctx, flags);
-  if (command.startsWith("operation "))
-    return command === "operation wait"
-      ? ctx.wait(args[0] ?? "", positive(flags.timeout ?? 300))
-      : ctx.poll(args[0] ?? "");
-  if (command === "account login")
-    return flags["key-stdin"] || flags["key-prompt"] ? ctx.keyLogin() : ctx.browserLogin();
-  if (command === "account claim") return ctx.operation("claim", {});
-  if (command === "account logout") return ctx.logout();
-  if (command === "deployment connect") {
-    const url = flags.cloud
-      ? CLOUD
-      : origin(
-          flags.url ?? (await required(flags, "url", "Deployment HTTPS URL")),
-        );
-    if (flags["key-stdin"] || flags["key-prompt"]) return ctx.keyLogin(url);
-    if (ctx.environmentKey) return ctx.connectWithEnvironment(url);
-    return ctx.browserLogin(url);
+  switch (command) {
+    case "deployment connect":
+      return ctx.connect(flags.cloud ? CLOUD : origin(flags.url ?? CLOUD));
+    case "deployment status":
+      return deploymentStatus(ctx);
+    case "account login":
+      return ctx.login();
+    case "account logout":
+      return ctx.logout();
+    case "provider add":
+      return providerAdd(ctx, flags);
+    case "provider rotate-key":
+      return providerRotateKey(ctx, first(args), flags);
+    case "app add":
+      return appAdd(ctx, flags);
+    case "app key add":
+      return appKeyAdd(ctx, first(args), flags);
+    case "app update":
+      return appUpdate(ctx, first(args), flags);
+    case "operation wait": {
+      const seconds = flags.timeout === undefined ? 300 : Number(flags.timeout);
+      if (!Number.isInteger(seconds) || seconds < 1) throw new CliError("invalid_input", "--timeout must be a whole number of seconds.");
+      return waitFor(ctx, first(args), seconds);
+    }
   }
-  if (command === "deployment status") {
-    const { data } = await ctx.publicCall("getCliCapabilities");
-    return {
-      url: ctx.url,
-      authenticated: Boolean(ctx.managementKey),
-      ...data,
-      connected: true,
-    };
-  }
-  return deploymentCommand(ctx, command, flags);
 }
 
 const builtIn = (command: string): boolean => Object.hasOwn(commands, command);
@@ -173,6 +175,7 @@ function catalogFor(ctx: Context, cache: CatalogCache): ToolCatalog {
       url,
       fetchList: async (timeoutMs) =>
         (await ctx.client.transport.request(url, operationPath("listCliTools"), { timeoutMs })).data,
+      onMissing: () => refuseOlderGateway(ctx.client.transport, url),
     },
     cache,
   );
@@ -194,9 +197,6 @@ function outputContext(ctx: Context): OutputContext {
   return {
     url: ctx.url,
     ...(ctx.active?.account?.id === undefined ? {} : { accountId: ctx.active.account.id }),
-    ...(ctx.active?.deployment?.id === undefined
-      ? {}
-      : { deploymentId: ctx.active.deployment.id }),
   };
 }
 
@@ -217,10 +217,7 @@ export async function main(
   const states = store ?? new StateStore();
   // What the run noticed, which either envelope carries; empty until a command runs.
   let notices: Notice[] = [];
-  // The run's context, once a command has one, and the command it runs: a
-  // failure is explained with both.
   let ctx: Context | undefined;
-  let command: string | undefined;
   try {
     const parsed = parse(argv);
     if (parsed.version) {
@@ -228,7 +225,7 @@ export async function main(
       return 0;
     }
     const open = async (): Promise<Context> => {
-      const state = await states.read((line) => stderr.write(line + "\n"));
+      const state = await states.read();
       const context = new Context(states, state, transport, parsed.flags ?? contextFlags(argv), { ...io, stderr });
       notices = context.notices;
       return context;
@@ -243,7 +240,6 @@ export async function main(
     if (parsed.words) {
       const catalog = catalogFor(ctx, cache);
       const { tool: resolved } = await resolveTool(catalog, parsed.words);
-      command = resolved.cli.command;
       const outcome = await runGatewayCommand(ctx, catalog, resolved, argumentsAfter(resolved, argv), stdin);
       const tool = outcome.tool;
       // The list as it stands now: reading the line or the answer may have refreshed it.
@@ -273,12 +269,9 @@ export async function main(
       await catalog.observe(outcome.revision);
       return 0;
     }
-    command = parsed.command;
     const result = await execute(parsed, ctx);
     const context = outputContext(ctx);
-    const rendered: RenderedResult = ctx.onboarding
-      ? { ...result, ...ctx.onboarding }
-      : result;
+    const rendered = result;
     // `notices` only when there is one, so the envelope of an ordinary run is
     // what it has always been.
     const output = {
@@ -294,7 +287,6 @@ export async function main(
     // No command-wide lock: each state write takes the lock for itself, so a
     // command that waits on a browser handoff for minutes does not hold one.
     await write(stdout, text);
-    await ctx.acknowledgeOutput();
     return 0;
   } catch (error) {
     const e =
@@ -303,15 +295,9 @@ export async function main(
         : new CliError(
             "internal_error",
             "The command could not complete.",
-            "Inspect account/resource status before retrying a mutation.",
+            "Check what the command changed before running it again.",
             4,
           );
-    // Said after the failure, not instead of it: the gateway's own explanation
-    // comes first, and a release difference is only a possible cause.
-    const mismatch = ctx && command && error instanceof CliError
-      ? await versionNotice(ctx, command, error)
-      : undefined;
-    if (mismatch) notices.push(mismatch);
     // Parsed on the way out for the same reason every response is: only the
     // fields this envelope declares may reach stdout. Fail-closed — details
     // that do not parse are dropped rather than printed, and never turn a
@@ -335,8 +321,8 @@ export async function main(
       return e.exitCode;
     }
     // Text failures go to stderr, where a shell already expects them: stdout
-    // stays clean for the command's own output, so `agw app snippet ... > f`
-    // writes a snippet or an empty file, never half a report of a failure.
+    // stays clean for the command's own output, so redirecting it never
+    // writes half a report of a failure.
     // `--json` keeps its one document on stdout, which is what agents read.
     const style = styleFor(stderr);
     const lines = [
@@ -349,7 +335,6 @@ export async function main(
     for (const [key, value] of Object.entries(reported.details ?? {}))
       lines.push(`  ${style.dim(`${key}:`)} ${String(value)}`);
     stderr.write(lines.join("\n") + "\n");
-    if (mismatch) stderr.write(noticeText(mismatch, style));
     return e.exitCode;
   }
 }

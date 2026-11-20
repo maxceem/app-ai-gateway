@@ -1,0 +1,62 @@
+# CLI compatibility policy
+
+An installed `agw` outlives many gateway releases. This policy says what a
+newer gateway promises to the `agw` releases already installed, and what
+`agw` does with things it does not know. It starts with v2 (plan decision
+D14). The v2 release itself breaks older CLIs on purpose: agw 2 manages v2
+gateways only, and stops with a short message at a v1 gateway (use agw 1.x,
+or migrate).
+
+## What a newer gateway promises
+
+From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
+
+1. **Additions only.** An API response, the app configuration and the tool
+   list only gain optional fields. A field is never made required, never
+   changes what it means, and is never removed while a released `agw` reads
+   it.
+2. **New settings only when used.** A new configuration field is written only
+   when it differs from its default, so an older `agw` meets it only once
+   somebody uses the feature. A new writable app setting goes inside
+   `config`, because `agw` writes back only `name`, `config` and `status`.
+3. **New enum values only where they are shown or stored.** A value that
+   drives a client's control flow, such as an operation's `state`, needs a new
+   field instead.
+4. **The paths `agw` calls stay**: the OAuth server under `/v2/oauth/*` and
+   its discovery document, `GET /v2/admin/session`, the operations the
+   built-in commands call, and the tool list `GET /v2/cli/tools` with
+   `POST /v2/cli/tools/{tool}`.
+5. **New commands arrive as tools.** Most commands are not built into `agw`:
+   the gateway lists its MCP tools, each with the command it is offered as,
+   and `agw` builds the command from that. A gateway release adds commands
+   without an `agw` release.
+
+## What `agw` does with what it does not know
+
+- **Unknown fields in an answer** are kept exactly as sent and sent back when
+  `agw` saves, and `agw` says once per run that the gateway is newer
+  (`newer_gateway` notice). A command edits only what its flags name.
+- **A tool the gateway changed** is caught before it runs: every call sends
+  the tool's guard, and a tool that has become destructive or needs more of
+  `agw` is refused with `tool_changed`. `agw` then reads the gateway's current
+  list and decides again, so it never runs a changed tool blind.
+- **A tool that needs a newer `agw`** (its `requires` names a feature this
+  release lacks) is left out of help and refused with "needs a newer agw".
+- **A tool `agw` cannot read** is left out; the rest of the list still works.
+- **The tool list is kept for a day**, and read again when a tool call
+  answers with another revision, so a gateway deploy reaches an `agw` that
+  ran a minute before it.
+
+## What `agw` promises its own users
+
+- `--json` prints one document with `schemaVersion: 1`; its fields only
+  grow.
+- Exit codes keep their meaning: 0 done, 2 the command line is wrong, 3 the
+  gateway or the network failed, 4 a state or a decision stops it.
+- Secrets never reach stdout: a provider key comes from a hidden prompt,
+  stdin or the console; a new app key goes to a private file.
+
+## For contributors
+
+Before changing anything `agw` reads, check it against the list above. A
+change that breaks a released `agw` needs a new field or a new tool instead.

@@ -1,74 +1,60 @@
 import type { CliTool } from "../src/catalog.ts";
-import { Context, type ContextStore } from "../src/context.ts";
-import type { CliState } from "../src/state.ts";
-import { providerCapability, type ProviderType } from "../../src/shared/providers.ts";
+import type { ContextStore } from "../src/context.ts";
+import { emptyState, type CliState, type KeyOutput } from "../src/state.ts";
+import type { FormResponse, RequestOptions, WireResponse } from "../src/transport.ts";
 
-/** The route and capability a direct provider row of this type is served with. */
-export const served = (type: ProviderType) => {
-  const capability = providerCapability(type);
+export const fresh = (): CliState => emptyState();
+
+/** A state signed in to `url` with a token that does not expire during a test. */
+export function signedInState(url: string, accessToken: string, expiresAt = "2999-01-01T00:00:00.000Z"): CliState {
   return {
-    route: "direct" as const,
-    capability: {
-      apiStyles: [...capability.apiStyles],
-      endpointStyles: [...capability.endpointStyles],
-      modelPrefix: null,
-      paths: "provider" as const,
+    schemaVersion: 1,
+    active: {
+      url,
+      login: { clientId: "agw-cli", accessToken, refreshToken: "agw_ort_test", expiresAt, grant: "manage" },
+      account: { id: "org_1", name: "Acme" },
     },
   };
-};
-
-export const fresh = (): CliState => ({
-  schemaVersion: 2,
-  active: null,
-  operations: {},
-});
-
-export const makeStore = (): ContextStore => ({
-  write: async () => {},
-  // The real store looks under its lock; with no file to share, this is the same.
-  reserve: async (state, find, create) => find(state) ?? create(state),
-  directory: "/unused",
-  keyOutput: () => {
-    throw new Error("keyOutput is not stubbed in this test");
-  },
-  vaultKey: async () => {
-    throw new Error("vaultKey is not stubbed in this test");
-  },
-});
+}
 
 /**
- * A `Context` with some of its methods replaced.
- *
- * `Object.defineProperty` rather than `Object.assign`, because `url` and
- * `active` are accessors on the prototype and assigning through them would
- * throw. The single cast is the point of this helper: every test that needs a
- * stub declares it here instead of building a lookalike object.
+ * A store held in memory: `update` runs the change on a copy of what it holds,
+ * as the real one runs it on what is on disk.
  */
-export function stubContext(parts: Record<string, unknown>): Context {
-  const ctx: object = Object.create(Context.prototype) as object;
-  for (const [key, value] of Object.entries(parts)) {
-    Object.defineProperty(ctx, key, {
-      value,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
-  }
-  return ctx as Context;
+export function memoryStore(initial: CliState = fresh()) {
+  let held: CliState = structuredClone(initial);
+  const store = {
+    writes: 0,
+    get held(): CliState {
+      return held;
+    },
+    set held(next: CliState) {
+      held = structuredClone(next);
+    },
+    read: async () => structuredClone(held),
+    update: async <T>(change: (state: CliState) => Promise<T> | T) => {
+      const state = structuredClone(held);
+      const result = await change(state);
+      held = structuredClone(state);
+      store.writes++;
+      return { state: structuredClone(state), result };
+    },
+    keyOutput: async (_path?: string): Promise<KeyOutput> => {
+      throw new Error("keyOutput is not stubbed in this test");
+    },
+  };
+  return store;
 }
+
+export const makeStore = (): ContextStore & { read: () => Promise<CliState> } => memoryStore();
 
 /** The `code` a rejected CLI promise carries, for `assert.rejects` predicates. */
 export function hasCode(code: string): (error: unknown) => boolean {
   return (error: unknown) =>
-    typeof error === "object" && error !== null && "code" in error &&
-    (error as { code: unknown }).code === code;
+    typeof error === "object" && error !== null && "code" in error && (error as { code: unknown }).code === code;
 }
 
-export function errorOf(error: unknown): { code?: string; details?: Record<string, unknown> } {
-  return error as { code?: string; details?: Record<string, unknown> };
-}
-
-/** A tool as `GET /v1/cli/tools` lists it, with the parts a test does not care about filled in. */
+/** A tool as `GET /v2/cli/tools` lists it, with the parts a test does not care about filled in. */
 export function cliTool(
   name: string,
   cli: CliTool["cli"],
@@ -85,8 +71,53 @@ export function cliTool(
   };
 }
 
-/** `get_account`, as a gateway offers it as `agw account status`. */
-export const ACCOUNT_TOOL = cliTool("get_account", {
-  command: "account status",
-  view: { record: "account", columns: ["name=Account", "id", "claimed"] },
-});
+export type Handler = (path: string, options: RequestOptions) => WireResponse | Promise<WireResponse>;
+export type FormHandler = (path: string, fields: Record<string, string>) => FormResponse | Promise<FormResponse>;
+
+/** A transport whose JSON requests and OAuth form posts are answered by the handlers given. */
+export function fakeTransport(json: Handler, form: FormHandler = () => ({ status: 500, data: {} })) {
+  const calls: { kind: "json" | "form"; path: string; method?: string; key?: string; body?: unknown; fields?: Record<string, string> }[] = [];
+  return {
+    calls,
+    request: async (_url: string, path: string, options: RequestOptions = {}) => {
+      calls.push({
+        kind: "json",
+        path,
+        ...(options.method === undefined ? {} : { method: options.method }),
+        ...(options.key === undefined ? {} : { key: options.key }),
+        ...(options.body === undefined ? {} : { body: options.body }),
+      });
+      return json(path, options);
+    },
+    postForm: async (_url: string, path: string, fields: Record<string, string>) => {
+      calls.push({ kind: "form", path, fields });
+      return form(path, fields);
+    },
+  };
+}
+
+/** A clock that only moves when a test sleeps on it. */
+export function fakeClock(start = Date.parse("2026-11-20T10:00:00.000Z")) {
+  const clock = {
+    time: start,
+    slept: [] as number[],
+    now: () => clock.time,
+    sleep: async (ms: number) => {
+      clock.slept.push(ms);
+      clock.time += ms;
+    },
+  };
+  return clock;
+}
+
+/** Output sinks that keep what they were given. */
+export function sinks() {
+  const out = { text: "" };
+  const err = { text: "" };
+  return {
+    out,
+    err,
+    stdout: { write: (text: string) => void (out.text += text) },
+    stderr: { write: (text: string) => void (err.text += text) },
+  };
+}

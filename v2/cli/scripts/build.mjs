@@ -1,6 +1,7 @@
 import { build } from "esbuild";
-import { chmod, mkdir } from "node:fs/promises";
-import { cliManifest } from "./manifest.mjs";
+import { chmod, mkdir, readFile } from "node:fs/promises";
+
+const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 await mkdir(new URL("../dist", import.meta.url), { recursive: true });
 await build({
   entryPoints: [new URL("../src/bin.ts", import.meta.url).pathname],
@@ -10,9 +11,8 @@ await build({
   format: "esm",
   target: "node22",
   banner: { js: "#!/usr/bin/env node" },
-  external: ["wrangler"],
-  // Inlines `cli/package.json`'s version and pinned Wrangler, so the bundle
-  // carries no manifest read. Running the sources directly reads the same file.
-  define: { __AGW_MANIFEST__: JSON.stringify(await cliManifest()) },
+  // Inlines the version, so the bundle reads no `package.json`. Running the
+  // sources directly reads the same file.
+  define: { __AGW_VERSION__: JSON.stringify(manifest.version) },
 });
 await chmod(new URL("../dist/agw.mjs", import.meta.url), 0o755);

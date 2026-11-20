@@ -1,211 +1,49 @@
-# App AI Gateway CLI
+# App AI Gateway CLI, version 2
 
-`agw` sets up and manages [App AI Gateway](https://appaigateway.com/)
-from a terminal or a coding agent: providers, apps, usage, and your own
-deployment. Requires Node.js 22.19+.
+`agw` manages an [App AI Gateway](https://appaigateway.com/) v2 from a
+terminal or a coding agent: providers, apps, their keys, limits and end
+users. It needs Node.js 22.19 or newer.
 
-```sh
-npm install -g @maxceem/agw
-```
+agw 2 manages v2 gateways only. For a v1 gateway, keep using agw 1.x.
 
-## Quick start
-
-Sign in through your browser:
+## Sign in
 
 ```sh
 agw account login
 ```
 
-The CLI prints a pairing code and opens the console. Check that the page shows
-the same code, then approve. The CLI receives a management key of its own,
-listed on the console's **Access** page with a **CLI** tag and this
-machine's name. Over SSH, on a machine without a display, or with `--no-open`,
-the CLI opens nothing: open the printed URL on any device and approve there. For your own deployment, run
-`agw deployment connect --url https://ai.example.com` instead. `agw account
-logout` revokes the key and removes it from this machine.
+With a browser on this machine, `agw` opens the console, you approve, and the
+browser comes back to the terminal. Over SSH, without a display, or with
+`--device`, it prints a link and a short code instead: open the link in any
+browser, check the code matches, and approve. The sign-in renews itself;
+`agw account logout` ends it. It is listed on the console's **Access** page,
+where you can also revoke it.
 
-No account yet? Skip login. An unclaimed hosted account is created for you
-automatically as soon as you add your first provider or app below. You can
-claim it with `agw account claim`. Check `agw account status` for its expiry;
-claim it before that deadline to keep it.
-
-Add a provider. Paste its API key into the hidden prompt.
+For your own gateway, connect first:
 
 ```sh
-agw provider add --type openai
+agw deployment connect --url https://console.example.com
 ```
 
-Add an app. It uses every provider you have added. A server app is created with
-an application key, written to a private file; an iOS app authenticates with
-App Attest instead and ships no key.
-
-```sh
-agw app add --type server --name "My backend"
-agw app add --type ios --team-id ABCDE12345 --bundle-id com.example.app
-```
-
-Creating an app prints the request it can send. To print it again — as curl for
-a server app, as Swift for an iOS one:
-
-```sh
-agw app snippet <app-id>
-agw app snippet <app-id> --provider openai   # when several could serve it
-```
-
-The example is written from the app's own providers and models, and uses named
-placeholders such as `PROVIDER_SLUG` for anything not configured yet.
-
-## Self-host on Cloudflare
-
-The package drives Wrangler and installs the gateway release of its own version.
-No checkout needed. The gateway itself downloads once from the project's GitHub
-release and is cached, after the CLI matches it against a digest built into the
-executable.
-
-```sh
-agw deployment setup --name my-gateway --no-domain   # deploy and connect
-agw deployment update                                 # move to this CLI's release
-agw deployment domain --hostname ai.example.com       # attach a custom domain
-```
-
-Setup signs in to Cloudflare through Wrangler, or uses `CLOUDFLARE_API_TOKEN`
-if set. Add `--dry-run` to any of these to see what would happen. See the
-[self-hosting guide](https://docs.appaigateway.com/self-hosting/deploy-to-cloudflare).
-
-No route to GitHub from that machine? Fetch the `gateway-<version>.tar.gz` asset
-elsewhere and pass `--release-archive <path>`.
+The URL is the gateway's console address. In CI and scripts, set
+`AGW_MANAGEMENT_KEY` to a management key instead; nothing is stored then.
 
 ## Commands
 
-| Group | What it manages |
-| --- | --- |
-| `provider` | Provider credentials: `add`, `list`, `show`, `update`, `rotate-key`, `remove` |
-| `provider-gateway` | Connections to Cloudflare AI Gateway or Vercel AI Gateway |
-| `app` | Apps and their config: `add`, `list`, `show`, `update`, `validate`, `check`, `snippet`, `remove`, `key` |
-| `usage` | Spend and requests: `show`, `breakdown` |
-| `account` | `status`, `claim`, `login`, `logout` |
-| `deployment` | `setup`, `connect`, `status`, `update`, `domain` |
-| `operation` | `status` and `wait` for browser handoffs |
-
-`agw --help` lists every command; `agw <group> <command> --help` lists its flags.
-
-## Using `agw` from an agent
-
-Full guide: [docs.appaigateway.com/automation/cli](https://docs.appaigateway.com/automation/cli).
-The agent manual is also published as
-[agents.md](https://docs.appaigateway.com/agents.md).
-
-**Output.** Add `--json` for exactly one JSON document on stdout; progress goes
-to stderr. Without `--json`, output is plain text and a failure is printed to
-stderr, so stdout carries only the command's own output. Colour is used only
-when the destination is a terminal, and `NO_COLOR` turns it off. Add
-`--no-input` to fail instead of prompting.
-
-```json
-{ "schemaVersion": 1, "ok": true,  "context": { "url": "...", "accountId": "..." }, "result": { } }
-{ "schemaVersion": 1, "ok": false, "error": { "code": "...", "message": "...", "nextAction": "...", "details": { } } }
-```
-
-Either document may also carry `notices`: things to know that are not the
-answer, each with a `code`, a `message` and the `paths` it applies to. The
-CLI prints them to stderr without `--json`. `newer_deployment` means the
-gateway is newer than this `agw` and has settings it does not understand: they
-are shown and kept unchanged when it saves, but not checked. Update `agw` to
-manage them. `version_mismatch` follows a failure the gateway answered when
-the CLI and the gateway API are different releases, and says which one to
-update.
-
-Every error names a `code` and a `nextAction`. Follow the `nextAction`.
-
-| Exit | Meaning |
-| --- | --- |
-| `0` | Success, including a browser handoff that is still pending |
-| `2` | Invalid input or validation failure |
-| `3` | Gateway unreachable, remote error, or failed handoff |
-| `4` | Local state or authentication problem |
-| `5` | `operation wait` timed out; the operation is still pending |
-
-**Signing in.** `agw account login --no-open --json` returns a pending login
-with a `url`, a `userCode` and an `id`. Give the person the URL and the code;
-they check the page shows the same code and approve, then
-`agw operation wait <id>` stores the key. In CI, set `AGW_MANAGEMENT_KEY` to a
-management key: when set, it is the credential for every command and overrides
-any saved login. To save an existing key instead, pipe it once with
-`agw account login --key-stdin`.
-
-**Secrets.** Never put a key in a command argument. Either pipe it with
-`--key-stdin`, or hand the browser to a human:
-
 ```sh
-agw provider add --type openai --browser --no-open --json   # prints a URL
-agw operation wait <operation-id> --timeout 300 --json      # resumes when done
+agw --help                          # every command, including the gateway's
+agw provider add --type openai      # the key goes in a hidden prompt
+agw provider add --type openai --browser   # a person types the key in the console
+agw app add --type ios --name "My App" --team-id ABCDE12345 --bundle-id com.example.app
+agw app add --type server --name "Backend"  # its first key goes to a private file
+agw app key add <app> --name ci             # another key, also to a private file
+agw app update <app> --status disabled
+agw app list
 ```
 
-Share the URL with the person who holds the credential. Nothing typed on that
-page reaches the CLI or its output.
+Most commands come from the gateway itself, as its tools, so a new gateway
+release brings its commands without an `agw` update. `--json` prints one
+document for agents and scripts.
 
-**Editing apps.** Read before you write. `app update <id>` changes only what
-its flags name — `--name`, `--status`, `--team-id`, `--bundle-id`,
-`--attest-environments`, `--verify-on`, `--providers`, `--all-providers` —
-and leaves everything else as it is. For any other setting, pass
-`--operations @patch.json`, a list of `add`, `replace` or `remove` operations
-at paths such as `/config/limits/per_app/requests/per_minute`, with the
-`--revision` from `app show`. `app replace <id> --config @app.json` replaces the
-whole document, with `name`, `config`, `status` and `revision` from
-`app show --json`'s `result.app`. `app validate [id] --config @app.json` checks
-a document without saving it. Finish with `app check <id>` and
-`app snippet <id>`, which send no inference.
-
-**Commands from your gateway.** Apart from signing in, deploying, adding
-providers, apps and keys, and browser steps, `agw`'s commands come from the
-gateway it is connected to. It keeps their list for a day and reads it again as
-soon as the gateway changes, so a newer gateway's commands work without
-updating `agw`. `agw --help` lists them; a structured value is JSON, inline or
-as `@file`, and `--input` takes every argument as one JSON object.
-
-**State.** Connection, credentials and pending operations live in
-`~/.local/state/agw` (`$XDG_STATE_HOME/agw`, or `%LOCALAPPDATA%/agw` on
-Windows), mode 0700. Do not delete it to fix an authentication error; run
-`agw account login` instead. Output files are never overwritten.
-
-## Local development
-
-The source lives in `cli/` of the
-[main repository](https://github.com/maxceem/app-ai-gateway). Clone it and run
-`pnpm install`.
-
-From the repository root, `pnpm cli:dev` is `agw` built from your own source
-instead of an installed copy. It rebuilds before every run, so your latest edit
-is always the one that runs.
-
-```sh
-pnpm cli:dev account login
-pnpm cli:dev provider add --type openai
-pnpm cli:dev app list
-```
-
-It keeps its state in `.agw-dev/`, separate from the state an installed `agw`
-uses. To start again from nothing:
-
-```sh
-pnpm cli:dev:reset
-```
-
-Deploying needs the gateway itself built too, once per change to the Worker,
-console or migrations:
-
-```sh
-pnpm --filter @maxceem/agw release:build
-pnpm cli:dev deployment setup --name my-gateway --no-domain
-```
-
-Type-check and test:
-
-```sh
-pnpm run cli:check
-pnpm run cli:test
-```
-
-## License
-
-This project is licensed under the [Apache License 2.0](LICENSE).
+What newer gateways promise to an installed `agw` is in
+[COMPATIBILITY.md](./COMPATIBILITY.md).

@@ -1,586 +1,159 @@
-import { createHash, randomBytes } from "node:crypto";
+/**
+ * What this CLI keeps on this machine: the selected gateway and its sign-in,
+ * in one private file, and the app keys it creates, each in a private file of
+ * its own.
+ *
+ * The file is `<state>/agw/v2/connection.json`, apart from the one agw 1.x
+ * writes beside it, so neither release ever reads the other's credential.
+ *
+ * Every write runs under a lock and starts from what is on disk, because an
+ * OAuth refresh token is good for one use only: two commands refreshing at
+ * once from the same stale copy would present it twice, and the gateway
+ * treats that as a stolen token and ends the sign-in.
+ */
 import { constants } from "node:fs";
-import {
-  mkdir,
-  open,
-  readFile,
-  rename,
-  unlink,
-  lstat,
-  chmod,
-  type FileHandle,
-} from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { chmod, lstat, mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import { homedir, hostname, platform } from "node:os";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { CliDeployment } from "../../src/contracts/cli.ts";
-import type { OrganizationSummary } from "../../src/contracts/responses.ts";
-import { CliError, fail, randomToken, origin, validate } from "./common.ts";
+import { CliError, fail, randomToken } from "./common.ts";
 
-/**
- * Whether POSIX ownership and permission bits mean anything here.
- *
- * Windows reports 0666 for every file and has no `getuid`, so the mode checks
- * below would refuse every file the CLI itself just wrote. There the private
- * state is protected by the user profile's own ACL instead.
- */
+/** Whether POSIX ownership and mode bits mean anything here (not on Windows). */
 const posixPermissions = (): boolean => process.platform !== "win32";
 
-/** The connection the commands act on, as it is written to disk. */
-export interface ActiveConnection {
-  url: string;
-  authenticated: boolean;
-  credential?: string;
-  account?: OrganizationSummary;
-  deployment?: CliDeployment & { mode: CliDeployment["mode"] };
-}
-
-/**
- * One CLI operation this machine has sent or is about to send.
- *
- * Written before the request, which is what makes a lost response safe: the
- * token is the operation's only proof, and its digest is the operation's id,
- * so the same command run again sends the same token and the deployment
- * answers with the operation it already has instead of a second one.
- */
-export interface OperationRecord {
-  url: string;
-  token: string;
-  kind: string;
-  /** Digest of what was asked, so an identical command finds this record again. */
-  requestHash: string;
-  /** The account it was sent for; null for the bootstrap that creates one. */
-  accountId: string | null;
-  createdAt: string;
-  /** A key-bearing operation's reserved output file. */
-  output?: OutputReservation;
-  /** The key's non-secret metadata, once the output holds it. */
-  keyMetadata?: StoredKeyMetadata;
-  /** The result as printed, its key removed, once the command has delivered it. */
-  result?: unknown;
-  completedAt?: string;
-}
-
-/** Where a reserved key output lives, identified so a swap cannot go unnoticed. */
-export interface OutputReservation {
-  path: string;
-  device: string;
-  inode: string;
-}
-
-export interface StoredKeyMetadata {
-  id: string;
-  name: string;
-  key_prefix: string;
-  created_at: string;
-  storagePath: string;
-  contentHash: string;
-}
-
-export interface InstallationJournal {
-  id: string;
-  name: string;
-  accountId: string;
-  databaseId?: string;
-  databaseName?: string;
-  version: string;
-  phase: "prepared" | "deployed" | "ready";
-  url?: string;
-  vars?: Record<string, string>;
-  domains?: string[];
-  pendingDomain?: string;
-  /** The token its first bootstrap is sent with, however many attempts it takes. */
-  bootstrap?: { token: string };
-  secrets?: Record<string, string>;
-}
-
-export interface CliState {
-  schemaVersion: 2;
-  active: ActiveConnection | null;
-  /** Keyed by operation id, which is `op:` and the digest of the record's token. */
-  operations: Record<string, OperationRecord>;
-  installations?: Record<string, InstallationJournal>;
-}
-
-/**
- * A URL as the state file carries one, held to the rule a flag is held to.
- *
- * `origin` is what decides, so a stored URL cannot be anything a command would
- * have refused to be given: no credentials, no path, no query, and HTTPS
- * unless it is loopback.
- */
-const StoredOrigin = z.string().refine(
-  (value) => {
-    try {
-      origin(value);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  "must be a deployment origin without credentials, path, query or fragment",
-);
-
-/**
- * One connection as it is written to disk.
- *
- * Deliberately open about `account` and `deployment`: those are copies of what
- * the deployment answered, already parsed by `OrganizationSummarySchema` and
- * `CliDeploymentSchema` on the way in. Re-checking their fields here would
- * refuse a state file written by a release whose contract carried fewer of
- * them, and the price of that refusal is somebody's connection — over fields
- * this file only carries. What is checked is what every release has required:
- * a URL that is an origin, and a credential if the connection claims to be
- * authenticated.
- */
-const StoredConnectionSchema = z
-  .looseObject({
-    url: StoredOrigin,
-    authenticated: z.boolean(),
-    credential: z.string().optional(),
-    account: z.looseObject({}).optional(),
-    deployment: z.looseObject({}).optional(),
-  })
-  .refine(
-    (connection) => !connection.authenticated || typeof connection.credential === "string",
-    "an authenticated connection must carry its credential",
-  );
-
-/**
- * One operation's record. Only the fields that decide whether it can still be
- * honoured are named; `keyMetadata` and `result` are left to the catchall,
- * because they are copies of what the deployment answered and a second, weaker
- * grammar for them here would refuse a recoverable operation over a field
- * nothing in this file looks at.
- */
-const StoredOperationSchema = z.looseObject({
-  url: StoredOrigin,
-  token: z.string(),
-  kind: z.string(),
-  requestHash: z.string(),
-  accountId: z.string().nullable(),
-  createdAt: z.string(),
-  completedAt: z.string().optional(),
+/** An OAuth sign-in of this CLI: a short-lived access token and a one-use refresh token. */
+export const OAuthLoginSchema = z.object({
+  clientId: z.string().min(1),
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  /** When the access token stops working, as an ISO date. */
+  expiresAt: z.string().min(1),
+  grant: z.enum(["read", "manage"]),
 });
+export type OAuthLogin = z.infer<typeof OAuthLoginSchema>;
 
-/**
- * One self-hosted installation's journal.
- *
- * `phase` is the resumable part of a deployment and its three names are the
- * ones on disk, so they are checked: a journal that claims a phase this
- * release cannot carry out is not something to deploy from. Everything a
- * phase adds is optional, because a journal is written at every step.
- */
-const StoredInstallationSchema = z.looseObject({
-  id: z.string(),
-  name: z.string(),
-  accountId: z.string(),
-  version: z.string(),
-  phase: z.enum(["prepared", "deployed", "ready"]),
-  databaseId: z.string().optional(),
-  databaseName: z.string().optional(),
-  url: z.string().optional(),
-  vars: z.record(z.string(), z.string()).optional(),
-  domains: z.array(z.string()).optional(),
-  pendingDomain: z.string().optional(),
-  bootstrap: z.looseObject({ token: z.string() }).optional(),
-  secrets: z.record(z.string(), z.string()).optional(),
+export const ActiveConnectionSchema = z.object({
+  /** The gateway's console origin, which every request goes to. */
+  url: z.string().min(1),
+  login: OAuthLoginSchema.optional(),
+  /** The account the sign-in acts in, as the gateway last said. */
+  account: z.object({ id: z.string(), name: z.string() }).optional(),
 });
+export type ActiveConnection = z.infer<typeof ActiveConnectionSchema>;
 
-/**
- * The whole state file, as the one thing that decides whether it can be read.
- *
- * Every field a command acts on is named here and nowhere else: a check written
- * beside a reader would be a second grammar, and a state file this schema
- * accepts is one every reader below may merge without inspecting it.
- */
 export const CliStateSchema = z.object({
-  schemaVersion: z.literal(2),
-  active: StoredConnectionSchema.nullable(),
-  operations: z.record(z.string(), StoredOperationSchema),
-  installations: z.record(z.string(), StoredInstallationSchema).optional(),
+  schemaVersion: z.literal(1),
+  active: ActiveConnectionSchema.nullable(),
 });
+export type CliState = z.infer<typeof CliStateSchema>;
 
-/** What can be done about a state file this CLI will not act on. */
-const RECOVER_STATE = "Recover the state file; it will not be treated as a new account.";
-
-/**
- * The state file, parsed by the one schema that describes it.
- *
- * Refused rather than replaced, as `invalid_state`: the file holds a
- * management credential, the owner of a vault key and unfinished creations, so
- * a shape this release cannot read is something to repair by hand, never
- * something to overwrite with a fresh state. The path and the first issue are
- * named because that is what repairing it by hand needs. A file an earlier CLI
- * wrote never gets here: `StateStore.read` upgrades it first (`upgradeState`).
- */
-function parseState(path: string, text: string): CliState {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    fail("invalid_state", `Connection state at ${path} is not valid JSON.`, RECOVER_STATE, 4);
-  }
-  try {
-    // Through `validate`, which is the one place a zod issue is worded the way
-    // this CLI words one; only its code and the length differ here, because a
-    // refusal a person has to act on reads better naming one field than forty.
-    return validate(CliStateSchema, value) as CliState;
-  } catch (error) {
-    const first = error instanceof CliError ? error.message.split("; ")[0] : undefined;
-    fail(
-      "invalid_state",
-      `Unsupported or malformed connection state at ${path}${first ? `: ${first}` : ""}.`,
-      RECOVER_STATE,
-      4,
-    );
-  }
-}
-
-/**
- * The state file's contents as an object an earlier CLI wrote, or null.
- *
- * Earlier means a numeric `schemaVersion` below this one's; anything else —
- * a later version, no number, text that is not JSON — is left to `parseState`
- * to refuse.
- */
-function earlierState(text: string): Record<string, unknown> | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const version = (value as { schemaVersion?: unknown }).schemaVersion;
-  return typeof version === "number" && version < CliStateSchema.shape.schemaVersion.value
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-/**
- * The current state an earlier CLI's file becomes.
- *
- * The connection is carried as it was, because its shape has not changed and
- * it is what keeps the person logged in. Operations, receipts and the old
- * bootstrap are dropped: they were proofs for server records that no longer
- * exist, so nothing could finish them. A ready installation is kept without
- * its spent bootstrap; one that never got that far is dropped, because its
- * bootstrap cannot be resumed by this CLI. Each carried installation is held
- * to the current schema and dropped if it fails, while a connection that fails
- * refuses the whole file, since it may hold the only copy of a key.
- */
-function upgradeState(path: string, earlier: Record<string, unknown>): CliState {
-  const installations: Record<string, InstallationJournal> = {};
-  const journals = earlier["installations"];
-  if (typeof journals === "object" && journals !== null)
-    for (const [id, journal] of Object.entries(journals)) {
-      if (typeof journal !== "object" || journal === null) continue;
-      const { bootstrap: _spent, ...rest } = journal as Record<string, unknown>;
-      if (rest["phase"] !== "ready") continue;
-      const carried = StoredInstallationSchema.safeParse(rest);
-      if (carried.success) installations[id] = carried.data as InstallationJournal;
-    }
-  const upgraded = {
-    schemaVersion: 2,
-    active: earlier["active"] ?? null,
-    operations: {},
-    ...(Object.keys(installations).length ? { installations } : {}),
-  };
-  return parseState(path, JSON.stringify(upgraded));
-}
+export const emptyState = (): CliState => ({ schemaVersion: 1, active: null });
 
 export function stateDirectory(): string {
-  if (platform() === "win32")
-    return join(
-      process.env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"),
-      "agw",
-    );
-  return join(
-    process.env["XDG_STATE_HOME"] || join(homedir(), ".local", "state"),
-    "agw",
-  );
+  if (platform() === "win32") return join(process.env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"), "agw", "v2");
+  return join(process.env["XDG_STATE_HOME"] || join(homedir(), ".local", "state"), "agw", "v2");
 }
 
-/**
- * Where downloaded, verified copies of things live.
- *
- * Separate from the state directory because the contents are reproducible: the
- * gateway release cached under `releases/<version>` can be deleted at any time
- * and the next deployment command fetches and verifies it again, while nothing
- * in the state directory can be recovered that way.
- */
+/** Where reproducible things live, such as the gateway's tool list. */
 export function cacheDirectory(): string {
-  if (platform() === "win32")
-    return join(
-      process.env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"),
-      "agw",
-    );
-  return join(process.env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "agw");
+  if (platform() === "win32") return join(process.env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"), "agw", "v2", "cache");
+  return join(process.env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "agw", "v2");
 }
 
 export async function protectedDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const s = await lstat(path);
-  if (!s.isDirectory() || s.isSymbolicLink())
-    fail("unsafe_storage", "CLI storage must be a real directory.");
+  if (!s.isDirectory() || s.isSymbolicLink()) fail("unsafe_storage", "CLI storage must be a real directory.");
   if (!posixPermissions()) return;
-  if (process.getuid && s.uid !== process.getuid())
-    fail("unsafe_storage", "CLI storage belongs to another user.");
+  if (process.getuid && s.uid !== process.getuid()) fail("unsafe_storage", "CLI storage belongs to another user.");
   await chmod(path, 0o700);
 }
 
-export interface ReservedOutput {
-  path: string;
-  reservation: OutputReservation;
-  contentHash(): Promise<string>;
-  write(value: string | unknown): Promise<void>;
-  cancel(): Promise<void>;
-}
-
-export async function reserveOutput(
-  path: string,
-  { reservation, retain = false }: { reservation?: OutputReservation | undefined; retain?: boolean } = {},
-): Promise<ReservedOutput> {
-  const absolute = resolve(path);
-  let handle: FileHandle | null = null;
-  let confirmed: OutputReservation;
-  try {
-    handle = reservation
-      ? await open(absolute, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0))
-      // Read-write even though a new reservation starts empty: `write` reads it
-      // back before it truncates, and `contentHash` reads it after, so a
-      // write-only handle would fail the first delivery into a fresh file.
-      : await open(absolute, "wx+", 0o600);
-    const info = await handle.stat();
-    if (!info.isFile() ||
-        (posixPermissions() && ((info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid()))) ||
-        (reservation && (reservation.path !== absolute || reservation.device !== String(info.dev) || reservation.inode !== String(info.ino)))) {
-      await handle.close(); handle = null;
-      fail("output_changed", "The reserved output file was replaced or its permissions changed.", "Choose a new --key-output path; no existing file was overwritten.", 4);
-    }
-    confirmed = { path: absolute, device: String(info.dev), inode: String(info.ino) };
-  } catch (error) {
-    if (error instanceof CliError) throw error;
-    fail("output_unavailable", `Cannot exclusively create or resume ${absolute}. Choose a new file in an existing writable directory.`);
-  }
-  let completed = false;
-  const live = handle;
-  return {
-    path: absolute,
-    reservation: confirmed,
-    async contentHash() {
-      if (!live) throw new Error("The reserved output is closed");
-      return createHash("sha256").update(await live.readFile()).digest("hex");
-    },
-    async write(value) {
-      if (!handle) throw new Error("The reserved output is closed");
-      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n";
-      try {
-        if (retain) {
-          const existing = await handle.readFile("utf8");
-          if (existing && !text.startsWith(existing)) fail("output_changed", "The reserved output contains different data.", "Choose a new --key-output path; no existing data was overwritten.", 4);
-          await handle.truncate(0);
-          await handle.write(text, 0, "utf8");
-        } else await handle.writeFile(text);
-        await handle.sync();
-        await handle.close(); handle = null;
-        completed = true;
-      } catch (error) {
-        await handle?.close().catch(() => {}); handle = null;
-        if (!retain) await unlink(absolute).catch(() => {});
-        throw error;
-      }
-    },
-    async cancel() {
-      await handle?.close().catch(() => {}); handle = null;
-      if (!completed && !retain) await unlink(absolute).catch(() => {});
-    },
-  };
-}
-
-/**
- * Removes a reservation the operation that owned it no longer needs.
- *
- * Only ever called for a creation the deployment refused outright, so there is
- * nothing to recover and leaving the file behind would make the next attempt at
- * the same `--key-output` path fail on a file the CLI itself left. It is still
- * confirmed against the recorded device and inode and an empty length first: a
- * file that was replaced, or that holds a delivered key, is not this
- * reservation and is left exactly where it is.
- */
-export async function releaseOutput(reservation: OutputReservation): Promise<void> {
-  const held = await lstat(reservation.path).catch(() => null);
-  if (
-    !held ||
-    !held.isFile() ||
-    held.isSymbolicLink() ||
-    held.size !== 0 ||
-    String(held.dev) !== reservation.device ||
-    String(held.ino) !== reservation.inode
-  )
-    return;
-  await unlink(reservation.path).catch(() => {});
-}
-
-/** The `errno` a failed filesystem call carries, without asserting a shape. */
 function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code: unknown }).code)
-    : undefined;
+  return typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : undefined;
 }
 
-/** How long to keep trying for the lock before reporting a busy state file. */
-const LOCK_TIMEOUT_MS = 10000;
-/** The age past which a held lock is treated as abandoned by its owner. */
-const LOCK_STALE_MS = 60000;
+const LOCK_TIMEOUT_MS = 10_000;
+/** A lock older than this was left by a command that died; no write takes that long. */
+const LOCK_STALE_MS = 60_000;
 
-/** Whether a process still exists, which `signal 0` answers without touching it. */
 function running(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // Owned by another user: alive, just not ours to signal.
     return errorCode(error) === "EPERM";
   }
 }
 
-/** What the holder of a lock writes about itself, as far as it can be trusted. */
-interface LockOwner {
-  pid?: unknown;
-  host?: unknown;
-}
-
-/**
- * Removes a lock no live writer can still be inside, so a killed command does
- * not strand the state file for good.
- *
- * A lock is abandoned when the process that recorded it on this host is gone,
- * or when it is older than any single state write could take. Removal is
- * confirmed against the same file that was judged, so a lock taken in between
- * is left to its new owner.
- */
+/** Removes a lock its owner can no longer be inside: a dead process on this host, or an old file. */
 async function breakAbandonedLock(path: string): Promise<boolean> {
   const held = await lstat(path).catch(() => null);
   if (!held) return true;
-  let owner: LockOwner = {};
+  let owner: { pid?: unknown; host?: unknown } = {};
   try {
-    owner = JSON.parse(await readFile(path, "utf8")) as LockOwner;
+    owner = JSON.parse(await readFile(path, "utf8")) as typeof owner;
   } catch {
-    // A lock with no readable owner is judged by its age alone.
+    // Judged by its age alone.
   }
-  const dead =
-    typeof owner.pid === "number" &&
-    owner.host === hostname() &&
-    !running(owner.pid);
+  const dead = typeof owner.pid === "number" && owner.host === hostname() && !running(owner.pid);
   if (!dead && Date.now() - held.mtimeMs <= LOCK_STALE_MS) return false;
   const current = await lstat(path).catch(() => null);
-  if (current && current.ino === held.ino && current.mtimeMs === held.mtimeMs)
-    await unlink(path).catch(() => {});
+  if (current && current.ino === held.ino && current.mtimeMs === held.mtimeMs) await unlink(path).catch(() => {});
   return true;
 }
 
-/** JSON equality, the only comparison the values in this state need. */
-const same = (a: unknown, b: unknown): boolean =>
-  JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-
-/**
- * Merges one record map three ways: what this command started from, what it
- * holds now, and what is on disk.
- *
- * An entry this command changed wins, an entry only another command changed is
- * taken from disk, and an entry either command dropped stays dropped. Ties keep
- * the live object rather than the copy just parsed off disk, because the
- * command that is mid-creation still holds a reference to it.
- */
-function mergeRecords<T>(
-  baseline: Record<string, T>,
-  local: Record<string, T>,
-  disk: Record<string, T>,
-): Record<string, T> {
-  const merged: Record<string, T> = { ...disk };
-  for (const [id, value] of Object.entries(local)) {
-    const changedHere = !(id in baseline) || !same(baseline[id], value);
-    if (changedHere) merged[id] = value;
-    // Unchanged here and gone from disk: another command dropped it.
-    else if (id in disk) merged[id] = same(baseline[id], disk[id]) ? value : disk[id]!;
-  }
-  for (const id of Object.keys(baseline)) if (!(id in local)) delete merged[id];
-  return merged;
-}
-
-/**
- * The state to persist when another command wrote while this one was running.
- *
- * The lock is held for a write rather than for a whole command, so a poll that
- * waits for minutes cannot block an unrelated command — which means a write
- * has to assume the file moved under it. Overwriting it wholesale would drop a
- * operation another command had just recorded, so the record maps
- * merge per entry and the connection is only replaced by the command that
- * actually changed it.
- *
- * `disk` is null only when there is no file, which is the one case where this
- * command's own state is the whole answer. A file that could not be read never
- * reaches here: `stored` refuses it, so nothing this cannot merge into is
- * replaced by writing over it.
- */
-function mergeState(
-  baseline: CliState | undefined,
-  local: CliState,
-  disk: CliState | null,
-): CliState {
-  if (!disk) return local;
-  const connection = baseline && same(baseline.active, local.active) ? disk : local;
-  const merged: CliState = {
-    schemaVersion: 2,
-    active: connection.active ?? null,
-    operations: mergeRecords(
-      baseline?.operations ?? {},
-      local.operations,
-      disk.operations,
-    ),
-  };
-  const installations = mergeRecords(
-    baseline?.installations ?? {},
-    local.installations ?? {},
-    disk.installations ?? {},
-  );
-  if (Object.keys(installations).length) merged.installations = installations;
-  return merged;
-}
-
-/** Brings one live record map in line with what the merge actually persisted. */
-function adoptRecords<T>(
-  local: Record<string, T>,
-  merged: Record<string, T>,
-): void {
-  for (const id of Object.keys(local)) if (!(id in merged)) delete local[id];
-  Object.assign(local, merged);
-}
+const RECOVER_STATE = "Move the file aside and sign in again with agw account login.";
 
 export class StateStore {
   readonly directory: string;
   readonly path: string;
   private readonly lockPath: string;
-  /** The state as this process last saw it, which is what a write merges from. */
-  private baseline: CliState | undefined;
 
-  constructor(path: string = stateDirectory()) {
-    this.directory = path;
-    this.path = join(path, "connection.json");
-    this.lockPath = join(path, "connection.lock");
+  constructor(directory: string = stateDirectory()) {
+    this.directory = directory;
+    this.path = join(directory, "connection.json");
+    this.lockPath = join(directory, "connection.lock");
+  }
+
+  /** The state on disk, or an empty one when there is no file. A file that cannot be read is refused. */
+  async read(): Promise<CliState> {
+    const held = await lstat(this.path).catch((error: unknown) => {
+      if (errorCode(error) === "ENOENT") return null;
+      fail("invalid_state", "Cannot read the connection state.", RECOVER_STATE, 4);
+    });
+    if (!held) return emptyState();
+    if (
+      !held.isFile() ||
+      held.isSymbolicLink() ||
+      (posixPermissions() && ((process.getuid && held.uid !== process.getuid()) || (held.mode & 0o077) !== 0))
+    )
+      fail("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", RECOVER_STATE, 4);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(this.path, "utf8"));
+    } catch {
+      fail("invalid_state", "The connection state is not readable JSON.", RECOVER_STATE, 4);
+    }
+    const state = CliStateSchema.safeParse(parsed);
+    if (!state.success) fail("invalid_state", "The connection state has a shape this agw does not know.", RECOVER_STATE, 4);
+    return state.data;
   }
 
   /**
-   * Runs `fn` while holding the write lock.
-   *
-   * Only a state write is guarded, never a whole command: `agw operation wait`
-   * polls for minutes, and nothing about that should stop `agw app list` from
-   * running beside it. A lock left behind by a killed command is broken rather
-   * than waited out.
+   * Changes the state under the lock: `change` gets what is on disk now, and
+   * whatever it leaves is written back. What it returns is returned.
    */
+  async update<T>(change: (state: CliState) => Promise<T> | T): Promise<{ state: CliState; result: T }> {
+    return this.locked(async () => {
+      const state = await this.read();
+      const result = await change(state);
+      await this.persist(state);
+      return { state, result };
+    });
+  }
+
   private async locked<T>(fn: () => Promise<T>): Promise<T> {
     await protectedDirectory(this.directory);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -594,21 +167,15 @@ export class StateStore {
         if (Date.now() > deadline)
           fail(
             "state_locked",
-            "Another CLI command is writing the connection state.",
-            "Retry the command. If it keeps failing, verify the PID in connection.lock before removing that lock.",
+            "Another agw command is writing the connection state.",
+            "Run the command again. If it keeps failing, check the PID in connection.lock before removing that file.",
             4,
           );
         await delay(50);
       }
     }
     try {
-      await handle.writeFile(
-        JSON.stringify({
-          pid: process.pid,
-          host: hostname(),
-          createdAt: new Date().toISOString(),
-        }),
-      );
+      await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), createdAt: new Date().toISOString() }));
       return await fn();
     } finally {
       await handle.close().catch(() => {});
@@ -616,269 +183,70 @@ export class StateStore {
     }
   }
 
-  /**
-   * The state this command starts from: what the file holds, or a fresh state
-   * when there is no file.
-   *
-   * Only a missing file is a fresh state. A file that is present and cannot be
-   * read — wrong owner, wrong mode, unparseable, or a shape this release does
-   * not know — is refused, because every one of those would otherwise start a
-   * command as though this machine had never held an account.
-   *
-   * A file an earlier CLI wrote is the one exception: it is upgraded in place,
-   * so installing a new CLI keeps the login. `notice` is told, once, where the
-   * old file was kept.
-   */
-  async read(
-    notice: (line: string) => void = (line) => process.stderr.write(line + "\n"),
-  ): Promise<CliState> {
-    const held = await lstat(this.path).catch((error: unknown) => {
-      if (errorCode(error) === "ENOENT") return null;
-      fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
-    });
-    if (
-      held &&
-      (!held.isFile() ||
-        held.isSymbolicLink() ||
-        (posixPermissions() &&
-          ((process.getuid && held.uid !== process.getuid()) ||
-            (held.mode & 0o077) !== 0)))
-    )
-      fail(
-        "unsafe_storage",
-        "Connection state must be owned by you with mode 0600.",
-      );
-    const text = held ? await this.contents() : null;
-    const stored = text === null
-      ? null
-      : earlierState(text)
-        ? await this.upgrade(notice)
-        : parseState(this.path, text);
-    const state: CliState = stored ?? {
-      schemaVersion: 2,
-      active: null,
-      operations: {},
-    };
-    this.baseline = structuredClone(state);
-    return state;
-  }
-
-  /**
-   * Persists the state, merged with whatever another command wrote meanwhile.
-   *
-   * The caller's own object is brought back in line with what landed on disk,
-   * so the records it goes on to touch are the records that were kept.
-   */
-  async write(state: CliState): Promise<void> {
-    await this.locked(() => this.persist(state));
-  }
-
-  /**
-   * Claims a token no two commands may hold at once.
-   *
-   * Everything else may merge after the fact, but a claim cannot: two commands
-   * started side by side must not create two accounts, or send one operation
-   * twice under two tokens. Here the look and the write happen under one lock,
-   * so the second command adopts the first command's token instead of minting
-   * one beside it.
-   */
-  async reserve<T>(
-    state: CliState,
-    find: (state: CliState) => T | undefined,
-    create: (state: CliState) => T,
-  ): Promise<T> {
-    return this.locked(async () => {
-      this.absorb(state, mergeState(this.baseline, state, await this.stored()));
-      const existing = find(state);
-      if (existing !== undefined) return existing;
-      const claimed = create(state);
-      await this.persist(state);
-      return claimed;
-    });
-  }
-
   private async persist(state: CliState): Promise<void> {
-    const merged = mergeState(this.baseline, state, await this.stored());
-    await this.replace(merged);
-    this.absorb(state, merged);
-    this.baseline = structuredClone(state);
-  }
-
-  /** Brings the caller's live state in line with the merge, records first. */
-  private absorb(state: CliState, merged: CliState): void {
-    adoptRecords(state.operations, merged.operations);
-    if (merged.installations)
-      adoptRecords((state.installations ??= {}), merged.installations);
-    else delete state.installations;
-    // A command holding no connection adopts the one another command
-    // established while it ran — which is what keeps a first run started twice
-    // from creating two accounts. A command already acting on a connection is
-    // never moved off it.
-    if (!state.active && merged.active) state.active = merged.active;
-  }
-
-  /**
-   * The state file as it stands, or null when there is no file at all.
-   *
-   * A file that will not parse is refused here rather than treated as nothing
-   * to merge with: this is what a write reads to keep another command's
-   * operations, and answering "nothing" would replace a file whose contents
-   * could not be understood with this command's own state.
-   */
-  private async stored(): Promise<CliState | null> {
-    const text = await this.contents();
-    return text === null ? null : parseState(this.path, text);
-  }
-
-  /** The state file's text, or null when there is no file at all. */
-  private async contents(): Promise<string | null> {
-    try {
-      return await readFile(this.path, "utf8");
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return null;
-      fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
-    }
-  }
-
-  /**
-   * Rewrites a file an earlier CLI wrote as the current state, and answers
-   * with what is on disk afterwards.
-   *
-   * Under the lock and judged again there, so two commands started together
-   * upgrade it once: the second finds the current state and reads it. The old
-   * file is copied byte for byte beside it before anything is replaced, because
-   * it may hold the only copy of a management key, and no earlier copy is ever
-   * overwritten.
-   */
-  private async upgrade(notice: (line: string) => void): Promise<CliState | null> {
-    const { state, copy } = await this.locked(async () => {
-      let bytes: Buffer;
-      try {
-        bytes = await readFile(this.path);
-      } catch (error) {
-        if (errorCode(error) === "ENOENT") return { state: null, copy: null };
-        fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
-      }
-      const earlier = earlierState(bytes.toString("utf8"));
-      if (!earlier) return { state: await this.stored(), copy: null };
-      const upgraded = upgradeState(this.path, earlier);
-      const copy = await this.keepCopy(bytes);
-      await this.replace(upgraded);
-      return { state: await this.stored(), copy };
-    });
-    if (copy)
-      notice(`Upgraded the saved connection an older CLI wrote; the old file is kept at ${copy}.`);
-    return state;
-  }
-
-  /** Writes `bytes` to the first free `.v1` name beside the state file. */
-  private async keepCopy(bytes: Buffer): Promise<string> {
-    const stamp = new Date().toISOString().replaceAll(":", "");
-    for (const path of [`${this.path}.v1`, `${this.path}.v1.${stamp}`]) {
-      let handle: FileHandle;
-      try {
-        handle = await open(path, "wx", 0o600);
-      } catch (error) {
-        if (errorCode(error) === "EEXIST") continue;
-        throw error;
-      }
-      try {
-        await handle.writeFile(bytes);
-        await handle.sync();
-        await handle.close();
-      } catch (error) {
-        // Only the copy this call just created, never an earlier one.
-        await handle.close().catch(() => {});
-        await unlink(path).catch(() => {});
-        throw error;
-      }
-      return path;
-    }
-    fail(
-      "invalid_state",
-      `Cannot keep a copy of the older connection state beside ${this.path}.`,
-      `Move the ${this.path}.v1 copies elsewhere and retry.`,
-      4,
-    );
-  }
-
-  private async replace(state: CliState): Promise<void> {
-    const temp = join(this.directory, `.state-${randomToken()}`);
+    const temp = `${this.path}.${randomToken().slice(0, 12)}.tmp`;
     const handle = await open(temp, "wx", 0o600);
     try {
-      await handle.writeFile(JSON.stringify(state));
+      await handle.writeFile(JSON.stringify(state, null, 2) + "\n");
       await handle.sync();
       await handle.close();
       await rename(temp, this.path);
-      // Windows cannot open a directory to flush its entry; the rename is durable.
-      if (posixPermissions()) {
-        const d = await open(this.directory, "r");
-        await d.sync();
-        await d.close();
-      }
-    } catch (e) {
+    } catch (error) {
       await handle.close().catch(() => {});
       await unlink(temp).catch(() => {});
-      throw e;
+      throw error;
     }
-  }
-
-  async keyOutput(
-    path: string | undefined,
-    options: { reservation?: OutputReservation | undefined; retain?: boolean } = {},
-  ): Promise<ReservedOutput> {
-    if (path) return reserveOutput(path, options);
-    const dir = join(this.directory, "app-keys");
-    await protectedDirectory(dir);
-    return reserveOutput(join(dir, `${randomToken()}.key`), options);
   }
 
   /**
-   * A self-hosted deployment's vault key, in a file of its own.
-   *
-   * It is the one installation secret worth keeping: losing it makes every
-   * stored provider credential unreadable, while the Worker's auth secrets are
-   * already where they are needed and are dropped once the install is ready.
-   * Keeping it out of `connection.json` keeps it away from the management
-   * credential that file carries, and out of anything that reads state.
+   * A new private file for an app key: the path given, or a fresh one under
+   * `app-keys/`. Created now, empty and exclusive, before the key exists, so
+   * a path that is taken or unwritable fails before anything is created.
    */
-  async vaultKey(deploymentId: string): Promise<string> {
-    const dir = join(this.directory, "vault-keys");
+  async keyOutput(path: string | undefined): Promise<KeyOutput> {
+    if (path) return reserveKeyFile(resolve(path));
+    const dir = join(this.directory, "app-keys");
     await protectedDirectory(dir);
-    const name = /^[A-Za-z0-9._-]{1,64}$/.test(deploymentId)
-      ? deploymentId
-      : createHash("sha256").update(deploymentId).digest("hex");
-    const path = join(dir, `${name}.key`);
-    const held = await lstat(path).catch(() => null);
-    if (held) {
-      if (
-        !held.isFile() ||
-        held.isSymbolicLink() ||
-        (posixPermissions() &&
-          ((process.getuid && held.uid !== process.getuid()) ||
-            (held.mode & 0o077) !== 0))
-      )
-        fail("unsafe_storage", "The stored vault key must be owned by you with mode 0600.");
-      const existing = (await readFile(path, "utf8")).trim();
-      // Never replace a key that is merely unreadable: provider credentials
-      // encrypted under it would become undecryptable.
-      if (!existing)
-        fail(
-          "unsafe_storage",
-          "The stored vault key file is empty.",
-          "Restore it from your backup before deploying this installation again.",
-          4,
-        );
-      return existing;
-    }
-    const key = randomBytes(32).toString("base64");
-    const handle = await open(path, "wx", 0o600);
-    try {
-      await handle.writeFile(key);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    return key;
+    return reserveKeyFile(join(dir, `${randomToken().slice(0, 16)}.key`));
   }
+}
+
+/** A key file reserved before its key exists. */
+export interface KeyOutput {
+  readonly path: string;
+  write(text: string): Promise<void>;
+  /** Removes the file, if nothing was written to it. */
+  cancel(): Promise<void>;
+}
+
+async function reserveKeyFile(path: string): Promise<KeyOutput> {
+  let handle: FileHandle | null;
+  try {
+    handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0), 0o600);
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    fail(
+      "output_unavailable",
+      `Cannot create ${path}: it exists, or its folder is not writable.`,
+      "Choose a new --key-output path; no existing file is ever overwritten.",
+      4,
+    );
+  }
+  let written = false;
+  return {
+    path,
+    async write(text) {
+      if (!handle) throw new Error("The key file is closed");
+      await handle.writeFile(text);
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      written = true;
+    },
+    async cancel() {
+      await handle?.close().catch(() => {});
+      handle = null;
+      if (!written) await unlink(path).catch(() => {});
+    },
+  };
 }

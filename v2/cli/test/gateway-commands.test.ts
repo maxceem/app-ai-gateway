@@ -11,7 +11,7 @@ import { plain, style } from "../src/style.ts";
 import { fieldsOf, flagName, readInvocation } from "../src/tool-args.ts";
 import { clean, humanToolResult, mentions, toolHelp } from "../src/tool-output.ts";
 import type { RequestOptions } from "../src/transport.ts";
-import { cliTool, fresh, hasCode, makeStore } from "./helpers.ts";
+import { cliTool, hasCode, makeStore, signedInState } from "./helpers.ts";
 
 /**
  * The commands this CLI builds from the gateway's tool list: how a command
@@ -21,7 +21,7 @@ import { cliTool, fresh, hasCode, makeStore } from "./helpers.ts";
 
 const PATCH = cliTool(
   "patch_app",
-  { command: "app update", args: ["app"], shortcuts: ["name", "team_id", "providers", "all_providers"] },
+  { command: "app patch", args: ["app"], shortcuts: ["name", "team_id", "providers", "all_providers"] },
   {
     properties: {
       app: { type: "string", description: "The app's id, as list_apps returns it." },
@@ -148,7 +148,7 @@ function gateway(options: {
   let tools = options.tools ?? [LIST, PATCH, REMOVE];
   return {
     asked,
-    lists: () => asked.filter((entry) => entry.path === "/v1/cli/tools").length,
+    lists: () => asked.filter((entry) => entry.path === "/v2/cli/tools").length,
     publish(next: { revision: string; tools: CliTool[] }) {
       revision = next.revision;
       tools = next.tools;
@@ -157,13 +157,13 @@ function gateway(options: {
       request: async (_url: string, path: string, request: RequestOptions = {}) => {
         const method = request.method ?? "GET";
         asked.push({ path, method, ...(request.body === undefined ? {} : { body: request.body }), ...(request.key ? { key: request.key } : {}) });
-        if (options.offline) throw new CliError("connection_failed", "Could not reach the selected deployment.", "", 3);
-        if (path === "/v1/cli/tools") {
+        if (options.offline) throw new CliError("connection_failed", "Could not reach the selected gateway.", "", 3);
+        if (path === "/v2/cli/tools") {
           if (options.missing) throw new CliError("invalid_request", "Route not found", "", 3, { status: 404 });
           if (options.broken) throw new CliError("http_502", "Bad gateway", "", 3, { status: 502 });
           return { data: { revision, tools: [...(options.extra ?? []), ...tools] } };
         }
-        const call = /^\/v1\/cli\/tools\/([a-z_]+)$/u.exec(path);
+        const call = /^\/v2\/cli\/tools\/([a-z_]+)$/u.exec(path);
         if (call && method === "POST") {
           const sent = request.headers?.["agw-tool-guard"];
           const current = tools.find((tool) => tool.name === call[1]);
@@ -184,11 +184,12 @@ function gateway(options: {
         }
         throw new Error(`unexpected ${method} ${path}`);
       },
+      postForm: async () => assert.fail("no OAuth form is posted in these tests"),
     },
   };
 }
 
-const signedIn = () => ({ ...fresh(), active: { url: "https://gw.example", credential: "agw_mgmt_test", authenticated: true } });
+const signedIn = () => signedInState("https://gw.example", "agw_oat_test");
 
 async function run(argv: string[], fake: ReturnType<typeof gateway>, cache = new MemoryCatalogCache()) {
   let out = "";
@@ -211,7 +212,7 @@ test("a gateway command runs its tool with the management key and prints its sum
   assert.equal(human.code, 0, human.err);
   // The summary names tools as agents call them; a terminal reads the command.
   assert.equal(human.out, "Ran agw app list.\n\nID     Name     Status\napp-1  Example  active\n");
-  assert.equal(fake.asked.find((entry) => entry.method === "POST")?.key, "agw_mgmt_test");
+  assert.equal(fake.asked.find((entry) => entry.method === "POST")?.key, "agw_oat_test");
   const json = await run(["app", "list", "--json"], fake);
   assert.deepEqual(Object.keys(json.json()), ["schemaVersion", "ok", "context", "summary", "result"]);
   assert.deepEqual(json.json().result, { apps: [{ id: "app-1", name: "Example", status: "active" }] });
@@ -230,7 +231,7 @@ test("a deletion asks first: without a terminal only --yes goes ahead, and confi
 
 test("a required argument left out is named as it is typed, before anything is sent", async () => {
   const fake = gateway();
-  const result = await run(["app", "update", "--name", "x", "--json"], fake);
+  const result = await run(["app", "patch", "--name", "x", "--json"], fake);
   assert.equal(result.code, 2);
   assert.equal(result.json().error.code, "missing_value");
   assert.match(result.json().error.message, /<app>/);
@@ -303,7 +304,7 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   const kept = (await cache.read("https://gw.example"))!;
   await cache.write({ ...kept, fetchedAt: 0 });
   const unreachable = async (): Promise<never> => {
-    throw new CliError("connection_failed", "Could not reach the selected deployment.", "", 3);
+    throw new CliError("connection_failed", "Could not reach the selected gateway.", "", 3);
   };
   const list: CachedCatalog = await new ToolCatalog({ url: "https://gw.example", fetchList: unreachable }, cache).load();
   assert.equal(list.revision, "r1");
@@ -314,7 +315,7 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   );
   const old = await run(["app", "list", "--json"], gateway({ missing: true }), new MemoryCatalogCache());
   assert.equal(old.json().error.code, "gateway_outdated");
-  assert.match(old.json().error.nextAction, /agw deployment update/);
+  assert.match(old.json().error.nextAction, /agw deployment status/);
 });
 
 test("a command kept as needing a newer agw is looked up again before it is refused", async () => {
@@ -338,9 +339,10 @@ test("a result is written before the list is read again for a changed gateway", 
     store: { ...makeStore(), read: async () => signedIn() },
     transport: {
       request: async (url: string, path: string, options: RequestOptions = {}) => {
-        if (path === "/v1/cli/tools") order.push("list");
+        if (path === "/v2/cli/tools") order.push("list");
         return fake.transport.request(url, path, options);
       },
+      postForm: fake.transport.postForm,
     },
     stdout: { write: () => void order.push("output") },
     stderr: { write: () => {} },
@@ -363,8 +365,8 @@ test("a refusal by a changed guard that no newer list explains is not sent again
       throw new CliError("tool_changed", "patch_app has changed", "", 3, { status: 409 });
     }
     return fake.transport.request(url, path, options);
-  } } };
-  const result = await run(["app", "update", "app-1", "--name", "x", "--json"], refusing, cache);
+  }, postForm: fake.transport.postForm } };
+  const result = await run(["app", "patch", "app-1", "--name", "x", "--json"], refusing, cache);
   assert.equal(result.json().error.code, "tool_changed");
   assert.match(result.json().error.nextAction, /Nothing ran/);
   assert.equal(fake.asked.filter((entry) => entry.path.endsWith("patch_app")).length, 1);
@@ -374,7 +376,7 @@ test("help for a built-in group does not look the list up again when it is kept"
   const cache = new MemoryCatalogCache();
   const fake = gateway();
   await run(["app", "list"], fake, cache);
-  await run(["support", "--help"], fake, cache);
+  await run(["operation", "--help"], fake, cache);
   assert.equal(fake.lists(), 1);
 });
 
@@ -395,10 +397,10 @@ test("a flag the kept list does not know is looked up once on the gateway before
   await run(["app", "list"], fake, cache);
   const widened = { ...PATCH, inputSchema: { ...PATCH.inputSchema, properties: { ...(PATCH.inputSchema.properties as object), new_setting: { type: "string" } } } };
   fake.publish({ revision: "r2", tools: [LIST, widened, REMOVE] });
-  const changed = await run(["app", "update", "app-1", "--new-setting", "x", "--json"], fake, cache);
+  const changed = await run(["app", "patch", "app-1", "--new-setting", "x", "--json"], fake, cache);
   assert.equal(changed.code, 0, changed.out);
   assert.deepEqual(fake.asked.find((entry) => entry.method === "POST" && entry.path.endsWith("patch_app"))?.body, { app: "app-1", new_setting: "x" });
-  const unknown = await run(["app", "update", "app-1", "--nonsense", "x", "--json"], fake, cache);
+  const unknown = await run(["app", "patch", "app-1", "--nonsense", "x", "--json"], fake, cache);
   assert.equal(unknown.json().error.code, "unknown_flag");
 });
 
@@ -408,7 +410,7 @@ test("a newer description fetched for a flag is checked for what it needs, and r
   await run(["app", "list"], fake, cache);
   const widened = { ...PATCH, inputSchema: { ...PATCH.inputSchema, properties: { ...(PATCH.inputSchema.properties as object), new_setting: { type: "string" } } } };
   fake.publish({ revision: "r2", tools: [LIST, { ...widened, cli: { ...widened.cli, requires: ["teleport"] } }, REMOVE] });
-  const refused = await run(["app", "update", "app-1", "--new-setting", "x", "--json"], fake, cache);
+  const refused = await run(["app", "patch", "app-1", "--new-setting", "x", "--json"], fake, cache);
   assert.equal(refused.json().error.code, "cli_outdated");
   assert.equal(fake.asked.some((entry) => entry.method === "POST" && entry.path.endsWith("patch_app")), false);
 
@@ -418,7 +420,7 @@ test("a newer description fetched for a flag is checked for what it needs, and r
   next.publish({ revision: "r2", tools: [LIST, widened, REMOVE] });
   let reads = 0;
   let out = "";
-  const code = await main(["app", "update", "--input", "@-", "--new-setting", "x", "--json"], {
+  const code = await main(["app", "patch", "--input", "@-", "--new-setting", "x", "--json"], {
     store: { ...makeStore(), read: async () => signedIn() },
     transport: next.transport,
     stdout: { write: (text: string) => void (out += text) },
@@ -463,7 +465,7 @@ test("a command that has become destructive since the list was kept is asked abo
   const fake = gateway({ tools: [LIST, update] });
   await run(["app", "list"], fake, cache);
   fake.publish({ revision: "r2", tools: [LIST, destructive] });
-  const refused = await run(["app", "update", "app-1", "--name", "x", "--json"], fake, cache);
+  const refused = await run(["app", "patch", "app-1", "--name", "x", "--json"], fake, cache);
   assert.equal(refused.json().error.code, "confirmation_required");
   // One call, refused before it ran, and none after it.
   assert.equal(posts(fake).length, 1);
@@ -472,7 +474,7 @@ test("a command that has become destructive since the list was kept is asked abo
   const again = gateway({ tools: [LIST, update] });
   await run(["app", "list"], again, agreed);
   again.publish({ revision: "r2", tools: [LIST, destructive] });
-  const ran = await run(["app", "update", "app-1", "--name", "x", "--yes", "--json"], again, agreed);
+  const ran = await run(["app", "patch", "app-1", "--name", "x", "--yes", "--json"], again, agreed);
   assert.equal(ran.code, 0, ran.out);
   assert.deepEqual(posts(again).map((entry) => entry.body), [{ app: "app-1", name: "x" }, { app: "app-1", name: "x" }]);
 });
@@ -482,7 +484,7 @@ test("a command that has come to need a newer agw is refused by name, having run
   const fake = gateway({ tools: [LIST, { ...PATCH, guard: "g1" }] });
   await run(["app", "list"], fake, cache);
   fake.publish({ revision: "r2", tools: [LIST, { ...PATCH, guard: "g2", cli: { ...PATCH.cli, requires: ["teleport"] } }] });
-  const refused = await run(["app", "update", "app-1", "--name", "x", "--json"], fake, cache);
+  const refused = await run(["app", "patch", "app-1", "--name", "x", "--json"], fake, cache);
   assert.equal(refused.json().error.code, "cli_outdated");
 });
 
@@ -513,9 +515,9 @@ test("a gateway that fails to give its list leaves an old kept one in use", asyn
   const broken = gateway({ broken: true });
   // Listing fails, the kept list stands in, and the call itself still goes through.
   const result = await run(["app", "list"], { ...broken, transport: { request: async (url: string, path: string, options: RequestOptions = {}) => {
-    if (path === "/v1/cli/tools") return broken.transport.request(url, path, options);
+    if (path === "/v2/cli/tools") return broken.transport.request(url, path, options);
     return gateway().transport.request(url, path, options);
-  } } }, cache);
+  }, postForm: broken.transport.postForm } }, cache);
   assert.equal(result.code, 0, result.err);
 });
 
@@ -548,9 +550,9 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
   const all = await run(["--help"], fake);
   assert.match(all.out, /agw app list +list apps/);
   assert.match(all.out, /agw app add +Add an iOS or server app/);
-  const one = await run(["app", "update", "--help"], fake);
+  const one = await run(["app", "patch", "--help"], fake);
   assert.equal(one.code, 0);
-  assert.match(one.out, /^agw app update <app> \[flags\]\n/);
+  assert.match(one.out, /^agw app patch <app> \[flags\]\n/);
   assert.match(one.out, /\nShortcuts\n {2}--name <value>/);
   assert.match(one.out, /\n {2}--all-providers\n/);
   assert.match(one.out, /--providers <value>… +Repeat the flag, or separate values with commas\./);

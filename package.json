@@ -61,7 +61,11 @@
     "v2:test": "pnpm --filter @app-ai-gateway/gateway-v2 test",
     "v2:console:check": "pnpm --filter @app-ai-gateway/console-v2 typecheck",
     "v2:console:test": "pnpm --filter @app-ai-gateway/console-v2 test",
-    "v2:console:build": "pnpm --filter @app-ai-gateway/console-v2 build"
+    "v2:console:build": "pnpm --filter @app-ai-gateway/console-v2 build",
+    "v2:cli:check": "pnpm --filter @app-ai-gateway/agw-v2 check",
+    "v2:cli:test": "pnpm --filter @app-ai-gateway/agw-v2 test",
+    "v2:cli:build": "pnpm --filter @app-ai-gateway/agw-v2 build",
+    "v2:cli:dev": "node v2/cli/scripts/dev.mjs"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.16",

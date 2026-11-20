@@ -1,50 +1,37 @@
-import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+/**
+ * One command's view of this machine and the selected gateway: the stored
+ * connection, the credential every request carries, and signing in and out.
+ */
 import { spawn } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
-import type {
-  CliAccountResponse,
-  CliCapabilitiesResponse,
-  CliCredential,
-  CliDeployment,
-  CliLogin,
-  CliOperation,
-  CliOperationPayload,
-  CliOperationRequestInput,
-  CliRequestedOperationKind,
-} from "../../src/contracts/cli.ts";
-import type { CreatedApiKey, OrganizationSummary } from "../../src/contracts/responses.ts";
+import { randomBytes } from "node:crypto";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { GatewayClient, type CallOptions, type CallResult, type OperationName } from "./client.ts";
-import { CliError, CLOUD, fail, MANAGEMENT_KEY_ENV, origin, randomToken, VERSION } from "./common.ts";
-import { secret } from "./input.ts";
-import { browserAvailable, clientDescription, listenLoopback, type Loopback } from "./login.ts";
+import { CLOUD, fail, MANAGEMENT_KEY_ENV, origin, VERSION } from "./common.ts";
+import { browserAvailable, listenLoopback, type Loopback } from "./login.ts";
 import type { OutputSink } from "./main.ts";
+import {
+  authorizeUrl,
+  deviceLogin,
+  discover,
+  exchangeCode,
+  pkce,
+  refresh,
+  revoke,
+  type DeviceClock,
+  type DevicePrompt,
+  type OAuthServer,
+  type OAuthTransport,
+} from "./oauth.ts";
 import type { Flags } from "./parser.ts";
+import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
-import { releaseOutput } from "./state.ts";
-import type {
-  ActiveConnection,
-  CliState,
-  OperationRecord,
-  ReservedOutput,
-  StateStore,
-  StoredKeyMetadata,
-} from "./state.ts";
-import type { Transport } from "./transport.ts";
 
 export type { CallOptions, CallResult, OperationName };
 
-/** How long a browser login is waited for, as every other browser step is. */
-const LOGIN_TIMEOUT_SECONDS = 300;
-/** How long a pending login's record is worth keeping; the deployment keeps one 15 minutes. */
-const LOGIN_RECORD_MS = 3_600_000;
-/**
- * How long an approved loopback login waits for its browser to come back. The
- * page navigates the moment it is approved, so this only runs out when it was
- * approved somewhere that cannot reach this machine.
- */
-const LOOPBACK_GRACE_MS = 10_000;
+/** How long a browser sign-in is waited for. */
+const LOGIN_TIMEOUT_MS = 300_000;
+/** An access token this close to its end is renewed before it is sent. */
+const RENEW_EARLY_MS = 60_000;
 
 /** What the context reaches outside itself for; replaced in tests. */
 export interface ContextIo {
@@ -53,8 +40,10 @@ export interface ContextIo {
   openBrowser(url: string): Promise<boolean>;
   /** Whether a browser opened here would be in front of the person at this terminal. */
   browserAvailable(): boolean;
-  listen(): Promise<Loopback>;
+  listen(state: string): Promise<Loopback>;
   env: Record<string, string | undefined>;
+  /** The device flow's clock, and the clock tokens expire by. */
+  clock: DeviceClock;
 }
 
 const defaultIo = (): ContextIo => ({
@@ -63,40 +52,11 @@ const defaultIo = (): ContextIo => ({
   browserAvailable: () => browserAvailable(),
   listen: listenLoopback,
   env: process.env,
+  clock: { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
 });
 
-/** What `account login` and `deployment connect` answer with once signed in. */
-export type LoginResult = CliAccountResponse & { connected: true };
-
-/** What `account logout` answers with. */
-export interface LogoutResult {
-  loggedOut: true;
-  /** Whether the deployment revoked the key this call removed. */
-  revoked: boolean;
-}
-
-/** The subset of a state store the context writes through; real one in `state.ts`. */
-export type ContextStore = Pick<
-  StateStore,
-  "write" | "reserve" | "directory" | "keyOutput" | "vaultKey"
->;
-
-/** The operations that mint an application key, which the CLI stores in a file of its own. */
-export type KeyOperationKind = "app.add" | "app.key.add";
-const KEY_OPERATION_KINDS: ReadonlySet<string> = new Set<KeyOperationKind>(["app.add", "app.key.add"]);
-
-/**
- * How long a deployment keeps an operation it ran at once. A record older than
- * this may name a row that is gone, and resending its token would then repeat
- * work that already landed rather than recover it.
- */
-const OPERATION_RETENTION_MS = 90 * 86_400_000;
-
-/** A key-minting operation once its key is safely in its output file. */
-export interface KeyedOperation {
-  operation: CliOperation;
-  key: StoredKeyMetadata;
-}
+/** The subset of a state store the context uses; the real one is `state.ts`. */
+export type ContextStore = Pick<StateStore, "update" | "keyOutput">;
 
 /**
  * Something a command wants the person running it to know without it being
@@ -104,16 +64,12 @@ export interface KeyedOperation {
  * `--json` envelope as `notices`.
  */
 export interface Notice {
-  code: "newer_deployment" | "unknown_settings_replaced" | "version_mismatch";
+  code: "newer_gateway";
   message: string;
-  /** Where in the documents involved the notice applies, for the notices about settings. */
+  /** Where in the documents involved the notice applies. */
   paths?: string[];
-  /** The two releases, for `version_mismatch`. */
-  cliVersion?: string;
-  apiVersion?: string;
 }
 
-/** At most this many paths are named on a terminal; `--json` carries all of them. */
 const NOTICE_PATHS = 5;
 
 /** A notice as a terminal shows it: the message, then the settings it names. */
@@ -124,101 +80,42 @@ export function noticeText(notice: Notice, style: Pick<ReturnType<typeof styleFo
   return `${style.warn(`Note: ${notice.message}`)}\n${paths.length ? `${style.dim(`  Settings: ${shown}${more}`)}\n` : ""}`;
 }
 
-export interface Onboarding {
-  account: OrganizationSummary;
-  unclaimedAccess: { endsAt: string; limit?: number } | null;
-  deployment: CliDeployment;
+/** What `account login` and `deployment connect` answer with. */
+export interface LoginResult {
+  connected: true;
+  url: string;
+  /** How this CLI is signed in: its own OAuth sign-in, or the environment's key. */
+  credential: "oauth" | "environment";
+  user: { id: string; email: string | null; name: string | null };
+  account: { id: string; name: string };
+  role: string;
+  grant: string;
 }
 
-/** Refused now, but the same request may still be accepted later. */
-const RETRYABLE_STATUS = new Set([408, 425, 429]);
-
-/**
- * Refused by an operation the deployment already holds under this token, which
- * the local record must not outlive: a request that differs from the one the
- * token is bound to.
- */
-const OPERATION_BOUND_STATUS = new Set([409, 410]);
-
-/**
- * Whether a refusal settles the request for good, so its local record has
- * nothing left to protect.
- *
- * A record is written before the request is sent, which is what lets a lost
- * response be retried under the same token instead of repeating the work. But
- * a deployment that refuses an operation outright — an unacceptable field, a
- * duplicate slug, an expired account — wrote nothing, so there is nothing to
- * recover, and keeping the record would only make the identical command send
- * the refused token again.
- *
- * Deliberately not every 4xx: a rate limit is the same request arriving too
- * soon, and the operation-bound statuses mean the deployment does hold a record
- * this token is the key to.
- */
-function definitiveRefusal(error: unknown): boolean {
-  if (!(error instanceof CliError)) return false;
-  const status = error.details?.status;
-  return (
-    typeof status === "number" &&
-    status >= 400 &&
-    status < 500 &&
-    !RETRYABLE_STATUS.has(status) &&
-    !OPERATION_BOUND_STATUS.has(status)
-  );
-}
-
-/** The id the deployment gives the operation a token proves: `op:` and the token's digest. */
-export function operationIdFor(token: string): string {
-  return `op:${createHash("sha256").update(token).digest("hex")}`;
-}
-
-/** What `select` takes out of a completed bootstrap. */
-export function bootstrapCredential(operation: CliOperation): SelectedCredential {
-  const credential = operation.result?.credential;
-  if (!credential || !operation.account)
-    fail(
-      "invalid_response",
-      "The bootstrap did not return its account and management access.",
-      "Run the same command again; it will not create another account.",
-      3,
-    );
-  return { credential, account: operation.account, deployment: operation.deployment };
-}
-
-/** The credential exchange both `bootstrap` and `login` end with. */
-interface SelectedCredential {
-  credential: CliCredential;
-  account: OrganizationSummary;
-  deployment: CliDeployment;
+export interface LogoutResult {
+  loggedOut: true;
+  /** Whether the gateway accepted the revocation; the sign-in is forgotten here either way. */
+  revoked: boolean;
 }
 
 export class Context {
   readonly store: ContextStore;
-  readonly state: CliState;
-  /** Every request this context sends goes through it. */
+  state: CliState;
   readonly client: GatewayClient;
+  readonly transport: OAuthTransport;
   readonly flags: Flags;
   readonly io: ContextIo;
-  /** Operations whose result this run has printed, released once stdout has taken it. */
-  readonly delivered = new Set<string>();
-  /** What this run has noticed along the way, in the order it was noticed. */
   readonly notices: Notice[] = [];
-  onboarding?: Onboarding;
 
-  constructor(
-    store: ContextStore,
-    state: CliState,
-    transport: Pick<Transport, "request">,
-    flags: Flags,
-    io: Partial<ContextIo> = {},
-  ) {
+  constructor(store: ContextStore, state: CliState, transport: OAuthTransport, flags: Flags, io: Partial<ContextIo> = {}) {
     this.store = store;
     this.state = state;
+    this.transport = transport;
     this.flags = flags;
     this.io = { ...defaultIo(), ...io };
     this.client = new GatewayClient(transport, {
       url: () => this.url,
-      managementKey: () => this.managementKey,
+      credential: () => this.credential(),
       environmentKey: () => this.environmentKey,
     });
   }
@@ -238,60 +135,70 @@ export class Context {
   }
 
   /**
-   * The management credential every call is sent with: the environment's, which
-   * always wins, or the one the selected connection stored.
+   * The credential every call carries: the environment's key, which always
+   * wins, or the stored sign-in's access token, renewed first when it is
+   * about to expire.
    */
-  get managementKey(): string | undefined {
-    return this.environmentKey ?? this.active?.credential;
+  async credential(): Promise<string | undefined> {
+    if (this.environmentKey) return this.environmentKey;
+    const login = this.active?.login;
+    if (!login) return undefined;
+    if (Date.parse(login.expiresAt) - this.io.clock.now() > RENEW_EARLY_MS) return login.accessToken;
+    return this.renew(login);
   }
 
-  /** Refuses a command that would store a key the environment would then override. */
-  private assertNoEnvironmentKey(): void {
-    if (this.environmentKey)
-      fail(
-        "environment_credential",
-        `${MANAGEMENT_KEY_ENV} is set, so it is the credential for every command and a stored login would never be used.`,
-        `Unset ${MANAGEMENT_KEY_ENV} to log in, or keep using it as is.`,
-        4,
-      );
+  /**
+   * Renews the access token under the state lock. Another command may have
+   * renewed it meanwhile: then its new token is used, and the one-use refresh
+   * token this command holds is never presented again.
+   */
+  private async renew(stale: OAuthLogin): Promise<string> {
+    const url = this.url;
+    const { state, result } = await this.store.update(async (disk) => {
+      const current = disk.active?.url === url ? disk.active.login : undefined;
+      if (!current) return null;
+      if (current.refreshToken !== stale.refreshToken && Date.parse(current.expiresAt) - this.io.clock.now() > RENEW_EARLY_MS)
+        return current.accessToken;
+      const renewed = await refresh(this.transport, url, current, () => this.io.clock.now());
+      if (!renewed) {
+        // Revoked, expired or already used: nothing it holds works any more.
+        delete disk.active!.login;
+        return null;
+      }
+      disk.active!.login = renewed;
+      return renewed.accessToken;
+    });
+    this.state = state;
+    if (result === null)
+      fail("login_required", "This CLI's sign-in has ended.", `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`, 4);
+    return result;
   }
 
-  async save(): Promise<void> {
-    await this.store.write(this.state);
-  }
-
-  /** One documented operation, sent with only the credential `options` names; see {@link GatewayClient}. */
-  async publicCall<K extends OperationName>(
-    name: K,
-    options: CallOptions<K> = {},
-  ): Promise<CallResult<OperationResponse<K>>> {
+  /** One documented operation, sent with only the credential `options` names. */
+  async publicCall<K extends OperationName>(name: K, options: CallOptions<K> = {}): Promise<CallResult<OperationResponse<K>>> {
     return this.noticed(await this.client.publicCall(name, options));
   }
 
-  /** The same call, with the connection's management credential attached. */
-  async call<K extends OperationName>(
-    name: K,
-    options: CallOptions<K> = {},
-  ): Promise<CallResult<OperationResponse<K>>> {
+  /** The same call, with the selected credential attached. */
+  async call<K extends OperationName>(name: K, options: CallOptions<K> = {}): Promise<CallResult<OperationResponse<K>>> {
     return this.noticed(await this.client.call(name, options));
   }
 
   /**
-   * Says, once per run, that the deployment answered with settings this
-   * release does not know. Every later answer that does adds its paths to the
-   * same notice rather than repeating it.
+   * Says, once per run, that the gateway answered with settings this release
+   * does not know. Later answers add their paths to the same notice.
    */
   private noticed<T>(result: CallResult<T>): CallResult<T> {
     if (!result.newer?.length) return result;
-    const existing = this.notices.find((notice) => notice.code === "newer_deployment");
+    const existing = this.notices.find((notice) => notice.code === "newer_gateway");
     if (existing) {
       const paths = (existing.paths ??= []);
       for (const path of result.newer) if (!paths.includes(path)) paths.push(path);
       return result;
     }
     this.notice({
-      code: "newer_deployment",
-      message: `This deployment is newer than agw ${VERSION} and has settings this agw does not understand. They are kept unchanged when agw saves, but are not explained or checked. Update agw: npm install -g @maxceem/agw`,
+      code: "newer_gateway",
+      message: `This gateway is newer than agw ${VERSION} and has settings this agw does not understand. They are kept unchanged when agw saves, but are not explained or checked. Update agw: npm install -g @maxceem/agw`,
       paths: [...result.newer],
     });
     return result;
@@ -304,733 +211,165 @@ export class Context {
     this.io.stderr.write(noticeText(notice, styleFor(this.io.stderr)));
   }
 
-  /**
-   * The record for one operation: the one an identical earlier command left,
-   * or a new one with a fresh token, written before anything is sent.
-   *
-   * Reserved rather than written: an identical command running beside this
-   * one must join this record, not send the same work under a second token.
-   */
-  private async reserveOperation(
-    kind: string,
-    payload: unknown,
-    url: string,
-  ): Promise<[string, OperationRecord]> {
-    const accountId = kind === "bootstrap" ? null : this.active?.account?.id ?? null;
-    const requestHash = createHash("sha256")
-      .update(JSON.stringify({ url, kind, payload }))
-      .digest("hex");
-    return this.store.reserve(
-      this.state,
-      (state) => Object.entries(state.operations).find(
-        ([, record]) =>
-          record.requestHash === requestHash && record.url === url && record.accountId === accountId,
-      ),
-      (state) => {
-        const token = randomToken();
-        const record: OperationRecord = {
-          url,
-          token,
-          kind,
-          requestHash,
-          accountId,
-          createdAt: new Date().toISOString(),
-        };
-        const id = operationIdFor(token);
-        state.operations[id] = record;
-        return [id, record];
-      },
-    );
+  /** A line for the person at the terminal, on stderr whatever the output mode. */
+  say(line: string): void {
+    this.io.stderr.write(line + "\n");
   }
 
-  /** Drops a record and persists that, best effort: the command is failing either way. */
-  private async forget(id: string): Promise<void> {
-    delete this.state.operations[id];
-    await this.save().catch(() => {});
-  }
-
-  /**
-   * Refuses to resend a record the deployment may no longer remember. The record
-   * is dropped, so running the command again, once its effect has been checked,
-   * sends it as a new operation — a decision the person makes, not the retry.
-   */
-  private async assertRecoverable(id: string, record: OperationRecord): Promise<void> {
-    if (!(Date.now() - Date.parse(record.createdAt) > OPERATION_RETENTION_MS)) return;
-    await this.forget(id);
-    fail(
-      "operation_retry_expired",
-      "This unfinished operation is older than the 90-day retry window, so resending it could repeat it.",
-      "Check whether it took effect; run the command again to send it as a new operation.",
-      4,
-      { id },
-    );
-  }
-
-  /** Sends a reserved operation, dropping its record if the deployment refused it for good. */
-  private async send<T>(id: string, request: () => Promise<T>): Promise<T> {
-    try {
-      return await request();
-    } catch (error) {
-      if (definitiveRefusal(error)) await this.forget(id);
-      throw error;
-    }
-  }
-
-  /**
-   * Sends one operation, or recovers the one an identical earlier command sent.
-   *
-   * An operation with no browser step answers completed, and its record is
-   * released once the command has printed it. One that owes a browser step
-   * opens the approval page and waits for it, unless the command was asked not
-   * to, in which case it answers pending with the URL and the id to resume.
-   */
-  async operation<Kind extends CliRequestedOperationKind>(
-    kind: Kind,
-    payload: CliOperationPayload<Kind>,
-    { browser = false, url = this.url }: { browser?: boolean; url?: string } = {},
-  ): Promise<CliOperation> {
-    if (!this.managementKey)
-      fail(
-        "login_required",
-        "This operation requires account management access.",
-        `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`,
-        4,
-      );
-    const target = origin(url);
-    const [id, record] = await this.reserveOperation(kind, payload, target);
-    await this.assertRecoverable(id, record);
-    const data = await this.send(id, async () => (await this.publicCall("createCliOperation", {
-      // One member of the per-kind union: `payload` was typed by `kind` above,
-      // which is the correlation the compiler cannot follow through a generic.
-      body: { kind, payload, token: record.token, ...(browser ? { browser: true } : {}) } as CliOperationRequestInput,
-      url: target,
-      key: this.managementKey,
-    })).data);
-    if (data.state === "expired") {
-      await this.forget(id);
-      expired(data);
-    }
-    if (data.state !== "pending" || !data.url) {
-      if (data.state === "completed") this.delivered.add(id);
-      return data;
-    }
-    const { data: capabilities } = await this.publicCall("getCliCapabilities", { url: target });
-    assertTrustedApprovalUrl(data.url, capabilities, target);
-    if (!this.flags["no-open"] && !(await this.io.openBrowser(data.url)))
-      this.io.stderr.write("Browser could not open. Use the returned handoff URL.\n");
-    if (this.flags["no-open"] || this.flags.json || this.flags["no-input"]) return data;
-    this.io.stderr.write(`Complete the browser step: ${data.url}\nOperation: ${data.id}\n`);
-    return this.wait(data.id, 300);
-  }
-
-  /**
-   * One operation that mints an application key, with the key written to a
-   * file before anything is printed.
-   *
-   * The output is reserved and recorded before the operation is sent, so a
-   * command that dies after the deployment answered finishes the same file on
-   * its next run: the deployment still holds the key sealed for fifteen
-   * minutes, and answers the same token with it rather than minting another.
-   * Once the file holds the key, the record keeps only its metadata.
-   */
-  async keyOperation<Kind extends KeyOperationKind>(
-    kind: Kind,
-    payload: CliOperationPayload<Kind>,
-    requestedPath: string | undefined,
-  ): Promise<KeyedOperation> {
-    if (!this.managementKey)
-      fail(
-        "login_required",
-        "The selected connection is not authenticated.",
-        `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`,
-        4,
-      );
-    const target = origin(this.url);
-    const [id, record] = await this.reserveOperation(kind, payload, target);
-    const chosen = requestedPath ? resolve(requestedPath) : record.output?.path;
-    if (record.completedAt && chosen !== record.output?.path)
-      fail(
-        "output_changed",
-        "A completed key creation cannot move its output.",
-        "Copy the protected existing file, or create a replacement with a new key name.",
-        4,
-      );
-    const output = await this.store.keyOutput(chosen, {
-      reservation: chosen && chosen === record.output?.path ? record.output : undefined,
-      retain: true,
-    });
-    try {
-      if (record.completedAt && record.keyMetadata) {
-        if (record.keyMetadata.contentHash !== (await output.contentHash()))
-          fail(
-            "output_changed",
-            "The completed key output is missing or changed.",
-            "Use app key add with a new name to generate a replacement; this creation will not be repeated.",
-            4,
-          );
-        this.delivered.add(id);
-        return { operation: record.result as CliOperation, key: record.keyMetadata };
-      }
-      await this.assertRecoverable(id, record);
-      record.output = output.reservation;
-      await this.save();
-      const operation = await this.send(id, async () => (await this.publicCall("createCliOperation", {
-        body: { kind, payload, token: record.token } as CliOperationRequestInput,
-        url: target,
-        key: this.managementKey,
-      })).data);
-      const minted = operation.result?.api_key;
-      const appId = operation.result?.app?.id ?? (payload as { app?: string }).app ?? "";
-      if (operation.state !== "completed" || !minted)
-        fail("invalid_response", "The server did not return the generated application key.", "Inspect the app key list before retrying.", 3);
-      const { key: plaintext, ...redacted } = minted;
-      if (!plaintext) {
-        // Nothing is left to recover: the deployment no longer holds the key.
-        await this.forget(id);
-        fail(
-          "key_recovery_expired",
-          "This key was created, but it can no longer be recovered: its one-time recovery window ended or it was revoked.",
-          "Inspect the resource and revoke or replace its key explicitly.",
-          4,
-          { appId, keyId: minted.id },
-        );
-      }
-      const key = await storeKey({ ...redacted, key: plaintext }, output, appId);
-      record.keyMetadata = key;
-      record.result = { ...operation, result: { ...operation.result, api_key: redacted } };
-      record.completedAt = new Date().toISOString();
-      await this.save();
-      this.delivered.add(id);
-      return { operation: record.result as CliOperation, key };
-    } finally {
-      await output.cancel();
-      // The record this file was reserved for is gone, so the operation was
-      // refused outright and the reservation holds nothing.
-      if (!this.state.operations[id]) await releaseOutput(output.reservation);
-    }
-  }
-
-  /** Releases the records of every operation this run has printed. */
-  async acknowledgeOutput(): Promise<void> {
-    if (!this.delivered.size) return;
-    const released = [...this.delivered].flatMap((id) => {
-      const record = this.state.operations[id];
-      return record ? [[id, record] as const] : [];
-    });
-    for (const [id] of released) delete this.state.operations[id];
-    try {
-      await this.save();
-    } catch {
-      // Kept, so a command whose output could not be acknowledged still finds
-      // its operation next time rather than sending it again.
-      for (const [id, record] of released) this.state.operations[id] = record;
-    }
-  }
-
-  async bootstrap(): Promise<void> {
-    if (this.managementKey) return;
-    if (this.active)
-      fail(
-        "login_required",
-        "This connection has prior account state; it cannot create another account.",
-        "Run agw account login.",
-        4,
-      );
-    const [id, record] = await this.reserveOperation("bootstrap", {}, CLOUD);
-    // Another command started beside this one may have finished the same
-    // bootstrap while this one waited for the lock, and reserving adopted its
-    // connection.
-    if ((this.state.active as ActiveConnection | null)?.credential) return;
-    const data = await this.send(id, async () => (await this.publicCall("bootstrapCliAccount", {
-      body: { token: record.token },
-      url: CLOUD,
-    })).data);
-    const selected = bootstrapCredential(data);
-    await this.select(CLOUD, selected);
-    this.onboarding = {
-      account: selected.account,
-      unclaimedAccess: data.result?.unclaimedAccess ?? null,
-      deployment: selected.deployment,
-    };
-    delete this.state.operations[id];
-    await this.save();
-  }
-
-  async select(url: string, data: SelectedCredential): Promise<void> {
-    if (!data.credential.token)
-      fail(
-        "invalid_response",
-        "Credential exchange did not return management access.",
-        "Run the same command again; do not create another account.",
-        3,
-      );
-    if (!data.account.id || !data.deployment.id)
-      fail(
-        "invalid_response",
-        "Credential exchange did not identify its account and deployment.",
-      );
-    this.state.active = {
-      url: origin(url),
-      credential: data.credential.token,
-      account: data.account,
-      deployment: data.deployment,
-      authenticated: true,
-    };
-    await this.save();
-  }
-
-  /** `account login --key-stdin` or `--key-prompt`: a management key a person already holds. */
-  async keyLogin(url: string = this.url): Promise<LoginResult> {
-    this.assertNoEnvironmentKey();
-    const token = await secret(this.flags, "Management API key");
-    if (!token)
-      fail("input_required", "A management API key is required.", "Supply it with --key-stdin.");
-    const { data } = await this.publicCall("getCliAccount", { key: token, url });
-    await this.select(url, { ...data, credential: { token } });
-    return { connected: true, ...data };
-  }
-
-  /**
-   * `deployment connect` while `AGW_MANAGEMENT_KEY` is set: selects the
-   * deployment the key is checked against, and stores no key of its own.
-   */
-  async connectWithEnvironment(url: string): Promise<LoginResult> {
-    const key = this.environmentKey!;
-    const target = origin(url);
-    const { data } = await this.publicCall("getCliAccount", { key, url: target });
-    this.state.active = {
-      url: target,
-      account: data.account,
-      deployment: data.deployment,
-      authenticated: false,
-    };
-    await this.save();
-    this.io.stderr.write(
-      `${MANAGEMENT_KEY_ENV} is set, so it stays the credential for every command; no key was stored.\n`,
-    );
-    return { connected: true, ...data };
-  }
-
-  /**
-   * `account login`: a person approves this CLI in a browser, and it receives
-   * a management key of its own, stored exactly as a pasted one is.
-   *
-   * The login is recorded like every other operation before it is opened, so
-   * one left waiting — by `--json`, `--no-input`, a timeout — is finished by
-   * `agw operation wait`. When this process is going to wait and a browser on
-   * this machine is in front of the person, it also listens on `127.0.0.1`,
-   * and the approval page hands the browser back to it with a one-time code;
-   * the key is then released only for that code and never to a poll.
-   * Otherwise — `--no-open`, SSH, no display, nobody at the terminal — the
-   * approval may happen on any device, so nothing listens and the key is
-   * polled for. A browser that turns out not to open is the same case, found
-   * late: that login is abandoned for one that is polled.
-   */
-  async browserLogin(url: string = this.url): Promise<LoginResult | CliLogin> {
-    this.assertNoEnvironmentKey();
-    const target = origin(url);
-    const { data: capabilities } = await this.publicCall("getCliCapabilities", { url: target });
-    if (!capabilities.features?.browserLogin)
-      fail(
-        "browser_login_unsupported",
-        "This deployment does not offer browser login.",
-        "Update the deployment, or pipe a management key to agw account login --key-stdin.",
-        3,
-      );
-    const opens = !this.flags["no-open"] && this.io.browserAvailable();
-    const detached = Boolean(this.flags.json || this.flags["no-input"]);
-    if (detached) {
-      const { login } = await this.openLogin(target, capabilities, null);
-      if (opens && !(await this.io.openBrowser(login.url)))
-        this.io.stderr.write("Browser could not open. Use the returned URL.\n");
-      return login;
-    }
-    let loopback = opens ? await this.io.listen() : null;
-    try {
-      let opened = await this.openLogin(target, capabilities, loopback);
-      if (loopback && !(await this.io.openBrowser(opened.login.url))) {
-        // Nothing but a browser on this machine could finish that login, so it
-        // is left to expire and one that can be approved anywhere replaces it.
-        await loopback.close();
-        loopback = null;
-        await this.forget(opened.id);
-        this.io.stderr.write(
-          "The browser could not be opened, so the approval will be collected by polling.\n",
-        );
-        opened = await this.openLogin(target, capabilities, null);
-      }
-      const { id, token, login } = opened;
-      const style = styleFor(this.io.stderr);
-      this.io.stderr.write(
-        [
-          ...(login.userCode
-            ? [
-                `Pairing code: ${style.headline(login.userCode)}`,
-                "Check that your browser shows this same code before you approve.",
-              ]
-            : []),
-          `Approve at: ${login.url}`,
-          "",
-        ].join("\n"),
-      );
-      if (loopback) {
-        try {
-          await this.collectLoopbackLogin(id, token, target, capabilities, loopback);
-        } finally {
-          // Only this process could ever finish a loopback login: nothing a
-          // later command could poll would carry its key.
-          if (this.state.operations[id]) await this.forget(id);
-        }
-      } else await this.wait(id, LOGIN_TIMEOUT_SECONDS);
-      const { data } = await this.call("getCliAccount", { url: target });
-      return { connected: true, ...data };
-    } finally {
-      await loopback?.close();
-    }
-  }
-
-  /** Records and opens one login, refusing one that is not pending on the trusted console. */
-  private async openLogin(
-    target: string,
-    capabilities: CliCapabilitiesResponse,
-    loopback: Loopback | null,
-  ): Promise<{ id: string; token: string; login: CliLogin & { url: string } }> {
-    const token = randomToken();
-    const id = operationIdFor(token);
-    await this.recordLogin(id, token, target);
-    const { data: login } = await this.send(id, () => this.publicCall("openCliLogin", {
-      body: {
-        token,
-        client: clientDescription(),
-        ...(loopback ? { loopbackRedirect: loopback.redirect } : {}),
-      },
-      url: target,
-    }));
-    if (login.state !== "pending" || !login.url) {
-      await this.forget(id);
-      expired({
-        id,
-        state: "expired",
-        expiresAt: login.expiresAt,
-        ...(login.state === "denied" ? { denied: true as const } : {}),
-      });
-    }
-    assertTrustedApprovalUrl(login.url, capabilities, target);
-    return { id, token, login: { ...login, url: login.url } };
-  }
-
-  /** Writes a login's record before it is opened, and drops logins long since expired. */
-  private async recordLogin(id: string, token: string, url: string): Promise<void> {
-    const now = Date.now();
-    for (const [key, record] of Object.entries(this.state.operations))
-      if (record.kind === "login" && now - Date.parse(record.createdAt) > LOGIN_RECORD_MS)
-        delete this.state.operations[key];
-    this.state.operations[id] = {
-      url,
-      token,
-      kind: "login",
-      // Never matched: every login is a new one, since a listener's port is.
-      requestHash: createHash("sha256").update(id).digest("hex"),
-      accountId: null,
-      createdAt: new Date(now).toISOString(),
-    };
-    await this.save();
-  }
-
-  /**
-   * Waits for the approval page to send the browser back with the redeem code,
-   * and redeems it. Polls meanwhile, since a declined or expired login never
-   * comes back to the listener.
-   */
-  private async collectLoopbackLogin(
-    id: string,
-    token: string,
-    url: string,
-    capabilities: CliCapabilitiesResponse,
-    loopback: Loopback,
-  ): Promise<void> {
-    let code: string | undefined;
-    const arrived = loopback.code.then((value) => {
-      code = value;
-    });
-    const end = Date.now() + LOGIN_TIMEOUT_SECONDS * 1000;
-    let approvedAt: number | undefined;
-    while (code === undefined) {
-      const { data: status } = await this.publicCall("pollCliOperation", {
-        params: { id },
-        key: token,
-        url,
-      });
-      if (code !== undefined) break;
-      if (status.state === "expired") {
-        await this.forget(id);
-        expired(status);
-      }
-      if (status.state === "completed") {
-        approvedAt ??= Date.now();
-        if (Date.now() - approvedAt > LOOPBACK_GRACE_MS) {
-          await this.forget(id);
-          fail(
-            "login_not_delivered",
-            "The login was approved, but the browser never came back to this terminal.",
-            "Run agw account login --no-open to approve it from another device, or run agw account login again here.",
-            3,
-            { id },
-          );
-        }
-      }
-      if (Date.now() >= end) {
-        await this.forget(id);
-        fail(
-          "wait_timeout",
-          "The login was not approved in time.",
-          "Run agw account login again.",
-          5,
-          { id, state: status.state, expiresAt: status.expiresAt },
-        );
-      }
-      await Promise.race([delay(Math.min(1500, Math.max(0, end - Date.now()))), arrived]);
-    }
-    try {
-      const { data } = await this.publicCall("redeemCliLogin", {
-        params: { id },
-        body: { redeemCode: code },
-        key: token,
-        url,
-      });
-      await this.select(url, { ...data, deployment: capabilities.deployment });
-      delete this.state.operations[id];
-      await this.save();
-      loopback.answer(true);
-    } catch (error) {
-      loopback.answer(false);
-      throw error;
-    }
-  }
-
-  /**
-   * `account logout`: the deployment revokes the stored key, then this machine
-   * forgets it. A key the deployment no longer accepts is already as good as
-   * revoked; any other failure still removes it here, and says so, because a
-   * machine must always be able to sign out.
-   */
-  async logout(): Promise<LogoutResult> {
-    const active = this.active;
-    const key = active?.credential;
-    let revoked = false;
-    if (active && key) {
-      try {
-        await this.publicCall("revokeCliCredential", { key, url: active.url });
-        revoked = true;
-      } catch (error) {
-        const status = error instanceof CliError ? error.details?.status : undefined;
-        if (status !== 401)
-          this.io.stderr.write(
-            `The key could not be revoked (${error instanceof Error ? error.message : "unknown error"}). ` +
-              "It was removed from this machine; revoke it on the console's keys page.\n",
-          );
-      }
-    }
-    if (active) {
-      delete active.credential;
-      active.authenticated = false;
-      await this.save();
-    }
+  /** Refuses a sign-in the environment's key would override on every command. */
+  private assertNoEnvironmentKey(): void {
     if (this.environmentKey)
-      this.io.stderr.write(
-        `${MANAGEMENT_KEY_ENV} is still set, so it stays the credential for every command; unset it to sign out completely.\n`,
+      fail(
+        "environment_credential",
+        `${MANAGEMENT_KEY_ENV} is set, so it is the credential for every command and a stored sign-in would never be used.`,
+        `Unset ${MANAGEMENT_KEY_ENV} to sign in, or keep using it as it is.`,
+        4,
       );
+  }
+
+  /** Who the credential is, as the gateway says. */
+  private async whoAmI(url: string, key: string): Promise<Omit<LoginResult, "connected" | "url" | "credential">> {
+    const { data } = await this.publicCall("getAdminSession", { url, key });
+    const { user, account, role, grant } = data.session;
+    return { user: { id: user.id, email: user.email, name: user.name }, account, role, grant };
+  }
+
+  /**
+   * `account login`: signs this CLI in to `url` through the gateway's OAuth
+   * server, and stores the sign-in. A browser on this machine is used when
+   * there is one; otherwise, or with `--device`, a link and a short code that
+   * any browser can approve.
+   */
+  async login(url: string = this.url): Promise<LoginResult> {
+    this.assertNoEnvironmentKey();
+    const target = origin(url);
+    const server = await discover(this.transport, target);
+    const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
+    const login = useBrowser ? await this.browserLogin(target, server) : await this.deviceSignIn(target, server);
+    const who = await this.whoAmI(target, login.accessToken);
+    const { state } = await this.store.update((disk) => {
+      disk.active = { url: target, login, account: who.account };
+    });
+    this.state = state;
+    return { connected: true, url: target, credential: "oauth", ...who };
+  }
+
+  /** The authorization code with PKCE, back to a listener on this machine. */
+  private async browserLogin(url: string, server: OAuthServer): Promise<OAuthLogin> {
+    const { verifier, challenge } = pkce();
+    const state = randomBytes(24).toString("base64url");
+    const loopback = await this.io.listen(state);
+    try {
+      const address = authorizeUrl(url, server, { redirect: loopback.redirect, challenge, state, grant: "manage" });
+      if (!(await this.io.openBrowser(address))) {
+        // Only a browser here could finish this one, so a code takes its place.
+        this.say("The browser could not be opened, so sign in with a code instead.");
+        await loopback.close();
+        return await this.deviceSignIn(url, server);
+      }
+      this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("timeout")),
+          LOGIN_TIMEOUT_MS,
+        );
+        timer.unref();
+      });
+      let answer;
+      try {
+        answer = await Promise.race([loopback.callback, timeout]);
+      } catch {
+        fail("login_expired", "The sign-in was not approved in time.", "Run agw account login again, or add --device to sign in with a code.", 4);
+      } finally {
+        clearTimeout(timer);
+      }
+      if ("error" in answer) {
+        loopback.answer(false);
+        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", "Run agw account login again to start over.", 4);
+        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, "Run agw account login again.", 3);
+      }
+      // RFC 9207: an answer naming another issuer is not this gateway's.
+      if (answer.iss !== null && answer.iss !== server.issuer) {
+        loopback.answer(false);
+        fail("login_failed", "The sign-in came back from another issuer than this gateway.", "Run agw account login again.", 3);
+      }
+      try {
+        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now());
+        loopback.answer(true);
+        return login;
+      } catch (error) {
+        loopback.answer(false);
+        throw error;
+      }
+    } finally {
+      await loopback.close();
+    }
+  }
+
+  /** The device flow, with its code shown on stderr. */
+  private deviceSignIn(url: string, server: OAuthServer): Promise<OAuthLogin> {
+    const style = styleFor(this.io.stderr);
+    return deviceLogin(
+      this.transport,
+      url,
+      server,
+      "manage",
+      (prompt: DevicePrompt) => {
+        this.say(
+          [
+            `To sign in, open ${prompt.verificationUri} in any browser and enter the code:`,
+            `  ${style.headline(prompt.userCode)}`,
+            ...(prompt.verificationUriComplete ? [`Or open: ${prompt.verificationUriComplete} and check it shows the same code.`] : []),
+            `The code works for ${Math.round(prompt.expiresIn / 60)} minutes. Waiting for approval…`,
+          ].join("\n"),
+        );
+      },
+      this.io.clock,
+    );
+  }
+
+  /**
+   * `deployment connect`: selects a gateway. With the environment's key set,
+   * it checks the key there and stores no credential; otherwise it signs in.
+   */
+  async connect(url: string): Promise<LoginResult> {
+    const target = origin(url);
+    if (!this.environmentKey) return this.login(target);
+    const who = await this.whoAmI(target, this.environmentKey);
+    const { state } = await this.store.update((disk) => {
+      disk.active = { url: target, account: who.account };
+    });
+    this.state = state;
+    this.say(`${MANAGEMENT_KEY_ENV} is set, so it stays the credential for every command; nothing was stored.`);
+    return { connected: true, url: target, credential: "environment", ...who };
+  }
+
+  /** `account logout`: revokes this CLI's sign-in and forgets it. */
+  async logout(): Promise<LogoutResult> {
+    const url = this.url;
+    const { state, result: login } = await this.store.update((disk) => {
+      const held = disk.active?.url === url ? disk.active.login : undefined;
+      if (disk.active) delete disk.active.login;
+      return held;
+    });
+    this.state = state;
+    if (!login) return { loggedOut: true, revoked: false };
+    let revoked = false;
+    try {
+      revoked = await revoke(this.transport, url, login);
+    } catch {
+      // Forgotten here already; an unrevoked sign-in still ends within its lifetime.
+      revoked = false;
+    }
+    if (!revoked) this.say("The gateway could not be told; the sign-in is forgotten here and ends on its own. You can also revoke it in the console, under Access.");
     return { loggedOut: true, revoked };
   }
-
-  async poll(id: string): Promise<CliOperation> {
-    const record = this.state.operations[id];
-    if (!record)
-      fail(
-        "operation_unknown",
-        "This operation has no locally stored token.",
-        "Resume it from the machine that initiated the operation.",
-        4,
-      );
-    // A login selects the deployment it was opened on, whatever was selected before.
-    if (this.active && this.active.url !== record.url && record.kind !== "login")
-      fail(
-        "operation_context",
-        "This operation belongs to another selected deployment.",
-        "Reconnect explicitly to the operation’s originating deployment.",
-        4,
-      );
-    // Its key goes to a protected file, never to stdout, and only the command
-    // that reserved that file can finish it.
-    if (KEY_OPERATION_KINDS.has(record.kind))
-      fail(
-        "operation_key_output",
-        "This operation delivers an application key to a file.",
-        "Run the command that created it again to finish its key file.",
-        4,
-      );
-    const { data } = await this.publicCall("pollCliOperation", {
-      params: { id },
-      key: record.token,
-      url: record.url,
-    });
-    if (data.state === "expired") await this.forget(id);
-    if (data.state === "completed" && record.kind === "login") return this.polledLogin(id, record, data);
-    if (data.state === "completed") {
-      // A claim only ever adds a human owner: this connection keeps the
-      // credential it polled with, so nothing here is invalidated by it. Only
-      // the connection to the account it claimed learns of it.
-      if (
-        record.kind === "claim"
-        && data.account
-        && this.active?.account?.id === record.accountId
-        && data.account.id === record.accountId
-      ) {
-        this.active.account = data.account;
-        await this.save();
-      }
-      this.delivered.add(id);
-    }
-    return data;
-  }
-
-  /**
-   * A completed login, as a poll first sees it: its key is stored the way a
-   * pasted one is, and taken out of what the command prints. A login whose key
-   * was already handed to another poll, or is only ever redeemed, cannot be
-   * collected here.
-   */
-  private async polledLogin(
-    id: string,
-    record: OperationRecord,
-    data: CliOperation,
-  ): Promise<CliOperation> {
-    const { credential, ...result } = data.result ?? {};
-    if (credential) {
-      if (!data.account)
-        fail(
-          "invalid_response",
-          "The login did not say which account it was approved into.",
-          "Run agw account login again.",
-          3,
-        );
-      await this.select(record.url, { credential, account: data.account, deployment: data.deployment });
-    } else if (
-      !(
-        this.active?.credential &&
-        this.active.url === record.url &&
-        data.account &&
-        this.active.account?.id === data.account.id
-      )
-    ) {
-      await this.forget(id);
-      fail(
-        "login_not_delivered",
-        "This login was approved, but its key can no longer be collected here.",
-        "Run agw account login again.",
-        3,
-        { id },
-      );
-    }
-    this.delivered.add(id);
-    return { ...data, result };
-  }
-
-  async wait(id: string, timeout: number): Promise<CliOperation> {
-    const end = Date.now() + timeout * 1000;
-    for (;;) {
-      const result = await this.poll(id);
-      if (result.state !== "pending") {
-        if (result.state !== "completed") expired(result);
-        return result;
-      }
-      if (Date.now() >= end)
-        fail(
-          "wait_timeout",
-          "Operation is still pending.",
-          "Run agw operation wait " + id + " to resume.",
-          5,
-          { id: result.id, state: result.state, expiresAt: result.expiresAt },
-        );
-      await delay(Math.min(1500, end - Date.now()));
-    }
-  }
-}
-
-/** The refusal for a browser step that was declined or ran out of time; its record is already gone. */
-function expired(operation: Pick<CliOperation, "id" | "state" | "expiresAt" | "denied">): never {
-  if (operation.denied)
-    fail(
-      "operation_denied",
-      "The browser step was declined.",
-      "Run the same command again to start a new one.",
-      3,
-      { id: operation.id, state: "denied", expiresAt: operation.expiresAt },
-    );
-  fail(
-    "operation_expired",
-    "The browser step expired before it was approved.",
-    "Run the same command again to start a new one.",
-    3,
-    { id: operation.id, state: operation.state, expiresAt: operation.expiresAt },
-  );
-}
-
-/**
- * Writes a minted key to its reserved output and answers with what may be kept
- * of it. A write that fails leaves the operation's record in place: the
- * deployment still holds the key sealed for fifteen minutes, so the same
- * command finishes the same file rather than minting a second key.
- */
-async function storeKey(
-  minted: CreatedApiKey,
-  output: ReservedOutput,
-  appId: string,
-): Promise<StoredKeyMetadata> {
-  try {
-    await output.write(minted.key + "\n");
-  } catch {
-    fail(
-      "key_output_pending",
-      "The key was created, but its output file could not be written.",
-      "Retry the same command within fifteen minutes to finish the file, or choose a new --key-output path. No second key will be generated.",
-      4,
-      { appId, keyId: minted.id, storagePath: output.path },
-    );
-  }
-  return {
-    id: minted.id,
-    name: minted.name,
-    key_prefix: minted.key_prefix,
-    created_at: minted.created_at,
-    storagePath: output.path,
-    contentHash: createHash("sha256").update(minted.key + "\n").digest("hex"),
-  };
-}
-
-/** Refuses an approval URL that is not on the deployment's own console. */
-function assertTrustedApprovalUrl(
-  url: string,
-  capabilities: CliCapabilitiesResponse,
-  target: string,
-): void {
-  const browserUrl = new URL(url);
-  const trustedOrigin = origin(
-    capabilities.consoleOrigin ?? capabilities.deployment.consoleOrigin ?? target,
-  );
-  if (browserUrl.origin !== trustedOrigin || browserUrl.username || browserUrl.password)
-    fail("invalid_response", "The approval URL is not on this deployment’s trusted console origin.");
 }
 
 export async function openBrowser(url: string): Promise<boolean> {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "rundll32"
-        : "xdg-open";
-  const args =
-    process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   return new Promise<boolean>((resolve) => {
     const child = spawn(command, args, { stdio: "ignore", detached: true });
     child.once("error", () => resolve(false));

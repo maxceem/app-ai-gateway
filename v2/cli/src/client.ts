@@ -5,7 +5,7 @@
  * goes to, which credential it carries, the path and method the catalog
  * declares for it, and the parse of its answer with that operation's own
  * response schema. `Transport` beneath it owns the wire — refusing redirects,
- * and turning a refusal into a `CliError` that carries the deployment's code
+ * and turning a refusal into a `CliError` that carries the gateway's code
  * and status. What a command does with an answer — records, prompts, waiting
  * on a browser step — is `Context`'s.
  */
@@ -26,27 +26,12 @@ import type { Transport } from "./transport.ts";
 
 export type { OperationName };
 
-/** The `/v1/cli` half of the table, which a deployment connection cannot reach. */
-const CLI_OPERATIONS = new Set<OperationName>([
-  "getCliCapabilities",
-  "listCliTools",
-  "callCliTool",
-  "bootstrapCliAccount",
-  "createCliOperation",
-  "pollCliOperation",
-  "getCliAccount",
-  "getCliUsage",
-  "openCliLogin",
-  "redeemCliLogin",
-  "revokeCliCredential",
-]);
-
 export interface CallOptions<K extends OperationName> {
   /** The `{name}` segments of the operation's path, if it has any. */
   params?: OperationParams<K>;
   query?: OperationQuery<K>;
   body?: OperationRequest<K>;
-  /** Overrides the connection credential; used by the poll and login proofs. */
+  /** Overrides the connection credential. */
   key?: string | undefined;
   url?: string;
   headers?: Record<string, string>;
@@ -58,7 +43,7 @@ export interface CallResult<T> {
   data: T;
   /**
    * Where the answer carried settings this release does not know, which a
-   * newer deployment may send; absent when it carried none. They are kept in
+   * newer gateway may send; absent when it carried none. They are kept in
    * `data` as they were sent, so a command that writes them back loses none.
    */
   newer?: string[];
@@ -71,10 +56,13 @@ export interface CallResult<T> {
  * a command may select another connection, or log in, between two of them.
  */
 export interface ClientSource {
-  /** The selected deployment's URL, the default target of every request. */
+  /** The selected gateway's URL, the default target of every request. */
   url(): string;
-  /** The management credential every `call` carries: the environment's, or the connection's. */
-  managementKey(): string | undefined;
+  /**
+   * The credential every `call` carries: the environment's management key, or
+   * the sign-in's access token, renewed first when it is about to expire.
+   */
+  credential(): Promise<string | undefined>;
   /** `AGW_MANAGEMENT_KEY`, when it is set, which changes the remedy for a refused key. */
   environmentKey(): string | undefined;
 }
@@ -109,7 +97,7 @@ export class GatewayClient {
    * this is what keeps an undocumented server field — or anything an unexpected
    * response carries — out of the values the commands go on to print. The one
    * exception is the configuration grammar's own strict objects, whose
-   * unknown keys a newer deployment may have written: see `parse` below.
+   * unknown keys a newer gateway may have written: see `parse` below.
    */
   async publicCall<K extends OperationName>(
     name: K,
@@ -136,12 +124,12 @@ export class GatewayClient {
     name: K,
     options: CallOptions<K> = {},
   ): Promise<CallResult<OperationResponse<K>>> {
-    const key = options.key ?? this.credential(name);
+    const key = options.key ?? (await this.credential());
     try {
       return await this.publicCall(name, { ...options, key });
     } catch (error) {
-      // The generic answer to a refused key is to log in, which a key taken
-      // from the environment would override again.
+      // The generic answer to a refused credential is to sign in, which a key
+      // taken from the environment would override again.
       if (
         error instanceof CliError &&
         error.details?.status === 401 &&
@@ -151,7 +139,7 @@ export class GatewayClient {
         throw new CliError(
           error.code,
           error.message,
-          `Check ${MANAGEMENT_KEY_ENV}: the deployment refused the key it holds.`,
+          `Check ${MANAGEMENT_KEY_ENV}: the gateway refused the key it holds.`,
           error.exitCode,
           error.details,
         );
@@ -159,38 +147,14 @@ export class GatewayClient {
     }
   }
 
-  /**
-   * One operation whose success is a file rather than JSON, with the
-   * connection's management credential: its bytes, as the deployment sent them.
-   */
-  async download<K extends OperationName>(
-    name: K,
-    { params, query }: Pick<CallOptions<K>, "params" | "query"> = {},
-  ): Promise<Uint8Array> {
-    const wire = await this.transport.request(
-      this.source.url(),
-      pathFor(name, params as Record<string, string> | undefined, query as object | undefined),
-      { method: CATALOG[name].method, key: this.credential(name), binary: true },
-    );
-    if (!(wire.data instanceof Uint8Array))
-      fail("invalid_response", `The deployment answered ${String(name)} with an unusable body.`, undefined, 3);
-    return wire.data;
-  }
-
-  /**
-   * The current management credential, or the refusal that names the way back.
-   * An admin operation is also reachable from a plain deployment connection,
-   * which is why those get the wider instruction.
-   */
-  private credential(name: OperationName): string {
-    const token = this.source.managementKey();
+  /** The current credential, or the refusal that names the way back. */
+  private async credential(): Promise<string> {
+    const token = await this.source.credential();
     if (!token)
       fail(
         "login_required",
-        "The selected connection is not authenticated.",
-        CLI_OPERATIONS.has(name)
-          ? `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`
-          : `Run agw account login or agw deployment connect, or set ${MANAGEMENT_KEY_ENV}.`,
+        "This CLI is not signed in to the selected gateway.",
+        `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`,
         4,
       );
     return token;
@@ -200,7 +164,7 @@ export class GatewayClient {
 /**
  * An answer, parsed with its operation's own schema.
  *
- * A deployment is updated underneath the CLI that manages it, so an answer the
+ * A gateway is updated underneath the CLI that manages it, so an answer the
  * strict parse refuses gets a second, tolerant reading: when everything wrong
  * with it is something a newer release could have added — a key the
  * configuration grammar does not declare, a value an enum does not list — it
@@ -213,8 +177,8 @@ function parse<K extends OperationName>(name: K, data: unknown): CallResult<Oper
   if (!read)
     fail(
       "invalid_response",
-      `The deployment answered ${String(name)} with an unusable body.`,
-      "Check that the CLI and the deployment are the same release.",
+      `The gateway answered ${String(name)} with an unusable body.`,
+      "Check that agw is up to date: npm install -g @maxceem/agw",
       3,
     );
   // The schema really is the one this operation's response type is inferred
