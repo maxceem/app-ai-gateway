@@ -9,7 +9,7 @@
  */
 
 /** How much of an error answer is kept, for its error code. Error bodies are small. */
-export const ERROR_HEAD_BYTES = 64 * 1024;
+export const ERROR_HEAD_BYTES = 256 * 1024;
 
 export interface ObservedBody {
   readonly totalBytes: number;

@@ -611,6 +611,8 @@ export interface BodyReading {
 
 export interface BodyReader {
   push(text: string): void;
+  /** Nothing more pushed would be read: the body is not JSON (a binary answer, say). */
+  readonly failed: boolean;
   /** The body ended. `clean` says it was read to its real end: neither the app nor the provider cut it. */
   end(clean?: boolean): BodyReading;
 }
@@ -656,6 +658,9 @@ export function bodyReader(contentType: string, style: ApiStyle, options: BodyRe
     push(text) {
       frames.push(text);
       closing.settle();
+    },
+    get failed() {
+      return frames.failed;
     },
     end(clean = true) {
       frames.end();

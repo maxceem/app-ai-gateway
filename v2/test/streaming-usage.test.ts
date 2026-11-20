@@ -13,6 +13,7 @@ import type { ApiStyle } from "../src/providers/operation.ts";
 import { responseReader } from "../src/proxy/meter.ts";
 import { observeBody } from "../src/proxy/observe.ts";
 import { bodyReader, readBody, type BodyReaderOptions, type BodyReading } from "../src/usage/readers.ts";
+import { MAX_SKIP_DEPTH, Skimmer } from "../src/usage/skim.ts";
 
 const SSE = "text/event-stream";
 const JSON_BODY = "application/json";
@@ -281,6 +282,40 @@ describe("the response reader", () => {
     events.push(new TextEncoder().encode(sse([{ choices: [] }, { choices: [] }, { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2 } }])));
     expect(events.finish(new Headers(), true).usage).toBeNull();
     expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_read_budget_exceeded"));
+    warnings.mockRestore();
+  });
+
+  it("reads a stream of 26,000 chunks exactly, within the safety stop (Fable F1)", () => {
+    const events = Array.from({ length: 26_000 }, (_, index) => ({ choices: [{ delta: { content: `t${index}` } }] }));
+    const body = `${sse([...events, { choices: [], usage: { prompt_tokens: 12, completion_tokens: 26_000 } }])}data: [DONE]\n\n`;
+    const reader = responseReader(SSE, openai, chat, {})!;
+    reader.push(new TextEncoder().encode(body));
+    const usage = reader.finish(new Headers(), true).usage;
+    expect(usage).toMatchObject({ inputTokens: 12, outputTokens: 26_000 });
+    expect(usage?.finalEventUnread).toBeUndefined();
+  });
+
+  it("fails a body nested past the skipping limit, never growing its memory (Fable F2)", () => {
+    const skimmer = new Skimmer({ usage: true });
+    skimmer.push(`{"x":${"[".repeat(MAX_SKIP_DEPTH + 10)}`);
+    expect(skimmer.failed).toBe(true);
+    const reader = responseReader(JSON_BODY, openai, chat, {})!;
+    reader.push(new TextEncoder().encode(`{"x":${"[".repeat(5_000)}`));
+    reader.push(new TextEncoder().encode('],"usage":{"prompt_tokens":1,"completion_tokens":1}}'));
+    expect(reader.finish(new Headers(), true).usage).toBeNull();
+  });
+
+  it("stops decoding a binary answer once it is plainly not JSON (Fable F3)", () => {
+    const speech = openai.operations.find((operation) => operation.name === "openai.speech")!;
+    const decode = vi.spyOn(TextDecoder.prototype, "decode");
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const reader = responseReader("application/json", openai, speech, {})!;
+    const audio = new Uint8Array(1024 * 1024).fill(0xff);
+    for (let piece = 0; piece < 10; piece += 1) reader.push(audio);
+    expect(reader.finish(new Headers(), true).usage).toBeNull();
+    expect(decode.mock.calls.length).toBe(1);
+    expect(warnings.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("usage_read_budget_exceeded"));
+    decode.mockRestore();
     warnings.mockRestore();
   });
 

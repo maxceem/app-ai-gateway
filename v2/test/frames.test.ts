@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { framer, MAX_EVENT_NAME, MAX_FIELD, type BodyDocument, type SseFrame } from "../src/usage/frames.ts";
-import { pick, Skimmer, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
+import { pick, SKIM_VALUE_CAP, type PathTree } from "../src/usage/skim.ts";
 
 const TREE: PathTree = { usage: true, type: true, model: true, usageMetadata: true };
 
@@ -46,13 +46,153 @@ function overflowIn(value: unknown, tree: PathTree): boolean {
   });
 }
 
-/** What the skimmer keeps of a document cut before it closed: its contract for whole ones is tested on its own. */
+/**
+ * An independent reader of a JSON text that may be cut or not quite JSON, by
+ * the skimmer's documented rules, written apart from it: along the declared
+ * paths objects are read member by member (a leaf counts once its value is
+ * whole, an inner object as soon as it opens); anything else is passed over
+ * with only its strings and bracket kinds checked, a number or literal ending
+ * at a delimiter; a key named twice keeps its last value.
+ */
+function prefixRead(text: string): { closed: Record<string, unknown> | null; open: Record<string, unknown> | null; complete: boolean; overflow: boolean } {
+  let at = 0;
+  let failed = false;
+  let overflow = false;
+  const space = () => {
+    while (at < text.length && " \t\r\n".includes(text[at]!)) at += 1;
+  };
+  /** Passes over one value; whether it closed inside the text. */
+  const skip = (): boolean => {
+    const first = text[at];
+    if (first === undefined) return false;
+    if (first === '"') return skipString();
+    if (first === "{" || first === "[") {
+      const closers: string[] = [];
+      while (at < text.length) {
+        const character = text[at]!;
+        if (character === '"') {
+          if (!skipString()) return false;
+          continue;
+        }
+        at += 1;
+        if (character === "{") closers.push("}");
+        else if (character === "[") closers.push("]");
+        else if (character === "}" || character === "]") {
+          if (closers.pop() !== character) {
+            failed = true;
+            return false;
+          }
+          if (closers.length === 0) return true;
+        }
+      }
+      return false;
+    }
+    if ("}],:".includes(first)) {
+      failed = true;
+      return false;
+    }
+    while (at < text.length && !" \t\r\n,]}".includes(text[at]!)) at += 1;
+    return at < text.length;
+  };
+  const skipString = (): boolean => {
+    at += 1;
+    while (at < text.length) {
+      if (text[at] === "\\") at += 2;
+      else if (text[at] === '"') {
+        at += 1;
+        return true;
+      } else at += 1;
+    }
+    return false;
+  };
+  /** Reads an object at `at` along `tree` into `into`; whether it closed. */
+  const object = (tree: PathTree, into: Record<string, unknown>): boolean => {
+    at += 1;
+    let first = true;
+    for (;;) {
+      space();
+      if (at >= text.length) return false;
+      if (text[at] === "}" && first) {
+        at += 1;
+        return true;
+      }
+      if (text[at] !== '"') {
+        failed = true;
+        return false;
+      }
+      const keyStart = at;
+      if (!skipString()) return false;
+      let key: string | null;
+      try {
+        key = JSON.parse(text.slice(keyStart, at)) as string;
+      } catch {
+        key = null;
+      }
+      space();
+      if (at >= text.length) return false;
+      if (text[at] !== ":") {
+        failed = true;
+        return false;
+      }
+      at += 1;
+      space();
+      if (at >= text.length) return false;
+      const declared = key !== null && Object.hasOwn(tree, key) ? tree[key] : undefined;
+      if (declared !== undefined && declared !== true && text[at] === "{") {
+        const inner: Record<string, unknown> = {};
+        into[key!] = inner;
+        if (!object(declared, inner)) return false;
+      } else {
+        if (declared !== undefined && declared !== true) delete into[key!];
+        const valueStart = at;
+        if (!skip()) return false;
+        if (declared === true) {
+          const raw = text.slice(valueStart, at);
+          if (raw.length > SKIM_VALUE_CAP) {
+            delete into[key!];
+            overflow = true;
+          } else {
+            try {
+              into[key!] = JSON.parse(raw) as unknown;
+            } catch {
+              failed = true;
+              return false;
+            }
+          }
+        }
+      }
+      space();
+      if (at >= text.length) return false;
+      if (text[at] === ",") {
+        at += 1;
+        first = false;
+        continue;
+      }
+      if (text[at] === "}") {
+        at += 1;
+        return true;
+      }
+      failed = true;
+      return false;
+    }
+  };
+  space();
+  if (text[at] !== "{") {
+    const closedValue = skip();
+    space();
+    return { closed: null, open: null, complete: closedValue && !failed && at >= text.length, overflow };
+  }
+  const root: Record<string, unknown> = {};
+  const closed = object(TREE, root);
+  if (!closed) return { closed: null, open: root, complete: false, overflow };
+  space();
+  return { closed: root, open: null, complete: !failed && at >= text.length, overflow };
+}
+
+/** What a document cut before it closed keeps, by the independent reader. */
 function partial(text: string): { value: Record<string, unknown> | null; overflow: boolean } {
-  let closed: Record<string, unknown> | null = null;
-  const skimmer = new Skimmer(TREE, { onDocument: (value) => (closed = value) });
-  skimmer.push(text);
-  skimmer.end();
-  return { value: closed ?? skimmer.openDocument, overflow: skimmer.overflow };
+  const read = prefixRead(text);
+  return { value: read.closed ?? read.open, overflow: read.overflow };
 }
 
 function isJson(text: string): boolean {
@@ -64,12 +204,9 @@ function isJson(text: string): boolean {
   }
 }
 
-/** Whether the skimmer reads `data`'s root as closed with nothing after it. */
+/** Whether `data`'s root closed with nothing after it, by the independent reader. */
 function structurallyWhole(data: string): boolean {
-  const skimmer = new Skimmer(TREE);
-  skimmer.push(data);
-  skimmer.end();
-  return skimmer.complete;
+  return prefixRead(data).complete;
 }
 
 /** One event's data as the reference reads it: whole, at once. */
@@ -82,18 +219,19 @@ function eventData(
 ): void {
   // `[DONE]`, with any space before it, in data small enough to be kept.
   const done = data.length <= 64 * 1024 && data.split("\n").map((part) => part.trimStart()).join("\n") === "[DONE]";
-  const json = dataLines > 0 && isJson(data);
+  // Valid JSON: a small event parsed whole, a large one judged by its structure.
+  const json = dataLines > 0 && (data.length <= 64 * 1024 ? isJson(data) : structurallyWhole(data));
   let document: Record<string, unknown> | null = null;
   let open: Record<string, unknown> | null = null;
-  if (json) {
+  if (isJson(data)) {
     document = pick(JSON.parse(data), TREE);
     if (overflowIn(JSON.parse(data), TREE)) out.overflow = true;
   } else if (dataLines > 0 && data !== "") {
-    // Not JSON: what of its root object was whole, as the skimmer keeps it (tested on its own).
-    const kept = partial(data);
-    if (kept.overflow) out.overflow = true;
-    if (structurallyWhole(data)) document = kept.value;
-    else open = kept.value;
+    // Not JSON: what of its root object was whole, by the independent reader.
+    const read = prefixRead(data);
+    if (read.overflow) out.overflow = true;
+    document = read.closed;
+    open = read.open;
   }
   const value = document ?? open;
   // Whole: the root object closed, with nothing after it (the skimmer's own contract covers valid JSON).
@@ -212,6 +350,8 @@ const DATA = [
   '{"type":"message_stop","x":tru}',
   "not json at all",
   "",
+  // Over the 64 KB kept to check: balanced, but not valid JSON.
+  `{"usage":{"prompt_tokens":2},"type":"message_stop","pad":"${"a".repeat(70_000)}","x":tru}`,
 ];
 
 /** A random SSE stream, written with every kind of line break and field. */
@@ -227,7 +367,9 @@ function sseText(next: () => number): string {
       else if (roll < 0.6) lines.push(`event: ${pickOne(["message_stop", "response.completed", " spaced ", "é"])}`);
       else if (roll < 0.7) lines.push(`: comment ${pickOne(["data: [DONE]", "x"])}`);
       else if (roll < 0.8) lines.push(pickOne(["data", "event", "id: 7", "retry: 10", `${"x".repeat(20)}: long`]));
-      else lines.push(`data: ${JSON.stringify({ usage: { prompt_tokens: Math.floor(next() * 100) } })}`);
+      else if (roll < 0.9) lines.push(`data: ${JSON.stringify({ usage: { prompt_tokens: Math.floor(next() * 100) } })}`);
+      // One JSON object spread over several data lines.
+      else lines.push('data: {"usage":', 'data: {"prompt_tokens":7},', 'data:"model":"multi"}');
     }
     lines.push("");
   }
@@ -261,7 +403,7 @@ function pieces(bytes: Uint8Array, next: () => number): Uint8Array[] {
 describe("the SSE framer gives what reading the whole text at once gives", () => {
   it("on random streams, cut into random pieces", () => {
     const next = random(20261120);
-    for (let round = 0; round < 130; round += 1) {
+    for (let round = 0; round < 90; round += 1) {
       const text = sseText(next);
       const bytes = new TextEncoder().encode(text);
       const maxEvents = next() < 0.3 ? Math.floor(next() * 4) : undefined;

@@ -37,6 +37,13 @@ export type PathTree = { readonly [key: string]: PathTree | true };
 /** The largest value kept, in characters of JSON text. A usage report is a few hundred. */
 export const SKIM_VALUE_CAP = 64 * 1024;
 
+/**
+ * The deepest nesting skipped inside one value. JSON this deep is no answer a
+ * provider sends; past it the skimmer fails, so a runaway body of brackets
+ * can never grow its memory.
+ */
+export const MAX_SKIP_DEPTH = 1024;
+
 /** A key longer than this, in characters of JSON text, cannot be a declared one. */
 const MAX_KEY = 256;
 
@@ -315,7 +322,8 @@ export class Skimmer {
       this.mode = Mode.SkipContainer;
       return index + 1;
     }
-    if (character === 125 || character === 93 || character === 44 || character === 58) return this.fail();
+    // A number or literal starts with a digit, a minus sign, or t, f or n: anything else (a binary answer, say) is not JSON.
+    if (!((character >= 48 && character <= 57) || character === 45 || character === 116 || character === 102 || character === 110)) return this.fail();
     this.mode = Mode.SkipScalar;
     return index;
   }
@@ -353,9 +361,10 @@ export class Skimmer {
         return STRUCTURE.lastIndex;
       }
       // A container is closed only by its own kind of bracket.
-      if (character === 123) this.skipClosers.push(125);
-      else if (character === 91) this.skipClosers.push(93);
-      else {
+      if (character === 123 || character === 91) {
+        if (this.skipClosers.length >= MAX_SKIP_DEPTH) return this.fail();
+        this.skipClosers.push(character === 123 ? 125 : 93);
+      } else {
         if (this.skipClosers.pop() !== character) return this.fail();
         if (this.skipClosers.length === 0) return this.valueEnd(text, STRUCTURE.lastIndex);
       }

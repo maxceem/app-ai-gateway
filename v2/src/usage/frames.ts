@@ -83,6 +83,11 @@ export interface Framer {
   readonly cut: boolean;
   /** More events came than `maxEvents`: the framer stopped reading, and nothing after was read. */
   readonly stopped: boolean;
+  /**
+   * The body is not JSON the framer can read any further (a binary answer,
+   * say): nothing more pushed is read, so there is no need to decode it.
+   */
+  readonly failed: boolean;
 }
 
 export function isEventStream(contentType: string): boolean {
@@ -127,6 +132,9 @@ function jsonFramer(tree: PathTree, listener: FramerListener, maxEvents: number)
     },
     get stopped() {
       return stopped;
+    },
+    get failed() {
+      return !stopped && skimmer.failed;
     },
   };
 }
@@ -189,6 +197,8 @@ class SseFramer implements Framer {
   private events = 0;
   overflow = false;
   stopped = false;
+  /** An SSE stream is read line by line to its end: it never stops being readable. */
+  readonly failed = false;
   /** The last event with data (not a whole `[DONE]`), and whether it ended. */
   private last: { readonly ended: boolean; readonly frame: EventEnd } | null = null;
 

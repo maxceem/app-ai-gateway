@@ -159,20 +159,25 @@ export interface ResponseReading {
 }
 
 /**
- * How much reading for usage one answer may cost. Reading costs CPU for every
- * byte and every event (`scripts/bench-usage-reading.ts`): about 4 GB/s over a
- * large body (a base64 image, a number array), and about 3 µs per SSE event.
- * Past either limit, reading stops: the call is recorded unresolved and the
+ * A safety stop against a runaway body, never a limit a real answer meets:
+ * past either figure, reading stops, the call is recorded unresolved and the
  * stop is logged, and the answer itself is never touched. Events are counted
  * by the framer, every one, before it is read.
  *
- * - 32 MiB of body: about 8 ms of CPU, more than any answer the gateway
- *   meters today.
- * - 25,000 events: about 70 ms of CPU, a streamed answer of some 25,000
- *   tokens. A Worker on the Free plan has 10 ms of CPU per request, which a
- *   stream reaches at about 3,500 events.
+ * What reading costs (`scripts/bench-usage-reading.ts`): about 4–5 GB/s over a
+ * large opaque value (a base64 image, a number array), about 120 MB/s over
+ * dense JSON (log probabilities, word timestamps), and about 2.7 µs per SSE
+ * event (3.8 µs when each event comes in a piece of its own).
+ *
+ * - 256 MiB of body: about 2 s of CPU at the dense-JSON rate.
+ * - 250,000 events: about 1 s of CPU. OpenAI sends about one event per token,
+ *   so the dearest answers are the longest streams: they are read whole.
+ *
+ * This does not keep a Worker on the Free plan (10 ms of CPU per request)
+ * within its limit: a stream reaches it at about 3,000 events, as it did
+ * before reading was streamed.
  */
-export const READ_BUDGET = { bytes: 32 * 1024 * 1024, documents: 25_000 } as const;
+export const READ_BUDGET = { bytes: 256 * 1024 * 1024, documents: 250_000 } as const;
 
 /** Reads a response as it streams past (`./observe.ts` hands it each piece), then gives its reading. */
 export interface ResponseReader {
@@ -214,7 +219,8 @@ export function responseReader(
   };
   return {
     push(chunk) {
-      if (stopped !== null) return;
+      // A body that is not JSON (speech audio, say) is not decoded any further.
+      if (stopped !== null || body.failed) return;
       read += chunk.byteLength;
       if (read > budget.bytes) return stop("budget");
       try {
@@ -228,7 +234,7 @@ export function responseReader(
       if (stopped !== null) return unread;
       let reading;
       try {
-        body.push(decoder.decode());
+        if (!body.failed) body.push(decoder.decode());
         reading = body.end(clean);
       } catch (error) {
         stop("failed", error);

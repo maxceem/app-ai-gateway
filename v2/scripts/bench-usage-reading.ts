@@ -6,8 +6,9 @@
  *
  *   node --experimental-strip-types scripts/bench-usage-reading.ts
  *
- * Each body is fed in 64 KiB pieces, as a provider's answer arrives, and the
- * CPU time of the reading alone is reported (best of several runs).
+ * Each body is fed in 64 KiB pieces (or one event a piece, as a stream that
+ * flushes each token arrives), and the CPU time of the reading alone is
+ * reported (best of several runs).
  */
 import type { ApiStyle } from "../src/providers/operation.ts";
 import { bodyReader } from "../src/usage/readers.ts";
@@ -39,6 +40,26 @@ function chatStream(events: number): string {
   return parts.join("");
 }
 
+/** 10 MB of dense JSON: a chat answer with log probabilities for every token. */
+function logprobs(bytes: number): string {
+  const tokens: string[] = [];
+  let length = 0;
+  for (let index = 0; length < bytes; index += 1) {
+    const entry = JSON.stringify({
+      token: `t${index}`,
+      logprob: -0.0123,
+      bytes: [116, 49],
+      top_logprobs: [
+        { token: "a", logprob: -1.5, bytes: [97] },
+        { token: "b", logprob: -2.25, bytes: [98] },
+      ],
+    });
+    tokens.push(entry);
+    length += entry.length + 1;
+  }
+  return `{"id":"c","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"x"},"logprobs":{"content":[${tokens.join(",")}]}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`;
+}
+
 function cpuMs(run: () => void): number {
   let best = Number.POSITIVE_INFINITY;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -50,16 +71,19 @@ function cpuMs(run: () => void): number {
   return best;
 }
 
-const cases: { name: string; body: string; contentType: string; style: ApiStyle }[] = [
+const cases: { name: string; body: string; contentType: string; style: ApiStyle; perEvent?: boolean }[] = [
   { name: "20 MB float array (embeddings)", body: floats(20 * MB), contentType: "application/json", style: "openai-embeddings" },
   { name: "20 MB base64 image", body: base64Image(20 * MB), contentType: "application/json", style: "openai-images" },
+  { name: "10 MB dense JSON (logprobs)", body: logprobs(10 * MB), contentType: "application/json", style: "openai-chat" },
   { name: "chat stream, 20,000 events", body: chatStream(20_000), contentType: "text/event-stream", style: "openai-chat" },
+  { name: "chat stream, 20,000 events, one per piece", body: chatStream(20_000), contentType: "text/event-stream", style: "openai-chat", perEvent: true },
 ];
 
-for (const { name, body, contentType, style } of cases) {
+for (const { name, body, contentType, style, perEvent } of cases) {
   const bytes = new TextEncoder().encode(body);
   const pieces: Uint8Array[] = [];
-  for (let at = 0; at < bytes.length; at += PIECE) pieces.push(bytes.subarray(at, at + PIECE));
+  if (perEvent === true) for (const event of body.split(/(?<=\n\n)/u)) pieces.push(new TextEncoder().encode(event));
+  else for (let at = 0; at < bytes.length; at += PIECE) pieces.push(bytes.subarray(at, at + PIECE));
   let usage: unknown = null;
   const ms = cpuMs(() => {
     const reader = bodyReader(contentType, style);
