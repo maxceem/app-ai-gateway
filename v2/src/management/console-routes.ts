@@ -37,6 +37,7 @@ import { GatewayError } from "../core/errors.ts";
 import { clientAddress, enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { activeAccounts } from "../admin/access.ts";
 import { parseBody } from "../admin/apps.ts";
+import { denyHandoff, getHandoff, submitHandoff } from "../admin/handoffs.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 type ConsoleContext = Context<ConsoleEnv>;
@@ -73,6 +74,12 @@ consoleRoutes.use("/v2/console/oauth/*", async (c, next) => {
   c.header("Referrer-Policy", "no-referrer");
 });
 consoleRoutes.use("/v2/console/device/*", async (c, next) => {
+  assertConsoleOrigin(c);
+  await next();
+  c.header("Cache-Control", "no-store");
+  c.header("Referrer-Policy", "no-referrer");
+});
+consoleRoutes.use("/v2/console/handoffs/*", async (c, next) => {
   assertConsoleOrigin(c);
   await next();
   c.header("Cache-Control", "no-store");
@@ -203,3 +210,9 @@ consoleRoutes.post(path("denyDeviceRequest"), handle(async (c) => {
   const { state } = await oauth.denyDevice({ id: c.req.param("id") ?? "", userCode, actor: await browserSession(c) });
   return c.json({ state } satisfies OperationResponse<"denyDeviceRequest">);
 }));
+
+// The approval page of a write an agent asked for. The link's proof is the
+// whole authority, so nobody needs to be signed in.
+consoleRoutes.post(path("getHandoff"), handle(getHandoff));
+consoleRoutes.post(path("submitHandoff"), handle(submitHandoff));
+consoleRoutes.post(path("denyHandoff"), handle(denyHandoff));

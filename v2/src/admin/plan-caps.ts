@@ -12,6 +12,7 @@
  * (503, or 402 with no plan) instead of guessing "no ceiling": rows created
  * over a ceiling are never removed later.
  */
+import { sql, type SQL } from "drizzle-orm";
 import {
   BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
   billingPlanLimits,
@@ -96,4 +97,19 @@ export async function planCeiling(env: Env, accountId: string, resource: CappedR
       "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
     });
   }
+}
+
+/**
+ * A ceiling's condition as a drizzle fragment, for a write the operation
+ * engine commits in its own batch (`./handoffs.ts`). The same SQL and values
+ * as {@link PlanCap.condition}.
+ */
+export function capCondition(cap: PlanCap): SQL {
+  const pieces = cap.condition.split("?");
+  const chunks: SQL[] = [];
+  pieces.forEach((piece, index) => {
+    chunks.push(sql.raw(piece));
+    if (index < pieces.length - 1) chunks.push(sql`${cap.binds[index]}`);
+  });
+  return sql.join(chunks);
 }

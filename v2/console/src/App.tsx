@@ -9,7 +9,9 @@ import { AppDetailPage, DEFAULT_APP_TAB } from "@/pages/app-detail";
 import { AppsPage } from "@/pages/apps";
 import { PricesPage } from "@/pages/prices";
 import { ProvidersPage } from "@/pages/providers";
+import { ApprovePage } from "@/pages/approve";
 import { DevicePage } from "@/pages/device";
+import { RevealPage } from "@/pages/reveal";
 import { LoginPage } from "@/pages/login";
 import { OAuthConsentPage } from "@/pages/oauth-consent";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
@@ -125,6 +127,13 @@ export default function App() {
         <Route path="/oauth/consent" element={<OAuthConsentPage />} />
         {/* Where a person types the code a CLI without a browser shows. Outside the shell for the same reason. */}
         <Route path="/device" element={<DevicePage />} />
+        {/*
+          Pages a person is sent to by an agent or the CLI: entering a key it
+          asked for (the link is the authority, so no sign-in), and seeing a key
+          it created, once (the person's own sign-in is the authority).
+        */}
+        <Route path="/approve/:id" element={<ApprovePage />} />
+        <Route path="/reveal/:id" element={<RevealPage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

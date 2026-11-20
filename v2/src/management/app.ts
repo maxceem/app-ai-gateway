@@ -40,6 +40,14 @@ import {
   validateAppDraft,
 } from "../admin/apps.ts";
 import { callCliTool, listCliTools } from "../admin/cli-tools.ts";
+import {
+  createReservedApp,
+  createReservedAppKey,
+  getOperation,
+  openProviderHandoff,
+  openProviderKeyHandoff,
+  revealOperation,
+} from "../admin/handoffs.ts";
 import { listModelPrices } from "../admin/prices.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
@@ -86,6 +94,13 @@ admin.post(path("createProvider"), createProvider);
 admin.get(path("getProvider"), getProvider);
 admin.put(path("updateProvider"), updateProvider);
 admin.delete(path("deleteProvider"), deleteProvider);
+// What an agent hands to a person: a key entered in a browser, a create made once.
+admin.post(path("openProviderHandoff"), openProviderHandoff);
+admin.post(path("openProviderKeyHandoff"), openProviderKeyHandoff);
+admin.post(path("createReservedApp"), createReservedApp);
+admin.post(path("createReservedAppKey"), createReservedAppKey);
+admin.get(path("getOperation"), getOperation);
+admin.post(path("revealOperation"), revealOperation);
 // The CLI's tool catalog: the list is public, a call is the caller's.
 admin.get(path("listCliTools"), listCliTools);
 admin.post(path("callCliTool"), adminAuth, callCliTool);

@@ -50,6 +50,8 @@ const CONSOLE_ROUTES = [
   "/signup",
   "/oauth/consent",
   "/device",
+  "/approve/:id",
+  "/reveal/:id",
   "/access",
   "/settings",
   "/settings/:section",

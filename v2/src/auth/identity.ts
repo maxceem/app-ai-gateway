@@ -15,6 +15,7 @@ import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { BETTER_AUTH_MESSAGES } from "./better-auth-messages.ts";
+import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds.ts";
 import { oauthClients } from "./oauth-clients.ts";
 import {
   cimdEnabled,
@@ -130,7 +131,7 @@ export async function createIdentity(
   const issuer = oauthIssuer(env);
   const realm = operationsRealm(env);
   const relay = googleAuthEnabled(env) ? oauthRelayOrigin(env) : undefined;
-  return createCfAuth({
+  const instance: CfAuth = createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
     tables: mgmtAuthTables,
@@ -158,8 +159,11 @@ export async function createIdentity(
     onEvent: async (event: CfAuthEvent) => {
       if (event.type === "organization.created") await activateAccount(env.DB, event.organizationId);
     },
-    // Browser approvals: only the OAuth flows use them in v2.
-    ...(realm === null ? {} : { operations: { enabled: true, realm } }),
+    // Browser approvals: the OAuth flows, and the writes an agent hands to a
+    // person (a key entered in a browser, a created key revealed on a page).
+    ...(realm === null
+      ? {}
+      : { operations: { enabled: true, realm, kinds: gatewayOperationKinds(() => instance), limits: OPERATION_LIMITS } }),
     ...(issuer === null || realm === null || consoleAt === null
       ? {}
       : {
@@ -183,6 +187,7 @@ export async function createIdentity(
         }
       : {}),
   });
+  return instance;
 }
 
 /** The part of a request context {@link identityFor} needs. */
@@ -229,6 +234,8 @@ const MAPPED_CODES: Readonly<Record<string, ErrorCode>> = {
   operation_expired: "operation_expired",
   operation_denied: "operation_denied",
   already_completed: "already_completed",
+  already_revealed: "already_revealed",
+  operation_mismatch: "operation_mismatch",
   no_eligible_organization: "no_eligible_organization",
 };
 

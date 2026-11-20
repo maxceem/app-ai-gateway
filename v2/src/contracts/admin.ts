@@ -10,7 +10,7 @@ import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
 
-const AppNameSchema = z.string().trim().min(1).max(100);
+export const AppNameSchema = z.string().trim().min(1).max(100);
 
 export const AppSchema = z
   .object({
@@ -129,7 +129,7 @@ export const ProviderListResponseSchema = z
   .object({ providers: z.array(ProviderSchema) })
   .meta({ id: "ProviderListResponse" });
 
-const SecretSchema = z.string().min(1).max(4096);
+export const SecretSchema = z.string().min(1).max(4096);
 
 export const ProviderCreateRequestSchema = z
   .object({

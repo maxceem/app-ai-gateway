@@ -26,7 +26,7 @@ import { planCap, planCeiling } from "./plan-caps.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
-interface AppRow {
+export interface AppRow {
   id: string;
   account_id: string;
   name: string;
@@ -39,7 +39,7 @@ interface AppRow {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-function appView(row: AppRow) {
+export function appView(row: AppRow) {
   return {
     id: row.id,
     revision: row.revision,
@@ -132,7 +132,7 @@ export async function checkAppConfig(
 }
 
 /** The app's id: its name made URL-safe, plus a random suffix, as v1. */
-function newAppId(name: string): string {
+export function newAppId(name: string): string {
   const base = name
     .normalize("NFKD")
     .toLowerCase()
@@ -144,14 +144,14 @@ function newAppId(name: string): string {
 }
 
 /** App keys belong to app-key apps only, as v1. */
-function requireApiKeyApp(row: AppRow): void {
+export function requireApiKeyApp(row: AppRow): void {
   const config = JSON.parse(row.config_json) as { authentication?: { type?: unknown } };
   if (config.authentication?.type !== "api_key") {
     throw new GatewayError(400, "invalid_request", "App keys can only be managed for api_key apps");
   }
 }
 
-async function appRow(db: D1Database, accountId: string, appId: string): Promise<AppRow> {
+export async function appRow(db: D1Database, accountId: string, appId: string): Promise<AppRow> {
   const row = await db.prepare("SELECT * FROM app WHERE id = ? AND account_id = ?").bind(appId, accountId).first<AppRow>();
   if (row === null) throw new GatewayError(404, "app_not_found", "App is not registered");
   return row;

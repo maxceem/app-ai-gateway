@@ -12,9 +12,10 @@
  * The table is an allowlist. Each tool names its operations, and every one
  * must be in {@link MCP_READ_OPERATIONS} or {@link MCP_WRITE_OPERATIONS}: a
  * write cannot be added by naming it. Nothing here takes or answers a secret.
- * Creating an app, a provider connection or an app key does (a key, or a key
- * shown once), so those are not tools yet: they need a person to enter or see
- * the secret in a browser, which arrives with the console.
+ * The creates that involve one hand it to a person (`../admin/handoffs.ts`):
+ * adding a provider connection or replacing its key answers a console link
+ * where a person enters the key, and creating an app or an app key takes two
+ * calls and answers a page where a person sees the new key once.
  *
  * The order is deliberate: `tools/list` answers with it, and a stable order
  * lets a client cache the list.
@@ -23,7 +24,7 @@ import { z } from "zod";
 import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
 import type { CliToolHint } from "../contracts/cli.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
-import { isSecretFieldName } from "./secret-fields.ts";
+import { isSecretFieldName, type ResultPath } from "./secret-fields.ts";
 
 /** The operations a tool may run that need only the read grant. */
 export const MCP_READ_OPERATIONS = [
@@ -38,6 +39,7 @@ export const MCP_READ_OPERATIONS = [
   "listAppKeys",
   "listAppUsers",
   "getAppUser",
+  "getOperation",
 ] as const satisfies readonly OperationName[];
 
 /**
@@ -54,6 +56,10 @@ export const MCP_WRITE_OPERATIONS = [
   "unblockAppUser",
   "updateProvider",
   "deleteProvider",
+  "openProviderHandoff",
+  "openProviderKeyHandoff",
+  "createReservedApp",
+  "createReservedAppKey",
 ] as const satisfies readonly OperationName[];
 
 export type ReadOperation = (typeof MCP_READ_OPERATIONS)[number];
@@ -92,6 +98,8 @@ export interface McpTool {
   readonly annotations: ToolAnnotations;
   /** Where it sits among `agw`'s commands. */
   readonly cli: CliToolHint;
+  /** Where the tool answers the metadata of an app key it created: shown, though `api_key` is a credential's name. */
+  readonly keyMetadataAt?: readonly ResultPath[];
   /** What to do after a refusal, where this tool knows better than {@link nextAction}. */
   readonly next?: Partial<Record<ErrorCode, string>>;
   /** A check of the tool's own, run before the operation. */
@@ -271,6 +279,65 @@ const PROVIDER_UPDATE = CATALOG.updateProvider.request;
 function appSaved(result: unknown): string {
   const { app } = result as OperationResponse<"updateApp">;
   return `App "${app.name}" (${app.id}) is ${app.status}, now at revision ${app.revision}. Changes reach live traffic within a minute.`;
+}
+
+// ---------------------------------------------------------------------------
+// Writes handed to a person
+
+const BROWSER_NEXT =
+  "Give the URL to the person: they open it in their browser, enter the key there and approve. Then call get_operation with this answer's id until it completes. Do not open the URL yourself.";
+
+const BROWSER_STEP_NEXT: Partial<Record<ErrorCode, string>> = {
+  invalid_request: "Correct the arguments as the message says and call the tool again. A key is never an argument: the person enters it on the page this tool returns.",
+};
+
+/** What a tool that opens a browser step answers, and its summary. */
+function openedSummary(asking: (input: Record<string, unknown>) => string) {
+  return (raw: unknown, input: Record<string, unknown>): string => {
+    const result = raw as OperationResponse<"openProviderHandoff">;
+    const notice = result.notice === undefined ? "" : ` ${result.notice}`;
+    return `Opened operation ${result.id} to ${asking(input)}. A person opens ${result.url} in their browser before ${result.expiresAt}, enters the key there and approves; then call get_operation.${notice}`;
+  };
+}
+
+const RESERVATION_ARGUMENT = z.string().min(1).max(512).optional().meta({
+  description:
+    "Omit it to reserve: nothing is created, and the answer's `handle` is this argument. Then call again with the same arguments and that handle to create it, once. Calling again with the same handle repeats the first answer rather than creating another.",
+});
+
+/** What to do after each refusal particular to a reserved create. */
+function reservationNext(tool: string): Partial<Record<ErrorCode, string>> {
+  return {
+    operation_not_found: `This server never gave out that handle. Call ${tool} without handle to reserve again.`,
+    operation_mismatch: `The handle was reserved for other arguments, or for another account. Call ${tool} without handle to reserve these arguments, or send the arguments you reserved.`,
+    operation_expired: `The reservation lapsed after 15 minutes. Call ${tool} without handle to reserve again.`,
+    already_completed: "That create ran more than 15 minutes ago. Call get_operation with the id its reservation answered to see what it created before creating another.",
+    conflict: `Nothing was written. Call ${tool} again with the same arguments and handle in a few seconds.`,
+  };
+}
+
+const REVEAL_NOTE = "Give reveal_url to the person: signed in to the console as an owner or admin, they see the key there once. Never ask them to paste it into this conversation.";
+
+/** The summary of a reserved create: what was reserved, or what was created. */
+function reservedSummary(tool: string, reserving: (input: Record<string, unknown>) => string, created: (result: Record<string, unknown>) => string) {
+  return (raw: unknown, input: Record<string, unknown>): string => {
+    const result = raw as Record<string, unknown>;
+    if (result.state === "reserved") {
+      const notice = typeof result.notice === "string" ? ` ${result.notice}` : "";
+      return `Reserved ${reserving(input)} as operation ${String(result.id)}; nothing is created yet. Call ${tool} again with the same arguments and handle "${String(result.handle)}" before ${String(result.expiresAt)} to create it.${notice}`;
+    }
+    const repeated = result.replayed === true ? " This repeats the answer of the call that created it; nothing new was created." : "";
+    const reveal = typeof result.reveal_url === "string"
+      ? ` Its key is not shown here: a person signed in as an owner or admin reveals it once at ${result.reveal_url}. ${REVEAL_NOTE}`
+      : "";
+    return `${created(result)}${repeated}${reveal}`;
+  };
+}
+
+/** The arguments without `handle`, which goes in the body as it is. */
+function withHandle(input: Record<string, unknown>): Record<string, unknown> {
+  const { handle, ...rest } = input;
+  return handle === undefined ? rest : { ...rest, handle };
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +533,43 @@ export const MCP_TOOLS: readonly McpTool[] = [
     summary: ({ app_id, month, user }) =>
       `User ${user.id} of ${app_id} is ${user.status}, with ${plural(user.usage.charges, "charge")} costing ${usd(user.usage.cost_nano)} in ${month}.`,
   }),
+  tool({
+    name: "get_operation",
+    title: "Get an operation",
+    description:
+      "Returns where an operation a change tool opened stands: pending with when it lapses, completed with what it created or changed, or expired (with denied when a person declined it). Use it after giving a person a URL to see when they have finished, and to inspect an operation a notice names before creating another. It never returns a key: when a key the operation created can still be revealed, reveal_url is the page a person opens to see it once.",
+    operation: "getOperation",
+    input: z.object({
+      id: z.string().min(1).meta({ description: "The operation's id: the id the tool that opened it answered, never a reservation's handle." }),
+    }),
+    cli: {
+      command: "operation show",
+      args: ["id"],
+      view: { record: "", columns: ["id", "kind", "state", "expiresAt=Expires", "reveal_url=Reveal at"] },
+    },
+    summary: (result) => {
+      const declined = result.denied ? ": a person declined it" : "";
+      const standing = result.state === "pending" ? ` It lapses at ${result.expiresAt}.` : "";
+      const reveal = result.reveal_url === undefined
+        ? ""
+        : ` A person signed in as an owner or admin reveals the key it created once at ${result.reveal_url}.`;
+      return `Operation ${result.id} (${result.kind}) is ${result.state}${declined}.${standing}${reveal}`;
+    },
+  }),
+  {
+    name: "add_provider",
+    title: "Add a provider connection",
+    description:
+      "Opens adding a provider connection, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes everything list_providers shows but the key: type, name, and optionally slug, baseUrl and pricing. They are checked now, and nothing is created until the person approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
+    operations: ["openProviderHandoff"],
+    input: CATALOG.openProviderHandoff.request,
+    annotations: writes({ destructive: false, idempotent: false }),
+    cli: { command: "provider add", args: ["type"], requires: ["browser-step"] },
+    next: BROWSER_STEP_NEXT,
+    request: (input) => ({ operation: "openProviderHandoff", body: input }),
+    result: (body) => ({ ...(body as object), next: BROWSER_NEXT }),
+    summary: openedSummary((input) => `add the ${String(input.type)} provider "${String(input.name)}"`),
+  },
   {
     name: "update_provider",
     title: "Update a provider connection",
@@ -484,6 +588,23 @@ export const MCP_TOOLS: readonly McpTool[] = [
       return `Provider connection ${provider.slug} (${provider.id}) is updated and ${provider.status}.`;
     },
   },
+  {
+    name: "rotate_provider_key",
+    title: "Replace a provider connection's key",
+    description:
+      "Opens replacing a provider connection's key and answers a URL. A person opens it in their browser, enters the new key there and approves; the key never passes through you. Send the connection's id and the revision list_providers returned. Call get_operation with the answer's id until it completes.",
+    operations: ["openProviderKeyHandoff"],
+    input: z.object({ id: PATH_ARGUMENTS.id! }).extend(CATALOG.openProviderKeyHandoff.request.shape),
+    annotations: writes({ destructive: false, idempotent: false }),
+    cli: { command: "provider rotate-key", args: ["id"], requires: ["browser-step"] },
+    next: {
+      ...BROWSER_STEP_NEXT,
+      conflict: "The connection changed since you read it. Call list_providers for its current revision and call rotate_provider_key again.",
+    },
+    request: ({ id, ...body }) => ({ operation: "openProviderKeyHandoff", params: { id: asText(id) }, body }),
+    result: (body) => ({ ...(body as object), next: BROWSER_NEXT }),
+    summary: openedSummary((input) => `replace the key of provider connection ${String(input.id)}`),
+  },
   tool({
     name: "remove_provider",
     title: "Remove a provider connection",
@@ -496,6 +617,35 @@ export const MCP_TOOLS: readonly McpTool[] = [
     check: confirmed("id", "provider connection"),
     summary: (result) => `Provider connection ${result.provider_id} is deleted, with its key.`,
   }),
+  {
+    name: "add_app",
+    title: "Create an app",
+    description:
+      "Creates an app from a document {name, config, status?}, the same one validate_app judges: call validate_app first. Two calls: without handle it checks the document and reserves the creation, creating nothing; with the same document and the answer's handle it creates the app, once. Repeating that call answers the same app again rather than creating another. The gateway assigns the app's id. An app-key app's first key is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
+    operations: ["createReservedApp"],
+    input: z.object({
+      config: CATALOG.createApp.request.meta({
+        description: "The app document: {name, config, status?}, exactly the body validate_app takes for a new app.",
+      }),
+      handle: RESERVATION_ARGUMENT,
+    }),
+    annotations: writes({ destructive: false, idempotent: true }),
+    keyMetadataAt: [["api_key"]],
+    cli: { command: "app add", requires: ["reservation"] },
+    next: reservationNext("add_app"),
+    request: (input) => ({
+      operation: "createReservedApp",
+      body: { ...(input.config as object), ...(input.handle === undefined ? {} : { handle: input.handle }) },
+    }),
+    summary: reservedSummary(
+      "add_app",
+      (input) => `creating the app "${String((input.config as { name?: unknown } | undefined)?.name)}"`,
+      (result) => {
+        const app = result.app as { id?: string; name?: string } | undefined;
+        return `Created app "${app?.name}" (${app?.id}).`;
+      },
+    ),
+  },
   {
     name: "update_app",
     title: "Update an app",
@@ -556,6 +706,31 @@ export const MCP_TOOLS: readonly McpTool[] = [
     next: { invalid_request: "Pass the app's id as confirm, exactly as app; nothing was deleted." },
     summary: (result) => `App ${result.app_id} is deleted. Its usage history is kept.`,
   }),
+  {
+    name: "add_app_key",
+    title: "Create an app key",
+    description:
+      "Creates another key for an app-key app. Two calls: without handle it reserves the key, creating nothing; with the same arguments and the answer's handle it creates it, once. Repeating that call answers the same key again rather than creating another. The key's value is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
+    operations: ["createReservedAppKey"],
+    input: z.object({
+      app: PATH_ARGUMENTS.app!,
+      name: CATALOG.createReservedAppKey.request.shape.name.meta({ description: "A name to tell the key apart by in list_app_keys." }),
+      handle: RESERVATION_ARGUMENT,
+    }),
+    annotations: writes({ destructive: false, idempotent: true }),
+    keyMetadataAt: [["api_key"]],
+    cli: { command: "app key add", args: ["app"], requires: ["reservation"] },
+    next: reservationNext("add_app_key"),
+    request: ({ app, ...rest }) => ({ operation: "createReservedAppKey", params: { app: asText(app) }, body: withHandle(rest) }),
+    summary: reservedSummary(
+      "add_app_key",
+      (input) => `a key named "${String(input.name)}" for ${String(input.app)}`,
+      (result) => {
+        const key = result.api_key as { id?: string; name?: string } | undefined;
+        return `Created key "${key?.name}" (${key?.id}) for ${String(result.app_id)}.`;
+      },
+    ),
+  },
   tool({
     name: "revoke_app_key",
     title: "Revoke an app key",

@@ -96,7 +96,8 @@ export function createOpenAPIDocument() {
       { name: "Admin providers", description: "Provider connections and their keys. A key is write-only: only its hint is ever returned." },
       { name: "Admin app keys", description: "Keys for server apps." },
       { name: "Admin access", description: "Who is calling, your accounts, management keys, and CLI and MCP sign-ins." },
-      { name: "Console", description: "The console's own pages: OAuth consent and entering a CLI sign-in code. Called only from the console's origin." },
+      { name: "Admin operations", description: "Writes an agent hands to a person: where each stands, and revealing a key one created." },
+      { name: "Console", description: "The console's own pages: OAuth consent, entering a CLI sign-in code, and approving a key an agent asked for. Called only from the console's origin." },
     ],
   });
 }

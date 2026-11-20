@@ -95,6 +95,21 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "start a CLI sign-in",
     sharedBy: "everyone sharing your network address",
   },
+  // Every write an agent hands to a person starts an operation: a loop that
+  // opens or reserves and never finishes is held to v1's pace.
+  operation: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "start a management operation",
+    sharedBy: "your account",
+  },
+  // Answering one approval link: a stranger guessing at keys or proofs for it.
+  submission: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "answer an approval page",
+    sharedBy: "this approval",
+  },
   // A CLI sign-in code is eight characters, short enough to guess in bulk,
   // and looking one up is the only way a guess can be tried.
   user_code: {
