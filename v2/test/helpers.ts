@@ -167,6 +167,22 @@ export function clearCaches(): void {
   resetStallHold();
 }
 
+/**
+ * Slow fakes for tests, without real timers. A fake awaits `held()`, so it
+ * answers only once the test calls `release()`. Tests never sleep: they wait
+ * for the deadline under test, or release the fake when they want it to
+ * answer. Call `release()` in `afterEach` so nothing is left waiting.
+ */
+export function slowFakes(): { held: () => Promise<void>; release: () => void } {
+  const waiting: (() => void)[] = [];
+  return {
+    held: () => new Promise<void>((resolve) => waiting.push(resolve)),
+    release: () => {
+      for (const go of waiting.splice(0)) go();
+    },
+  };
+}
+
 /** The auth events of one app, oldest first. */
 export async function authEvents(appId: string): Promise<Record<string, unknown>[]> {
   const { results } = await env.DB.prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();

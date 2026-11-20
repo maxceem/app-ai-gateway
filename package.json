@@ -65,7 +65,8 @@
     "v2:cli:check": "pnpm --filter @app-ai-gateway/agw-v2 check",
     "v2:cli:test": "pnpm --filter @app-ai-gateway/agw-v2 test",
     "v2:cli:build": "pnpm --filter @app-ai-gateway/agw-v2 build",
-    "v2:cli:dev": "node v2/cli/scripts/dev.mjs"
+    "v2:cli:dev": "node v2/cli/scripts/dev.mjs",
+    "v2:timers:check": "node scripts/no-real-timers.mjs"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.16",

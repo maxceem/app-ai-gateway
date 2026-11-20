@@ -23,6 +23,7 @@ import {
   seedAppKey,
   seedRoutedApp,
   signedProof,
+  slowFakes,
   tokenForInstall,
 } from "./helpers.ts";
 
@@ -40,7 +41,13 @@ beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, "fetch");
 });
 
-afterEach(() => vi.restoreAllMocks());
+/** Slow limiters, billing and D1 answer only when the test lets them, never on a real timer. */
+const slow = slowFakes();
+
+afterEach(() => {
+  slow.release();
+  vi.restoreAllMocks();
+});
 
 /** The events logged at a level, by name. */
 function logged(spy: MockInstance<(...args: unknown[]) => void>): string[] {
@@ -53,7 +60,6 @@ function logged(spy: MockInstance<(...args: unknown[]) => void>): string[] {
   });
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------- admission, unit
 
@@ -81,28 +87,31 @@ const userIdentity: GatewayIdentity = {
 };
 
 
+/** Passed as `slow`: the stub answers only once the test lets it, after any deadline. */
+const SLOW = true;
+
 /**
- * A stub limiter namespace: each method answers after `delayMs`, and the calls
- * are recorded. `useCounter` (the replay check) answers `counter`; the others `answer`.
+ * A stub limiter namespace, and the calls it got. `useCounter` (the replay
+ * check) answers `counter`; the others `answer`. A `slow` one answers only
+ * once the test releases it.
  */
 function limiter(
   name: string,
   calls: string[],
   answer: () => unknown,
-  delayMs = 0,
+  isSlow = false,
   counter: () => unknown = () => ({ accepted: true }),
-  counterDelayMs = delayMs,
 ) {
-  const call = (respond: () => unknown, ms: number, label: string) => async () => {
+  const call = (respond: () => unknown, label: string) => async () => {
     calls.push(label);
-    if (ms > 0) await sleep(ms);
+    if (isSlow) await slow.held();
     return respond();
   };
   return {
     getByName: () => ({
-      checkRequest: call(answer, delayMs, name),
-      admit: call(answer, delayMs, name),
-      useCounter: call(counter, counterDelayMs, `${name}:replay`),
+      checkRequest: call(answer, name),
+      admit: call(answer, name),
+      useCounter: call(counter, `${name}:replay`),
     }),
   };
 }
@@ -119,11 +128,11 @@ function input(overrides: Partial<AdmissionInput> & { env: Env }): AdmissionInpu
   };
 }
 
-/** A billing binding whose account has a plan with these limits. */
-function billing(limits: Record<string, unknown> | undefined, delayMs = 0, fail = false) {
+/** A billing binding whose account has a plan with these limits. A `slow` one answers once the test releases it. */
+function billing(limits: Record<string, unknown> | undefined, isSlow = false, fail = false) {
   return {
     getTenantAccess: async () => {
-      if (delayMs > 0) await sleep(delayMs);
+      if (isSlow) await slow.held();
       if (fail) throw new Error("billing down");
       return { plan: { planKey: "p", planName: "P", isDefault: true, ...(limits === undefined ? {} : { limits }) }, subscription: null };
     },
@@ -164,13 +173,14 @@ describe("admission order and timeout rules", () => {
       ...env,
       END_USER_LIMITER: limiter("user", [], allowed),
       APP_LIMITER: limiter("app", [], () => ({ allowed: false, reason: "rate", retryAfterSeconds: 7 })),
-      BILLING: billing({ maxRequestsPerMonth: 100 }, 50),
+      BILLING: billing({ maxRequestsPerMonth: 100 }, SLOW),
     } as unknown as Env;
     await expect(
       admitRequest(input({ env: stubbed, waitUntil: (promise) => void kept.push(promise) })),
     ).rejects.toMatchObject({ code: "app_rate_limited" });
-    // The refusal came before the plan read was awaited; it is still handed to waitUntil.
+    // The refusal came before the plan read answered; it is still handed to waitUntil.
     expect(kept.length).toBeGreaterThan(0);
+    slow.release();
     await Promise.all(kept);
   });
 
@@ -178,7 +188,7 @@ describe("admission order and timeout rules", () => {
     const calls: string[] = [];
     const stubbed = {
       ...env,
-      END_USER_LIMITER: limiter("user", calls, allowed, 200),
+      END_USER_LIMITER: limiter("user", calls, allowed, SLOW),
       APP_LIMITER: { getByName: () => ({ checkRequest: async () => { throw new Error("object gone"); } }) },
     } as unknown as Env;
     await expect(admitRequest(input({ env: stubbed, limitsDeadlineMs: 30 }))).resolves.toBeUndefined();
@@ -190,9 +200,9 @@ describe("admission order and timeout rules", () => {
     await seedAccount();
     const stubbed = {
       ...env,
-      END_USER_LIMITER: limiter("user", calls, allowed, 300),
-      APP_LIMITER: limiter("app", calls, allowed, 300),
-      ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 100 }), 300),
+      END_USER_LIMITER: limiter("user", calls, allowed, SLOW),
+      APP_LIMITER: limiter("app", calls, allowed, SLOW),
+      ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 100 }), SLOW),
       BILLING: billing({ maxRequestsPerMonth: 100 }),
     } as unknown as Env;
     const started = Date.now();
@@ -222,10 +232,10 @@ describe("the plan allowance", () => {
     const calls: string[] = [];
     const base = { ...env, ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 1 })) };
     const plain = { ...input({ env }).app, accountId: ACCOUNT_ID, limits: app().limits };
-    await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, 200) } as unknown as Env, app: plain, billingDeadlineMs: 20 }));
+    await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, SLOW) } as unknown as Env, app: plain, billingDeadlineMs: 20 }));
     expect(logged(warn)).toContain("billing_access_slow");
     clearCaches();
-    await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, 0, true) } as unknown as Env, app: plain }));
+    await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, false, true) } as unknown as Env, app: plain }));
     expect(logged(warn)).toContain("billing_unavailable_admitted");
     expect(logged(error)).toContain("billing_access_failed");
     expect(calls).toEqual([]);
@@ -236,7 +246,7 @@ describe("the plan allowance", () => {
     const plain = { ...input({ env }).app, accountId: ACCOUNT_ID, limits: app().limits };
     const answering = { ...env, BILLING: billing({ maxRequestsPerMonth: 1 }) } as unknown as Env;
     await admitRequest(input({ env: answering, app: plain }));
-    const slowCounter = { ...answering, ACCOUNT_LIMITER: limiter("account", [], () => ({ allowed: true, used: 1, limit: 1 }), 200) } as unknown as Env;
+    const slowCounter = { ...answering, ACCOUNT_LIMITER: limiter("account", [], () => ({ allowed: true, used: 1, limit: 1 }), SLOW) } as unknown as Env;
     // The counter's last answer said 1 of 1 is used, so the plan is known to be used up.
     await expect(admitRequest(input({ env: slowCounter, app: plain, limitsDeadlineMs: 30 }))).rejects.toMatchObject({
       status: 429,
@@ -247,9 +257,9 @@ describe("the plan allowance", () => {
   it("bounds working out the plan period by the shared deadline", async () => {
     const plain = { ...input({ env }).app, accountId: "acc_slow_created", limits: app().limits };
     const calls: string[] = [];
-    // Billing answers at once; the account's creation day (D1) takes far longer than the deadline.
+    // Billing answers at once; the account's creation day (D1) answers only after the deadline.
     const slowDb = {
-      prepare: () => ({ bind: () => ({ first: async () => (await sleep(400), { created_at: new Date().toISOString() }) }) }),
+      prepare: () => ({ bind: () => ({ first: async () => (await slow.held(), { created_at: new Date().toISOString() }) }) }),
     };
     const stubbed = {
       ...env,

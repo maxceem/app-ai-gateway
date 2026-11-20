@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, testResultText } from "./providers";
-import { renderAuthenticated } from "@/test/render";
+import { renderAuthenticated, settled } from "@/test/render";
 import { PROVIDER_TYPES } from "@/lib/providers";
 
 const PROVIDER = {
@@ -125,14 +125,14 @@ describe("ProvidersPage", () => {
         return new Response(JSON.stringify({ providers: [] }));
       }),
     );
-    renderAuthenticated(<ProvidersPage />);
+    const { client } = renderAuthenticated(<ProvidersPage />);
     await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
     const key = screen.getByLabelText(/api key/i);
     await userEvent.type(key, SECRET);
     await userEvent.click(screen.getByRole("button", { name: /test key/i }));
     await userEvent.type(key, "-other");
     answer(new Response(JSON.stringify({ validated: true })));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settled(client);
     expect(screen.queryByRole("status")).toBeNull();
   });
 
