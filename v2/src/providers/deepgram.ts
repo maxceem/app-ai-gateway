@@ -59,10 +59,12 @@ const DETECT_LANGUAGE = { in: "query", field: "detect_language" } as const;
  * The priced models each model architecture Deepgram reports
  * (`metadata.model_info[].arch`) stands for. Any other, such as Nova-1's
  * `nova` or Nova-2's `nova-2`, is a fallback the gateway has no price for:
- * billed at the asked model's rate as an estimate, logged. Whisper's is not
- * known yet, so Whisper with language detection is an estimate too.
+ * billed at the asked model's rate as an estimate, logged. A key may be the
+ * reported `arch` or `name`: Whisper Large reports `arch: "whisper"` with
+ * `name: "large-whisper"` (seen on a real call, T27), so its name stands for
+ * `whisper-large` and other Whisper sizes stay unmatched.
  */
-const SERVED_AS = { "nova-3": ["nova-3", "nova-3-general"] } as const;
+const SERVED_AS = { "nova-3": ["nova-3", "nova-3-general"], "large-whisper": ["whisper-large"] } as const;
 
 export const deepgram = defineProvider({
   type: "deepgram",
