@@ -1856,7 +1856,6 @@
           "status",
           "secretHint",
           "baseUrl",
-          "cloudflareGateway",
           "pricing",
           "revision",
           "createdAt",

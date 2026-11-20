@@ -117,10 +117,15 @@ export const ProviderSchema = z
     /** The last characters of the key. The key itself is never returned. */
     secretHint: z.string().nullable(),
     baseUrl: z.string().nullable(),
-    /** Sending this connection's traffic through Cloudflare AI Gateway (D13). The token itself is never returned. */
+    /**
+     * Sending this connection's traffic through Cloudflare AI Gateway (D13). The
+     * token itself is never returned. Optional, as every field added to an answer
+     * is, so a client reading an older gateway's answer still accepts it.
+     */
     cloudflareGateway: z
       .object({ accountId: z.string(), gatewayId: z.string(), tokenHint: z.string().nullable() })
-      .nullable(),
+      .nullable()
+      .optional(),
     pricing: ProviderPricingSchema.nullable(),
     revision: z.number().int().positive(),
     createdAt: z.string(),
