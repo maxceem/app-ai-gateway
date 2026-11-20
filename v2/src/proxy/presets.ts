@@ -10,7 +10,9 @@
  *
  * 1. The caller is checked as on the proxy (`serveCaller`).
  * 2. The body is read once. A JSON body gets the preset's `params` merged in,
- *    winning over the app's values. A transcription is a multipart upload.
+ *    winning over the app's values. A transcription is a multipart upload,
+ *    and so may be another API's request, such as an image edit; an upload
+ *    is parsed whole once, and each attempt sets its own model in it.
  * 3. Each target of the chain becomes an attempt. The first must work: a
  *    missing connection, an operation it cannot serve or a key that cannot
  *    be opened is refused, before anything is spent (a fallback's key is
@@ -89,6 +91,11 @@ async function presetBody(caller: Caller, contentType: string, preset: Preset, s
     const form = await parseForm(bytes, contentType);
     if (!form.has("file")) throw new GatewayError(400, "invalid_request", "A file field is required");
     return { kind: "form", form };
+  }
+  // An upload to another API, such as an image edit, is sent as a form too,
+  // each attempt setting its own model in it. `params` merge into JSON only.
+  if (contentType.toLowerCase().startsWith("multipart/form-data")) {
+    return { kind: "form", form: await parseForm(bytes, contentType) };
   }
   return { kind: "json", body: deepMerge(jsonBody(bytes), preset.params ?? {}) };
 }

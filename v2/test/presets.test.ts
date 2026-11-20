@@ -45,6 +45,11 @@ async function connection(type: string, status: "active" | "disabled" = "active"
   return slug;
 }
 
+/** Removes the account's connections that report their own cost, which can bill any rewrite target. */
+async function withoutCostReporters(): Promise<void> {
+  await env.DB.prepare("DELETE FROM provider_connection WHERE account_id = ? AND type IN ('openrouter', 'xai')").bind(ACCOUNT_ID).run();
+}
+
 /** An app with this config (authentication added), and an app key for it. */
 async function appWith(config: Record<string, unknown>): Promise<{ appId: string; key: string }> {
   await seedAccount();
@@ -576,6 +581,29 @@ describe("presets", () => {
     expect(logged.filter((line) => line.includes('"preset_fallback_skipped"') && line.includes("gone-connection"))).toHaveLength(1);
   });
 
+  it("sends an image-edit preset's upload as a form, with each attempt's model set", async () => {
+    const slug = await connection("openai");
+    const { appId, key } = await appWith({ presets: { edit: { provider: slug, operation: "openai.images.edits", model: "gpt-image-2" } } });
+    fetchSpy.mockImplementation(async () => Response.json({ data: [], usage: { input_tokens: 10, output_tokens: 20 } }));
+    const form = new FormData();
+    form.append("image", new Blob([new Uint8Array(64)], { type: "image/png" }), "a.png");
+    form.append("prompt", "a hat");
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/presets/edit`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-end-user-id": "u" }, body: form }),
+      env,
+      ctx,
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    const sentForm = fetchSpy.mock.calls[0]![1]!.body as FormData;
+    expect(sentForm.get("model")).toBe("gpt-image-2");
+    expect(sentForm.get("prompt")).toBe("a hat");
+    expect(sentForm.get("image")).toBeInstanceOf(File);
+    expect((await charges(appId))[0]).toMatchObject({ model: "gpt-image-2", status: "ok" });
+  });
+
   it("sends a transcription preset's upload with its model set", async () => {
     const slug = await connection("openai");
     const { appId, key } = await appWith({ presets: { stt: { provider: slug, operation: "openai.transcription", model: "whisper-1" } } });
@@ -640,6 +668,7 @@ describe("saving rewrites and presets", () => {
   }
 
   it("lets an app with a stored rewrite whose price has gone be saved, if the rewrite is unchanged", async () => {
+    await withoutCostReporters();
     const { appId } = await appWith({ routing: { model_rewrites: { house: "no-such-model-zz" } } });
     const key = await seedManagementKey();
     const put = async (rewrites: Record<string, string>) => {
@@ -660,7 +689,41 @@ describe("saving rewrites and presets", () => {
     expect(await put({ house: "no-such-model-zz" })).toBe(200);
   });
 
+  it("lets an app whose listed, rewritten model lost its price be saved unchanged, but checks a newly listed one", async () => {
+    const slug = await connection("openai");
+    const routing = { providers: { [slug]: { operations: ["openai.chat"], models: ["house"] } }, model_rewrites: { house: "no-such-model-zz" } };
+    const { appId } = await appWith({ routing });
+    const key = await seedManagementKey();
+    const put = async (config: Record<string, unknown>) => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/admin/apps/${appId}`, {
+          method: "PUT",
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+          body: JSON.stringify({ name: "Renamed", revision: 1, config: { authentication: AUTH, ...config } }),
+        }),
+        env,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return response.status;
+    };
+    expect(await put({ routing: { ...routing, providers: { [slug]: { operations: ["openai.chat"], models: ["house", "other-zz"] } } } })).toBe(400);
+    expect(await put({ routing })).toBe(200);
+  });
+
+  it("accepts a rewrite to a model a connection that reports its own cost can bill, as v1", async () => {
+    await connection("openrouter");
+    expect((await save({ routing: { model_rewrites: { house: "some-router-model-zz" } } })).status).toBe(200);
+  });
+
+  it("accepts a service mode in a preset's params on an operation that reports its own cost", async () => {
+    const slug = await connection("xai");
+    expect((await save({ presets: { a: { provider: slug, operation: "xai.chat", model: "grok-4.6", params: { service_tier: "priority" } } } })).status).toBe(200);
+  });
+
   it("needs a price for each rewrite's target, and judges a listed model by its rewrite", async () => {
+    await withoutCostReporters();
     const slug = await connection("openai");
     expect((await save({ routing: { model_rewrites: { house: "no-such-model-zz" } } })).body.error.code).toBe("pricing_not_configured");
     expect(

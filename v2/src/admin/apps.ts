@@ -166,9 +166,16 @@ export async function checkAppConfig(
     }
     const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
+    // An entry saved as it is, with each of its models' rewrites unchanged,
+    // was checked when it was saved; a price gone since must not stop the
+    // app being saved, even to rename it. A newly listed model, or a changed
+    // route, is checked.
+    const routingUnchanged = Object.hasOwn(stored.providers, slug) && sameJson(stored.providers[slug], routing);
     for (const listed of routing.models ?? []) {
       // A listed model is sent, and priced, as the model it is rewritten to.
       const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
+      const storedRewrite = Object.hasOwn(stored.rewrites, listed) ? stored.rewrites[listed] : undefined;
+      if (routingUnchanged && storedRewrite === (Object.hasOwn(rewrites, listed) ? rewrites[listed] : undefined)) continue;
       const resolved = resolvePrice(connection.type, model, rates);
       // An operation whose answers carry the provider's own cost (OpenRouter's,
       // xAI's) needs no price of ours (v1). A model with no price at all needs
@@ -221,9 +228,16 @@ async function checkRewrites(
     .bind(accountId)
     .all<{ type: string; rates_json: string | null }>();
   for (const [source, target] of targets) {
+    // A connection whose provider reports its own cost (OpenRouter's, xAI's)
+    // bills any model it serves, as v1 accepted. Each route is judged again
+    // where the model is listed, and on each request.
     const priced =
       Object.keys(BUILT_IN_PROVIDERS).some((type) => listPrice(type, target) !== null) ||
-      results.some((row) => resolvePrice(row.type, target, row.rates_json === null ? null : (JSON.parse(row.rates_json) as CustomerRates)) !== null);
+      results.some(
+        (row) =>
+          resolvePrice(row.type, target, row.rates_json === null ? null : (JSON.parse(row.rates_json) as CustomerRates)) !== null ||
+          (builtInProvider(row.type)?.operations.some(reportsCost) ?? false),
+      );
     if (!priced) {
       throw new GatewayError(
         400,
@@ -318,7 +332,8 @@ async function checkPreset(
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
       }
-      if (price !== null && !isStandardMode(mode.mode) && priceInMode(price, mode.mode) === undefined) {
+      // An operation that reports its own cost bills any mode it serves (v1).
+      if (price !== null && !reportsCost(operation) && !isStandardMode(mode.mode) && priceInMode(price, mode.mode) === undefined) {
         throw new GatewayError(
           400,
           "pricing_not_configured",
