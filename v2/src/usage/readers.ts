@@ -205,6 +205,56 @@ export function openAiUsage(value: unknown, countedInput: readonly Modality[] = 
   };
 }
 
+/** A count that is a finite number, 0 or more, else null. */
+function nonNegativeNumber(value: unknown): number | null {
+  const number = finiteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
+const EMPTY_USAGE: UsageObservation = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+
+/**
+ * A transcription reports whatever its model is billed by, and the reader
+ * does not choose between them (v1's `audioUsage`): OpenAI's token-priced
+ * models answer with a `usage` of tokens, its time-priced ones with
+ * `usage: {type: "duration", seconds}`, and xAI and `verbose_json` with a
+ * top-level `duration`. Every measure present is kept, and the model's price
+ * decides which one bills, so a response shape can never move a model onto
+ * another model's unit.
+ *
+ * `usage.seconds` wins over `duration` where both appear: it is the figure
+ * the usage bills, and `duration` is the length of the audio as transcribed.
+ * Mistral names the billed audio `prompt_audio_seconds`, beside its tokens.
+ */
+export function audioUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
+  const root = asRecord(value);
+  if (!root) return null;
+  const usage = asRecord(root.usage);
+  // The first positive one: a `seconds: 0` beside a real duration must not bill the audio as nothing.
+  const candidates = [usage?.seconds, usage?.prompt_audio_seconds, root.duration].map(nonNegativeNumber);
+  const seconds = candidates.find((value) => value !== null && value > 0) ?? candidates.find((value) => value !== null) ?? null;
+  const tokens = openAiUsage(root, countedInput);
+  if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
+  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
+}
+
+/**
+ * An image API's usage: the OpenAI shape, with image tokens apart, plus the
+ * images BytePlus Seedream bills per image and counts as `generated_images`
+ * (v1).
+ */
+export function imagesUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
+  const root = asRecord(value);
+  if (!root) return null;
+  const usage = asRecord(root.usage);
+  // A count only: a whole number, 0 or more. Anything else is no count at all.
+  const reported = usage?.generated_images;
+  const images = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 0 ? reported : null;
+  const tokens = openAiUsage(root, countedInput);
+  if (images === null) return tokens;
+  return tokens === null ? { ...EMPTY_USAGE, images, noTokens: true } : { ...tokens, images };
+}
+
 const ANTHROPIC_COUNTS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
 
 /** Anthropic usage: a whole message, or one stream event. */
@@ -480,6 +530,125 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
   return document;
 }
 
+/**
+ * The top-level `usage` or `usageMetadata` objects of a document's kept head,
+ * for an answer that reports its usage first and then a large payload, such
+ * as an image API's base64 (`gpt-image-1`). Only keys of the root object
+ * count, never one nested in the answer's content, which the client may have
+ * written. Null when the head holds none whole.
+ */
+function headUsageDocument(head: string): Record<string, unknown> | null {
+  const start = head.search(/\S/u);
+  if (start === -1 || head[start] !== "{") return null;
+  const document: Record<string, unknown> = {};
+  let depth = 0;
+  for (let at = start; at < head.length; at += 1) {
+    const character = head[at];
+    if (character === '"') {
+      // A string: a key of the root object when it is followed by a colon at depth 1.
+      let end = at + 1;
+      while (end < head.length && head[end] !== '"') end += head[end] === "\\" ? 2 : 1;
+      if (end >= head.length) break;
+      const key = head.slice(at + 1, end);
+      at = end;
+      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key)) continue;
+      const separator = /^\s*:\s*\{/u.exec(head.slice(end + 1));
+      if (!separator) continue;
+      const object = jsonObjectAt(head, end + 1 + separator[0].length - 1);
+      if (!object) break;
+      try {
+        document[key] = JSON.parse(object) as unknown;
+      } catch {
+        break;
+      }
+      at = end + separator[0].length + object.length - 1;
+    } else if (character === "{" || character === "[") {
+      depth += 1;
+    } else if (character === "}" || character === "]") {
+      depth -= 1;
+    }
+  }
+  if (Object.keys(document).length === 0) return null;
+  SCANNED.add(document);
+  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return document;
+}
+
+/** Whether the quote at `at` is escaped: an odd run of backslashes before it. */
+function escapedQuote(text: string, at: number): boolean {
+  let slashes = 0;
+  for (let index = at - 1; index >= 0 && text[index] === "\\"; index -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+/**
+ * The root's `usage` and `usageMetadata` objects found in a document's kept
+ * tail, read backwards from where the root object ends, so only keys of the
+ * root count: a `usage` nested in the answer's content (a Gemini function
+ * call's arguments, say) never does. The tail's start may be cut, but every
+ * position read backwards from the real end is placed exactly. Null when the
+ * tail holds none whole.
+ */
+function rootTailUsageDocument(tail: string): Record<string, unknown> | null {
+  let at = tail.length - 1;
+  while (at >= 0 && /\s/u.test(tail[at]!)) at -= 1;
+  if (tail[at] !== "}") return null;
+  const document: Record<string, unknown> = {};
+  let depth = 0;
+  for (; at >= 0; at -= 1) {
+    const character = tail[at];
+    if (character === "}" || character === "]") depth += 1;
+    else if (character === "{" || character === "[") {
+      depth -= 1;
+      if (depth === 0) break;
+    } else if (character === '"' && !escapedQuote(tail, at)) {
+      // A whole string, read back to its opening quote.
+      const end = at;
+      at -= 1;
+      while (at >= 0 && !(tail[at] === '"' && !escapedQuote(tail, at))) at -= 1;
+      if (at < 0) break;
+      const key = tail.slice(at + 1, end);
+      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key) || Object.hasOwn(document, key)) continue;
+      const separator = /^\s*:\s*\{/u.exec(tail.slice(end + 1));
+      if (!separator) continue;
+      const object = jsonObjectAt(tail, end + 1 + separator[0].length - 1);
+      if (!object) continue;
+      try {
+        document[key] = JSON.parse(object) as unknown;
+      } catch {
+        // Not a whole object after all.
+      }
+    }
+  }
+  if (Object.keys(document).length === 0) return null;
+  SCANNED.add(document);
+  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return document;
+}
+
+/** A transcription's duration is a number, not an object, so it is matched as one. */
+const TAIL_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/gu;
+/**
+ * A `verbose_json` transcription states its top-level `duration` before its
+ * segments, so the head's first one is the whole audio's. Quotes inside the
+ * transcript are escaped, so text that says "duration" never matches.
+ */
+const HEAD_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/u;
+
+/**
+ * A truncated document with the duration the text still shows: the tail's
+ * last, else the head's first (v1). Only the transcription reader reads it,
+ * so a token-priced answer that mentions a duration is still priced from its
+ * tokens.
+ */
+function withDuration(document: Record<string, unknown> | null, tail: string, head: string): Record<string, unknown> | null {
+  const found = [...tail.matchAll(TAIL_DURATION)].at(-1)?.[1] ?? HEAD_DURATION.exec(head)?.[1];
+  if (found === undefined) return document;
+  const withIt = document ?? {};
+  withIt.duration = Number(found);
+  return withIt;
+}
+
 /** The values of one response, parsed where a reader reaches one and nowhere else. */
 export interface ResponseValues {
   /** Every value, the last one first, then the cut ones. */
@@ -514,7 +683,8 @@ export function responseValues(body: ObservedText, contentType: string): Respons
       *backwards() {
         if (tail) yield* tail.backwards();
         if (split) {
-          cutDocument ??= tailUsageDocument(split.cut);
+          // The duration a transcription's cut event still shows counts too, as v1.
+          cutDocument ??= withDuration(tailUsageDocument(split.cut), split.cut, "");
           if (cutDocument) yield cutDocument;
         }
         yield* head.backwards();
@@ -526,20 +696,25 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    const document = tailUsageDocument(body.tail);
+    // The root's usage in the tail, where most answers report, tried first;
+    // then the root's usage at the top of the kept head, for an answer that
+    // reports it before a large payload. A reader takes the first it can use.
+    const documents = [headUsageDocument(body.head), rootTailUsageDocument(body.tail)].filter(
+      (document): document is Record<string, unknown> => document !== null,
+    );
+    const last = withDuration(documents.at(-1) ?? null, body.tail, body.head);
+    if (documents.length === 0 && last !== null) documents.push(last);
+    const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
     // Only beside usage it found: the tier says what that usage was billed in.
-    if (document !== null && document.usage !== undefined) {
-      const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
-      if (tier !== undefined) document.service_tier = tier;
-    }
-    return documentValues(document === null ? [] : [document]);
+    for (const document of documents) if (tier !== undefined && document.usage !== undefined) document.service_tier = tier;
+    return documentValues(documents);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.head) as unknown;
   } catch {
     // A body whose JSON never closed (a cut answer) may still end with its usage.
-    const document = tailUsageDocument(body.head);
+    const document = withDuration(tailUsageDocument(body.head), body.head, body.head);
     return documentValues(document === null ? [] : [document]);
   }
   return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
@@ -629,7 +804,16 @@ export function readUsage(values: ResponseValues, style: ApiStyle, counted: read
     case "anthropic-messages":
       return anthropicReader(values);
     case "gemini-generate":
+    case "gemini-embed":
       return lastReported(values, geminiUsage);
+    case "openai-transcription":
+      return lastReported(values, (value) => audioUsage(value, counted));
+    case "openai-images":
+      return lastReported(values, (value) => imagesUsage(value, counted));
+    case "openai-embeddings":
+    case "openai-speech":
+      // A speech answer streamed as events ends with its usage; a plain audio answer has none.
+      return lastReported(values, (value) => openAiUsage(value, counted));
   }
 }
 

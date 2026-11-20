@@ -18,8 +18,10 @@
  * 6. After the answer is sent, read its usage, price it and write one charge.
  *    Counting never fails or delays the request (`AGENTS.md`).
  *
- * Calls measured from the response body are served: today's LLM APIs (step
- * 3). Fallback chains, presets and conversation storage come in later steps.
+ * Calls measured from the response body are served: today's LLM APIs, with
+ * their transcription, image, embedding and speech APIs (step 3). A body is
+ * JSON, or a multipart form (an upload), read by its content type. Fallback
+ * chains, presets and conversation storage come in later steps.
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
@@ -35,6 +37,7 @@ import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
+import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
 import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
@@ -184,8 +187,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     }
 
     const bytes = await readBody();
-    const body = jsonBody(bytes);
-    refuseBackground(operation, body);
+    const contentType = c.req.header("content-type") ?? "";
+    const parsed = await requestBody(bytes, contentType, operation, description);
+    const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
+    if (parsed.kind === "json") refuseBackground(operation, body);
     model = requestModel(operation, body, match.parts);
     if (routing.models !== undefined && !routing.models.includes(model)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
@@ -193,17 +198,42 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     const resolved = resolvePrice(connection.type, model, connection.rates);
     // A price in another unit (per minute, say) cannot bill this operation.
     const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
-    if (price === null && routing.models === undefined && !reportsCost(operation)) {
-      // Never served: a model with no price is refused, and nothing is listed by name.
-      throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
+    if (price === null && !reportsCost(operation)) {
+      // Never served: a model with no price is refused, unless the app lists
+      // it by name (its price may have gone since: it is served, and priced
+      // later). A model priced only in a unit this operation cannot bill (a
+      // per-minute price on chat) was never served on it, so it is refused
+      // even when listed: an app may list it for another of its operations.
+      if (resolved !== null) {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+          data: { model, operation: operation.name },
+        });
+      }
+      if (routing.models === undefined) {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
+      }
     }
     // Read, never judged: a service mode is never refused (`./meter.ts`).
     const mode = requestedServiceMode(description, connection.baseUrl, body);
 
     // The output cap refuses on its own, so it runs before admission: a request
-    // it refuses must not spend a request limit or the plan allowance.
-    const capped = applyOutputCap(operation, body, routing.max_output_tokens);
-    const metered = requestStreamUsage(operation, body);
+    // it refuses must not spend a request limit or the plan allowance. Only a
+    // JSON body has one; a form is an upload with no output to cap.
+    const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
+    const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
+    // A transcription is only sent in a format whose answer can be priced.
+    const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
+
+    // An untouched body is sent as the client's own bytes, with its own content
+    // type. A changed form is sent as a new form, so fetch writes a fresh
+    // boundary. Built before admission: a form that cannot be rebuilt is
+    // refused before it spends anything.
+    const sent: OutgoingBody =
+      parsed.kind === "json"
+        ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
+        : format !== null
+          ? { form: await withFormat(parsed.form ?? bytes, contentType, format), contentType: null }
+          : { bytes, contentType };
 
     // Admission comes last, once the request is known to be one that can be
     // served: the app's own limits, then the plan allowance.
@@ -214,8 +244,6 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       waitUntil: (promise) => c.executionCtx.waitUntil(promise),
       refuse: refusal,
     });
-
-    const sent = capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes;
 
     const attempt: CallAttempt = {
       requestId: timeOrderedId(startedAt),
@@ -284,6 +312,150 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
   return { reason: error instanceof GatewayError ? error.code : "internal_error", scope: null };
 }
 
+type ParsedBody =
+  | { readonly kind: "json"; readonly body: Record<string, unknown> }
+  | {
+      readonly kind: "form";
+      readonly fields: ReadonlyMap<string, readonly FieldValue[]>;
+      /** The form parsed whole, where the fast scanner could not read it. */
+      readonly form?: FormData;
+    };
+
+/** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
+type OutgoingBody =
+  | { readonly bytes: Uint8Array; readonly contentType: string; readonly form?: undefined }
+  | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
+
+function isMultipart(contentType: string): boolean {
+  return contentType.toLowerCase().startsWith("multipart/form-data");
+}
+
+/**
+ * A request body, read by its content type: a multipart form, else JSON (v1).
+ *
+ * A form is read by a fast scanner first: only the text fields the gateway
+ * reads (the model, a transcription's format, the service mode) are read from
+ * the bytes it holds, and the upload is not copied (`../http/multipart.ts`).
+ * A form the scanner cannot read is parsed whole by the platform's own parser
+ * instead, as v1 did, at the cost of one copy, so the scanner never refuses
+ * a form v1 served. Only a form the platform's parser also refuses is
+ * refused. A form that names its model more than once is refused: pricing reads the
+ * first, and a provider that read another would run a model nobody priced.
+ * A transcription to a provider that judges its format must be a form, since
+ * only a form names the format where it can be read.
+ */
+export async function requestBody(
+  bytes: Uint8Array,
+  contentType: string,
+  operation: OperationDescription,
+  description: ProviderDescription,
+): Promise<ParsedBody> {
+  if (isMultipart(contentType)) {
+    const location = operation.model;
+    // The path names the model and no format is judged: as v1, the form is
+    // not read at all, so it is never refused for its shape. A service mode
+    // it names is not read either, as in v1: the response says which served.
+    if (location.in === "path" && operation.style !== "openai-transcription") {
+      return { kind: "form", fields: new Map() };
+    }
+    const boundary = multipartBoundary(contentType);
+    const modelField = location.in === "body" || location.in === "form" ? location.field : null;
+    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names)]);
+    if (modelField !== null) wanted.add(modelField);
+    let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };
+    try {
+      if (boundary === null) throw new MultipartError("The form names no boundary");
+      parsed = { fields: scanMultipart(bytes, boundary, wanted) };
+    } catch {
+      const form = await parseForm(bytes, contentType);
+      parsed = { fields: formValues(form, wanted), form };
+    }
+    if (modelField !== null && (parsed.fields.get(modelField)?.length ?? 0) > 1) {
+      throw new GatewayError(400, "invalid_request", "The form names its model more than once");
+    }
+    return { kind: "form", ...parsed };
+  }
+  if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
+    throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
+  }
+  return { kind: "json", body: jsonBody(bytes) };
+}
+
+/** A form's text fields as a record, first value of each, for the model and service mode readers. Files are left out. */
+function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const [name, values] of fields) {
+    const first = values[0];
+    if (typeof first === "string") record[name] = first;
+  }
+  return record;
+}
+
+/** A form parsed whole by the platform's parser, as v1 did. It copies the upload. */
+async function parseForm(bytes: Uint8Array, contentType: string): Promise<FormData> {
+  try {
+    return await new Request("https://local.invalid", {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body: bytes as Uint8Array<ArrayBuffer>,
+    }).formData();
+  } catch {
+    throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
+  }
+}
+
+/** The `wanted` fields of a parsed form, as the scanner gives them: a file, or a value too long to be a name, is null. */
+function formValues(form: FormData, wanted: ReadonlySet<string>): Map<string, FieldValue[]> {
+  const values = new Map<string, FieldValue[]>();
+  for (const name of wanted) {
+    const found = form.getAll(name).map((value) => (typeof value === "string" && new TextEncoder().encode(value).length <= MAX_VALUE_BYTES ? value : null));
+    if (found.length > 0) values.set(name, found);
+  }
+  return values;
+}
+
+/**
+ * The upload with its `response_format` set, as v1 does: parsed whole, which
+ * copies it, only on this path, where the body must change, unless the
+ * fallback parsed it already. fetch writes a fresh boundary for it.
+ */
+async function withFormat(source: Uint8Array | FormData, contentType: string, format: string): Promise<FormData> {
+  const form = source instanceof FormData ? source : await parseForm(source, contentType);
+  form.set("response_format", format);
+  return form;
+}
+
+/**
+ * The `response_format` a transcription must be sent with so its answer
+ * carries what it is billed by (v1's `meteredTranscriptionFormat`): null where
+ * the request's is fine as it is, else the format that extends it. A format
+ * with no measure and no extension is refused, and so is a form naming two.
+ */
+function meteredTranscriptionFormat(
+  operation: OperationDescription,
+  description: ProviderDescription,
+  fields: ReadonlyMap<string, readonly FieldValue[]>,
+): string | null {
+  const formats = description.transcriptionFormats;
+  if (operation.style !== "openai-transcription" || formats === undefined) return null;
+  const requested = fields.get("response_format") ?? [];
+  const named = requested[0];
+  if (requested.length > 1 || named === null) throw unmeteredFormat(formats.metered);
+  const format = named ?? formats.default;
+  if (formats.metered.includes(format)) return null;
+  const upgrade = formats.upgrades !== undefined && Object.hasOwn(formats.upgrades, format) ? formats.upgrades[format] : undefined;
+  if (upgrade === undefined) throw unmeteredFormat(formats.metered);
+  return upgrade;
+}
+
+function unmeteredFormat(metered: readonly string[]): GatewayError {
+  return new GatewayError(
+    400,
+    "invalid_request",
+    `This response_format answers without the usage or duration a transcription is billed by; use ${metered.join(" or ")}`,
+  );
+}
+
 function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   let value: unknown;
   try {
@@ -305,8 +477,10 @@ function requestModel(operation: OperationDescription, body: Record<string, unkn
     if (value === undefined || value.trim() === "") throw new GatewayError(400, "invalid_request", "Request path must name a model");
     return value;
   }
-  if (location.in !== "body") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
-  const value = body[location.field] ?? location.default;
+  if (location.in === "query") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
+  // A body field and a form field are read the same way: the request's
+  // content type, not the operation, says which the body is.
+  const value = (Object.hasOwn(body, location.field) ? body[location.field] : undefined) ?? location.default;
   if (typeof value !== "string" || value.trim() === "") {
     throw new GatewayError(400, "invalid_request", `Request body must name a model in ${location.field}`);
   }
@@ -354,7 +528,7 @@ async function sendUpstream(
     query: string;
     /** Client headers that must never reach the provider, even if allowlisted: the gateway's own credentials and end-user ids. */
     stripped: readonly string[];
-    body: Uint8Array;
+    body: OutgoingBody;
     attempt: CallAttempt;
   },
 ): Promise<Response> {
@@ -362,8 +536,11 @@ async function sendUpstream(
   const secret = await connectionSecret(c.env, connection);
   const headers = upstreamHeaders(c.req.raw.headers);
   for (const name of input.stripped) headers.delete(name);
-  // Every operation served now sends a JSON body, whatever type the client named, as v1.
-  headers.set("content-type", "application/json");
+  // A JSON body is sent as JSON whatever type the client named, as v1. An
+  // untouched form keeps the client's type and boundary; a changed one gets
+  // the type fetch writes for it.
+  if (input.body.contentType === null) headers.delete("content-type");
+  else headers.set("content-type", input.body.contentType);
   // A callback, so a key containing `$&` or `$1` is sent as it is.
   headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
   const origin = upstreamOrigin(connection, description, input.hostKey);
@@ -377,7 +554,7 @@ async function sendUpstream(
     upstream = await fetch(url, {
       method: c.req.method,
       headers,
-      body: input.body as Uint8Array<ArrayBuffer>,
+      body: input.body.form ?? (input.body.bytes as Uint8Array<ArrayBuffer>),
       // Never follow a redirect: it could take the key to another host.
       redirect: "manual",
       signal: controller.signal,

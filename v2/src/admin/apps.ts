@@ -129,19 +129,25 @@ export async function checkAppConfig(
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
     for (const model of routing.models ?? []) {
       const resolved = resolvePrice(connection.type, model, rates);
-      // Each enabled operation needs a price in the unit it measures. One
-      // whose answers carry the provider's own cost (OpenRouter's, xAI's)
-      // bills on that, so it needs no price of ours (v1).
-      const unpriced = enabled.find(
-        (operation) => !reportsCost(operation) && (resolved === null || !pricesOperation(operation, resolved.price)),
-      );
-      if (unpriced !== undefined) {
+      // An operation whose answers carry the provider's own cost (OpenRouter's,
+      // xAI's) needs no price of ours (v1). A model with no price at all needs
+      // that from every enabled operation: listed by name, it would be served
+      // unpriced by the others.
+      const unpriced = resolved === null ? enabled.find((operation) => !reportsCost(operation)) : undefined;
+      // A priced model needs a price in the unit of at least one enabled
+      // operation: an app may list `whisper-1` beside its chat models for its
+      // transcriptions. A call to an operation that cannot bill its unit is
+      // refused when it is made.
+      const billable = resolved === null || enabled.length === 0 || enabled.some((operation) => reportsCost(operation) || pricesOperation(operation, resolved.price));
+      if (unpriced !== undefined || !billable) {
         throw new GatewayError(
           400,
           "pricing_not_configured",
-          `config.routing.providers.${slug}.models: ${model} has no price that ${unpriced.name} can bill; add one to the provider connection first`,
+          unpriced !== undefined
+            ? `config.routing.providers.${slug}.models: ${model} has no price that ${unpriced.name} can bill; add one to the provider connection first`
+            : `config.routing.providers.${slug}.models: ${model} has no price that any of ${enabled.map((operation) => operation.name).join(", ")} can bill; add one to the provider connection first`,
           undefined,
-          { data: { slug, model, operation: unpriced.name } },
+          { data: { slug, model, ...(unpriced !== undefined ? { operation: unpriced.name } : {}) } },
         );
       }
     }

@@ -10,9 +10,22 @@
  * - `POST /v1/messages`: Anthropic's Messages API.
  * - `POST /v1beta/models/{model}:generateContent` and
  *   `:streamGenerateContent`: Gemini.
+ * - `POST /v1/audio/transcriptions`, `/openai/v1/audio/transcriptions` and
+ *   `/v1/stt`: transcription, a multipart upload (or JSON). `whisper*` and
+ *   `grok*` models answer with a duration (`usage.seconds`, or `duration`
+ *   for `verbose_json` and `v1/stt`); others with tokens. The duration is
+ *   the form's `mock_seconds`, else 30.
+ * - `POST /v1/images/generations`, `/v1/images/edits` and
+ *   `/images/generations`: images. `seedream*` models report
+ *   `generated_images` (the form's or body's `n`, else 1); others tokens.
+ * - `POST /v1/embeddings` and `/embeddings/multimodal`: embeddings, with
+ *   input tokens only. `POST /v1beta/models/{model}:embedContent`: Gemini's.
+ * - `POST /v1/audio/speech`: audio bytes, or, with `stream_format: "sse"`,
+ *   events ending with usage.
  *
  * Each reads the whole body, counting its bytes, and answers JSON, or a
- * stream when the body has `"stream": true` (Gemini: the streaming path).
+ * stream when the body has `"stream": true` (Gemini: the streaming path). A
+ * multipart form's text fields are read like a JSON body's.
  * A Chat Completions stream ends with its usage chunk only when the request
  * asks for one, as OpenAI's does. Fields only this mock reads, which the
  * gateway passes through as it passes any body field:
@@ -37,8 +50,8 @@ function promptTokens(bytes: number): number {
 
 const OUTPUT_TOKENS = 5;
 
-async function readCounting(request: Request): Promise<{ bytes: number; text: string | null }> {
-  if (request.body === null) return { bytes: 0, text: "" };
+async function readCounting(request: Request): Promise<{ bytes: number; text: string | null; form: Record<string, unknown> | null }> {
+  if (request.body === null) return { bytes: 0, text: "", form: null };
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -54,10 +67,23 @@ async function readCounting(request: Request): Promise<{ bytes: number; text: st
     joined.set(chunk, at);
     at += chunk.byteLength;
   }
+  const type = request.headers.get("content-type") ?? "";
+  if (type.toLowerCase().startsWith("multipart/form-data")) {
+    try {
+      const form = await new Request("https://mock.invalid", { method: "POST", headers: { "content-type": type }, body: joined }).formData();
+      const fields: Record<string, unknown> = {};
+      form.forEach((value, name) => {
+        if (typeof value === "string" && !(name in fields)) fields[name] = /^\d+(\.\d+)?$/u.test(value) && name !== "model" ? Number(value) : value;
+      });
+      return { bytes, text: null, form: fields };
+    } catch {
+      return { bytes, text: null, form: null };
+    }
+  }
   try {
-    return { bytes, text: new TextDecoder("utf-8", { fatal: true }).decode(joined) };
+    return { bytes, text: new TextDecoder("utf-8", { fatal: true }).decode(joined), form: null };
   } catch {
-    return { bytes, text: null };
+    return { bytes, text: null, form: null };
   }
 }
 
@@ -140,12 +166,55 @@ const gemini: Answer = ({ bytes, path }) => {
   return new Response(events([{ candidates: [{ content: { role: "model", parts: [{ text: "Hel" }] } }] }, last]), { headers: SSE });
 };
 
+const transcription: Answer = ({ body, bytes, model, path }) => {
+  const seconds = typeof body.mock_seconds === "number" ? body.mock_seconds : 30;
+  const byTime = model.startsWith("whisper") || model.startsWith("grok");
+  if (path === "/v1/stt" || body.response_format === "verbose_json") {
+    return Response.json({ text: "Hello", language: "en", duration: seconds, segments: [] });
+  }
+  if (byTime) return Response.json({ text: "Hello", usage: { type: "duration", seconds } });
+  return Response.json({ text: "Hello", usage: { type: "tokens", input_tokens: promptTokens(bytes), output_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS } });
+};
+
+const images: Answer = ({ body, bytes, model }) => {
+  const count = typeof body.n === "number" && body.n > 0 ? Math.floor(body.n) : 1;
+  const data = Array.from({ length: count }, () => ({ b64_json: "iVBORw0KGgo=" }));
+  if (model.startsWith("seedream")) return Response.json({ model, data, usage: { generated_images: count, output_tokens: 16384, total_tokens: 16384 } });
+  const input = promptTokens(bytes);
+  return Response.json({
+    created: 0,
+    data,
+    usage: { input_tokens: input, output_tokens: 1056 * count, total_tokens: input + 1056 * count, input_tokens_details: { text_tokens: input, image_tokens: 0 } },
+  });
+};
+
+const embeddings: Answer = ({ bytes, model }) =>
+  Response.json({ object: "list", model, data: [{ object: "embedding", index: 0, embedding: [0.1, 0.2] }], usage: { prompt_tokens: promptTokens(bytes), total_tokens: promptTokens(bytes) } });
+
+const geminiEmbed: Answer = ({ bytes }) => Response.json({ embedding: { values: [0.1, 0.2] }, usageMetadata: { promptTokenCount: promptTokens(bytes), totalTokenCount: promptTokens(bytes) } });
+
+const speech: Answer = ({ body, bytes }) => {
+  if (body.stream_format !== "sse") return new Response(new Uint8Array(1024).fill(0x55), { headers: { "content-type": "audio/mpeg" } });
+  return new Response(
+    events([
+      { type: "speech.audio.delta", audio: "VVVV" },
+      { type: "speech.audio.done", usage: { input_tokens: promptTokens(bytes), output_tokens: 100, total_tokens: promptTokens(bytes) + 100 } },
+    ]),
+    { headers: SSE },
+  );
+};
+
 /** Which answer a path gets. */
 function answerFor(path: string): Answer | null {
   if (path === "/v1/chat/completions") return chat;
   if (path === "/v1/responses") return responses;
   if (path === "/v1/messages") return messages;
   if (/^\/v1beta\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/u.test(path)) return gemini;
+  if (path === "/v1/audio/transcriptions" || path === "/openai/v1/audio/transcriptions" || path === "/v1/stt") return transcription;
+  if (path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/images/generations") return images;
+  if (path === "/v1/embeddings" || path === "/embeddings/multimodal") return embeddings;
+  if (/^\/v1(?:beta)?\/models\/[^/]+:embedContent$/u.test(path)) return geminiEmbed;
+  if (path === "/v1/audio/speech") return speech;
   return null;
 }
 
@@ -172,8 +241,8 @@ export default {
     }
     const answer = request.method === "POST" ? answerFor(url.pathname) : null;
     if (answer === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
-    const { bytes, text } = await readCounting(request);
-    let body: Record<string, unknown> = {};
+    const { bytes, text, form } = await readCounting(request);
+    let body: Record<string, unknown> = form ?? {};
     try {
       const parsed = text === null ? null : (JSON.parse(text) as unknown);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;

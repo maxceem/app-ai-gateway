@@ -1,9 +1,11 @@
 /**
  * Today's other LLM providers (plan step 3): services that speak Chat
- * Completions, most with more APIs beside it. Each is declared at its own
- * paths, as v1's provider list serves them.
+ * Completions, most with more APIs beside it (embeddings, images, speech).
+ * Each is declared at its own paths, as v1's provider list serves them.
+ * Transcription is declared for every provider at v1's paths by
+ * `withV1Paths`.
  */
-import { chat, completions, messages, responses, withV1Paths } from "./llm.ts";
+import { chat, completions, embeddings, images, messages, responses, speech, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
@@ -30,6 +32,8 @@ export const perplexity = defineProvider({
     chat("perplexity.router.chat", "router/v1/chat/completions"),
     responses("perplexity.router.responses", "router/v1/responses"),
     messages("perplexity.router.messages", "router/v1/messages"),
+    embeddings("perplexity.embeddings", "v1/embeddings"),
+    embeddings("perplexity.embeddings.contextualized", "v1/contextualizedembeddings"),
   ]),
 });
 
@@ -68,7 +72,13 @@ export const groq = defineProvider({
       values: { default: "standard", on_demand: "standard", flex: "flex", performance: "standard", auto: "standard" },
     },
   ],
-  operations: withV1Paths("groq", [chat("groq.chat", "openai/v1/chat/completions"), responses("groq.responses", "openai/v1/responses")]),
+  // Its `json` answer has no duration; `verbose_json` does, and extends it.
+  transcriptionFormats: { metered: ["verbose_json"], default: "json", upgrades: { json: "verbose_json" } },
+  operations: withV1Paths("groq", [
+    chat("groq.chat", "openai/v1/chat/completions"),
+    responses("groq.responses", "openai/v1/responses"),
+    speech("groq.speech", "openai/v1/audio/speech"),
+  ]),
 });
 
 export const mistral = defineProvider({
@@ -86,7 +96,12 @@ export const mistral = defineProvider({
   ],
   // Regional inference, 10% over the global host.
   regionalOrigins: { "https://api.eu.mistral.ai/": "eu", "https://api.us.mistral.ai/": "us" },
-  operations: withV1Paths("mistral", [chat("mistral.chat", "v1/chat/completions"), completions("mistral.fim", "v1/fim/completions")]),
+  operations: withV1Paths("mistral", [
+    chat("mistral.chat", "v1/chat/completions"),
+    completions("mistral.fim", "v1/fim/completions"),
+    embeddings("mistral.embeddings", "v1/embeddings"),
+    speech("mistral.speech", "v1/audio/speech"),
+  ]),
 });
 
 export const together = defineProvider({
@@ -100,7 +115,16 @@ export const together = defineProvider({
   serviceModes: NO_SERVICE_TIERS,
   // The US geo-pinned host, priced apart for the models it serves.
   regionalOrigins: { "https://us-api.together.ai/": "us" },
-  operations: withV1Paths("together", [chat("together.chat", "v1/chat/completions"), completions("together.completions", "v1/completions")]),
+  // Its `json` answer has no duration; `verbose_json` does, and extends it.
+  transcriptionFormats: { metered: ["verbose_json"], default: "json", upgrades: { json: "verbose_json" } },
+  // Video is a job whose result is polled for, so it is not here.
+  operations: withV1Paths("together", [
+    chat("together.chat", "v1/chat/completions"),
+    completions("together.completions", "v1/completions"),
+    images("together.images", "v1/images/generations"),
+    speech("together.speech", "v1/audio/speech"),
+    embeddings("together.embeddings", "v1/embeddings"),
+  ]),
 });
 
 export const fireworks = defineProvider({
@@ -119,6 +143,7 @@ export const fireworks = defineProvider({
     completions("fireworks.completions", "inference/v1/completions"),
     messages("fireworks.messages", "inference/v1/messages"),
     responses("fireworks.responses", "inference/v1/responses"),
+    embeddings("fireworks.embeddings", "inference/v1/embeddings"),
   ]),
 });
 
@@ -190,5 +215,11 @@ export const bytedance = defineProvider({
   servedModes: [{ names: ["response_service_tier"], axis: "tier", values: { default: "standard", flex: "flex" } }],
   // Seed models that hear price audio input apart, and report it as `audio_tokens`.
   countedInputModalities: ["audio"],
-  operations: withV1Paths("bytedance", [chat("bytedance.chat", "chat/completions"), responses("bytedance.responses", "responses")]),
+  // Seedream images bill per image; Seedance video is a polled job, so it is not here.
+  operations: withV1Paths("bytedance", [
+    chat("bytedance.chat", "chat/completions"),
+    responses("bytedance.responses", "responses"),
+    images("bytedance.images", "images/generations"),
+    embeddings("bytedance.embeddings", "embeddings/multimodal"),
+  ]),
 });

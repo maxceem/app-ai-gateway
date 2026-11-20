@@ -2,9 +2,10 @@
  * xAI. Chat Completions, Responses and legacy completions report what xAI
  * actually billed (`usage.cost_in_usd_ticks`), which wins over our price. Its
  * Anthropic-compatible Messages API is not documented to report it, so it
- * bills on our price.
+ * bills on our price. Images and their edits report their cost as chat does;
+ * embeddings answer in tokens, and transcription (`v1/stt`) with a duration.
  */
-import { chat, completions, messages, responses, withV1Paths } from "./llm.ts";
+import { chat, completions, embeddings, images, messages, responses, transcription, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
 export const xai = defineProvider({
@@ -25,6 +26,11 @@ export const xai = defineProvider({
       responses("xai.responses", "v1/responses", { providerCost: "xai" }),
       completions("xai.completions", "v1/completions", { providerCost: "xai" }),
       messages("xai.messages", "v1/messages"),
+      // A form with only the audio is served, as v1: xAI transcribes it with grok-transcribe.
+      transcription("xai.transcription", "v1/stt", { defaultModel: "grok-transcribe" }),
+      images("xai.images", "v1/images/generations", { providerCost: "xai" }),
+      images("xai.images.edits", "v1/images/edits", { providerCost: "xai" }),
+      embeddings("xai.embeddings", "v1/embeddings"),
     ],
     { chat: { providerCost: "xai" }, responses: { providerCost: "xai" } },
   ),
