@@ -34,6 +34,7 @@ export type ErrorCode =
   | "model_not_allowed"
   | "pricing_not_configured"
   | "max_output_tokens_exceeded"
+  | "preset_not_found"
   | "app_rate_limited"
   | "app_budget_exhausted"
   | "billing_request_quota_exceeded"

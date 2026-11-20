@@ -54,6 +54,8 @@ export interface CallAttempt {
   readonly providerSlug: string;
   readonly operation: string;
   readonly model: string;
+  /** The preset the call came through, if any. Written on each of its attempts. */
+  readonly preset?: string | null;
   readonly price: { readonly price: ModelPrice; readonly source: PriceSourceKind } | null;
   /** The operation's answers carry the provider's own cost. */
   readonly reportsCost: boolean;
@@ -184,7 +186,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     providerType: attempt.providerType,
     providerConnectionId: attempt.connectionId,
     operation: attempt.operation,
-    preset: null,
+    preset: attempt.preset ?? null,
     model: attempt.model,
     status: outcome.status,
     httpStatus: outcome.httpStatus,

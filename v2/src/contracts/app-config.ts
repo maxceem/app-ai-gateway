@@ -2,10 +2,11 @@
  * The app configuration, as stored in `app.config_json`.
  *
  * `authentication` is ported from v1 with the same fields and rules.
- * `routing` is v2's minimal shape from step 1a part 3: which provider
- * connections an app may call, which of their declared operations, which
- * models, and an output cap. Presets, fallback chains, model rewrites,
- * conversation storage and limits come in later steps, as new optional keys.
+ * `routing` says which provider connections an app may call, which of their
+ * declared operations, which models, an output cap, and model rewrites (v1's
+ * `routing.model_rewrites`). `presets` are v1's custom endpoints (plan
+ * section 4.4), each with its fallback chain. Conversation storage comes in
+ * a later step, as a new optional key.
  *
  * Plain `zod`, so the console and the CLI can import it.
  */
@@ -253,16 +254,75 @@ export const ProviderRoutingSchema = z
   })
   .strict();
 
+/** A model name used as a record key. `__proto__` is refused: as a key it would not be stored. */
+const ModelKeySchema = ModelNameSchema.refine((value) => value !== "__proto__", { error: "is not a model name" });
+
 export const RoutingConfigSchema = z
   .object({
     providers: z
       .record(z.string().regex(PROVIDER_SLUG_PATTERN, { error: "must be a provider connection slug" }), ProviderRoutingSchema)
       .default({}),
+    /**
+     * A model a request names, and the model it is sent and billed as, for
+     * every proxy call of the app (v1). The app's model list is judged on the
+     * model the request names; the price on the model it becomes. One step
+     * only: a rewrite's target is never rewritten again. Presets name their
+     * models themselves and are not rewritten. Written only when it has
+     * one: an empty list is the default (`AGENTS.md`).
+     */
+    model_rewrites: z.record(ModelKeySchema, ModelNameSchema).optional(),
   })
   .strict();
 
 export type ProviderRouting = z.output<typeof ProviderRoutingSchema>;
 export type RoutingConfig = z.output<typeof RoutingConfigSchema>;
+
+/** A preset's slug, as in `/v2/apps/{app}/presets/{slug}`. */
+export const PRESET_SLUG_PATTERN = /^[a-z0-9-]{1,64}$/;
+
+const OperationNameSchema = z.string().trim().min(1).max(100);
+
+/**
+ * One more provider connection and model a preset tries when the one before
+ * failed (a fallback). Its operation must speak the preset's API style; left
+ * out, it is the connection's first operation of that style.
+ */
+const PresetFallbackSchema = z
+  .object({
+    provider: z.string().regex(PROVIDER_SLUG_PATTERN, { error: "must be a provider connection slug" }),
+    operation: OperationNameSchema.optional(),
+    model: ModelNameSchema,
+  })
+  .strict();
+
+/**
+ * A preset: v1's custom endpoint (plan section 4.4). The app calls it by its
+ * slug and sends only the request's own content; the server names the
+ * connection, the operation, the model, fixed parameters and an output cap.
+ *
+ * - `params` are merged into a JSON body, and win over the app's values.
+ * - `fallback` is tried in order when an attempt gets no answer, a 429 or a
+ *   5xx. Every attempt is one charge; a failed one costs nothing (D13).
+ */
+export const PresetSchema = z
+  .object({
+    provider: z.string().regex(PROVIDER_SLUG_PATTERN, { error: "must be a provider connection slug" }),
+    operation: OperationNameSchema,
+    model: ModelNameSchema,
+    params: z.record(z.string(), z.unknown()).optional(),
+    max_output_tokens: z.number().int().positive().optional(),
+    fallback: z.array(PresetFallbackSchema).optional(),
+  })
+  .strict();
+
+export const PresetsConfigSchema = z.record(
+  z.string().regex(PRESET_SLUG_PATTERN, { error: "is not a valid preset slug; use 1-64 characters from a-z, 0-9 and -" }),
+  PresetSchema,
+);
+
+export type Preset = z.output<typeof PresetSchema>;
+export type PresetFallback = z.output<typeof PresetFallbackSchema>;
+export type PresetsConfig = z.output<typeof PresetsConfigSchema>;
 
 /**
  * Whose month a `limits.per_user` budget is measured over: one install's, one
@@ -345,6 +405,7 @@ export const AppConfigSchema = z
     authentication: AuthenticationConfigSchema,
     routing: RoutingConfigSchema.prefault({}),
     limits: LimitsConfigSchema.prefault({}),
+    presets: PresetsConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, context) => {

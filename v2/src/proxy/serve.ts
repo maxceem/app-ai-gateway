@@ -20,8 +20,10 @@
  *
  * Calls measured from the response body are served: today's LLM APIs, with
  * their transcription, image, embedding and speech APIs (step 3). A body is
- * JSON, or a multipart form (an upload), read by its content type. Fallback
- * chains, presets and conversation storage come in later steps.
+ * JSON, or a multipart form (an upload), read by its content type. The app's
+ * model rewrites apply here. Presets, with their fallback chains, are in
+ * `./presets.ts`, and share the caller checks and the attempt loop.
+ * Conversation storage comes in a later step.
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
@@ -64,7 +66,7 @@ const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
 const matchers = new Map<string, ProviderMatcher>();
 
-function matcherFor(description: ProviderDescription): ProviderMatcher {
+export function matcherFor(description: ProviderDescription): ProviderMatcher {
   let matcher = matchers.get(description.type);
   if (matcher === undefined) {
     matcher = new ProviderMatcher(description);
@@ -74,7 +76,7 @@ function matcherFor(description: ProviderDescription): ProviderMatcher {
 }
 
 /** Whether this build can serve an operation: a call measured from its response body. */
-function servedNow(operation: OperationDescription): boolean {
+export function servedNow(operation: OperationDescription): boolean {
   return operation.lifecycle === "call" && operation.meter.kind === "response_json";
 }
 
@@ -95,36 +97,53 @@ function proxyTarget(url: URL): { slug: string; path: string } {
   return { slug, path };
 }
 
-type ProxyContext = Context<{ Bindings: Env }>;
+export type ProxyContext = Context<{ Bindings: Env }>;
 
-export async function proxyHandler(c: ProxyContext): Promise<Response> {
-  const startedAt = Date.now();
-  const appId = c.req.param("app");
-  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const url = new URL(c.req.url);
-  const target = proxyTarget(url);
-  const app = await loadApp(c.env, appId);
-  assertAppActive(app);
-  // Only a slug the app lists is looked up: the caller is not verified yet, so
-  // an unlisted one costs no D1 read and leaves nothing in the cache. It is
-  // refused below, once the caller is known.
-  const routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
-  const connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
-  const description = connection === null ? null : connectionDescription(connection);
+/** Who is calling, once checked, and what a refusal is recorded with. */
+export interface Caller {
+  readonly identity: GatewayIdentity;
+  /** The header the caller's credential came in, never sent to a provider. */
+  readonly credentialHeader: string;
+  readonly appVersion: string | null;
+  readonly clientTraceId: string | null;
+  /** The request body, read once, 20 MiB at most. */
+  readonly readBody: () => Promise<Uint8Array>;
+  /** Set as the request is understood, for the rejection event of a refusal. */
+  readonly facts: { operation: string | null; model: string | null };
+}
+
+/**
+ * Checks who is calling, then runs `serve`. Shared by the proxy and presets:
+ * the credential, the App Attest counter (used up first, never skipped), the
+ * app version, the app key's last use, a blocked end user and the trace id.
+ * From the moment the caller is known, every refusal is recorded as a
+ * rejection event.
+ */
+export async function serveCaller(
+  c: ProxyContext,
+  input: {
+    readonly app: AppRecord;
+    readonly startedAt: number;
+    /** The header of the provider the request names, where a client may send its key. */
+    readonly providerAuthHeader?: string;
+    /** The connection a rejection event names. */
+    readonly providerSlug: string;
+  },
+  serve: (caller: Caller) => Promise<Response>,
+): Promise<Response> {
+  const { app, startedAt } = input;
   const readBody = bodyOnce(c.req.raw);
-
   const { identity, credential, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,
     request: c.req.raw,
     body: readBody,
-    ...(description === null ? {} : { providerAuthHeader: description.auth.header }),
+    ...(input.providerAuthHeader === undefined ? {} : { providerAuthHeader: input.providerAuthHeader }),
   });
   const appVersion = c.req.header("x-app-version") ?? null;
+  const facts: Caller["facts"] = { operation: null, model: null };
 
   // From here on the caller is known, so a refusal is recorded as a rejection event.
-  let operationName: string | null = null;
-  let model: string | null = null;
   try {
     // A signed request is single use, whatever happens to it next: its
     // counter is used up right after the proof is checked, before anything
@@ -162,120 +181,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         "X-Client-Trace-Id must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
       );
     }
-    if (connection === null || description === null || routing === undefined) {
-      throw new GatewayError(
-        502,
-        "provider_not_configured",
-        `No provider connection ${target.slug} is set up for this app`,
-      );
-    }
-    if (connection.status === "disabled") {
-      throw new GatewayError(502, "provider_disabled", `Provider connection ${target.slug} is disabled`);
-    }
-
-    const match = matcherFor(description).match(c.req.method, target.path);
-    if (match.kind !== "operation") {
-      throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-    }
-    const { operation } = match;
-    operationName = operation.name;
-    if (!routing.operations.includes(operation.name)) {
-      throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
-    }
-    if (!servedNow(operation)) {
-      throw new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
-    }
-
-    const bytes = await readBody();
-    const contentType = c.req.header("content-type") ?? "";
-    const parsed = await requestBody(bytes, contentType, operation, description);
-    const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
-    if (parsed.kind === "json") refuseBackground(operation, body);
-    model = requestModel(operation, body, match.parts);
-    if (routing.models !== undefined && !routing.models.includes(model)) {
-      throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
-    }
-    const resolved = resolvePrice(connection.type, model, connection.rates);
-    // A price in another unit (per minute, say) cannot bill this operation.
-    const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
-    if (price === null && !reportsCost(operation)) {
-      // Never served: a model with no price is refused, unless the app lists
-      // it by name (its price may have gone since: it is served, and priced
-      // later). A model priced only in a unit this operation cannot bill (a
-      // per-minute price on chat) was never served on it, so it is refused
-      // even when listed: an app may list it for another of its operations.
-      if (resolved !== null) {
-        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
-          data: { model, operation: operation.name },
-        });
-      }
-      if (routing.models === undefined) {
-        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
-      }
-    }
-    // Read, never judged: a service mode is never refused (`./meter.ts`).
-    const mode = requestedServiceMode(description, connection.baseUrl, body);
-
-    // The output cap refuses on its own, so it runs before admission: a request
-    // it refuses must not spend a request limit or the plan allowance. Only a
-    // JSON body has one; a form is an upload with no output to cap.
-    const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
-    const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
-    // A transcription is only sent in a format whose answer can be priced.
-    const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
-
-    // An untouched body is sent as the client's own bytes, with its own content
-    // type. A changed form is sent as a new form, so fetch writes a fresh
-    // boundary. Built before admission: a form that cannot be rebuilt is
-    // refused before it spends anything.
-    const sent: OutgoingBody =
-      parsed.kind === "json"
-        ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
-        : format !== null
-          ? { form: await withFormat(parsed.form ?? bytes, contentType, format), contentType: null }
-          : { bytes, contentType };
-
-    // Admission comes last, once the request is known to be one that can be
-    // served: the app's own limits, then the plan allowance.
-    await admitRequest({
-      env: c.env,
-      app,
-      identity,
-      waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-      refuse: refusal,
-    });
-
-    const attempt: CallAttempt = {
-      requestId: timeOrderedId(startedAt),
-      seq: 1,
-      accountId: app.accountId,
-      appId: app.id,
-      identity,
-      providerType: connection.type,
-      connectionId: connection.id,
-      providerSlug: connection.slug,
-      operation: operation.name,
-      model,
-      price,
-      reportsCost: reportsCost(operation),
-      requestedMode: mode.mode,
-      ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
-      startedAt,
-      appVersion,
-      clientTraceId,
-    };
-    return await sendUpstream(c, {
-      app,
-      connection,
-      description,
-      operation,
-      hostKey: match.upstream.host,
-      path: match.upstream.path,
-      query: sanitizedQuery(url),
-      stripped: [credential.headerName, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER],
-      body: sent,
-      attempt,
-    });
+    return await serve({ identity, credentialHeader: credential.headerName, appVersion, clientTraceId, readBody, facts });
   } catch (error) {
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
@@ -284,9 +190,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           identity,
           reason: reason.reason,
           scope: reason.scope,
-          providerSlug: target.slug,
-          model: model === null ? null : model.slice(0, 200),
-          operation: operationName,
+          providerSlug: input.providerSlug,
+          model: facts.model === null ? null : facts.model.slice(0, 200),
+          operation: facts.operation,
           appVersion,
           latencyMs: Date.now() - startedAt,
         }),
@@ -296,10 +202,188 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   }
 }
 
+/** The model a request is sent and billed as: the app's rewrite of it, if any (v1). A fixed model is never rewritten. */
+export function rewrittenModel(app: AppRecord, operation: OperationDescription, model: string): string {
+  if (operation.model.in === "fixed") return model;
+  const rewrites = app.routing.model_rewrites ?? {};
+  return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
+}
+
+export async function proxyHandler(c: ProxyContext): Promise<Response> {
+  const startedAt = Date.now();
+  const appId = c.req.param("app");
+  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+  const url = new URL(c.req.url);
+  const target = proxyTarget(url);
+  const app = await loadApp(c.env, appId);
+  assertAppActive(app);
+  // Only a slug the app lists is looked up: the caller is not verified yet, so
+  // an unlisted one costs no D1 read and leaves nothing in the cache. It is
+  // refused below, once the caller is known.
+  const routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
+  const connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
+  const description = connection === null ? null : connectionDescription(connection);
+
+  return serveCaller(
+    c,
+    { app, startedAt, providerSlug: target.slug, ...(description === null ? {} : { providerAuthHeader: description.auth.header }) },
+    async (caller) => {
+      const { identity } = caller;
+      if (connection === null || description === null || routing === undefined) {
+        throw new GatewayError(
+          502,
+          "provider_not_configured",
+          `No provider connection ${target.slug} is set up for this app`,
+        );
+      }
+      if (connection.status === "disabled") {
+        throw new GatewayError(502, "provider_disabled", `Provider connection ${target.slug} is disabled`);
+      }
+
+      const matcher = matcherFor(description);
+      const match = matcher.match(c.req.method, target.path);
+      if (match.kind !== "operation") {
+        throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+      }
+      const { operation } = match;
+      caller.facts.operation = operation.name;
+      if (!routing.operations.includes(operation.name)) {
+        throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
+      }
+      if (!servedNow(operation)) {
+        throw new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
+      }
+
+      const bytes = await caller.readBody();
+      const contentType = c.req.header("content-type") ?? "";
+      const parsed = await requestBody(bytes, contentType, operation, description);
+      const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
+      if (parsed.kind === "json") refuseBackground(operation, body);
+      const requested = requestModel(operation, body, match.parts);
+      caller.facts.model = requested;
+      if (routing.models !== undefined && !routing.models.includes(requested)) {
+        throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model: requested } });
+      }
+      // The app's model list judges the model the request names; everything
+      // after it, the price included, the model it is sent as.
+      const model = rewrittenModel(app, operation, requested);
+      const resolved = resolvePrice(connection.type, model, connection.rates);
+      // A price in another unit (per minute, say) cannot bill this operation.
+      const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
+      if (price === null && !reportsCost(operation)) {
+        // Never served: a model with no price is refused, unless the app lists
+        // it by name (its price may have gone since: it is served, and priced
+        // later). A model priced only in a unit this operation cannot bill (a
+        // per-minute price on chat) was never served on it, so it is refused
+        // even when listed: an app may list it for another of its operations.
+        if (resolved !== null) {
+          throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+            data: { model, operation: operation.name },
+          });
+        }
+        if (routing.models === undefined) {
+          throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
+        }
+      }
+      // A rewritten model is written where the request named it: the path,
+      // or the body or form field.
+      let upstream = match.upstream;
+      let bodyModelChanged = false;
+      if (model !== requested) {
+        const location = operation.model;
+        if (location.in === "path") {
+          const rebuilt = matcher.upstreamFor(operation.name, { ...match.parts, [location.part]: model });
+          if (rebuilt === null) throw new GatewayError(400, "invalid_request", "The rewritten model cannot be sent in the path");
+          upstream = rebuilt;
+        } else if (location.in === "body" || location.in === "form") {
+          body[location.field] = model;
+          bodyModelChanged = true;
+        }
+      }
+      // Read, never judged: a service mode is never refused (`./meter.ts`).
+      const mode = requestedServiceMode(description, connection.baseUrl, body);
+
+      // The output cap refuses on its own, so it runs before admission: a request
+      // it refuses must not spend a request limit or the plan allowance. Only a
+      // JSON body has one; a form is an upload with no output to cap.
+      const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
+      const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
+      // A transcription is only sent in a format whose answer can be priced.
+      const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
+      const location = operation.model;
+      const formChanges: Record<string, string> = {};
+      if (format !== null) formChanges.response_format = format;
+      if (parsed.kind === "form" && bodyModelChanged && location.in !== "path" && location.in !== "fixed" && location.in !== "query") {
+        formChanges[location.field] = model;
+      }
+
+      // An untouched body is sent as the client's own bytes, with its own content
+      // type. A changed form is sent as a new form, so fetch writes a fresh
+      // boundary. Built before admission: a form that cannot be rebuilt is
+      // refused before it spends anything.
+      const sent: OutgoingBody =
+        parsed.kind === "json"
+          ? {
+              bytes: capped || metered || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
+              contentType: "application/json",
+            }
+          : Object.keys(formChanges).length > 0
+            ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges), contentType: null }
+            : { bytes, contentType };
+
+      // The key is opened before admission: a request that cannot be sent must not spend anything.
+      const secret = await connectionSecret(c.env, connection);
+
+      // Admission comes last, once the request is known to be one that can be
+      // served: the app's own limits, then the plan allowance.
+      await admitRequest({
+        env: c.env,
+        app,
+        identity,
+        waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+        refuse: refusal,
+      });
+
+      const attempt: CallAttempt = {
+        requestId: timeOrderedId(startedAt),
+        seq: 1,
+        accountId: app.accountId,
+        appId: app.id,
+        identity,
+        providerType: connection.type,
+        connectionId: connection.id,
+        providerSlug: connection.slug,
+        operation: operation.name,
+        model,
+        price,
+        reportsCost: reportsCost(operation),
+        requestedMode: mode.mode,
+        ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
+        startedAt,
+        appVersion: caller.appVersion,
+        clientTraceId: caller.clientTraceId,
+      };
+      return await sendAttempts(c, strippedHeaders(app, caller), [
+        {
+          connection,
+          description,
+          operation,
+          hostKey: upstream.host,
+          path: upstream.path,
+          query: sanitizedQuery(url),
+          secret: () => Promise.resolve(secret),
+          body: () => sent,
+          attempt,
+        },
+      ]);
+    },
+  );
+}
+
 const REFUSALS = new WeakMap<object, { reason: string; scope: string | null }>();
 
 /** Marks an error with a rejection reason other than its code. */
-function refusal(error: GatewayError, reason: string, scope: string | null): GatewayError {
+export function refusal(error: GatewayError, reason: string, scope: string | null): GatewayError {
   REFUSALS.set(error, { reason, scope });
   return error;
 }
@@ -312,7 +396,7 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
   return { reason: error instanceof GatewayError ? error.code : "internal_error", scope: null };
 }
 
-type ParsedBody =
+export type ParsedBody =
   | { readonly kind: "json"; readonly body: Record<string, unknown> }
   | {
       readonly kind: "form";
@@ -322,7 +406,7 @@ type ParsedBody =
     };
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
-type OutgoingBody =
+export type OutgoingBody =
   | { readonly bytes: Uint8Array; readonly contentType: string; readonly form?: undefined }
   | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
 
@@ -382,7 +466,7 @@ export async function requestBody(
 }
 
 /** A form's text fields as a record, first value of each, for the model and service mode readers. Files are left out. */
-function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<string, unknown> {
+export function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<string, unknown> {
   const record: Record<string, unknown> = {};
   for (const [name, values] of fields) {
     const first = values[0];
@@ -392,7 +476,7 @@ function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<
 }
 
 /** A form parsed whole by the platform's parser, as v1 did. It copies the upload. */
-async function parseForm(bytes: Uint8Array, contentType: string): Promise<FormData> {
+export async function parseForm(bytes: Uint8Array, contentType: string): Promise<FormData> {
   try {
     return await new Request("https://local.invalid", {
       method: "POST",
@@ -415,13 +499,18 @@ function formValues(form: FormData, wanted: ReadonlySet<string>): Map<string, Fi
 }
 
 /**
- * The upload with its `response_format` set, as v1 does: parsed whole, which
- * copies it, only on this path, where the body must change, unless the
- * fallback parsed it already. fetch writes a fresh boundary for it.
+ * The upload with some text fields set (`response_format`, a rewritten or a
+ * preset's model), as v1 does: parsed whole, which copies it, only on this
+ * path, where the body must change, unless the fallback parsed it already.
+ * fetch writes a fresh boundary for it.
  */
-async function withFormat(source: Uint8Array | FormData, contentType: string, format: string): Promise<FormData> {
+export async function withFields(
+  source: Uint8Array | FormData,
+  contentType: string,
+  fields: Readonly<Record<string, string>>,
+): Promise<FormData> {
   const form = source instanceof FormData ? source : await parseForm(source, contentType);
-  form.set("response_format", format);
+  for (const [name, value] of Object.entries(fields)) form.set(name, value);
   return form;
 }
 
@@ -431,7 +520,7 @@ async function withFormat(source: Uint8Array | FormData, contentType: string, fo
  * the request's is fine as it is, else the format that extends it. A format
  * with no measure and no extension is refused, and so is a form naming two.
  */
-function meteredTranscriptionFormat(
+export function meteredTranscriptionFormat(
   operation: OperationDescription,
   description: ProviderDescription,
   fields: ReadonlyMap<string, readonly FieldValue[]>,
@@ -456,7 +545,7 @@ function unmeteredFormat(metered: readonly string[]): GatewayError {
   );
 }
 
-function jsonBody(bytes: Uint8Array): Record<string, unknown> {
+export function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder().decode(bytes));
@@ -469,7 +558,7 @@ function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requestModel(operation: OperationDescription, body: Record<string, unknown>, parts: Parts): string {
+export function requestModel(operation: OperationDescription, body: Record<string, unknown>, parts: Parts): string {
   const location = operation.model;
   if (location.in === "fixed") return location.model;
   if (location.in === "path") {
@@ -509,79 +598,290 @@ function providerErrorCode(text: string): string | null {
 }
 
 /** The client's query without a key an SDK may have put there, as v1: the gateway never forwards a client key. */
-function sanitizedQuery(url: URL): string {
+export function sanitizedQuery(url: URL): string {
   const copy = new URL(url);
   copy.searchParams.delete("key");
   copy.searchParams.delete("api_key");
   return copy.search;
 }
 
-async function sendUpstream(
-  c: ProxyContext,
-  input: {
-    app: AppRecord;
-    connection: ConnectionRecord;
-    description: ProviderDescription;
-    operation: OperationDescription;
-    hostKey: string;
-    path: string;
-    query: string;
-    /** Client headers that must never reach the provider, even if allowlisted: the gateway's own credentials and end-user ids. */
-    stripped: readonly string[];
-    body: OutgoingBody;
-    attempt: CallAttempt;
-  },
-): Promise<Response> {
-  const { connection, description, operation, attempt } = input;
-  const secret = await connectionSecret(c.env, connection);
-  const headers = upstreamHeaders(c.req.raw.headers);
-  for (const name of input.stripped) headers.delete(name);
-  // A JSON body is sent as JSON whatever type the client named, as v1. An
-  // untouched form keeps the client's type and boundary; a changed one gets
-  // the type fetch writes for it.
-  if (input.body.contentType === null) headers.delete("content-type");
-  else headers.set("content-type", input.body.contentType);
-  // A callback, so a key containing `$&` or `$1` is sent as it is.
-  headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
-  const origin = upstreamOrigin(connection, description, input.hostKey);
-  const url = `${origin}${input.path.replace(/^\//u, "")}${input.query}`;
+/** Client headers that never reach a provider, even if allowlisted: the gateway's own credentials and end-user ids. */
+export function strippedHeaders(app: AppRecord, caller: Caller): readonly string[] {
+  return [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER];
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROVIDER_TTFB_TIMEOUT_MS);
-  const providerStart = Date.now();
-  let upstream: Response;
+/** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
+export interface PreparedAttempt {
+  readonly connection: ConnectionRecord;
+  readonly description: ProviderDescription;
+  readonly operation: OperationDescription;
+  readonly hostKey: string;
+  readonly path: string;
+  readonly query: string;
+  /**
+   * Opens the connection's key. The first attempt's is opened before
+   * admission, so a request whose key cannot be opened is refused before it
+   * spends anything; a fallback's only when the chain reaches it.
+   */
+  readonly secret: () => Promise<string>;
+  /** Built only when this attempt is sent, so a long chain never holds every target's body at once. */
+  readonly body: () => OutgoingBody;
+  readonly attempt: CallAttempt;
+  /** Headers set when the client sent none, such as the API version a preset's provider needs. */
+  readonly defaultHeaders?: Readonly<Record<string, string>>;
+}
+
+/** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** How much of a failed attempt's body is read for its error code, and for how long at most (v1). */
+const FAILED_BODY_MAX_BYTES = 8 * 1024;
+const FAILED_BODY_MAX_MS = 2_000;
+
+/**
+ * The start of a failed attempt's body, for the error code its provider
+ * names, with the rest cancelled. Read in the background, bounded in bytes
+ * and time: the next attempt goes out at once.
+ */
+async function failedBodyHead(body: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let finished = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), FAILED_BODY_MAX_MS);
+  });
   try {
-    upstream = await fetch(url, {
-      method: c.req.method,
-      headers,
-      body: input.body.form ?? (input.body.bytes as Uint8Array<ArrayBuffer>),
-      // Never follow a redirect: it could take the key to another host.
-      redirect: "manual",
-      signal: controller.signal,
-    });
-  } catch (error) {
-    const timedOut = controller.signal.aborted;
-    log("warn", timedOut ? "provider_ttfb_timeout" : "provider_request_failed", {
-      app: attempt.appId,
-      providerSlug: connection.slug,
-      operation: attempt.operation,
-      error: errorFacts(error),
-    });
-    record(c, attempt, {
-      status: timedOut ? "timeout" : "network_error",
-      httpStatus: null,
-      errorCode: null,
-      usage: null,
-      cut: false,
-      latencyMs: Date.now() - providerStart,
-    });
-    throw timedOut
-      ? new GatewayError(504, "provider_error", "Provider did not respond in time")
-      : new GatewayError(502, "provider_error", "Provider request failed");
+    while (bytes < FAILED_BODY_MAX_BYTES) {
+      const next = await Promise.race([reader.read(), timedOut]);
+      if (next === null) break;
+      if (next.done) {
+        finished = true;
+        break;
+      }
+      chunks.push(next.value);
+      bytes += next.value.byteLength;
+    }
+  } catch {
+    // A body that breaks off has nothing more to say; what was read stands.
   } finally {
     clearTimeout(timer);
+    // Not awaited: a cancel that never settles must not hold back the attempt's charge.
+    if (!finished) void reader.cancel().catch(() => undefined);
   }
-  const latencyMs = Date.now() - providerStart;
+  const kept = new Uint8Array(Math.min(bytes, FAILED_BODY_MAX_BYTES));
+  let at = 0;
+  for (const chunk of chunks) {
+    if (at >= kept.length) break;
+    const part = chunk.subarray(0, kept.length - at);
+    kept.set(part, at);
+    at += part.byteLength;
+  }
+  return new TextDecoder().decode(kept);
+}
+
+/** Whether the app went away, so no later attempt is worth sending. */
+function clientGone(c: ProxyContext): boolean {
+  return c.req.raw.signal?.aborted === true;
+}
+
+/**
+ * Sends the attempts in order and answers with the first that is not moved
+ * on from (D13, v1's fallback chains):
+ *
+ * - An attempt that gets no answer (it timed out, or the connection failed),
+ *   or answers 429 or 5xx, is followed by the next one. The last attempt's
+ *   answer is passed to the app as it is, provider errors included.
+ * - Every attempt is one charge, with its own `seq`. A failed one costs
+ *   nothing: its cost is empty, not $0.
+ * - All attempts share one budget for the provider's first byte, the
+ *   proxy's own 120 s: a fallback gets what is left of it.
+ * - Every attempt sends the whole body again: it was read whole before the
+ *   first one, and each attempt's own body is built only when it is sent.
+ * - A fallback's key is opened only when the chain reaches it, within what
+ *   is left of the budget. One that cannot be opened is logged and skipped;
+ *   when nothing usable is left, the previous attempt's answer is passed to
+ *   the app as it is.
+ * - Nothing is sent after the app went away.
+ */
+export async function sendAttempts(
+  c: ProxyContext,
+  stripped: readonly string[],
+  attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
+): Promise<Response> {
+  let deadline: number | undefined;
+  /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number } | null = null;
+  /** The error of an attempt that got no answer, for when nothing usable follows it. */
+  let failure: GatewayError | null = null;
+  const budgetExhausted = (index: number): GatewayError => {
+    log("warn", "provider_ttfb_budget_exhausted", {
+      app: attempts[0].attempt.appId,
+      skipped: attempts.slice(index).map((next) => next.connection.slug),
+    });
+    return new GatewayError(504, "provider_error", "Provider did not respond in time");
+  };
+  for (const [index, prepared] of attempts.entries()) {
+    const last = index === attempts.length - 1;
+    const { connection, description, attempt } = prepared;
+    // The budget is checked before anything is opened or built for a fallback.
+    // With a failed answer held and no time left for another, that answer is
+    // passed on as it is, never a gateway error.
+    if (deadline !== undefined && deadline - Date.now() <= 0) {
+      if (previous !== null) {
+        budgetExhausted(index);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      }
+      throw budgetExhausted(index);
+    }
+    let secret: string;
+    try {
+      secret = await withinMs(prepared.secret(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
+    } catch (error) {
+      // With nothing tried before it and nothing after it, its failure is the answer.
+      if (last && previous === null && failure === null) throw error;
+      log("warn", "preset_fallback_skipped", {
+        app: attempt.appId,
+        providerSlug: connection.slug,
+        code: error instanceof GatewayError ? error.code : "key_timeout",
+      });
+      continue;
+    }
+    // Everything up to the fetch can still end the call. Until the fetch is
+    // under way, a held failed answer is kept, and any exit returns it.
+    let fetching: Promise<Response>;
+    let controller: AbortController;
+    let timer: ReturnType<typeof setTimeout>;
+    let providerStart: number;
+    try {
+      const body = prepared.body();
+      const headers = upstreamHeaders(c.req.raw.headers);
+      for (const name of stripped) headers.delete(name);
+      for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
+        if (!headers.has(name)) headers.set(name, value);
+      }
+      // A JSON body is sent as JSON whatever type the client named, as v1. An
+      // untouched form keeps the client's type and boundary; a changed one gets
+      // the type fetch writes for it.
+      if (body.contentType === null) headers.delete("content-type");
+      else headers.set("content-type", body.contentType);
+      // A callback, so a key containing `$&` or `$1` is sent as it is.
+      headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
+      const origin = upstreamOrigin(connection, description, prepared.hostKey);
+      const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
+
+      // Checked just before each fetch: nothing is sent for an app that went
+      // away. The app's own signal is never passed to the provider, so an
+      // answer already on its way is read to the end and charged.
+      if (clientGone(c)) {
+        throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
+      }
+      providerStart = Date.now();
+      deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
+      const remainingMs = deadline - providerStart;
+      if (remainingMs <= 0) throw budgetExhausted(index);
+      controller = new AbortController();
+      const abort = controller;
+      timer = setTimeout(() => abort.abort(), remainingMs);
+      fetching = fetch(url, {
+        method: c.req.method,
+        headers,
+        body: body.form ?? (body.bytes as Uint8Array<ArrayBuffer>),
+        // Never follow a redirect: it could take the key to another host.
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      throw error;
+    }
+    // The fallback is under way: the failed answer before it is charged and let go.
+    if (previous !== null) {
+      retire(c, previous);
+      previous = null;
+    }
+    let upstream: Response;
+    try {
+      upstream = await fetching;
+    } catch (error) {
+      const timedOut = controller.signal.aborted;
+      log("warn", timedOut ? "provider_ttfb_timeout" : "provider_request_failed", {
+        app: attempt.appId,
+        providerSlug: connection.slug,
+        operation: attempt.operation,
+        ...(attempts.length > 1 ? { attempt: attempt.seq } : {}),
+        error: errorFacts(error),
+      });
+      record(c, attempt, {
+        status: timedOut ? "timeout" : "network_error",
+        httpStatus: null,
+        errorCode: null,
+        usage: null,
+        cut: false,
+        latencyMs: Date.now() - providerStart,
+      });
+      failure = timedOut
+        ? new GatewayError(504, "provider_error", "Provider did not respond in time")
+        : new GatewayError(502, "provider_error", "Provider request failed");
+      if (!last) continue;
+      throw failure;
+    } finally {
+      clearTimeout(timer);
+    }
+    const latencyMs = Date.now() - providerStart;
+
+    if (!last && retryableStatus(upstream.status)) {
+      // Kept, not yet charged: if no later attempt can be sent, it is the answer.
+      previous = { prepared, upstream, latencyMs };
+      failure = null;
+      continue;
+    }
+    return answer(c, prepared, upstream, latencyMs);
+  }
+  // Every later attempt was skipped: the last failed answer is passed on as it is.
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+  throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
+}
+
+/** A promise that rejects once `ms` have passed without it settling. */
+function withinMs<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new GatewayError(504, "provider_error", "The provider key could not be opened in time")), Math.max(0, ms));
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Charges a failed answer a fallback was sent after, at no cost, with the
+ * error code its body names, read in the background and the rest cancelled.
+ */
+function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: Response; latencyMs: number }): void {
+  const { upstream, latencyMs } = failed;
+  const head = upstream.body === null ? Promise.resolve("") : failedBodyHead(upstream.body);
+  c.executionCtx.waitUntil(
+    head.then((text) =>
+      recordLedgerEntry(
+        c.env,
+        safeCharge(failed.prepared.attempt, {
+          status: "provider_error",
+          httpStatus: upstream.status,
+          errorCode: providerErrorCode(text),
+          usage: null,
+          cut: false,
+          latencyMs,
+        }),
+      ),
+    ),
+  );
+}
+
+/** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
+function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number): Response {
+  const { description, operation, attempt } = prepared;
   const responseHeaders = clientResponseHeaders(upstream.headers);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;

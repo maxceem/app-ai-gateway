@@ -205,6 +205,32 @@ export class ProviderMatcher {
     return { kind: "refused", reason: "not_declared" };
   }
 
+  /**
+   * Where a declared operation is sent when the gateway builds the request
+   * itself (a preset, or a rewritten model in the path), with `parts` filling
+   * its template's parts. Null for an operation this provider does not
+   * declare, a template with a `{name...}` part, a part `parts` leaves out, or
+   * a path that comes out with a dot segment.
+   */
+  upstreamFor(operationName: string, parts: Parts): UpstreamTarget | null {
+    const compiled = this.operations.find((candidate) => candidate.operation.name === operationName);
+    if (compiled === undefined) return null;
+    const template = compiled.upstream ?? compiled.template;
+    for (const segment of template.segments) {
+      if (segment.kind === "multi" || segment.kind === "rest") return null;
+      if (segment.kind === "part" && !Object.hasOwn(parts, segment.name)) return null;
+    }
+    const path = fillTemplate(template, parts);
+    return path === null ? null : { host: compiled.host, path };
+  }
+
+  /** The names of an operation's template parts, or null when this provider does not declare it. */
+  templateParts(operationName: string): readonly string[] | null {
+    const compiled = this.operations.find((candidate) => candidate.operation.name === operationName);
+    if (compiled === undefined) return null;
+    return compiled.template.segments.flatMap((segment) => (segment.kind === "part" || segment.kind === "multi" ? [segment.name] : []));
+  }
+
   private closedLists(compiled: CompiledOperation, context: MatchContext): ClosedLists {
     if (compiled.pricedParts.length === 0) return compiled.fixedLists;
     const priced = context.pricedModels?.(compiled.operation.name) ?? NOTHING;

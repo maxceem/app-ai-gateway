@@ -22,6 +22,7 @@ export const CONFIG_REJECTION_REASONS: ReadonlySet<string> = new Set([
   "provider_disabled",
   "pricing_not_configured",
   "max_output_tokens_exceeded",
+  "preset_not_found",
 ]);
 
 /** Every refusal recorded as a rejection event, as v1's list. */

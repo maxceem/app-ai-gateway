@@ -5,9 +5,11 @@
  * hostnames, with a Worker route for `/v2` and `/v2/*` (plan section 9.1,
  * test T23). Anything it does not declare is answered with a JSON 404.
  *
- * It serves app sign-in, `/me` and provider requests
+ * It serves app sign-in, `/me`, provider requests
  * (`/v2/apps/{app}/proxy/{provider}/...`, outside the catalog because they
- * follow the provider descriptions) itself. The management API, people's
+ * follow the provider descriptions) and presets
+ * (`/v2/apps/{app}/presets/{slug}`, whose bodies follow their provider's API
+ * style) itself. The management API, people's
  * sign-in, the OAuth server and the console's pages are loaded on first use
  * (`./management/app.ts`), and so is the MCP endpoint (`./mcp/app.ts`). The
  * OAuth discovery documents live under `/.well-known/`, outside `/v2`.
@@ -24,6 +26,7 @@ import { asGatewayError } from "./core/platform-errors.ts";
 import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
 import { meHandler } from "./routes/me.ts";
+import { presetHandler } from "./proxy/presets.ts";
 import { proxyHandler } from "./proxy/serve.ts";
 import { lazyRoutes } from "./http/lazy.ts";
 
@@ -114,6 +117,7 @@ app.all("/v2/mcp", lazyRoutes(() => import("./mcp/app.ts").then((module) => modu
 
 // Provider requests. No deadline of their own: a provider may stream for minutes.
 app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);
+app.post("/v2/apps/:app/presets/:slug", presetHandler);
 
 app.notFound(async (c) => {
   // A page of the console, such as `/v2/access` or `/v2/oauth/consent`: no

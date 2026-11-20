@@ -279,7 +279,8 @@ function ProvidersTab({ app }: { app: App }) {
       const entry = routingOf(draftFor(connection.slug));
       if (entry) next[connection.slug] = entry;
     }
-    if (await save({ config: { ...app.config, routing: { providers: next } } }, "Providers saved")) setDrafts({});
+    // Only the providers change: the rest of routing, such as model rewrites, is kept.
+    if (await save({ config: { ...app.config, routing: { ...app.config.routing, providers: next } } }, "Providers saved")) setDrafts({});
   };
 
   if (providers.isPending) return <Skeleton className="h-24 w-full" />;
