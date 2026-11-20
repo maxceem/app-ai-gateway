@@ -7,17 +7,27 @@
  *   billable by the same rule (`../pricing/billability.ts`), or the request
  *   is refused before it spends anything;
  * - the charge is priced at the model the answer says served the request, if
- *   it is one of them (`chargedAs`).
+ *   it is one of them, in the service mode the request asks of that model's
+ *   provider (`chargedAs`);
+ * - when the answer does not say which model served it, the request's own is
+ *   charged, as an estimate, and logged.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { billing, type Billing, type PriceSources } from "../pricing/billability.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { fieldValue } from "../usage/service-modes.ts";
+import { fieldValue, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
+import { requestedServiceMode } from "./meter.ts";
+
+/** How one of the request's other models is billed: its price, and the mode the request asks of its provider. */
+export interface Alternative {
+  readonly billing: Billing;
+  readonly requestedMode: { readonly mode: ServiceMode; readonly unknown?: ServiceModeValue };
+}
 
 /** The request's other models, each with how it is billed. Empty when it names none. */
-export type Alternatives = ReadonlyMap<string, Billing>;
+export type Alternatives = ReadonlyMap<string, Alternative>;
 
 const NONE: Alternatives = new Map();
 
@@ -30,7 +40,7 @@ export function judgedAlternatives(
   description: ProviderDescription,
   operation: OperationDescription,
   body: Record<string, unknown>,
-  policy: { readonly allowed: readonly string[] | undefined; readonly sources: PriceSources },
+  policy: { readonly allowed: readonly string[] | undefined; readonly sources: PriceSources; readonly baseUrl: string | null },
 ): Alternatives {
   const field = description.alternativeModels?.field;
   if (field === undefined) return NONE;
@@ -39,7 +49,7 @@ export function judgedAlternatives(
   if (!Array.isArray(listed) || !listed.every((model) => typeof model === "string" && model.length > 0)) {
     throw new GatewayError(400, "invalid_request", `${field} must be a list of model ids`);
   }
-  const judged = new Map<string, Billing>();
+  const judged = new Map<string, Alternative>();
   for (const model of listed as string[]) {
     if (policy.allowed !== undefined && !policy.allowed.includes(model)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });
@@ -52,7 +62,9 @@ export function judgedAlternatives(
         data: { model, field },
       });
     }
-    judged.set(model, bill);
+    // Read with that model's provider's table: one request may name an
+    // Anthropic model and a Gemini one, whose tiers mean different things.
+    judged.set(model, { billing: bill, requestedMode: requestedServiceMode(description, policy.baseUrl, body, model) });
   }
   return judged;
 }
@@ -63,13 +75,27 @@ export function judgedAlternatives(
  * the request did not is logged, and the request's own model is charged.
  */
 export function chargedAs(attempt: CallAttempt, servedModel: string | null): CallAttempt {
-  if (servedModel === null || servedModel === attempt.model) return attempt;
-  const alternative = attempt.alternatives?.get(servedModel);
+  const others = attempt.alternatives;
+  if (others === undefined || others.size === 0 || servedModel === attempt.model) return attempt;
+  const alternative = servedModel === null ? undefined : others.get(servedModel);
   if (alternative === undefined) {
-    if (attempt.alternatives !== undefined && attempt.alternatives.size > 0) {
-      log("warn", "served_model_unexpected", { app: attempt.appId, providerSlug: attempt.providerSlug, model: attempt.model });
-    }
-    return attempt;
+    // It may have been served by another model, priced differently: the
+    // request's own model is charged, marked as an estimate.
+    log("warn", servedModel === null ? "served_model_unknown" : "served_model_unexpected", {
+      app: attempt.appId,
+      providerSlug: attempt.providerSlug,
+      model: attempt.model,
+    });
+    return { ...attempt, servedModelUnknown: true };
   }
-  return { ...attempt, model: servedModel, price: alternative.price, reportsCost: alternative.reportsCost };
+  const { mode, unknown } = alternative.requestedMode;
+  const { requestedModeUnknown: _ignored, ...rest } = attempt;
+  return {
+    ...rest,
+    model: servedModel!,
+    price: alternative.billing.price,
+    reportsCost: alternative.billing.reportsCost,
+    requestedMode: mode,
+    ...(unknown !== undefined ? { requestedModeUnknown: unknown } : {}),
+  };
 }

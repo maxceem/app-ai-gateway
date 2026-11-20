@@ -496,9 +496,44 @@ function jsonObjectAt(text: string, start: number): string | null {
 
 const TAIL_USAGE_KEYS = ["usage", "usageMetadata"] as const;
 
-/** The served tier of a truncated document: the tail's last, else the head's first. */
-const TAIL_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/gu;
-const HEAD_SERVICE_TIER = /"service_tier"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/u;
+/**
+ * The root fields a reader or the meter needs from a document too large to
+ * keep whole: its usage objects, and the strings naming what served it (the
+ * model, and the tier). Read only at the root, through one lookup over the
+ * kept tail, then the kept head (`rootFields`).
+ */
+const ROOT_OBJECT_KEYS: readonly string[] = TAIL_USAGE_KEYS;
+const ROOT_STRING_KEYS: readonly string[] = ["model", "service_tier"];
+
+/**
+ * The root field `key` whose value starts right after `end` (the key's closing
+ * quote), if it is one of the root fields and whole: an object for a usage key,
+ * a string for a string key. Undefined otherwise.
+ */
+function rootFieldValue(text: string, key: string, end: number): { value: unknown; length: number } | undefined {
+  if (ROOT_OBJECT_KEYS.includes(key)) {
+    const separator = /^\s*:\s*\{/u.exec(text.slice(end + 1));
+    if (!separator) return undefined;
+    const object = jsonObjectAt(text, end + 1 + separator[0].length - 1);
+    if (!object) return undefined;
+    try {
+      return { value: JSON.parse(object) as unknown, length: separator[0].length + object.length - 1 };
+    } catch {
+      return undefined;
+    }
+  }
+  if (ROOT_STRING_KEYS.includes(key)) {
+    const string = /^\s*:\s*("(?:[^"\\]|\\.){0,400}")/u.exec(text.slice(end + 1));
+    if (!string) return undefined;
+    try {
+      const value = JSON.parse(string[1]!) as unknown;
+      return typeof value === "string" ? { value, length: string[0].length } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
 
 /**
  * A document holding whatever usage objects the text still has whole: the
@@ -531,7 +566,8 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
 }
 
 /**
- * The top-level `usage` or `usageMetadata` objects of a document's kept head,
+ * The root fields (`ROOT_OBJECT_KEYS`, `ROOT_STRING_KEYS`) of a document's kept
+ * head: the top-level `usage` or `usageMetadata` objects, the `model`, the tier,
  * for an answer that reports its usage first and then a large payload, such
  * as an image API's base64 (`gpt-image-1`). Only keys of the root object
  * count, never one nested in the answer's content, which the client may have
@@ -551,17 +587,11 @@ function headUsageDocument(head: string): Record<string, unknown> | null {
       if (end >= head.length) break;
       const key = head.slice(at + 1, end);
       at = end;
-      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key)) continue;
-      const separator = /^\s*:\s*\{/u.exec(head.slice(end + 1));
-      if (!separator) continue;
-      const object = jsonObjectAt(head, end + 1 + separator[0].length - 1);
-      if (!object) break;
-      try {
-        document[key] = JSON.parse(object) as unknown;
-      } catch {
-        break;
-      }
-      at = end + separator[0].length + object.length - 1;
+      if (depth !== 1 || Object.hasOwn(document, key)) continue;
+      const found = rootFieldValue(head, key, end);
+      if (found === undefined) continue;
+      document[key] = found.value;
+      at = end + found.length;
     } else if (character === "{" || character === "[") {
       depth += 1;
     } else if (character === "}" || character === "]") {
@@ -582,8 +612,8 @@ function escapedQuote(text: string, at: number): boolean {
 }
 
 /**
- * The root's `usage` and `usageMetadata` objects found in a document's kept
- * tail, read backwards from where the root object ends, so only keys of the
+ * The root fields (`ROOT_OBJECT_KEYS`, `ROOT_STRING_KEYS`) found in a
+ * document's kept tail, read backwards from where the root object ends, so only keys of the
  * root count: a `usage` nested in the answer's content (a Gemini function
  * call's arguments, say) never does. The tail's start may be cut, but every
  * position read backwards from the real end is placed exactly. Null when the
@@ -608,16 +638,9 @@ function rootTailUsageDocument(tail: string): Record<string, unknown> | null {
       while (at >= 0 && !(tail[at] === '"' && !escapedQuote(tail, at))) at -= 1;
       if (at < 0) break;
       const key = tail.slice(at + 1, end);
-      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key) || Object.hasOwn(document, key)) continue;
-      const separator = /^\s*:\s*\{/u.exec(tail.slice(end + 1));
-      if (!separator) continue;
-      const object = jsonObjectAt(tail, end + 1 + separator[0].length - 1);
-      if (!object) continue;
-      try {
-        document[key] = JSON.parse(object) as unknown;
-      } catch {
-        // Not a whole object after all.
-      }
+      if (depth !== 1 || Object.hasOwn(document, key)) continue;
+      const found = rootFieldValue(tail, key, end);
+      if (found !== undefined) document[key] = found.value;
     }
   }
   if (Object.keys(document).length === 0) return null;
@@ -696,17 +719,21 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    // The root's usage in the tail, where most answers report, tried first;
-    // then the root's usage at the top of the kept head, for an answer that
-    // reports it before a large payload. A reader takes the first it can use.
-    const documents = [headUsageDocument(body.head), rootTailUsageDocument(body.tail)].filter(
-      (document): document is Record<string, unknown> => document !== null,
-    );
+    // The root's fields in the tail, where most answers report, tried first;
+    // then the root's fields at the top of the kept head, for an answer that
+    // reports them before a large payload. A reader takes the first usage it
+    // can use; the strings naming what served it (the model, the tier) are the
+    // root's own wherever they were kept, so each document carries them.
+    const head = headUsageDocument(body.head);
+    const tail = rootTailUsageDocument(body.tail);
+    const documents = [head, tail].filter((document): document is Record<string, unknown> => document !== null);
+    for (const key of ROOT_STRING_KEYS) {
+      const value = tail?.[key] ?? head?.[key];
+      if (value === undefined) continue;
+      for (const document of documents) document[key] ??= value;
+    }
     const last = withDuration(documents.at(-1) ?? null, body.tail, body.head);
     if (documents.length === 0 && last !== null) documents.push(last);
-    const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
-    // Only beside usage it found: the tier says what that usage was billed in.
-    for (const document of documents) if (tier !== undefined && document.usage !== undefined) document.service_tier = tier;
     return documentValues(documents);
   }
   let parsed: unknown;

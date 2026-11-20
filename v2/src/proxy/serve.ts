@@ -285,7 +285,11 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
       }
       // Models the provider may serve the request with instead pass the same policy.
-      const alternatives = judgedAlternatives(description, operation, body, { allowed: routing.models, sources: priceSources(connection) });
+      const alternatives = judgedAlternatives(description, operation, body, {
+        allowed: routing.models,
+        sources: priceSources(connection),
+        baseUrl: connection.baseUrl,
+      });
       // A rewritten model is written where the request named it: the path,
       // or the body or form field.
       let upstream = match.upstream;
@@ -926,7 +930,10 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
             ? streamClosed(body, operation.style)
             : null;
         const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
-        const served = servedServiceMode(description, attempt.requestedMode, usage, upstream.headers, attempt.model);
+        // Charged as the model that served it, when the request named another it could be served with:
+        // its price, and the mode the request asked of its provider, which the served mode starts from.
+        const charged = ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt;
+        const served = servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
         const outcome: AttemptOutcome = ok
           ? {
               // A stream the provider broke, or ended early, is a failed attempt, not one the app left.
@@ -948,8 +955,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
               cut,
               latencyMs,
             };
-        // Priced at the model that served it, when the request named another it could be served with.
-        return recordLedgerEntry(c.env, safeCharge(ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt, outcome));
+        return recordLedgerEntry(c.env, safeCharge(charged, outcome));
       },
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),

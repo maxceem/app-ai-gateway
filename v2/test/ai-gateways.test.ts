@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
-import { priceTokens } from "../src/pricing/tokens.ts";
+import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
 import type { ConnectionRecord } from "../src/providers/connections.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
@@ -441,6 +441,42 @@ describe("calls through the gateways, end to end", () => {
     expect(rows[0]!.model).toBe("anthropic/claude-sonnet-5");
     const expected = priceTokens(listPrice("anthropic", "claude-sonnet-5")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
     expect(Number(rows[0]!.cost_nano)).toBe(expected);
+  });
+
+  it("finds the served model at the root of a large answer, kept or not, and marks a charge it cannot tell as an estimate (S4)", async () => {
+    const open = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", undefined);
+    const fallbacks = { providerOptions: { gateway: { models: ["anthropic/claude-sonnet-5"] } } };
+    // The model is at the top, then 2 MiB of content, then the usage: only the head and the tail are kept.
+    const large = `{"model":"anthropic/claude-sonnet-5","choices":[{"message":{"content":"${"x".repeat(2 * 1024 * 1024)}"}}],"usage":${JSON.stringify(usage)}}`;
+    fetchSpy.mockResolvedValueOnce(new Response(large, { headers: { "content-type": "application/json" } }));
+    await call(open.slug, open.appKey, open.appId, "v1/chat/completions", { model: "openai/gpt-4o-mini", messages: [], ...fallbacks });
+    // An answer that names no model could have been either: the request's own is charged, as an estimate.
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "c3", choices: [], usage }));
+    await call(open.slug, open.appKey, open.appId, "v1/chat/completions", { model: "openai/gpt-4o-mini", messages: [], ...fallbacks });
+    const rows = await charges(open.appId);
+    const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    const served = rows.find((row) => row.model === "anthropic/claude-sonnet-5")!;
+    expect(Number(served.cost_nano)).toBe(priceTokens(listPrice("anthropic", "claude-sonnet-5")!, tokens)!.cost);
+    const unknown = rows.find((row) => row.model === "openai/gpt-4o-mini")!;
+    expect(unknown.price_is_estimate).toBe(1);
+  });
+
+  it("prices a fallback that served in the mode the request asks of its own provider (S9)", async () => {
+    const open = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", undefined);
+    fetchSpy.mockResolvedValue(Response.json({ id: "c4", model: "google/gemini-4-neon", choices: [], usage }));
+    await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
+      model: "anthropic/claude-sonnet-5",
+      messages: [],
+      service_tier: "priority",
+      providerOptions: { gateway: { models: ["google/gemini-4-neon"] } },
+    });
+    const rows = await charges(open.appId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.model).toBe("google/gemini-4-neon");
+    // `priority` means nothing to Anthropic, but is Gemini's priority tier.
+    const priority = priceInServedMode(listPrice("gemini", "gemini-4-neon")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 }, { tier: "priority", region: "global" })!;
+    expect(Number(rows[0]!.cost_nano)).toBe(priority.cost);
+    expect(rows[0]!.price_is_estimate).toBe(0);
   });
 
   it("refuses to save a Vercel model with no price under its namespace", async () => {

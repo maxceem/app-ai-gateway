@@ -69,6 +69,8 @@ export interface CallAttempt {
   readonly clientTraceId: string | null;
   /** The request's other models the provider may serve it with, each judged and priced (`./alternatives.ts`). */
   readonly alternatives?: Alternatives;
+  /** The answer did not say which of the request's models served it: the price is an estimate. */
+  readonly servedModelUnknown?: true;
 }
 
 export interface AttemptOutcome {
@@ -109,7 +111,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
 
   const reported = outcome.providerCostUsd ?? null;
   // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
-  const modeUnknown = attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined;
+  // So is a call whose answer did not say which of the request's models served it.
+  const modeUnknown =
+    attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined || attempt.servedModelUnknown === true;
   const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode);
 
   let costed: Costed;

@@ -200,7 +200,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     applyOutputCap(operation, judged, preset.max_output_tokens);
     // A preset fixes its model: another the provider could serve instead is
     // allowed only when it is that same model.
-    judgedAlternatives(description, operation, judged, { allowed: [model], sources: priceSources(connection) });
+    judgedAlternatives(description, operation, judged, { allowed: [model], sources: priceSources(connection), baseUrl: connection.baseUrl });
     fields = judged;
     build = () => {
       const body = shaped();
