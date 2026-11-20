@@ -107,13 +107,12 @@ function mapTables(
 }
 
 /**
- * Refuses a stored price that any effective price run time could produce from
- * it (each key value, each service mode, `effectivePrices`) cannot bill with,
- * or holds a rate too large to store. The run-time functions decide; saving
- * composes nothing of its own.
+ * Refuses a stored price that, at some key value and mode serving can select,
+ * no operation of the connection can charge (the one charge function decides,
+ * `savedPriceProblem`), or that holds a rate too large to store.
  */
 function assertEffectivePrices(stored: CustomerRates, model: string, providerType: string, where: string): void {
-  const problem = savedPriceProblem(stored, model, providerType);
+  const problem = savedPriceProblem(stored, model, providerType, builtInProvider(providerType)?.operations ?? []);
   if (problem === null) return;
   if (problem.kind === "too_many_combinations") {
     throw new GatewayError(

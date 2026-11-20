@@ -1926,6 +1926,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_text_message": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
@@ -2062,6 +2066,10 @@
                       "per_request": {
                         "type": "number",
                         "minimum": 0
+                      },
+                      "per_text_message": {
+                        "type": "number",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -2195,6 +2203,10 @@
                           "minimum": 0
                         },
                         "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_text_message": {
                           "type": "number",
                           "minimum": 0
                         }
@@ -2431,6 +2443,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_text_message": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
@@ -2567,6 +2583,10 @@
                       "per_request": {
                         "type": "number",
                         "minimum": 0
+                      },
+                      "per_text_message": {
+                        "type": "number",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -2700,6 +2720,10 @@
                           "minimum": 0
                         },
                         "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_text_message": {
                           "type": "number",
                           "minimum": 0
                         }
@@ -2989,6 +3013,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_text_message": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
@@ -3125,6 +3153,10 @@
                       "per_request": {
                         "type": "number",
                         "minimum": 0
+                      },
+                      "per_text_message": {
+                        "type": "number",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -3258,6 +3290,10 @@
                           "minimum": 0
                         },
                         "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_text_message": {
                           "type": "number",
                           "minimum": 0
                         }
@@ -3479,6 +3515,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_text_message": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_context_threshold": {
                   "type": "integer",
                   "exclusiveMinimum": 0
@@ -3615,6 +3655,10 @@
                       "per_request": {
                         "type": "number",
                         "minimum": 0
+                      },
+                      "per_text_message": {
+                        "type": "number",
+                        "minimum": 0
                       }
                     },
                     "additionalProperties": false
@@ -3748,6 +3792,10 @@
                           "minimum": 0
                         },
                         "per_request": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_text_message": {
                           "type": "number",
                           "minimum": 0
                         }

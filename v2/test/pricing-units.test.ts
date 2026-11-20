@@ -20,7 +20,7 @@ import { PRICE_LIST, listPrice } from "../src/pricing/prices.ts";
 import { V1_PRICE_FILE, V2_PRICE_OVERLAY } from "../src/pricing/price-file.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import type { ProviderDescription } from "../src/providers/operation.ts";
-import { operationUnits, scaledCount } from "../src/pricing/units.ts";
+import { meterCases, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
 import { openai } from "../src/providers/openai.ts";
 import { attemptUsage, headerUsage } from "../src/proxy/meter.ts";
@@ -44,6 +44,15 @@ const priced = (rates: Record<string, number>, extra: Partial<ModelPrice> = {}):
 
 const operation = (meter: Parameters<typeof defineOperation>[0]["meter"], extra: Record<string, unknown> = {}) =>
   defineOperation({ name: "test.op", match: { method: "POST", path: "v1/op" }, lifecycle: "call", transport: "http", model: { in: "body", field: "model" }, meter, ...extra });
+
+/** Each way a meter's usage can come out, as the units in it: `~` worked out from the request, `missing` a header that was not sent. */
+const ways = (op: Parameters<typeof meterCases>[0]) =>
+  meterCases(op).map((way) =>
+    way.map((usage) => {
+      const units = [...(usage.noTokens === true ? [] : ["tokens"]), ...Object.keys(usage.units ?? {}).map((unit) => (usage.estimatedUnits?.includes(unit as never) === true ? `${unit}~` : unit))];
+      return units.join("+") + (usage.reportMissing === true ? " missing" : "");
+    }),
+  );
 
 describe("unit rates", () => {
   it("prices each unit by its rate, rounding up once", () => {
@@ -70,12 +79,16 @@ describe("unit rates", () => {
     expect(reportedUnits({ ...counted({ characters: 42, credits: 7000 }), estimatedUnits: ["characters"] })).toEqual({ unit: "credits", units: 7000 });
   });
 
-  it("knows the units each meter measures", () => {
-    expect(operationUnits(openai.operations.find((op) => op.name === "openai.speech")!)).toEqual(["tokens", "characters"]);
-    expect(operationUnits(operation({ kind: "request_count" }))).toEqual(["requests"]);
+  it("knows the ways each meter's usage can come out", () => {
+    // Speech: tokens (with the request's characters beside them), or plain audio billed on the characters alone.
+    expect(ways(openai.operations.find((op) => op.name === "openai.speech")!)).toEqual([["tokens+characters~"], ["characters~"]]);
+    expect(ways(operation({ kind: "request_count" }))).toEqual([["requests"]]);
+    // A header: one way, the header present and the header missing, since one model's answers come both ways.
     expect(
-      operationUnits(operation({ kind: "response_header", header: "x-cost", unit: "credits", estimate: { measure: "characters", field: "text", unit: "characters" } })),
-    ).toEqual(["credits", "characters"]);
+      ways(operation({ kind: "response_header", header: "x-cost", unit: "credits", estimate: { measure: "characters", field: "text", unit: "characters" } })),
+    ).toEqual([["credits+characters~", "characters~ missing"]]);
+    // A session's provider events: tokens, or session seconds, never nothing.
+    expect(ways(operation({ kind: "provider_event", adapter: "x" }, { lifecycle: "session", transport: "websocket" }))).toEqual([["tokens"], ["session_seconds"]]);
   });
 
   it("lets an operation bill a model only in a unit it measures", () => {
@@ -124,11 +137,15 @@ describe("price keys", () => {
   });
 
   it("searches an unpriced mode with the same rule: a reported measure before any estimate, however cheap", () => {
-    // Standard bills only the estimated characters, dearly; priority's own rate bills the reported credits.
+    // Standard bills only the estimated characters, dearly; priority's own rate bills the reported credits, cheaply.
     const price = priced({ per_million_characters: 1_000_000_000_000 }, { modes: { priority: { per_credit: 0.000001 } } });
     const usage = { ...counted({ credits: 5_000, characters: 100 }), estimatedUnits: ["characters" as const] };
     const fast = parseServiceModeName("fast")!;
-    expect(priceInServedMode(price, usage, fast)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
+    // The search picks priority's reported credits; then the floor, the model's own standard charge for the same usage, wins.
+    expect(priceInServedMode(price, usage, fast)).toMatchObject({ unit: "characters", measured: "estimated", estimated: true, cost: 100_000_000 });
+    // Where the standard price is the cheaper, the reported credits bill.
+    const cheap = priced({ per_million_characters: 1 }, { modes: { priority: { per_credit: 1 } } });
+    expect(priceInServedMode(cheap, usage, fast)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
   });
 
   it("falls back to the model's own standard price when no candidate can bill the measure", () => {
@@ -187,7 +204,10 @@ describe("customer rates in any unit", () => {
   });
 
   it("refuses on save any key value whose effective price bills nothing, as run time resolves it", () => {
-    expect(() => save({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/q x/u);
+    // `size`, which the images API reads: at x no operation can charge a request.
+    expect(() => save({ m: ModelPricingSchema.parse({ by: { size: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/size x/u);
+    // A key no operation reads stays unknown, as on a real request, so the dearest value that bills is charged.
+    expect(() => save({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).not.toThrow();
     expect(() => save({ m: ModelPricingSchema.parse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }) })).not.toThrow();
     // A price that bills nothing at all.
     expect(() => save({ m: ModelPricingSchema.parse({ cached_input: 1 }) })).toThrow(/no rate that bills/u);
@@ -420,8 +440,8 @@ describe("review fixes", () => {
   });
 
   it("takes the units a meter's reader reports from the meter, never from its style's name", () => {
-    expect(operationUnits(openai.operations.find((op) => op.name === "openai.transcription")!)).toContain("audio_seconds");
-    expect(operationUnits(operation({ kind: "response_json", style: "openai-chat", units: ["audio_seconds"] }))).toEqual(["tokens", "audio_seconds"]);
+    expect(ways(openai.operations.find((op) => op.name === "openai.transcription")!)).toContainEqual(["audio_seconds"]);
+    expect(ways(operation({ kind: "response_json", style: "openai-chat", units: ["audio_seconds"] }))).toEqual([["tokens"], ["audio_seconds"], ["tokens+audio_seconds"]]);
   });
 
   it("reads a boolean price key value, and treats one over 100 characters as unknown", () => {
@@ -440,13 +460,15 @@ describe("review fixes", () => {
     expect(priceInServedMode(priced({ per_request: 1 }), counted, STANDARD_MODE)).toMatchObject({ measured: "complete" });
   });
 
-  it("requires a header meter's price to bill both the header's unit and its estimate's", () => {
+  it("saves a header meter's price only when both the header's unit and its estimate's can be charged", () => {
     const op = operation({ kind: "response_header", header: "x-cost", unit: "credits", estimate: { measure: "characters", field: "text", unit: "characters" } });
     const sources = (rates: Record<string, number>) => priceSources({ type: "openai", rates: { m: rates } });
-    expect(billing(op, sources({ per_credit: 1 }), "m").problem).toBe("wrong_unit");
-    expect(billing(op, sources({ per_credit: 1, per_million_characters: 1 }), "m").problem).toBeNull();
-    // A key value's unit rate replaces the base's: that price bills no credits.
-    expect(billing(op, priceSources({ type: "openai", rates: { m: { per_credit: 1, by: { x: { a: { per_million_characters: 1 } } } } } }), "m").problem).toBe("wrong_unit");
+    // Credits only: a missing header leaves the estimate unpriced, so saving refuses it; a request it can charge is still served.
+    expect(billing(op, sources({ per_credit: 1 }), "m", undefined, "save").problem).toBe("wrong_unit");
+    expect(billing(op, sources({ per_credit: 1 }), "m").problem).toBeNull();
+    expect(billing(op, sources({ per_credit: 1, per_million_characters: 1 }), "m", undefined, "save").problem).toBeNull();
+    // A key value whose rate bills only characters still charges both ways: the estimate when the header is missing, and on its own when not.
+    expect(billing(op, priceSources({ type: "openai", rates: { m: { per_credit: 1, by: { x: { a: { per_million_characters: 1 } } } } } }), "m", undefined, "save").problem).toBeNull();
   });
 
   it("ignores a header figure too large to count exactly, so the estimate bills", () => {

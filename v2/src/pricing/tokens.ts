@@ -17,12 +17,13 @@
  * The whole is rounded up once. A model priced per minute, per hour or per
  * image bills that measure instead (`priceUsage`).
  */
-import { priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { log } from "../core/log.ts";
+import { assertStorable, compareExact, exactCost, MoneyError, rate, roundUp, toMilli, type ExactCost, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { chargeCandidates, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
+import { chargeCandidates, modeAxes, priceInMode, type ModelPrice } from "./prices.ts";
 import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
@@ -30,6 +31,8 @@ export type TokenUsage = TokenCounts;
 
 export interface Pricing {
   readonly cost: NanoDollars;
+  /** The cost before rounding, so candidates are compared exactly and only the winner is rounded. */
+  readonly exact: ExactCost;
   /**
    * The rates billed with, stored on the charge: the four buckets for a token
    * price (a units correction prices with them), plus each modality and
@@ -42,6 +45,18 @@ export interface Pricing {
   readonly units: number;
   /** The measure billed was worked out from the request, not reported by the provider. */
   readonly fromEstimate: boolean;
+}
+
+/**
+ * A price before rounding: what candidates are compared on. Only the chosen
+ * one is rounded, once (`withCost`); a candidate whose cost could not be
+ * stored is refused before that (`assertStorable`).
+ */
+type Candidate = Omit<Pricing, "cost">;
+
+/** A candidate's cost rounded, once: it has passed `assertStorable`, so this cannot overflow. */
+function withCost<C extends Candidate>(candidate: C): C & { readonly cost: NanoDollars } {
+  return { ...candidate, cost: roundUp(candidate.exact) };
 }
 
 type Part = readonly [units: number, rate: RateNanoPerMillion];
@@ -144,6 +159,12 @@ function splitCachedModalities(usage: UsageObservation): { input: ModalityCounts
  * tokens: it has no input or output rate (a model priced per minute, say).
  */
 export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing | null {
+  const candidate = tokenCandidate(price, usage);
+  return candidate === null ? null : withCost(candidate);
+}
+
+/** `priceTokens` before rounding. */
+function tokenCandidate(price: ModelPrice, usage: UsageObservation): Candidate | null {
   const { rates } = price;
   if (rates.input === undefined || rates.output === undefined) return null;
   const prompt = usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens;
@@ -160,7 +181,9 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
     ...bucketParts("cache_write", usage.cacheWriteTokens, buckets.cache_write, price, longContext, tokenVariants, used),
     ...sideParts(usage.outputTokens, buckets.output, modalityRates(price, OUTPUT_RATES, longContext, used), usage.modalityTokens?.output),
   ];
-  return { cost: priceUnitsSum(parts), rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
+  const exact = exactCost(parts.map(([units, value]) => [units, value, 1_000_000] as const));
+  assertStorable(exact);
+  return { exact, rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
 }
 
 /**
@@ -176,84 +199,38 @@ export function unitCount(usage: UsageObservation, unit: Unit): number | undefin
   return undefined;
 }
 
-/** The unit rates a price states, in table order. */
-function statedUnitRates(price: ModelPrice): UnitRate[] {
-  return UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
+/** What divides a count at a rate: the unit rate's amount (`./units.ts`), else a million (a token rate). */
+export function rateDivisor(field: string): number {
+  return UNIT_RATES.find((unitRate) => unitRate.field === field)?.per ?? 1_000_000;
 }
 
 /**
- * The first unit a stated rate bills that the usage reports, with its count.
- * With `reportedOnly`, a unit worked out from the request is passed over.
+ * The one cost formula for counts at named rates: Σ count × rate ÷ the rate's
+ * divisor, rounded up once. A live charge on a unit rate and a settlement's
+ * final units both use it, so the same count at the same rate always costs
+ * the same.
  */
-function reportedUnit(unitRate: UnitRate, usage: UsageObservation, reportedOnly = false): { unit: Unit; count: number } | null {
-  for (const unit of unitRate.units) {
-    if (reportedOnly && usage.estimatedUnits?.includes(unit) === true) continue;
-    const count = unitCount(usage, unit);
-    if (count !== undefined) return { unit, count };
-  }
-  return null;
+export function costOfRates(parts: readonly (readonly [field: string, count: number, rate: RateNanoPerMillion])[]): NanoDollars {
+  return roundUp(exactOfRates(parts));
 }
 
-/**
- * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
- * per million characters, ...), or undefined when the price states none.
- * A unit the provider reported is billed before one worked out from the
- * request (a header's credits before the request's characters); among them,
- * the table's order. A price with unit rates but none the usage reports
- * prices as null: the counter was never sent, and pricing it would claim a
- * confident $0. A price that also bills tokens falls back to them.
- */
-function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
-  const stated = statedUnitRates(price);
-  if (stated.length === 0) return undefined;
-  const tokensReported = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
-  for (const reportedOnly of [true, false]) {
-    // Reported tokens the price bills come before a unit worked out from the request.
-    if (!reportedOnly && tokensReported) return undefined;
-    for (const unitRate of stated) {
-      const reported = reportedUnit(unitRate, usage, reportedOnly);
-      if (reported === null) continue;
-      const value = price.rates[unitRate.field]!;
-      return {
-        cost: priceUnitsPer(reported.count, value, unitRate.per),
-        rates: { [unitRate.field]: value },
-        longContext: false,
-        unit: reported.unit,
-        units: reported.count,
-        fromEstimate: usage.estimatedUnits?.includes(reported.unit) === true,
-      };
-    }
-  }
-  return price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true ? undefined : null;
+/** `costOfRates` before rounding. */
+function exactOfRates(parts: readonly (readonly [field: string, count: number, rate: RateNanoPerMillion])[]): ExactCost {
+  return exactCost(parts.map(([field, count, value]) => [count, value, rateDivisor(field)] as const));
 }
 
-/**
- * The cost of one usage at one price, in the unit the price is in: a unit
- * rate where it states one the usage reports, else tokens. Null when the
- * usage does not report that unit (v1's `reportsPricedMeasure`): a duration
- * alone for a token-priced model, or tokens alone for a time-priced one.
- */
-export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
-  const unit = priceUnitRate(price, usage);
-  if (unit !== undefined) return unit;
-  if (usage.noTokens === true) return null;
-  return priceTokens(price, usage);
+/** `costOfRates` for one count at one rate. */
+export function costAtRate(field: string, count: number, value: RateNanoPerMillion): NanoDollars {
+  return costOfRates([[field, count, value]]);
 }
 
-/**
- * A usage priced on one given unit only, or null when the price has no rate
- * for it or the usage does not report it: the standard floor is worked out on
- * the same measure the chosen price billed.
- */
-function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Pricing | null {
-  if (unit === "tokens") return usage.noTokens === true ? null : priceTokens(price, usage);
-  const count = unitCount(usage, unit);
-  if (count === undefined) return null;
-  const unitRate = UNIT_RATES.find((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined);
-  if (unitRate === undefined) return null;
+/** A usage priced on one unit rate, for one unit it bills. */
+function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: number, usage: UsageObservation): Candidate {
   const value = price.rates[unitRate.field]!;
+  const exact = exactOfRates([[unitRate.field, count, value]]);
+  assertStorable(exact);
   return {
-    cost: priceUnitsPer(count, value, unitRate.per),
+    exact,
     rates: { [unitRate.field]: value },
     longContext: false,
     unit,
@@ -263,17 +240,123 @@ function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "t
 }
 
 /**
+ * The unit-rate options a price has for a usage, in the order they can win:
+ * units the provider reported first; only when there are none, units worked
+ * out from the request. `reportedOnly` asks for the first group alone. An
+ * option is priced only when it can win, so a rate whose cost cannot be
+ * stored voids its candidate only if it would have been billed. Pricing one
+ * throws `MoneyError` when its cost cannot be stored (not isolated per
+ * option: the whole candidate is refused, `isolated` in `priceInServedMode`,
+ * so a charge never falls to a cheaper measure as if exact).
+ */
+function unitOptions(price: ModelPrice, usage: UsageObservation, units: (unit: Unit) => boolean, estimated: boolean): Candidate[] {
+  const options: Candidate[] = [];
+  for (const unitRate of UNIT_RATES) {
+    if (price.rates[unitRate.field] === undefined) continue;
+    for (const unit of unitRate.units) {
+      if (!units(unit) || (usage.estimatedUnits?.includes(unit) === true) !== estimated) continue;
+      const count = unitCount(usage, unit);
+      if (count !== undefined) options.push(atUnitRate(price, unitRate, unit, count, usage));
+    }
+  }
+  return options;
+}
+
+/**
+ * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
+ * per million characters, ...), or undefined when the price states none.
+ * The order a measure can win in: a unit the provider reported (the dearest
+ * of those, `preferred`), then reported tokens the price bills, then a unit
+ * worked out from the request (a header's credits before the request's
+ * characters). A price with unit rates but none the usage reports prices as
+ * null: the counter was never sent, and pricing it would claim a confident
+ * $0. A price that also bills tokens falls back to them.
+ */
+function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | null | undefined {
+  if (!UNIT_RATES.some((unitRate) => price.rates[unitRate.field] !== undefined)) return undefined;
+  const billsTokens = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
+  const reported = preferred(unitOptions(price, usage, () => true, false));
+  if (reported !== null) return reported;
+  if (billsTokens) return undefined;
+  return preferred(unitOptions(price, usage, () => true, true));
+}
+
+/**
+ * A usage priced on one given unit only, reported or worked out from the
+ * request as the usage says, or null when the price has no rate for it or the
+ * usage does not report it. Throws `MoneyError` when its cost cannot be stored.
+ */
+function onUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Candidate | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : tokenCandidate(price, usage);
+  const estimated = usage.estimatedUnits?.includes(unit) === true;
+  return preferred(unitOptions(price, usage, (one) => one === unit, estimated));
+}
+
+/**
+ * The dearest charge a price can make for a usage: across every measure the
+ * provider reported (each reported unit, and its tokens), or, only when it
+ * can bill none of them, across the units worked out from the request.
+ * Throws `MoneyError` when a cost it must compare cannot be stored.
+ */
+function dearestCharge(price: ModelPrice, usage: UsageObservation): Candidate | null {
+  const tokens = usage.noTokens === true ? null : tokenCandidate(price, usage);
+  const reported = preferredAny([...unitOptions(price, usage, () => true, false), tokens]);
+  return reported ?? preferredAny(unitOptions(price, usage, () => true, true));
+}
+
+/**
+ * The cost of one usage at one price, in the unit the price is in: a unit
+ * rate where it states one the usage reports, else tokens. Null when the
+ * usage does not report that unit (v1's `reportsPricedMeasure`): a duration
+ * alone for a token-priced model, or tokens alone for a time-priced one.
+ */
+export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
+  const candidate = usageCandidate(price, usage);
+  return candidate === null ? null : withCost(candidate);
+}
+
+/** `priceUsage` before rounding. */
+function usageCandidate(price: ModelPrice, usage: UsageObservation): Candidate | null {
+  const unit = priceUnitRate(price, usage);
+  if (unit !== undefined) return unit;
+  if (usage.noTokens === true) return null;
+  return tokenCandidate(price, usage);
+}
+
+/**
  * The one rule for picking among prices of the same usage, wherever several
  * are tried (key candidates, the modes an estimate searches): one billing a
  * measure the provider reported before any billing the request's estimate;
  * among those, the dearest. Null when there are none.
  */
-function preferred<P extends Pricing>(prices: readonly P[]): P | null {
+function preferred<P extends Candidate>(prices: readonly P[]): P | null {
   const reported = prices.filter((one) => !one.fromEstimate);
   const pool = reported.length > 0 ? reported : prices;
   let dearest: P | null = null;
-  for (const one of pool) if (dearest === null || one.cost > dearest.cost) dearest = one;
+  for (const one of pool) if (dearest === null || compareExact(one.exact, dearest.exact) > 0) dearest = one;
   return dearest;
+}
+
+/** The dearest of several prices, whatever their measure: the floor takes the higher, never the cheaper. */
+function preferredAny(prices: readonly (Candidate | null)[]): Candidate | null {
+  let dearest: Candidate | null = null;
+  for (const one of prices) if (one !== null && (dearest === null || compareExact(one.exact, dearest.exact) > 0)) dearest = one;
+  return dearest;
+}
+
+/**
+ * One candidate's price, or null when it cannot be worked out because a rate
+ * or count is too large to store: that candidate is skipped and logged, and
+ * the others still compete. A charge none can price is left unresolved.
+ */
+function isolated<P>(price: () => P | null, facts: Record<string, unknown>): P | null {
+  try {
+    return price();
+  } catch (error) {
+    if (!(error instanceof MoneyError)) throw error;
+    log("warn", "price_candidate_too_large", { ...facts, error: error.message });
+    return null;
+  }
 }
 
 /** A charge's price, as one result: what both a live charge and the sweep write. */
@@ -298,7 +381,13 @@ export type ChargePricing = Pricing & {
  * 3. An estimate (a mode or key value with no price, a missing report, or
  *    `doubt`: a mode value the gateway does not know, a served model it
  *    cannot tell, ...) is floored at the model's own standard price, before
- *    any key value or mode, worked out on the same measure (`AGENTS.md`).
+ *    any key value or mode: the dearer of that price on the unit the
+ *    estimate billed, and the dearest charge that price can make across every
+ *    measure the provider reported (the request's estimate only when none can
+ *    be billed). An estimate bills more than either, never less (`AGENTS.md`).
+ *
+ * A candidate whose cost cannot be stored is skipped and logged; a floor that
+ * cannot be stored leaves the usage unpriced, never billed below it.
  * 4. When no candidate can bill, the model's own standard price bills, as an
  *    estimate, if it can. Only otherwise is the usage unpriced (null).
  */
@@ -310,53 +399,65 @@ export function priceInServedMode(
 ): ChargePricing | null {
   // The one candidate list, which eligibility judges too (`chargeCandidates`).
   const keyed = chargeCandidates(price, usage.priceKeys);
-  const priced: (Pricing & { readonly estimated: boolean })[] = [];
+  const priced: (Candidate & { readonly estimated: boolean })[] = [];
   for (const candidate of keyed.keyed) {
-    const one = priceIn(candidate, usage, served);
+    const one = isolated(() => priceIn(candidate, usage, served), { candidate: "key" });
     if (one !== null) priced.push(one);
   }
   const standardPrice = keyed.fallback;
   const chosen = preferred(priced);
   if (chosen === null) {
-    const standard = priceUsage(standardPrice, usage);
-    return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
+    const standard = isolated(() => usageCandidate(standardPrice, usage), { candidate: "standard" });
+    if (standard === null) return null;
+    const standardMeasured: ChargePricing["measured"] = standard.fromEstimate ? "estimated" : "complete";
+    return withCost({ ...standard, estimated: true, measured: standardMeasured });
   }
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
-  const measured = chosen.fromEstimate ? "estimated" : "complete";
-  if (!estimated) return { ...chosen, estimated: false, measured };
-  // The one floor: at least the model's own standard price on the same measure.
-  const floor = priceOnUnit(standardPrice, usage, chosen.unit);
-  return floor !== null && floor.cost > chosen.cost ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
+  const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
+  if (!estimated) return withCost({ ...chosen, estimated: false, measured });
+  // The one floor, both parts applied: the dearer of (a) the model's own standard price on the unit the
+  // estimate billed, so it never bills below the standard rate for its own unit, and (b) the dearest charge
+  // the standard price can make for this usage (`dearestCharge`), so it never bills below base whichever
+  // unit won. A floor that cannot be stored is never dropped for the lower estimate: the charge is left
+  // unresolved.
+  let floor: Candidate | null;
+  try {
+    floor = preferredAny([onUnit(standardPrice, usage, chosen.unit), dearestCharge(standardPrice, usage)]);
+  } catch (error) {
+    if (!(error instanceof MoneyError)) throw error;
+    log("error", "price_floor_too_large", { error: error.message });
+    return null;
+  }
+  const billed = floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? floor : chosen;
+  // The label follows the measure actually billed: the floor may bill the request's estimate.
+  return withCost({ ...billed, estimated: true, measured: billed.fromEstimate ? "estimated" : measured });
 }
 
-function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {
+function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Candidate & { readonly estimated: boolean }) | null {
   const served = priceInMode(price, mode);
   if (served !== undefined) {
-    const priced = priceUsage(served, usage);
+    const priced = usageCandidate(served, usage);
     return priced === null ? null : { ...priced, estimated: false };
   }
-  const tiers = new Set<ServiceTier>();
-  const regions = new Set<ServiceRegion>();
   // Priced on its own only: a tier or region that appears only inside a pair
-  // has no price of its own.
-  for (const listed of listedModes(price)) {
-    if (listed.region === "global") tiers.add(listed.tier);
-    else if (listed.tier === "standard") regions.add(listed.region);
-  }
+  // has no price of its own (the same axes `servedModes` combines).
+  const { tiers, regions } = modeAxes(price);
   const tierPriced = mode.tier === "standard" || tiers.has(mode.tier);
   const regionPriced = mode.region === "global" || regions.has(mode.region);
   const cheaper = SERVICE_TIERS[mode.tier].rank < SERVICE_TIERS.standard.rank;
   const tryTiers: ServiceTier[] = tierPriced ? [mode.tier] : cheaper ? ["standard"] : ["standard", ...tiers];
   const tryRegions: ServiceRegion[] = regionPriced ? [mode.region] : ["global", ...regions];
-  const tried: Pricing[] = [];
+  const tried: Candidate[] = [];
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
-      const candidate = priceInMode(price, { tier, region });
-      const priced = candidate === undefined ? null : priceUsage(candidate, usage);
+      const priced = isolated(() => {
+        const candidate = priceInMode(price, { tier, region });
+        return candidate === undefined ? null : usageCandidate(candidate, usage);
+      }, { tier, region });
       if (priced !== null) tried.push(priced);
     }
   }
-  const fallback = preferred(tried) ?? priceUsage(price, usage);
+  const fallback = preferred(tried) ?? usageCandidate(price, usage);
   return fallback === null ? null : { ...fallback, estimated: true };
 }
 
@@ -380,4 +481,21 @@ export function reportedUnits(usage: UsageObservation): { unit: Unit | "tokens";
     if (usage.images !== undefined) return { unit: "images", units: usage.images };
   }
   return { unit: "tokens", units: totalTokens(usage) };
+}
+
+/**
+ * The unit, count and `measured` label a charge keeps for its usage: a priced
+ * one's from its pricing result, an unpriced one's from the unit it reports
+ * (`reportedUnits`), estimated when that unit was worked out from the request.
+ * The one place a charge's measure is labelled; a cut answer is `partial`
+ * whatever this says.
+ */
+export function chargedMeasure(
+  priced: ChargePricing | null,
+  usage: UsageObservation,
+): { readonly unit: Unit | "tokens"; readonly units: number; readonly measured: "complete" | "estimated" } {
+  if (priced !== null) return { unit: priced.unit, units: priced.units, measured: priced.measured };
+  const kept = reportedUnits(usage);
+  const estimated = kept.unit !== "tokens" && usage.estimatedUnits?.includes(kept.unit) === true;
+  return { ...kept, measured: estimated ? "estimated" : "complete" };
 }

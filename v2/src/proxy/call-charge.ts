@@ -35,7 +35,7 @@ import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
-import { priceInServedMode, reportedUnits } from "../pricing/tokens.ts";
+import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -192,14 +192,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = "complete";
   }
 
-  // The unit the price billed, with its count, from the pricing result itself;
-  // an unpriced usage keeps the unit it reports.
-  const billed = priced !== null ? { unit: priced.unit, units: priced.units } : usage === null ? null : reportedUnits(usage);
-  if (usage !== null && reported === null) {
-    // Worked out from the request, not reported by the provider: estimated, whatever the price.
-    const unpricedEstimate = billed !== null && billed.unit !== "tokens" && usage.estimatedUnits?.includes(billed.unit) === true;
-    measured = outcome.cut ? "partial" : priced !== null ? priced.measured : unpricedEstimate ? "estimated" : "complete";
-  }
+  // The unit, count and label the charge keeps, decided in one place (`chargedMeasure`).
+  const billed = usage === null ? null : chargedMeasure(priced, usage);
+  if (billed !== null && reported === null) measured = outcome.cut ? "partial" : billed.measured;
   const charge: ChargeRow = {
     id,
     kind: "attempt",

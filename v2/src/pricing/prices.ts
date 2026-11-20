@@ -14,7 +14,7 @@
  * entry with `unlisted_since`, and is still priced.
  */
 import { PRICE_FILE } from "./price-file.ts";
-import type { OperationDescription, Unit } from "../providers/operation.ts";
+import type { OperationDescription } from "../providers/operation.ts";
 import { MoneyError, NANO_PER_DOLLAR, rate, rateFromDollarsPerMillion, type RateNanoPerMillion } from "../money.ts";
 import {
   STANDARD_MODE,
@@ -23,9 +23,11 @@ import {
   serviceModeName,
   type ModePrice,
   type ServiceMode,
+  type ServiceRegion,
+  type ServiceTier,
 } from "../usage/service-modes.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
-import { operationUnits, UNIT_RATES } from "./units.ts";
+import { UNIT_RATES } from "./units.ts";
 
 /** The name of a rate a price may carry: a token rate (`input`, `long_cache_write_1h`, ...) or a unit rate (`per_minute`). */
 export type RateField = string;
@@ -208,22 +210,10 @@ export function resolvePrice(
   return ours === null ? null : { price: ours, source: "list_rate" };
 }
 
-/** Whether rates bill tokens: they have input and output rates. */
-function billsTokens(rates: RateSet): boolean {
-  return rates.input !== undefined && rates.output !== undefined;
-}
-
-/** Whether rates bill a unit: a unit rate for it, or input and output for tokens. */
-function billsUnit(rates: RateSet, unit: Unit | "tokens"): boolean {
-  if (unit === "tokens") return billsTokens(rates);
-  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined && unitRate.units.includes(unit));
-}
-
 /**
  * The prices a charge's selection walks, in one list (`priceInServedMode`):
  * the key candidates for the request's values, then the model's own standard
- * price, which bills when no candidate can. Without `values`, every key value:
- * what eligibility judges.
+ * price, which bills when no candidate can.
  */
 export function chargeCandidates(
   price: ModelPrice,
@@ -231,50 +221,6 @@ export function chargeCandidates(
 ): { readonly keyed: readonly ModelPrice[]; readonly estimated: boolean; readonly fallback: ModelPrice } {
   const { candidates, estimated } = keyCandidates(price, values);
   return { keyed: candidates.map((candidate) => candidate.price), estimated, fallback: priceInMode(price, STANDARD_MODE) ?? price };
-}
-
-/**
- * Every price a request may be charged at: each candidate the selection
- * walks (`chargeCandidates`) in each mode run time reaches, through the same
- * mode function. For a price whose rates do not fit once a mode scales them
- * (saving refuses it), the candidates as they are.
- */
-function chargeablePrices(price: ModelPrice): readonly { readonly price: ModelPrice }[] {
-  const { keyed, fallback } = chargeCandidates(price);
-  const inModes = (one: ModelPrice) => {
-    try {
-      return effectivePrices({ ...one, keyed: undefined });
-    } catch {
-      return [{ price: one }];
-    }
-  };
-  return [...keyed.flatMap(inModes), { price: fallback }];
-}
-
-/**
- * Whether an operation can bill a model at this price: the one definition,
- * used at save and on every request. It is judged on the effective prices the
- * charge itself can use (each key value, each service mode), so a rate a key
- * value or a mode supplies counts, and a key value that replaces the base's
- * unit rates is judged as it bills.
- *
- * - Usually: some effective price bills one of the units the operation
- *   measures (`operationUnits`).
- * - A header meter with an estimate: every effective price bills both the
- *   header's unit and the estimate's, so a missing header falls back to a
- *   measure the price can still bill.
- */
-export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
-  const effective = chargeablePrices(price);
-  const { meter } = operation;
-  if (meter.kind === "response_header" && meter.estimate !== undefined) {
-    // Every price a key value can produce; the standard fallback bills only when they cannot.
-    const estimate = meter.estimate;
-    const keyed = effective.slice(0, -1);
-    return keyed.every((one) => billsUnit(one.price.rates, meter.unit) && billsUnit(one.price.rates, estimate.unit));
-  }
-  const units = operationUnits(operation);
-  return effective.some((one) => units.some((unit) => billsUnit(one.price.rates, unit)));
 }
 
 /** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */
@@ -334,28 +280,41 @@ export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string
   return { candidates: candidates.map(({ values: used, rates }) => ({ values: used, price: { ...price, rates } })), estimated };
 }
 
-/** Whether rates can bill anything: input and output tokens, or a unit rate. */
-export function ratesBill(rates: RateSet): boolean {
-  return (rates.input !== undefined && rates.output !== undefined) || statesUnitRate(rates);
+/**
+ * The tiers and the regions a price states on their own (not only inside a
+ * pair): what an unpriced mode searches, and what `servedModes` combines.
+ */
+export function modeAxes(price: ModelPrice): { readonly tiers: ReadonlySet<ServiceTier>; readonly regions: ReadonlySet<ServiceRegion> } {
+  const listed = listedModes(price);
+  return {
+    tiers: new Set(listed.filter((mode) => mode.region === "global").map((mode) => mode.tier)),
+    regions: new Set(listed.filter((mode) => mode.tier === "standard").map((mode) => mode.region)),
+  };
+}
+
+/**
+ * Every service mode the run-time selection can price a request in: standard,
+ * each listed mode, and each tier in each region, which `priceInMode`
+ * resolves as run time does (an exact pair first, else the tier's price times
+ * the region's factor). The one list of modes; saving and eligibility walk it.
+ */
+export function servedModes(price: ModelPrice): ServiceMode[] {
+  const { tiers, regions } = modeAxes(price);
+  const modes: ServiceMode[] = [STANDARD_MODE, ...listedModes(price)];
+  for (const tier of tiers) for (const region of regions) if (tier !== "standard") modes.push({ tier, region });
+  return modes;
 }
 
 /**
  * Every effective price a model's price can produce at run time: each key
  * value (and so every unknown-value candidate) in each service mode the
- * run-time selection can reach, resolved by the run-time functions themselves
- * (`keyCandidates`, `priceInMode`). Saving checks each for billability and
- * for rates that fit; there is no other composition. A rate that does not fit
- * throws here, as it would at run time (`MoneyError`).
+ * run-time selection can reach (`servedModes`), resolved by the run-time
+ * functions themselves (`keyCandidates`, `priceInMode`). Saving uses it to
+ * check that rates fit. A rate that does not fit throws here, as it would at
+ * run time (`MoneyError`).
  */
 export function effectivePrices(price: ModelPrice): { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] {
-  const listed = listedModes(price);
-  const tiers = new Set(listed.filter((mode) => mode.region === "global").map((mode) => mode.tier));
-  const regions = new Set(listed.filter((mode) => mode.tier === "standard").map((mode) => mode.region));
-  // Standard, each listed mode, and each tier in each region, which
-  // `priceInMode` resolves as run time does: an exact pair first, else the
-  // tier's price times the region's factor.
-  const modes: ServiceMode[] = [{ tier: "standard", region: "global" }, ...listed];
-  for (const tier of tiers) for (const region of regions) if (tier !== "standard") modes.push({ tier, region });
+  const modes = servedModes(price);
   const out: { values: Readonly<Record<string, string>>; mode: string; price: ModelPrice }[] = [];
   for (const candidate of keyCandidates(price).candidates) {
     for (const mode of modes) {

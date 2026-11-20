@@ -23,9 +23,9 @@
  *   a final settlement of one charge never both add its full cost. Pricing
  *   stops once a final settlement exists; the settlement already includes it.
  */
-import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
+import { rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources } from "../pricing/billability.ts";
-import { priceInServedMode } from "../pricing/tokens.ts";
+import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
@@ -141,13 +141,15 @@ function correctionFor(
     });
     return { correction, finalCost: final.costNano };
   }
-  const parts: [number, ReturnType<typeof rate>][] = [];
+  // Each bucket is a rate the charge stored, priced by the one cost formula the
+  // live charge uses (a token rate per million, a unit rate per its amount).
+  const parts: [string, number, ReturnType<typeof rate>][] = [];
   for (const [bucket, units] of Object.entries(final.buckets)) {
     const stored = original.rates?.[bucket];
     if (stored === undefined) return { noRate: bucket };
-    parts.push([units, rate(stored)]);
+    parts.push([bucket, units, rate(stored)]);
   }
-  const finalCost = priceUnitsSum(parts);
+  const finalCost = costOfRates(parts);
   const correction = correctionOf(original, {
     id,
     kind: "units",
