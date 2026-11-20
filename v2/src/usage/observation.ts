@@ -54,8 +54,9 @@ export interface UsageObservation extends TokenCounts {
   /** Images an image API reports it made, for a model priced per image. */
   readonly images?: number;
   /**
-   * The answer reported a duration and no token counts. Its zero token counts
-   * are not a measure: a token-priced model cannot be billed from them.
+   * The answer reported no token counts, only a duration or an image count.
+   * Its zero token counts are not a measure: a token-priced model cannot be
+   * billed from them, never as $0.
    */
-  readonly durationOnly?: true;
+  readonly noTokens?: true;
 }

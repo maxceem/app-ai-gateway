@@ -37,6 +37,7 @@ import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
+import { multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
 import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
@@ -187,8 +188,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
     const bytes = await readBody();
     const contentType = c.req.header("content-type") ?? "";
-    const parsed = await requestBody(bytes, contentType, operation, description);
-    const body = parsed.kind === "json" ? parsed.body : formFields(parsed.form);
+    const parsed = requestBody(bytes, contentType, operation, description);
+    const body = parsed.kind === "json" ? parsed.body : formFields(parsed.fields);
     if (parsed.kind === "json") refuseBackground(operation, body);
     model = requestModel(operation, body, match.parts);
     if (routing.models !== undefined && !routing.models.includes(model)) {
@@ -197,9 +198,20 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     const resolved = resolvePrice(connection.type, model, connection.rates);
     // A price in another unit (per minute, say) cannot bill this operation.
     const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
-    if (price === null && routing.models === undefined && !reportsCost(operation)) {
-      // Never served: a model with no price is refused, and nothing is listed by name.
-      throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
+    if (price === null && !reportsCost(operation)) {
+      // Never served: a model with no price is refused, unless the app lists
+      // it by name (its price may have gone since: it is served, and priced
+      // later). A model priced only in a unit this operation cannot bill (a
+      // per-minute price on chat) was never served on it, so it is refused
+      // even when listed: an app may list it for another of its operations.
+      if (resolved !== null) {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+          data: { model, operation: operation.name },
+        });
+      }
+      if (routing.models === undefined) {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
+      }
     }
     // Read, never judged: a service mode is never refused (`./meter.ts`).
     const mode = requestedServiceMode(description, connection.baseUrl, body);
@@ -210,7 +222,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
     const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
     // A transcription is only sent in a format whose answer can be priced.
-    const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.form) : null;
+    const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
 
     // Admission comes last, once the request is known to be one that can be
     // served: the app's own limits, then the plan allowance.
@@ -228,7 +240,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       parsed.kind === "json"
         ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
         : format !== null
-          ? { form: withField(parsed.form, "response_format", format), contentType: null }
+          ? { form: await withFormat(bytes, contentType, format), contentType: null }
           : { bytes, contentType };
 
     const attempt: CallAttempt = {
@@ -298,7 +310,9 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
   return { reason: error instanceof GatewayError ? error.code : "internal_error", scope: null };
 }
 
-type ParsedBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
+type ParsedBody =
+  | { readonly kind: "json"; readonly body: Record<string, unknown> }
+  | { readonly kind: "form"; readonly fields: ReadonlyMap<string, readonly FieldValue[]> };
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
 type OutgoingBody =
@@ -311,30 +325,33 @@ function isMultipart(contentType: string): boolean {
 
 /**
  * A request body, read by its content type: a multipart form, else JSON (v1).
- * A form that names its model more than once is refused: pricing reads the
+ *
+ * A form is never parsed whole: only the text fields the gateway reads (the
+ * model, a transcription's format, the service mode) are read from the bytes
+ * it holds, and the upload itself is not copied (`../http/multipart.ts`). A
+ * form that names its model more than once is refused: pricing reads the
  * first, and a provider that read another would run a model nobody priced.
  * A transcription to a provider that judges its format must be a form, since
  * only a form names the format where it can be read.
  */
-async function requestBody(
-  bytes: Uint8Array,
-  contentType: string,
-  operation: OperationDescription,
-  description: ProviderDescription,
-): Promise<ParsedBody> {
+function requestBody(bytes: Uint8Array, contentType: string, operation: OperationDescription, description: ProviderDescription): ParsedBody {
   if (isMultipart(contentType)) {
-    let form: FormData;
+    const boundary = multipartBoundary(contentType);
+    const location = operation.model;
+    const modelField = location.in === "body" || location.in === "form" ? location.field : null;
+    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names)]);
+    if (modelField !== null) wanted.add(modelField);
+    let fields: Map<string, FieldValue[]>;
     try {
-      form = await new Request("https://local.invalid", {
-        method: "POST",
-        headers: { "content-type": contentType },
-        body: bytes as Uint8Array<ArrayBuffer>,
-      }).formData();
+      if (boundary === null) throw new MultipartError("The form names no boundary");
+      fields = scanMultipart(bytes, boundary, wanted);
     } catch {
       throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
     }
-    if (form.getAll("model").length > 1) throw new GatewayError(400, "invalid_request", "The form names its model more than once");
-    return { kind: "form", form };
+    if (modelField !== null && (fields.get(modelField)?.length ?? 0) > 1) {
+      throw new GatewayError(400, "invalid_request", "The form names its model more than once");
+    }
+    return { kind: "form", fields };
   }
   if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
     throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
@@ -343,21 +360,27 @@ async function requestBody(
 }
 
 /** A form's text fields as a record, first value of each, for the model and service mode readers. Files are left out. */
-function formFields(form: FormData): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  form.forEach((value, name) => {
-    if (typeof value === "string" && !Object.hasOwn(fields, name)) fields[name] = value;
-  });
-  return fields;
+function formFields(fields: ReadonlyMap<string, readonly FieldValue[]>): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const [name, values] of fields) {
+    const first = values[0];
+    if (typeof first === "string") record[name] = first;
+  }
+  return record;
 }
 
-/** A copy of a form with one field set, so fetch writes a fresh boundary for it. */
-function withField(source: FormData, name: string, value: string): FormData {
-  const form = new FormData();
-  source.forEach((entry, key) => {
-    if (key !== name) form.append(key, entry);
-  });
-  form.set(name, value);
+/**
+ * The upload with its `response_format` set, as v1 does: parsed whole, which
+ * copies it, only on this path, where the body must change. fetch writes a
+ * fresh boundary for it.
+ */
+async function withFormat(bytes: Uint8Array, contentType: string, format: string): Promise<FormData> {
+  const form = await new Request("https://local.invalid", {
+    method: "POST",
+    headers: { "content-type": contentType },
+    body: bytes as Uint8Array<ArrayBuffer>,
+  }).formData();
+  form.set("response_format", format);
   return form;
 }
 
@@ -367,12 +390,16 @@ function withField(source: FormData, name: string, value: string): FormData {
  * the request's is fine as it is, else the format that extends it. A format
  * with no measure and no extension is refused, and so is a form naming two.
  */
-function meteredTranscriptionFormat(operation: OperationDescription, description: ProviderDescription, form: FormData): string | null {
+function meteredTranscriptionFormat(
+  operation: OperationDescription,
+  description: ProviderDescription,
+  fields: ReadonlyMap<string, readonly FieldValue[]>,
+): string | null {
   const formats = description.transcriptionFormats;
   if (operation.style !== "openai-transcription" || formats === undefined) return null;
-  const requested = form.getAll("response_format");
+  const requested = fields.get("response_format") ?? [];
   const named = requested[0];
-  if (requested.length > 1 || (named !== undefined && typeof named !== "string")) throw unmeteredFormat(formats.metered);
+  if (requested.length > 1 || named === null) throw unmeteredFormat(formats.metered);
   const format = named ?? formats.default;
   if (formats.metered.includes(format)) return null;
   const upgrade = formats.upgrades !== undefined && Object.hasOwn(formats.upgrades, format) ? formats.upgrades[format] : undefined;

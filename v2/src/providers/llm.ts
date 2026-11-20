@@ -101,17 +101,18 @@ export function messages(name: string, path: string, options: TextOptions = {}):
 /**
  * Speech to text (v1's `audio_transcription`). The request is usually a
  * multipart upload with the model in a form field, and a JSON body is read
- * too. Its `response_format` is judged where the provider declares
+ * too. `defaultModel` is the model a request that names none is billed as,
+ * where the provider runs one by default; its form is sent unchanged. Its `response_format` is judged where the provider declares
  * `transcriptionFormats`, so the answer carries what it is billed by.
  */
-export function transcription(name: string, path: string): OperationDescription {
+export function transcription(name: string, path: string, options: { readonly defaultModel?: string } = {}): OperationDescription {
   return defineOperation({
     name,
     match: { method: "POST", path },
     lifecycle: "call",
     transport: "upload",
     style: "openai-transcription",
-    model: { in: "form", field: "model" },
+    model: { in: "form", field: "model", ...(options.defaultModel !== undefined ? { default: options.defaultModel } : {}) },
     meter: { kind: "response_json", style: "openai-transcription" },
   });
 }

@@ -46,7 +46,7 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUn
   // Seconds at the fixed scale, so the stored figure is a whole number.
   if (usage.audioSeconds !== undefined) measures.audio_ms = toMilli(usage.audioSeconds);
   if (usage.images !== undefined) measures.images = usage.images;
-  if (usage.durationOnly === true) measures.duration_only = 1;
+  if (usage.noTokens === true) measures.no_tokens = 1;
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
   if (modeUnknown) measures.service_mode_unknown = 1;
   return measures;
@@ -93,7 +93,7 @@ export function usageFromMeasures(
     ...(tokenVariants !== undefined ? { tokenVariants: tokenVariants as TokenVariants } : {}),
     ...(audioMs !== undefined ? { audioSeconds: audioMs / 1000 } : {}),
     ...(images !== undefined ? { images } : {}),
-    ...(count(measures, "duration_only") !== undefined ? { durationOnly: true as const } : {}),
+    ...(count(measures, "no_tokens") !== undefined ? { noTokens: true as const } : {}),
   };
   return {
     usage,

@@ -119,7 +119,7 @@ describe("provider connections", () => {
 });
 
 describe("apps", () => {
-  it("checks each model against every enabled operation's unit, with the provider-cost exception per operation", async () => {
+  it("checks each model's unit against the enabled operations, with the provider-cost exception per operation", async () => {
     const key = await seedManagementKey();
     const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });
     const xaiSlug = xai.body.provider.slug as string;
@@ -131,12 +131,15 @@ describe("apps", () => {
       status: 400,
       body: { error: { code: "pricing_not_configured", data: { operation: "xai.messages" } } },
     });
-    // A price per minute cannot bill a token operation.
+    // A price per minute cannot bill a token operation, so whisper-1 needs an operation that can.
     const openai = await createProvider(key);
-    expect(await create({ [openai.body.provider.slug]: { operations: ["openai.chat"], models: ["whisper-1"] } })).toMatchObject({
+    const openaiSlug = openai.body.provider.slug as string;
+    expect(await create({ [openaiSlug]: { operations: ["openai.chat"], models: ["whisper-1"] } })).toMatchObject({
       status: 400,
       body: { error: { code: "pricing_not_configured" } },
     });
+    // Beside chat models, for transcriptions, it is saved: one enabled operation can bill it.
+    expect((await create({ [openaiSlug]: { operations: ["openai.chat", "openai.transcription"], models: ["gpt-4o-mini", "whisper-1"] } })).status).toBe(201);
   });
 
   it("refuses a provider's key header as the end user header when saved", async () => {

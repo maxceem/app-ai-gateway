@@ -26,7 +26,8 @@ export const xai = defineProvider({
       responses("xai.responses", "v1/responses", { providerCost: "xai" }),
       completions("xai.completions", "v1/completions", { providerCost: "xai" }),
       messages("xai.messages", "v1/messages"),
-      transcription("xai.transcription", "v1/stt"),
+      // A form with only the audio is served, as v1: xAI transcribes it with grok-transcribe.
+      transcription("xai.transcription", "v1/stt", { defaultModel: "grok-transcribe" }),
       images("xai.images", "v1/images/generations", { providerCost: "xai" }),
       images("xai.images.edits", "v1/images/edits", { providerCost: "xai" }),
       embeddings("xai.embeddings", "v1/embeddings"),

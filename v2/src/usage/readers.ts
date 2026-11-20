@@ -234,7 +234,7 @@ export function audioUsage(value: unknown, countedInput: readonly Modality[] = N
     nonNegativeNumber(usage?.seconds) ?? nonNegativeNumber(usage?.prompt_audio_seconds) ?? nonNegativeNumber(root.duration);
   const tokens = openAiUsage(root, countedInput);
   if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
-  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, durationOnly: true };
+  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
 }
 
 /**
@@ -246,10 +246,12 @@ export function imagesUsage(value: unknown, countedInput: readonly Modality[] = 
   const root = asRecord(value);
   if (!root) return null;
   const usage = asRecord(root.usage);
-  const images = usage === null ? null : nonNegativeNumber(usage.generated_images);
+  // A count only: a whole number, 0 or more. Anything else is no count at all.
+  const reported = usage?.generated_images;
+  const images = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 0 ? reported : null;
   const tokens = openAiUsage(root, countedInput);
   if (images === null) return tokens;
-  return { ...(tokens ?? EMPTY_USAGE), images: Math.trunc(images) };
+  return tokens === null ? { ...EMPTY_USAGE, images, noTokens: true } : { ...tokens, images };
 }
 
 const ANTHROPIC_COUNTS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;

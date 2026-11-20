@@ -189,7 +189,7 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | nu
 export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
   const unit = priceUnitRate(price, usage);
   if (unit !== undefined) return unit;
-  if (usage.durationOnly === true) return null;
+  if (usage.noTokens === true) return null;
   return priceTokens(price, usage);
 }
 
@@ -202,7 +202,7 @@ export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation)
   const { rates } = price;
   if (rates.per_minute !== undefined || rates.per_hour !== undefined) return usage.audioSeconds !== undefined;
   if (rates.per_image !== undefined) return usage.images !== undefined;
-  return usage.durationOnly !== true;
+  return usage.noTokens !== true;
 }
 
 /**
@@ -259,9 +259,9 @@ export function totalTokens(usage: TokenCounts): number {
  */
 export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: "tokens" | "audio_seconds" | "images"; units: number } {
   const rates = price?.rates;
-  const byTime = rates !== undefined ? rates.per_minute !== undefined || rates.per_hour !== undefined : usage.durationOnly === true;
+  const byTime = rates !== undefined ? rates.per_minute !== undefined || rates.per_hour !== undefined : usage.noTokens === true;
   if (byTime && usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
-  const byImage = rates !== undefined ? rates.per_image !== undefined : false;
+  const byImage = rates !== undefined ? rates.per_image !== undefined : usage.noTokens === true;
   if (byImage && usage.images !== undefined) return { unit: "images", units: usage.images };
   return { unit: "tokens", units: totalTokens(usage) };
 }

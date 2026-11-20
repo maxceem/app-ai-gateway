@@ -150,6 +150,8 @@ describe("paths v1 served", () => {
 describe("transcription", () => {
   it("bills a time-priced model on the seconds it reports, forwarding the upload's own bytes", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.transcription"] });
+    // The upload is read in place, never parsed whole: parsing it would copy every byte.
+    const parsedWhole = vi.spyOn(Request.prototype, "formData");
     fetchSpy.mockResolvedValue(Response.json({ text: "hello", usage: { type: "duration", seconds: 12.34 } }));
     const { response, bytes, contentType } = await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, {
       model: "whisper-1",
@@ -167,6 +169,26 @@ describe("transcription", () => {
     expect(await chargesOf(appId)).toMatchObject([
       { operation: "openai.transcription", model: "whisper-1", status: "ok", price_source: "list_rate", cost_nano: cost, unit: "audio_seconds", units: 12_340 },
     ]);
+    expect(parsedWhole).not.toHaveBeenCalled();
+  });
+
+  it("serves an xAI form with only the audio, billed as grok-transcribe and sent unchanged, as v1", async () => {
+    const { appId, slug, key } = await setup("xai", { operations: ["xai.transcription"] });
+    fetchSpy.mockResolvedValue(Response.json({ text: "hello", duration: 1.25 }));
+    const { response, bytes } = await upload(`/v2/apps/${appId}/proxy/${slug}/v1/stt`, key, { file: AUDIO });
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(fetchSpy.mock.calls[0]![1]?.body as Uint8Array)).toEqual(bytes);
+    expect(await chargesOf(appId)).toMatchObject([
+      { model: "grok-transcribe", unit: "audio_seconds", units: 1250, cost_nano: priceUnitsPer(1250, listPrice("xai", "grok-transcribe")!.rates.per_hour!, 3_600_000) },
+    ]);
+  });
+
+  it("refuses a call to an operation that cannot bill the listed model's unit, though the app lists it for another", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.chat", "openai.transcription"], models: ["gpt-4o-mini", "whisper-1"] });
+    const { response, text } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "whisper-1", messages: [] });
+    expect(response.status).toBe(400);
+    expect(text).toContain("pricing_not_configured");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("bills a token-priced model on its tokens, even when the answer also states a duration", async () => {
@@ -277,6 +299,18 @@ describe("images", () => {
     expect(await chargesOf(appId)).toMatchObject([{ unit: "images", units: 2, cost_nano: fromDollars(0.06) }]);
   });
 
+  it("never bills an image answer with no token counts as $0 for a token-priced model", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.images"] });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValue(Response.json({ data: [{}], usage: { generated_images: 1 } }));
+    await json(`/v2/apps/${appId}/proxy/${slug}/v1/images/generations`, key, { model: "gpt-image-1", prompt: "a cat" });
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, unit: "tokens", units: 0 });
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
+    // Nor later, when the sweep tries: the measures say no tokens were reported.
+    expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({ status: "no_price" });
+  });
+
   it("bills xAI's images at the cost it reports", async () => {
     const { appId, slug, key } = await setup("xai", { operations: ["xai.images"] });
     fetchSpy.mockResolvedValue(Response.json({ data: [{}], usage: { cost_in_usd_ticks: 200_000_000 } }));
@@ -321,11 +355,14 @@ describe("embeddings and speech", () => {
 
 describe("usage in other units", () => {
   it("reads every measure a transcription reports, usage.seconds before duration", () => {
-    expect(audioUsage({ usage: { type: "duration", seconds: 4 }, duration: 9 })).toMatchObject({ audioSeconds: 4, durationOnly: true });
+    expect(audioUsage({ usage: { type: "duration", seconds: 4 }, duration: 9 })).toMatchObject({ audioSeconds: 4, noTokens: true });
     expect(audioUsage({ duration: 9 })).toMatchObject({ audioSeconds: 9, inputTokens: 0 });
     expect(audioUsage({ usage: { prompt_tokens: 5, completion_tokens: 1, prompt_audio_seconds: 2.5 } })).toMatchObject({ audioSeconds: 2.5, inputTokens: 5 });
     expect(audioUsage({ text: "no measure" })).toBeNull();
-    expect(imagesUsage({ usage: { generated_images: 3 } })).toMatchObject({ images: 3, inputTokens: 0 });
+    expect(imagesUsage({ usage: { generated_images: 3 } })).toMatchObject({ images: 3, inputTokens: 0, noTokens: true });
+    expect(imagesUsage({ usage: { generated_images: 2, output_tokens: 10 } })).toEqual(expect.not.objectContaining({ noTokens: true }));
+    // A count is a whole number: 0.5 images is no count at all.
+    expect(imagesUsage({ usage: { generated_images: 0.5 } })).toBeNull();
   });
 
   it("prices time once on whole milliseconds, rounding up, and never bills a missing measure", () => {
@@ -335,13 +372,13 @@ describe("usage in other units", () => {
     expect(priceUnitsPer(1, rate(6_000_000), 60_000)).toBe(100);
     expect(priceUnitsPer(1, rate(1), 60_000)).toBe(1);
     expect(priceUsage(whisper, { inputTokens: 5, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 })).toBeNull();
-    expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, durationOnly: true })).toBeNull();
+    expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, noTokens: true })).toBeNull();
   });
 
   it("keeps the seconds and images in the charge's measures, so the sweep prices them exactly", () => {
-    const usage = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 12.345, images: 2, durationOnly: true as const };
+    const usage = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 12.345, images: 2, noTokens: true as const };
     const back = usageFromMeasures(usageMeasures(usage, STANDARD_MODE))!;
-    expect(back.usage).toMatchObject({ audioSeconds: 12.345, images: 2, durationOnly: true });
+    expect(back.usage).toMatchObject({ audioSeconds: 12.345, images: 2, noTokens: true });
   });
 
   it("lets the sweep price an unresolved time-priced charge on its stored seconds", async () => {
