@@ -357,9 +357,15 @@ export function resolveCall(
   return { kind: "admitted", operation, requested, model, bill };
 }
 
+/** Each allowlist as a set, built once per list: a route's config is one object for the Worker's life, so serving and saving share it. */
+const LISTS = new WeakMap<readonly string[], ReadonlySet<string>>();
+
 /** A route's model names, a set for membership; null when it has no list. */
 function listOf(route: RouteModels): ReadonlySet<string> | null {
-  return route.models === undefined ? null : new Set(route.models);
+  if (route.models === undefined) return null;
+  let set = LISTS.get(route.models);
+  if (set === undefined) LISTS.set(route.models, (set = new Set(route.models)));
+  return set;
 }
 
 /** The model names a request to a route can carry: its model list, or, with none, every model it could name that has a price of the connection's own or a rewrite. */

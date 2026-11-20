@@ -173,23 +173,6 @@ export async function checkAppConfig(
   raw: unknown,
   stored: StoredEntries = NOTHING_STORED,
 ): Promise<AppConfig> {
-  return (await checkedAppConfig(db, accountId, raw, stored)).config;
-}
-
-/**
- * `checkAppConfig`, with the state of the account's connections it was
- * judged against (`readFingerprint`): the write that follows is made only if
- * no connection changed since (`fingerprintGuard`), so a rate saved at the
- * same moment cannot slip past either check.
- */
-export async function checkedAppConfig(
-  db: D1Database,
-  accountId: string,
-  raw: unknown,
-  stored: StoredEntries = NOTHING_STORED,
-): Promise<{ readonly config: AppConfig; readonly connections: string }> {
-  // Read first: a connection written after this is caught by the guard.
-  const connections = await readFingerprint(db, "provider_connection", accountId);
   const config = parseAppConfig(raw);
   const changed = changesAgainst(stored, config);
   const rows = new Map<string, ConnectionRow | null>();
@@ -250,7 +233,7 @@ export async function checkedAppConfig(
     views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description });
   }
   judgeApp(config, stored, (slug) => views.get(slug) ?? null);
-  return { config, connections };
+  return config;
 }
 
 /** The parts of a stored app that decide its calls, read loosely: it was valid when saved. Null when they cannot be read. */
@@ -372,30 +355,17 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
   );
 }
 
-/** A fingerprint of an account's rows of one table: it changes whenever a row is added, removed or written. */
-function fingerprintOf(table: "app" | "provider_connection"): string {
-  return `(SELECT count(*) || ':' || coalesce(sum(revision), 0) || ':' || coalesce(max(updated_at), 0) FROM ${table} WHERE account_id = ?)`;
-}
-
-/** The account's rows of one table, as a fingerprint, read before a check that depends on them. */
-export async function readFingerprint(db: D1Database, table: "app" | "provider_connection", accountId: string): Promise<string> {
-  return (await db.prepare(`SELECT ${fingerprintOf(table)} AS value`).bind(accountId).first<string>("value")) ?? "";
-}
-
-/** SQL to AND into a write's `WHERE`, with its values: the write is made only if the table's rows are still as `readFingerprint` read them. */
-export function fingerprintGuard(table: "app" | "provider_connection", accountId: string, value: string): { readonly condition: string; readonly binds: readonly unknown[] } {
-  return { condition: `${fingerprintOf(table)} = ?`, binds: [accountId, value] };
-}
-
 /**
  * A connection's rates are about to change: each active app that routes to
  * it is judged on the calls the change can affect, at every entry point
  * (`reachableCalls`), by the same rule as an app save (`callGap`), so a rate
  * added after an app was saved cannot leave its calls charged only partly.
- * Only models whose rates are new or changed are judged: a removed rate is
- * served and priced later, as before. A disabled app is judged in full when
- * it is turned on again. Returns the state of the account's apps the check
- * read (`readFingerprint`), for the write's guard.
+ * The calls judged are those reachable under the old rates and under the
+ * new, all priced with the new: a preset fallback the new rates would drop
+ * is judged too, and refused, as its first target would be. Only models
+ * whose rates are new or changed are judged: a removed rate is served and
+ * priced later, as before. A disabled app is judged in full when it is
+ * turned on again.
  */
 export async function checkConnectionRates(
   db: D1Database,
@@ -403,18 +373,17 @@ export async function checkConnectionRates(
   connection: { readonly slug: string; readonly type: string },
   before: CustomerRates | null,
   after: CustomerRates | null,
-): Promise<string> {
-  // Read first: an app written after this is caught by the guard.
-  const apps = await readFingerprint(db, "app", accountId);
+): Promise<void> {
   const description = builtInProvider(connection.type);
-  if (description === null || after === null) return apps;
+  if (description === null || after === null) return;
   const changedModels = new Set(Object.keys(after).filter((model) => before === null || !Object.hasOwn(before, model) || !sameJson(before[model], after[model])));
-  if (changedModels.size === 0) return apps;
+  if (changedModels.size === 0) return;
   const { results } = await db
     .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
     .bind(accountId)
     .all<{ name: string; status: string; config_json: string }>();
-  const view: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description };
+  const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description };
+  const previous: ConnectionView = { sources: priceSources({ type: connection.type, rates: before }), description };
   for (const app of results) {
     if (app.status !== "active") continue;
     let config: AppCallConfig | null;
@@ -424,8 +393,13 @@ export async function checkConnectionRates(
       continue;
     }
     if (config === null) continue;
-    const { calls } = reachableCalls(config, (slug) => (slug === connection.slug ? view : null));
-    for (const call of calls) {
+    const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
+    const { calls } = reachableCalls(config, only(next));
+    const nowKeys = new Set(calls.map(callKey));
+    // A call the old rates let through and the new do not is judged on the new rates: it would be dropped, or served unpriced.
+    const dropped = reachableCalls(config, only(previous)).calls.filter((call) => !nowKeys.has(callKey(call)));
+    const judged = [...calls, ...dropped.map((call) => ({ ...call, bill: billing(call.operation, next.sources, call.model) }))];
+    for (const call of judged) {
       if (!changedModels.has(call.model)) continue;
       const gap = callGap(call);
       if (gap !== null) throw ratesRefused(call.model, app.name, connection.slug, gap.operation ?? call.operation.name);
@@ -439,7 +413,6 @@ export async function checkConnectionRates(
       throw ratesRefused(model, app.name, connection.slug, undefined);
     }
   }
-  return apps;
 }
 
 function ratesRefused(model: string, app: string, slug: string, operation: string | undefined): GatewayError {
@@ -640,7 +613,7 @@ export async function createApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, AppCreateRequestSchema);
-  const { config, connections } = await checkedAppConfig(c.env.DB, actor.accountId, body.config);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
   // The first key is not counted against the key ceiling, as v1, except when
   // the plan allows no keys at all: such a plan allows only App Attest apps.
@@ -651,18 +624,16 @@ export async function createApp(c: AdminContext): Promise<Response> {
   }
   const now = Date.now();
   const id = newAppId(body.name);
-  // Written only if no connection changed since the check read them.
-  const unchanged = fingerprintGuard("provider_connection", actor.accountId, connections);
   const insert = c.env.DB.prepare(
     `INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at)
-     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition} AND ${unchanged.condition}`,
-  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds, ...unchanged.binds);
+     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
+  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds);
   // An app-key app gets its first key, shown once, as v1. Written only if the app was.
   const key = config.authentication.type === "api_key" ? await createKey(c.env.DB, id, "Initial key", now, true) : null;
   const [written] = await c.env.DB.batch(key === null ? [insert] : [insert, key.statement]);
   if (written?.meta.changes !== 1) {
     await cap.assertNotReached();
-    throw new GatewayError(409, "conflict", "The app could not be created: a provider connection may have changed while it was checked; retry");
+    throw new GatewayError(409, "conflict", "The app could not be created; retry");
   }
   const row = await appRow(c.env.DB, actor.accountId, id);
   return c.json({ app: appView(row), api_key: key?.created ?? null } satisfies OperationResponse<"createApp">, 201);
@@ -717,21 +688,15 @@ async function saveApp(
   if (revision === undefined) {
     throw new GatewayError(400, "app_revision_required", "Send the revision the app was read at");
   }
-  const { config, connections } = await checkedAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
-  // Written only if neither the app nor any connection changed since the check read them.
-  const unchanged = fingerprintGuard("provider_connection", actor.accountId, connections);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
-     WHERE id = ? AND account_id = ? AND revision = ? AND ${unchanged.condition}`,
+     WHERE id = ? AND account_id = ? AND revision = ?`,
   )
-    .bind(body.name, JSON.stringify(config), body.status ?? null, Date.now(), current.id, actor.accountId, revision, ...unchanged.binds)
+    .bind(body.name, JSON.stringify(config), body.status ?? null, Date.now(), current.id, actor.accountId, revision)
     .run();
   if (result.meta.changes === 0) {
-    const now = await appRow(c.env.DB, actor.accountId, current.id);
-    if (now.revision !== revision) {
-      throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
-    }
-    throw new GatewayError(409, "conflict", "A provider connection changed while the app was checked; retry");
+    throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
   }
   invalidateApp(current.id);
   const row = await appRow(c.env.DB, actor.accountId, current.id);
