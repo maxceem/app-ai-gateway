@@ -134,8 +134,20 @@ function pricesUsage(price: ModelPrice, usage: UsageObservation, mode: ServiceMo
   }
 }
 
+/**
+ * The key values a request to `operation` can carry, out of `values`: only the
+ * keys the operation reads (its `priceKeys`), as serving reads them. The
+ * others stay unknown, as they would on a real request.
+ */
+function keysRead(operation: OperationDescription, values: Readonly<Record<string, string>>): Readonly<Record<string, string>> | undefined {
+  const names = (operation.priceKeys ?? []).map((key) => key.name);
+  if (names.length === 0) return undefined;
+  return Object.fromEntries(Object.entries(values).filter(([name]) => names.includes(name)));
+}
+
 /** Whether one of an operation's ways prices every usage in it, at known key values if given. */
-function someWayPrices(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys?: Readonly<Record<string, string>>): boolean {
+function someWayPrices(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, values?: Readonly<Record<string, string>>): boolean {
+  const keys = values === undefined ? undefined : keysRead(operation, values);
   return meterCases(operation).some((way) => way.every((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode)));
 }
 

@@ -87,18 +87,10 @@ export function priceUnits(units: number, ratePerMillion: RateNanoPerMillion): N
 /**
  * The cost of several unit counts, each at its own rate, rounded up once over
  * the whole: Σ units × rate ÷ 1,000,000. A charge rounds once (D20), not once
- * per bucket.
+ * per bucket. The one rounding code is `priceUnitsMixed`.
  */
 export function priceUnitsSum(parts: readonly (readonly [units: number, rate: RateNanoPerMillion])[]): NanoDollars {
-  let product = 0n;
-  for (const [units, perMillion] of parts) {
-    assertSafeInteger(units, "A count of units");
-    if (units < 0) throw new MoneyError(`A count of units cannot be negative, got ${units}`);
-    product += BigInt(units) * BigInt(perMillion);
-  }
-  const cost = (product + MILLION - 1n) / MILLION;
-  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
-  return Number(cost) as NanoDollars;
+  return priceUnitsMixed(parts.map(([units, value]) => [units, value, 1_000_000] as const));
 }
 
 /**
@@ -119,13 +111,18 @@ export function priceUnitsPer(units: number, ratePerUnit: RateNanoPerMillion, pe
   return Number(cost) as NanoDollars;
 }
 
+/** A cost before rounding: `numerator ÷ denominator` nano-dollars, exactly. */
+export interface ExactCost {
+  readonly numerator: bigint;
+  readonly denominator: bigint;
+}
+
 /**
- * The cost of several counts, each at its own rate and its own divisor
- * (`units × rate ÷ per`), rounded up once over the whole: tokens at a rate per
- * million beside seconds at a rate per minute, say. In BigInt, over the least
- * common multiple of the divisors, so no part is rounded on its own (D20).
+ * The exact cost of several counts, each at its own rate and its own divisor
+ * (`units × rate ÷ per`), over the least common multiple of the divisors, so
+ * no part is rounded on its own (D20). `priceUnitsMixed` rounds it once.
  */
-export function priceUnitsMixed(parts: readonly (readonly [units: number, rate: RateNanoPerMillion, per: number])[]): NanoDollars {
+export function exactCost(parts: readonly (readonly [units: number, rate: RateNanoPerMillion, per: number])[]): ExactCost {
   let common = 1n;
   for (const [units, , per] of parts) {
     assertSafeInteger(units, "A count of units");
@@ -136,9 +133,30 @@ export function priceUnitsMixed(parts: readonly (readonly [units: number, rate: 
   }
   let product = 0n;
   for (const [units, value, per] of parts) product += BigInt(units) * BigInt(value) * (common / BigInt(per));
-  const cost = (product + common - 1n) / common;
-  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
-  return Number(cost) as NanoDollars;
+  return { numerator: product, denominator: common };
+}
+
+/** An exact cost rounded up to whole nano-dollars: the one place a cost is rounded. */
+export function roundUp(cost: ExactCost): NanoDollars {
+  const rounded = (cost.numerator + cost.denominator - 1n) / cost.denominator;
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
+  return Number(rounded) as NanoDollars;
+}
+
+/** Compares two exact costs without rounding either: negative, zero or positive, as `a - b`. */
+export function compareExact(a: ExactCost, b: ExactCost): number {
+  const left = a.numerator * b.denominator;
+  const right = b.numerator * a.denominator;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * The cost of several counts, each at its own rate and its own divisor
+ * (`units × rate ÷ per`), rounded up once over the whole: tokens at a rate per
+ * million beside seconds at a rate per minute, say.
+ */
+export function priceUnitsMixed(parts: readonly (readonly [units: number, rate: RateNanoPerMillion, per: number])[]): NanoDollars {
+  return roundUp(exactCost(parts));
 }
 
 function gcd(a: bigint, b: bigint): bigint {

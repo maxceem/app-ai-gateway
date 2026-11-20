@@ -200,7 +200,10 @@ describe("customer rates in any unit", () => {
   });
 
   it("refuses on save any key value whose effective price bills nothing, as run time resolves it", () => {
-    expect(() => save({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/q x/u);
+    // `size`, which the images API reads: at x no operation can charge a request.
+    expect(() => save({ m: ModelPricingSchema.parse({ by: { size: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/size x/u);
+    // A key no operation reads stays unknown, as on a real request, so the dearest value that bills is charged.
+    expect(() => save({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).not.toThrow();
     expect(() => save({ m: ModelPricingSchema.parse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }) })).not.toThrow();
     // A price that bills nothing at all.
     expect(() => save({ m: ModelPricingSchema.parse({ cached_input: 1 }) })).toThrow(/no rate that bills/u);
@@ -434,7 +437,7 @@ describe("review fixes", () => {
 
   it("takes the units a meter's reader reports from the meter, never from its style's name", () => {
     expect(ways(openai.operations.find((op) => op.name === "openai.transcription")!)).toContainEqual(["audio_seconds"]);
-    expect(ways(operation({ kind: "response_json", style: "openai-chat", units: ["audio_seconds"] }))).toEqual([["tokens"], ["audio_seconds"]]);
+    expect(ways(operation({ kind: "response_json", style: "openai-chat", units: ["audio_seconds"] }))).toEqual([["tokens"], ["audio_seconds"], ["tokens+audio_seconds"]]);
   });
 
   it("reads a boolean price key value, and treats one over 100 characters as unknown", () => {

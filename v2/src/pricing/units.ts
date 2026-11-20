@@ -61,8 +61,12 @@ export const UNIT_RATES: readonly UnitRate[] = [
 /** The names of every unit rate. */
 export const UNIT_RATE_FIELDS: readonly string[] = UNIT_RATES.map((rate) => rate.field);
 
-/** A sample count: any whole number above zero works, since a case only asks whether a price can bill it. */
-const SAMPLE = 1000;
+/**
+ * A sample count: the smallest a stored count can be (one unit, or one
+ * thousandth of a fractional one). A case only asks whether a price can bill
+ * it, so a probe never overflows where one real unit would not.
+ */
+const SAMPLE = 1;
 const NO_TOKENS = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true } as const;
 const SOME_TOKENS = { inputTokens: SAMPLE, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: SAMPLE } as const;
 
@@ -81,8 +85,9 @@ function withEstimate(usage: UsageObservation, estimate: Unit | undefined): Usag
  * they can never disagree with the charge.
  *
  * - Usage in the response: tokens, or one of the units the meter declares its
- *   reader reports (a transcription's duration, an image API's images), each
- *   a way of its own, since a model answers in one of them. Each keeps the
+ *   reader reports (a transcription's duration, an image API's images), or
+ *   tokens and that unit together, each a way of its own, since a model
+ *   answers in one of them (a reported unit is billed before tokens). Each keeps the
  *   request's measure beside it when the meter declares one, and an answer
  *   that reports nothing bills that measure alone (OpenAI's plain speech).
  * - A response header: one way with two usages, the header present (beside
@@ -99,7 +104,12 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
   switch (meter.kind) {
     case "response_json": {
       const estimate = meter.requestMeasure?.unit;
-      const ways: UsageObservation[][] = [[withEstimate(SOME_TOKENS, estimate)], ...(meter.units ?? []).map((unit) => [withEstimate(reported(unit), estimate)])];
+      const units = meter.units ?? [];
+      const ways: UsageObservation[][] = [
+        [withEstimate(SOME_TOKENS, estimate)],
+        ...units.map((unit) => [withEstimate(reported(unit), estimate)]),
+        ...units.map((unit) => [withEstimate({ ...SOME_TOKENS, units: { [unit]: SAMPLE } }, estimate)]),
+      ];
       if (estimate !== undefined) ways.push([withEstimate(NO_TOKENS, estimate)]);
       return ways;
     }

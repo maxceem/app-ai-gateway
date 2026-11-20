@@ -402,15 +402,18 @@ describe("review fixes", () => {
     ]);
   });
 
-  it("writes the charge unpriced and logs it when pricing throws (S4)", async () => {
+  it("writes the charge unpriced and logs it when its cost is too large to store (S4)", async () => {
     const { appId, slug, key } = await setup({}, { rates: { "gpt-4o-mini": { input: 9_000_000_000_000_000, output: 1 } } });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 2_000_000, completion_tokens: 1 } }));
     const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
     await response.text();
     await waitOnExecutionContext(ctx);
     expect(await chargesOf(appId)).toMatchObject([{ price_source: "unresolved", cost_nano: null, input_tokens: 2_000_000 }]);
-    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_pricing_failed"));
+    // The candidate that overflows is skipped and logged; with none left, the charge is unresolved and logged.
+    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("price_candidate_too_large"));
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_unresolved_cost"));
   });
 
   it("sends a provider key holding `$&` as it is (S5)", async () => {

@@ -17,7 +17,8 @@
  * The whole is rounded up once. A model priced per minute, per hour or per
  * image bills that measure instead (`priceUsage`).
  */
-import { priceUnitsMixed, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { log } from "../core/log.ts";
+import { compareExact, exactCost, MoneyError, rate, roundUp, toMilli, type ExactCost, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
@@ -30,6 +31,8 @@ export type TokenUsage = TokenCounts;
 
 export interface Pricing {
   readonly cost: NanoDollars;
+  /** The cost before rounding, so candidates are compared exactly and only the winner is rounded. */
+  readonly exact: ExactCost;
   /**
    * The rates billed with, stored on the charge: the four buckets for a token
    * price (a units correction prices with them), plus each modality and
@@ -160,7 +163,8 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
     ...bucketParts("cache_write", usage.cacheWriteTokens, buckets.cache_write, price, longContext, tokenVariants, used),
     ...sideParts(usage.outputTokens, buckets.output, modalityRates(price, OUTPUT_RATES, longContext, used), usage.modalityTokens?.output),
   ];
-  return { cost: priceUnitsSum(parts), rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
+  const exact = exactCost(parts.map(([units, value]) => [units, value, 1_000_000] as const));
+  return { cost: roundUp(exact), exact, rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
 }
 
 /**
@@ -188,7 +192,12 @@ export function rateDivisor(field: string): number {
  * the same.
  */
 export function costOfRates(parts: readonly (readonly [field: string, count: number, rate: RateNanoPerMillion])[]): NanoDollars {
-  return priceUnitsMixed(parts.map(([field, count, value]) => [count, value, rateDivisor(field)] as const));
+  return roundUp(exactOfRates(parts));
+}
+
+/** `costOfRates` before rounding. */
+function exactOfRates(parts: readonly (readonly [field: string, count: number, rate: RateNanoPerMillion])[]): ExactCost {
+  return exactCost(parts.map(([field, count, value]) => [count, value, rateDivisor(field)] as const));
 }
 
 /** `costOfRates` for one count at one rate. */
@@ -199,8 +208,10 @@ export function costAtRate(field: string, count: number, value: RateNanoPerMilli
 /** A usage priced on one unit rate, for one unit it bills. */
 function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: number, usage: UsageObservation): Pricing {
   const value = price.rates[unitRate.field]!;
+  const exact = exactOfRates([[unitRate.field, count, value]]);
   return {
-    cost: costAtRate(unitRate.field, count, value),
+    cost: roundUp(exact),
+    exact,
     rates: { [unitRate.field]: value },
     longContext: false,
     unit,
@@ -228,7 +239,9 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | nu
   for (const unitRate of stated) {
     for (const unit of unitRate.units) {
       const count = unitCount(usage, unit);
-      if (count !== undefined) options.push(atUnitRate(price, unitRate, unit, count, usage));
+      if (count === undefined) continue;
+      const option = isolated(() => atUnitRate(price, unitRate, unit, count, usage), { rate: unitRate.field, unit });
+      if (option !== null) options.push(option);
     }
   }
   const chosen = preferred(options);
@@ -259,9 +272,10 @@ function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "t
   if (unit === "tokens") return usage.noTokens === true ? null : priceTokens(price, usage);
   const count = unitCount(usage, unit);
   if (count === undefined) return null;
-  const options = UNIT_RATES.filter((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined).map((unitRate) =>
-    atUnitRate(price, unitRate, unit, count, usage),
-  );
+  const options = UNIT_RATES.filter((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined).flatMap((unitRate) => {
+    const option = isolated(() => atUnitRate(price, unitRate, unit, count, usage), { rate: unitRate.field, unit });
+    return option === null ? [] : [option];
+  });
   return preferred(options);
 }
 
@@ -275,8 +289,23 @@ function preferred<P extends Pricing>(prices: readonly P[]): P | null {
   const reported = prices.filter((one) => !one.fromEstimate);
   const pool = reported.length > 0 ? reported : prices;
   let dearest: P | null = null;
-  for (const one of pool) if (dearest === null || one.cost > dearest.cost) dearest = one;
+  for (const one of pool) if (dearest === null || compareExact(one.exact, dearest.exact) > 0) dearest = one;
   return dearest;
+}
+
+/**
+ * One candidate's price, or null when it cannot be worked out because a rate
+ * or count is too large to store: that candidate is skipped and logged, and
+ * the others still compete. A charge none can price is left unresolved.
+ */
+function isolated<P>(price: () => P | null, facts: Record<string, unknown>): P | null {
+  try {
+    return price();
+  } catch (error) {
+    if (!(error instanceof MoneyError)) throw error;
+    log("warn", "price_candidate_too_large", { ...facts, error: error.message });
+    return null;
+  }
 }
 
 /** A charge's price, as one result: what both a live charge and the sweep write. */
@@ -315,21 +344,21 @@ export function priceInServedMode(
   const keyed = chargeCandidates(price, usage.priceKeys);
   const priced: (Pricing & { readonly estimated: boolean })[] = [];
   for (const candidate of keyed.keyed) {
-    const one = priceIn(candidate, usage, served);
+    const one = isolated(() => priceIn(candidate, usage, served), { candidate: "key" });
     if (one !== null) priced.push(one);
   }
   const standardPrice = keyed.fallback;
   const chosen = preferred(priced);
   if (chosen === null) {
-    const standard = priceUsage(standardPrice, usage);
+    const standard = isolated(() => priceUsage(standardPrice, usage), { candidate: "standard" });
     return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
   }
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   const measured = chosen.fromEstimate ? "estimated" : "complete";
   if (!estimated) return { ...chosen, estimated: false, measured };
   // The one floor: at least the model's own standard price on the same measure.
-  const floor = priceOnUnit(standardPrice, usage, chosen.unit);
-  return floor !== null && floor.cost > chosen.cost ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
+  const floor = isolated(() => priceOnUnit(standardPrice, usage, chosen.unit), { candidate: "floor" });
+  return floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? { ...floor, estimated: true, measured } : { ...chosen, estimated: true, measured };
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {
@@ -349,8 +378,10 @@ function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode):
   const tried: Pricing[] = [];
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
-      const candidate = priceInMode(price, { tier, region });
-      const priced = candidate === undefined ? null : priceUsage(candidate, usage);
+      const priced = isolated(() => {
+        const candidate = priceInMode(price, { tier, region });
+        return candidate === undefined ? null : priceUsage(candidate, usage);
+      }, { tier, region });
       if (priced !== null) tried.push(priced);
     }
   }

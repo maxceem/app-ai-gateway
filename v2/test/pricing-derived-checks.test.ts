@@ -5,7 +5,7 @@
  * step 4a). These tests hold the three side by side.
  */
 import { describe, expect, it } from "vitest";
-import { rate } from "../src/money.ts";
+import { priceUnitsMixed, priceUnitsSum, rate } from "../src/money.ts";
 import { billing, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, servedModes, type CustomerRates } from "../src/pricing/prices.ts";
 import { costAtRate, costOfRates, priceInServedMode } from "../src/pricing/tokens.ts";
@@ -155,13 +155,66 @@ describe("property: the checks are the charge function, run", () => {
       const price = customerPrice(stored, "m")!;
       const sources = priceSources({ type: "openai", rates: stored });
       for (const operation of OPERATIONS) {
+        // A request carries only the keys the operation reads; the rest stay unknown.
+        const read = (operation.priceKeys ?? []).map((key) => key.name);
+        const keysFor = (values: Readonly<Record<string, string>>) =>
+          read.length === 0 ? undefined : Object.fromEntries(Object.entries(values).filter(([name]) => read.includes(name)));
         const expected = keyCandidates(price).candidates.every(({ values }) =>
-          servedModes(price).every((mode) => meterCases(operation).some((way) => way.every((usage) => charged(stored, { ...usage, priceKeys: values }, mode)))),
+          servedModes(price).every((mode) =>
+            meterCases(operation).some((way) => way.every((usage) => charged(stored, { ...usage, priceKeys: keysFor(values) }, mode))),
+          ),
         );
         expect(billing(operation, sources, "m", undefined, "save").problem === null, `${operation.name} ${JSON.stringify(stored)}`).toBe(expected);
         // Whatever saving accepts, serving accepts too.
         if (expected) expect(billing(operation, sources, "m").problem).toBeNull();
       }
+    }
+  });
+});
+
+describe("Sol's review of the derived checks", () => {
+  const chat = openai.operations.find((op) => op.name === "openai.chat")!;
+  const images = openai.operations.find((op) => op.name === "openai.images")!;
+  const MINUTE: UsageObservation = { ...NONE, units: { audio_seconds: 3_600_000 } };
+
+  it("probes with one stored unit, so a rate valid for one real unit never overflows a probe", () => {
+    // $10,000 per image: one image fits, a thousand would not.
+    const sources = priceSources({ type: "openai", rates: { m: { per_image: 10_000_000_000_000 } } });
+    expect(billing(images, sources, "m").problem).toBeNull();
+    expect(billing(images, sources, "m", undefined, "save").problem).toBeNull();
+  });
+
+  it("gives an operation only the key values it reads on save, leaving the rest unknown as serving does", () => {
+    // Chat reads no size: a chat request is charged at the size whose rates bill tokens.
+    const sources = priceSources({ type: "openai", rates: { m: { by: { size: { big: { per_image: 1 }, small: { input: 1, output: 1 } } } } } });
+    expect(billing(chat, sources, "m", undefined, "save").problem).toBeNull();
+  });
+
+  it("skips a candidate whose cost is too large to store, and the others still compete", () => {
+    const price = customerPrice({ m: { per_minute: 9_000_000_000_000_000, per_second: 1 } }, "m")!;
+    expect(priceInServedMode(price, MINUTE, STANDARD_MODE)).toMatchObject({ rates: { per_second: 1 }, cost: 3_600 });
+  });
+
+  it("compares candidates exactly, so a tie after rounding never picks the cheaper rate", () => {
+    // One millisecond: 1.2 nano at a, 1.9 nano at b; both round to 2, and b is dearer.
+    const price = customerPrice({ m: { by: { voice: { a: { per_minute: 72_000 }, b: { per_minute: 114_000 } } } } }, "m")!;
+    expect(priceInServedMode(price, { ...NONE, units: { audio_seconds: 1 } }, STANDARD_MODE)).toMatchObject({ rates: { per_minute: 114_000 }, cost: 2 });
+  });
+
+  it("covers tokens and a reported unit together, where the reported unit bills first", () => {
+    const transcription = openai.operations.find((op) => op.name === "openai.transcription")!;
+    expect(meterCases(transcription).flat()).toContainEqual(expect.objectContaining({ inputTokens: 1, units: { audio_seconds: 1 } }));
+    // A model priced both ways bills the duration it reported, not its tokens.
+    const price = customerPrice({ m: { input: 1_000_000_000, output: 1_000_000_000, per_minute: 6_000_000 } }, "m")!;
+    const both: UsageObservation = { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 10, units: { audio_seconds: 60_000 } };
+    expect(priceInServedMode(price, both, STANDARD_MODE)).toMatchObject({ unit: "audio_seconds", cost: 6_000_000 });
+  });
+
+  it("rounds tokens with the one rounding code", () => {
+    const next = random(99);
+    for (let round = 0; round < 200; round += 1) {
+      const parts = Array.from({ length: 1 + Math.floor(next() * 4) }, () => [Math.floor(next() * 1_000_000), rate(Math.floor(next() * 1_000_000_000))] as const);
+      expect(priceUnitsSum(parts)).toBe(priceUnitsMixed(parts.map(([units, value]) => [units, value, 1_000_000] as const)));
     }
   });
 });
