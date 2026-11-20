@@ -18,8 +18,12 @@ import {
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
-import { pricesOperation, reportsCost, resolvePrice, type CustomerRates } from "../pricing/prices.ts";
-import { builtInProvider } from "../providers/index.ts";
+import type { Preset } from "../contracts/app-config.ts";
+import { listPrice, priceInMode, pricesOperation, reportsCost, resolvePrice, type CustomerRates } from "../pricing/prices.ts";
+import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
+import { declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
+import { requestedServiceMode } from "../proxy/meter.ts";
+import { isStandardMode, serviceModeName } from "../usage/service-modes.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
@@ -74,12 +78,13 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
  * Checks a whole configuration against the account: the shape, then each
  * provider connection it names, each operation, and each listed model's price.
  *
- * `storedRouting` is the app's stored routing, by slug. When a connection it
- * names has since been deleted, an update may keep that entry exactly as it
- * is, as v1: otherwise deleting a connection would make every app that used
- * it impossible to save, even to rename. Its requests are refused with
- * `provider_not_configured` until it is back. An added or changed entry for
- * that slug needs the connection, because nothing could check it.
+ * `stored` is the app's stored routing and presets, by slug. When a
+ * connection an entry names has since been deleted, an update may keep that
+ * entry exactly as it is, as v1: otherwise deleting a connection would make
+ * every app that used it impossible to save, even to rename. Its requests are
+ * refused with `provider_not_configured` until it is back (a preset's
+ * fallback is left out of its chain). An added or changed entry needs its
+ * connections, because nothing could check it.
  */
 /**
  * An app document's config as it is saved, read by its schema and the
@@ -97,20 +102,46 @@ export function parseAppConfig(raw: unknown): AppConfig {
   return parsed.data;
 }
 
+/** An app's stored routing entries and presets, by slug, read loosely: they were valid when saved. */
+export interface StoredEntries {
+  readonly providers: Readonly<Record<string, unknown>>;
+  readonly presets: Readonly<Record<string, unknown>>;
+}
+
+const NOTHING_STORED: StoredEntries = { providers: {}, presets: {} };
+
+interface ConnectionRow {
+  type: string;
+  rates_json: string | null;
+  base_url: string | null;
+}
+
 export async function checkAppConfig(
   db: D1Database,
   accountId: string,
   raw: unknown,
-  storedRouting: Readonly<Record<string, unknown>> = {},
+  stored: StoredEntries = NOTHING_STORED,
 ): Promise<AppConfig> {
   const config = parseAppConfig(raw);
+  const rows = new Map<string, ConnectionRow | null>();
+  const connectionRow = async (slug: string): Promise<ConnectionRow | null> => {
+    if (!rows.has(slug)) {
+      rows.set(
+        slug,
+        await db
+          .prepare("SELECT type, rates_json, base_url FROM provider_connection WHERE account_id = ? AND slug = ?")
+          .bind(accountId, slug)
+          .first<ConnectionRow>(),
+      );
+    }
+    return rows.get(slug) ?? null;
+  };
+  const rewrites = config.routing.model_rewrites;
+  await checkRewrites(db, accountId, rewrites);
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
-    const connection = await db
-      .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ? AND slug = ?")
-      .bind(accountId, slug)
-      .first<{ type: string; rates_json: string | null }>();
+    const connection = await connectionRow(slug);
     if (connection === null) {
-      if (Object.hasOwn(storedRouting, slug) && sameJson(storedRouting[slug], routing)) continue;
+      if (Object.hasOwn(stored.providers, slug) && sameJson(stored.providers[slug], routing)) continue;
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
     const description = builtInProvider(connection.type);
@@ -127,7 +158,9 @@ export async function checkAppConfig(
     }
     const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    for (const model of routing.models ?? []) {
+    for (const listed of routing.models ?? []) {
+      // A listed model is sent, and priced, as the model it is rewritten to.
+      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
       const resolved = resolvePrice(connection.type, model, rates);
       // An operation whose answers carry the provider's own cost (OpenRouter's,
       // xAI's) needs no price of ours (v1). A model with no price at all needs
@@ -143,16 +176,131 @@ export async function checkAppConfig(
         throw new GatewayError(
           400,
           "pricing_not_configured",
-          unpriced !== undefined
-            ? `config.routing.providers.${slug}.models: ${model} has no price that ${unpriced.name} can bill; add one to the provider connection first`
-            : `config.routing.providers.${slug}.models: ${model} has no price that any of ${enabled.map((operation) => operation.name).join(", ")} can bill; add one to the provider connection first`,
+          `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that ${
+            unpriced !== undefined ? unpriced.name : `any of ${enabled.map((operation) => operation.name).join(", ")}`
+          } can bill; add one to the provider connection first`,
           undefined,
           { data: { slug, model, ...(unpriced !== undefined ? { operation: unpriced.name } : {}) } },
         );
       }
     }
   }
+  for (const [slug, preset] of Object.entries(config.presets)) {
+    // Unchanged, it may keep a connection that was deleted since, as routing does.
+    if (Object.hasOwn(stored.presets, slug) && sameJson(stored.presets[slug], preset)) continue;
+    await checkPreset(slug, preset, connectionRow);
+  }
   return config;
+}
+
+/**
+ * Each rewrite's target needs a price this account could bill it at: ours,
+ * for any provider, or a connection's own rate. A rewrite names no provider,
+ * so the app's model lists and each request judge the rest (v1).
+ */
+async function checkRewrites(db: D1Database, accountId: string, rewrites: Readonly<Record<string, string>>): Promise<void> {
+  const targets = Object.entries(rewrites);
+  if (targets.length === 0) return;
+  const { results } = await db
+    .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ?")
+    .bind(accountId)
+    .all<{ type: string; rates_json: string | null }>();
+  for (const [source, target] of targets) {
+    const priced =
+      Object.keys(BUILT_IN_PROVIDERS).some((type) => listPrice(type, target) !== null) ||
+      results.some((row) => resolvePrice(row.type, target, row.rates_json === null ? null : (JSON.parse(row.rates_json) as CustomerRates)) !== null);
+    if (!priced) {
+      throw new GatewayError(
+        400,
+        "pricing_not_configured",
+        `config.routing.model_rewrites.${source}: ${target} has no price; add one to a provider connection first`,
+        undefined,
+        { data: { model: target } },
+      );
+    }
+  }
+}
+
+/**
+ * A preset and each fallback: the connection exists, its type has an
+ * operation of the preset's API style a preset can use, and the model has a
+ * price that operation can bill, in any service mode the preset's parameters
+ * name.
+ */
+async function checkPreset(
+  slug: string,
+  preset: Preset,
+  connectionRow: (slug: string) => Promise<ConnectionRow | null>,
+): Promise<void> {
+  const where = `config.presets.${slug}`;
+  const declared = declaredOperation(preset.operation);
+  const style = declared?.style;
+  if (declared === null || style === undefined) {
+    throw invalid(`${where}.operation: ${preset.operation} is not an operation a preset can use`, { slug });
+  }
+  if (preset.params !== undefined && declared.model.in === "form") {
+    throw invalid(`${where}.params: a ${style} preset takes an upload; params apply only to JSON requests`, { slug });
+  }
+  const targets: { label: string; provider: string; operation?: string | undefined; model: string }[] = [
+    { label: where, provider: preset.provider, operation: preset.operation, model: preset.model },
+    ...(preset.fallback ?? []).map((fallback, index) => ({ label: `${where}.fallback.${index}`, ...fallback })),
+  ];
+  for (const [index, target] of targets.entries()) {
+    const connection = await connectionRow(target.provider);
+    if (connection === null) {
+      throw invalid(`${target.label}.provider: no provider connection ${target.provider} exists`, { slug });
+    }
+    const description = builtInProvider(connection.type);
+    if (description === null) {
+      throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
+    }
+    const operation = presetOperation(description, style, target.operation);
+    if (operation === null) {
+      const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
+      throw invalid(
+        target.operation === undefined
+          ? `${target.label}.provider: ${connection.type} has no ${style} operation a preset can use`
+          : named === undefined
+            ? `${target.label}.operation: ${target.operation} is not an operation of ${connection.type}`
+            : named.style !== style
+              ? `${target.label}.operation: ${target.operation} is not a ${style} operation; a fallback must speak the preset's API style`
+              : `${target.label}.operation: ${presetOperationProblem(description, named) ?? `${target.operation} cannot be a preset`}`,
+        { slug },
+      );
+    }
+    if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
+      throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
+    }
+    const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
+    const resolved = resolvePrice(connection.type, target.model, rates);
+    const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved.price : null;
+    if (price === null && !reportsCost(operation)) {
+      throw new GatewayError(
+        400,
+        "pricing_not_configured",
+        `${target.label}.model: ${target.model} has no price that ${operation.name} can bill; add one to the provider connection first`,
+        undefined,
+        { data: { slug, model: target.model, operation: operation.name } },
+      );
+    }
+    // Naming a service mode in the parameters chooses it for every target, so
+    // each must know it and be able to bill it.
+    if (preset.params !== undefined) {
+      const mode = requestedServiceMode(description, connection.base_url, preset.params);
+      if (mode.unknown !== undefined) {
+        throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
+      }
+      if (price !== null && !isStandardMode(mode.mode) && priceInMode(price, mode.mode) === undefined) {
+        throw new GatewayError(
+          400,
+          "pricing_not_configured",
+          `${target.label}.model: ${target.model} has no price in the ${serviceModeName(mode.mode)} service mode the preset's params name`,
+          undefined,
+          { data: { slug, model: target.model } },
+        );
+      }
+    }
+  }
 }
 
 /** The app's id: its name made URL-safe, plus a random suffix, as v1. */
@@ -251,9 +399,9 @@ export async function createApp(c: AdminContext): Promise<Response> {
 }
 
 /** The routing a stored configuration has, by slug, read loosely: it was valid when saved. */
-function storedRouting(row: AppRow): Record<string, unknown> {
-  const config = JSON.parse(row.config_json) as { routing?: { providers?: Record<string, unknown> } };
-  return config.routing?.providers ?? {};
+function storedRouting(row: AppRow): StoredEntries {
+  const config = JSON.parse(row.config_json) as { routing?: { providers?: Record<string, unknown> }; presets?: Record<string, unknown> };
+  return { providers: config.routing?.providers ?? {}, presets: config.presets ?? {} };
 }
 
 /** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */

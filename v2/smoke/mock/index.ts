@@ -34,6 +34,11 @@
  *   slow provider.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
  *
+ * A path that starts with `/fail-{status}/`, such as `/fail-503/v1/chat/completions`,
+ * is answered with that status and an OpenAI-style error, after its body is
+ * read. A connection whose base URL ends in `/fail-503/` therefore always
+ * fails, so a fallback chain can be checked through a live gateway.
+ *
  * Every answer carries `x-mock-received-bytes`, the bytes it read. A body
  * that is not JSON is still counted and answered. Any key is accepted, in any
  * of the providers' key headers.
@@ -238,6 +243,14 @@ export default {
         return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
       }
       return Response.json({ object: "list", data: [] });
+    }
+    const failing = /^\/fail-([45]\d\d)(\/.*)$/u.exec(url.pathname);
+    if (failing !== null && request.method === "POST") {
+      const { bytes } = await readCounting(request);
+      return Response.json(
+        { error: { message: "Mock failure", type: "mock_error", code: "mock_failure" } },
+        { status: Number(failing[1]), headers: { "x-mock-received-bytes": String(bytes) } },
+      );
     }
     const answer = request.method === "POST" ? answerFor(url.pathname) : null;
     if (answer === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });

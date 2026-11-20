@@ -57,6 +57,7 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     authentication: config.authentication,
     routing: config.routing,
     limits: config.limits,
+    presets: config.presets,
   };
   if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
   return value;

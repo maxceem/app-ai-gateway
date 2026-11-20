@@ -1,0 +1,317 @@
+/**
+ * Presets: `POST /v2/apps/{app}/presets/{slug}` (plan section 4.4, D13), v1's
+ * custom endpoints.
+ *
+ * The app sends only its request's own content. The preset names the
+ * provider connection, the operation, the model, fixed parameters and an
+ * output cap, and a fallback chain of more connections and models to try.
+ *
+ * In order:
+ *
+ * 1. The caller is checked as on the proxy (`serveCaller`).
+ * 2. The body is read once. A JSON body gets the preset's `params` merged in,
+ *    winning over the app's values. A transcription is a multipart upload.
+ * 3. Each target of the chain becomes an attempt. The first must work: a
+ *    missing connection, an operation it cannot serve or a model with no
+ *    price is refused, before anything is spent. A fallback that cannot work
+ *    is left out of the chain. A disabled first connection is a pause: the
+ *    chain goes on to its fallbacks, and only with none left is it refused.
+ * 4. The request is admitted once, for the whole chain.
+ * 5. The attempts are sent in order (`sendAttempts`): a target that gets no
+ *    answer, a 429 or a 5xx is followed by the next. Every attempt is one
+ *    charge; a failed one costs nothing.
+ *
+ * A preset's models are its own: the app's model rewrites do not apply.
+ * The client's query is never sent upstream, except Gemini's `alt=sse`,
+ * which picks its streaming method (v1).
+ */
+import { assertAppActive, loadApp } from "../apps/app-records.ts";
+import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contracts/app-config.ts";
+import { GatewayError } from "../core/errors.ts";
+import { timeOrderedId } from "../core/ids.ts";
+import { log } from "../core/log.ts";
+import { admitRequest } from "../limits/admission.ts";
+import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
+import { connectionDescription, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
+import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
+import type { CallAttempt } from "./call-charge.ts";
+import { requestedServiceMode } from "./meter.ts";
+import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
+import {
+  jsonBody,
+  meteredTranscriptionFormat,
+  parseForm,
+  refusal,
+  sendAttempts,
+  serveCaller,
+  strippedHeaders,
+  type Caller,
+  type OutgoingBody,
+  type PreparedAttempt,
+  type ProxyContext,
+} from "./serve.ts";
+
+/** Headers an API needs that a client calling a preset may not know to send (v1's `requiredHeaders`). */
+const STYLE_HEADERS: Partial<Record<ApiStyle, Readonly<Record<string, string>>>> = {
+  "anthropic-messages": { "anthropic-version": "2023-06-01" },
+};
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Merges the preset's parameters over the app's body; the preset's values win, nested objects merged (v1). */
+export function deepMerge(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    // `__proto__` would set the prototype instead of storing a key.
+    if (key === "__proto__") continue;
+    const current = Object.hasOwn(result, key) ? result[key] : undefined;
+    result[key] = plainObject(current) && plainObject(value) ? deepMerge(current, value) : value;
+  }
+  return result;
+}
+
+/** The request as read once: a JSON body with the preset's parameters in, or an upload. */
+type PresetBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
+
+async function presetBody(caller: Caller, contentType: string, preset: Preset, style: ApiStyle): Promise<PresetBody> {
+  const bytes = await caller.readBody();
+  if (style === "openai-transcription") {
+    if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+      throw new GatewayError(400, "invalid_request", "This preset takes a multipart/form-data upload");
+    }
+    // Parsed whole, as v1 does: each attempt sets its own model in it.
+    const form = await parseForm(bytes, contentType);
+    if (!form.has("file")) throw new GatewayError(400, "invalid_request", "A file field is required");
+    return { kind: "form", form };
+  }
+  return { kind: "json", body: deepMerge(jsonBody(bytes), preset.params ?? {}) };
+}
+
+/** A copy of an upload, so each attempt can set its own fields. Files are shared, not copied. */
+function copyForm(form: FormData): FormData {
+  const copy = new FormData();
+  for (const [name, value] of form) copy.append(name, value);
+  return copy;
+}
+
+/** A form's text fields for the readers, first value of each. */
+function formText(form: FormData): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const [name, value] of form) {
+    if (typeof value === "string" && !Object.hasOwn(record, name)) record[name] = value;
+  }
+  return record;
+}
+
+/** Why a target cannot be an attempt. On the first target it is the answer; on a fallback, it is left out. */
+class TargetProblem extends Error {
+  constructor(readonly error: GatewayError) {
+    super(error.message);
+  }
+}
+
+interface TargetInput {
+  readonly c: ProxyContext;
+  readonly caller: Caller;
+  readonly preset: Preset;
+  readonly style: ApiStyle;
+  readonly body: PresetBody;
+  readonly streaming: boolean;
+  readonly connection: ConnectionRecord;
+  readonly description: ProviderDescription;
+  readonly target: Pick<PresetFallback, "operation" | "model">;
+  readonly requestId: string;
+  readonly seq: number;
+  readonly startedAt: number;
+}
+
+/** One target of the chain as an attempt ready to send, or a `TargetProblem`. */
+function targetAttempt(input: TargetInput): PreparedAttempt {
+  const { connection, description, target, preset, style } = input;
+  const chosen = presetOperation(description, style, target.operation);
+  if (chosen === null) {
+    throw new TargetProblem(
+      new GatewayError(502, "provider_unavailable", `Provider connection ${connection.slug} cannot serve this preset's ${style} requests`),
+    );
+  }
+  const operation: OperationDescription = (input.streaming && streamingSibling(description, chosen)) || chosen;
+  const model = target.model;
+  const resolved = resolvePrice(connection.type, model, connection.rates);
+  const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
+  if (price === null && !reportsCost(operation)) {
+    throw new TargetProblem(
+      new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+        data: { model, operation: operation.name },
+      }),
+    );
+  }
+  const upstream = presetUpstream(description, operation, model);
+  if (upstream === null) {
+    throw new TargetProblem(new GatewayError(400, "invalid_request", `Model ${model} cannot be sent in ${operation.name}'s path`));
+  }
+  const location = operation.model;
+  let sent: OutgoingBody;
+  let fields: Record<string, unknown>;
+  if (input.body.kind === "json") {
+    const body = structuredClone(input.body.body);
+    if (location.in === "body") body[location.field] = model;
+    // The path names the model; the body names none, as v1.
+    else delete body.model;
+    refuseBackground(operation, body);
+    applyOutputCap(operation, body, preset.max_output_tokens);
+    requestStreamUsage(operation, body);
+    sent = { bytes: new TextEncoder().encode(JSON.stringify(body)), contentType: "application/json" };
+    fields = body;
+  } else {
+    const form = copyForm(input.body.form);
+    if (location.in === "form" || location.in === "body") form.set(location.field, model);
+    const format = meteredTranscriptionFormat(
+      operation,
+      description,
+      new Map([["response_format", form.getAll("response_format").map((value) => (typeof value === "string" ? value : null))]]),
+    );
+    if (format !== null) form.set("response_format", format);
+    sent = { form, contentType: null };
+    fields = formText(form);
+  }
+  const mode = requestedServiceMode(description, connection.baseUrl, fields);
+  const attempt: CallAttempt = {
+    requestId: input.requestId,
+    seq: input.seq,
+    accountId: connection.accountId,
+    appId: input.caller.identity.appId,
+    identity: input.caller.identity,
+    providerType: connection.type,
+    connectionId: connection.id,
+    providerSlug: connection.slug,
+    operation: operation.name,
+    model,
+    price,
+    reportsCost: reportsCost(operation),
+    requestedMode: mode.mode,
+    ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
+    startedAt: input.startedAt,
+    appVersion: input.caller.appVersion,
+    clientTraceId: input.caller.clientTraceId,
+  };
+  const defaultHeaders = operation.style === undefined ? undefined : STYLE_HEADERS[operation.style];
+  return {
+    connection,
+    description,
+    operation,
+    hostKey: upstream.host,
+    path: upstream.path,
+    query: input.streaming && operation !== chosen ? "?alt=sse" : "",
+    body: sent,
+    attempt,
+    ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
+  };
+}
+
+export async function presetHandler(c: ProxyContext): Promise<Response> {
+  const startedAt = Date.now();
+  const appId = c.req.param("app");
+  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+  const slug = c.req.param("slug") ?? "";
+  const app = await loadApp(c.env, appId);
+  assertAppActive(app);
+  // Only a preset the app has is looked up further, as on the proxy.
+  const preset = PRESET_SLUG_PATTERN.test(slug) && Object.hasOwn(app.presets, slug) ? app.presets[slug] : undefined;
+  const first = preset === undefined ? null : await loadConnection(c.env, app.accountId, preset.provider);
+  const firstDescription = first === null ? null : connectionDescription(first);
+
+  return serveCaller(
+    c,
+    {
+      app,
+      startedAt,
+      providerSlug: preset?.provider ?? slug,
+      ...(firstDescription === null ? {} : { providerAuthHeader: firstDescription.auth.header }),
+    },
+    async (caller) => {
+      if (preset === undefined) throw new GatewayError(404, "preset_not_found", `This app has no preset ${slug}`);
+      caller.facts.operation = preset.operation;
+      caller.facts.model = preset.model;
+      const style = declaredOperation(preset.operation)?.style;
+      if (style === undefined) {
+        throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
+      }
+      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style);
+      const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
+      const requestId = timeOrderedId(startedAt);
+
+      const targets: (Pick<PresetFallback, "provider" | "operation" | "model">)[] = [
+        { provider: preset.provider, operation: preset.operation, model: preset.model },
+        ...(preset.fallback ?? []),
+      ];
+      const connections = new Map<string, ConnectionRecord | null>([[preset.provider, first]]);
+      const attempts: PreparedAttempt[] = [];
+      let paused: GatewayError | null = null;
+      for (const [index, target] of targets.entries()) {
+        const primary = index === 0;
+        try {
+          let connection = connections.get(target.provider);
+          if (connection === undefined) {
+            connection = await loadConnection(c.env, app.accountId, target.provider);
+            connections.set(target.provider, connection);
+          }
+          const description = connection === null ? null : connectionDescription(connection);
+          if (connection === null || description === null) {
+            throw new TargetProblem(
+              new GatewayError(502, "provider_not_configured", `No provider connection ${target.provider} is set up for this app`),
+            );
+          }
+          if (connection.status === "disabled") {
+            const error = new GatewayError(502, "provider_disabled", `Provider connection ${target.provider} is disabled`);
+            // Disabling is a deliberate pause: the chain goes on to its fallbacks.
+            if (primary) paused = error;
+            continue;
+          }
+          attempts.push(
+            targetAttempt({
+              c,
+              caller,
+              preset,
+              style,
+              body,
+              streaming,
+              connection,
+              description,
+              target,
+              requestId,
+              seq: index + 1,
+              startedAt,
+            }),
+          );
+        } catch (error) {
+          const problem = error instanceof TargetProblem ? error.error : error;
+          if (primary) throw problem;
+          // A fallback that cannot work is left out; the save that wrote it checked it.
+          log("warn", "preset_fallback_skipped", {
+            app: app.id,
+            preset: slug,
+            providerSlug: target.provider,
+            code: problem instanceof GatewayError ? problem.code : "internal_error",
+          });
+        }
+      }
+      const [head, ...rest] = attempts;
+      if (head === undefined) {
+        throw paused ?? new GatewayError(502, "provider_not_configured", "No provider connection of this preset can serve it");
+      }
+
+      await admitRequest({
+        env: c.env,
+        app,
+        identity: caller.identity,
+        waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+        refuse: refusal,
+      });
+      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest]);
+    },
+  );
+}
+
