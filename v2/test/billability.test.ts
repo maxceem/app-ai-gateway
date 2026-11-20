@@ -150,7 +150,7 @@ describe("one place decides", () => {
   const sources = (import.meta as ImportMeta & {
     glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
   }).glob<string>("../src/**/*.ts", { query: "?raw", import: "default", eager: true });
-  const DECIDERS = ["resolvePrice", "pricesOperation", "reportsCost", "listPrice"];
+  const DECIDERS = ["resolvePrice", "pricesOperation", "reportsCost", "listPrice", "priceInMode", "customerPrice", "PRICE_LIST"];
   const ALLOWED = new Set(["../src/pricing/billability.ts", "../src/pricing/tokens.ts", "../src/pricing/prices.ts"]);
 
   it("no file but billability.ts reads the price list or a connection's rates to decide billing", () => {
@@ -161,16 +161,20 @@ describe("one place decides", () => {
         const names = statement[1]!.split(",").map((name) => name.trim().replace(/^type\s+/u, "").split(/\s+as\s+/u)[0]!);
         for (const name of names) if (DECIDERS.includes(name)) offenders.push(`${file}: ${name}`);
       }
+      if (/import\s+\*\s+as\s+\w+\s+from\s+"[^"]*pricing\/prices\.ts"/u.test(text)) offenders.push(`${file}: namespace import`);
     }
     expect(sources["../src/pricing/billability.ts"]).toBeDefined();
     expect(offenders).toEqual([]);
   });
 
   it("reads a connection's rates once, and only when asked", () => {
-    let parses = 0;
-    const row = { type: "openai", get rates_json() { parses += 1; return "{not json"; } };
+    let reads = 0;
+    const row = { type: "openai", get rates_json() { reads += 1; return JSON.stringify({ "house-model": { input: 1, output: 1 } }); } };
     const lazy = priceSources(row);
-    expect(parses).toBe(0);
-    expect(() => lazy.rates()).toThrow(SyntaxError);
+    expect(reads).toBe(0);
+    expect(lazy.rates()).toEqual({ "house-model": { input: 1, output: 1 } });
+    expect(lazy.rates()).toEqual({ "house-model": { input: 1, output: 1 } });
+    expect(reads).toBe(1);
+    expect(() => priceSources({ type: "openai", rates_json: "{not json" }).rates()).toThrow(SyntaxError);
   });
 });

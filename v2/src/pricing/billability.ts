@@ -82,12 +82,9 @@ export function priceSources(
     type: connection.type,
     rates: () => {
       if (read === undefined) {
+        const text = "rates_json" in connection ? connection.rates_json : undefined;
         const value =
-          "rates_json" in connection
-            ? connection.rates_json === null
-              ? null
-              : (JSON.parse(connection.rates_json) as CustomerRates)
-            : connection.rates;
+          text === undefined ? (connection as { readonly rates: CustomerRates | null }).rates : text === null ? null : (JSON.parse(text) as CustomerRates);
         read = { value };
       }
       return read.value;
@@ -95,9 +92,14 @@ export function priceSources(
   };
 }
 
+/** A model's price on a connection: its own rate, else ours. The one place a price is looked up. */
+function resolve(connection: PriceSources, model: string): ResolvedPrice | null {
+  return resolvePrice(connection.type, model, connection.rates());
+}
+
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about. */
 export function billing(operation: OperationDescription, connection: PriceSources, model: string, mode?: ServiceMode): Billing {
-  return billingAt(operation, resolvePrice(connection.type, model, connection.rates()), mode);
+  return billingAt(operation, resolve(connection, model), mode);
 }
 
 /** `billing`, given the model's resolved price: the one place the rule is written. */
@@ -131,7 +133,7 @@ export function listedModelProblem(
   model: string,
 ): { readonly operation?: string } | null {
   if (operations.length === 0) return null;
-  const resolved = resolvePrice(connection.type, model, connection.rates());
+  const resolved = resolve(connection, model);
   if (resolved === null) {
     const refused = operations.find((operation) => billingAt(operation, null).problem !== null);
     return refused === undefined ? null : { operation: refused.name };
@@ -159,7 +161,7 @@ export function rewriteTargetBillable(
     connections.some((connection) => {
       const operations = operationsOf(connection.type);
       if (operations.some((operation) => couldBill(billingAt(operation, null).problem))) return true;
-      const resolved = resolvePrice(connection.type, model, connection.rates());
+      const resolved = resolve(connection, model);
       return operations.some((operation) => couldBill(billingAt(operation, resolved).problem));
     })
   );
@@ -171,5 +173,5 @@ export function rewriteTargetBillable(
  * any price counts here; null when there is none yet.
  */
 export function billingForCharge(connection: PriceSources, model: string): ResolvedPrice | null {
-  return resolvePrice(connection.type, model, connection.rates());
+  return resolve(connection, model);
 }
