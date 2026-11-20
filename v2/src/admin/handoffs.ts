@@ -49,7 +49,7 @@ import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../provi
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
-import { appRow, checkAppConfig, checkConnectionRates, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { appRow, checkConnectionRates, checkedAppConfig, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkedBaseUrl,
@@ -380,6 +380,16 @@ interface StagedWrite {
   refusal(error: unknown): Promise<unknown>;
 }
 
+/** The account's connections are as a check read them (`readFingerprint`), as drizzle SQL for a guarded write. */
+function connectionsUnchanged(accountId: string, value: string): SQL {
+  return sql`(SELECT count(*) || ':' || coalesce(sum(revision), 0) || ':' || coalesce(max(updated_at), 0) FROM provider_connection WHERE account_id = ${accountId}) = ${value}`;
+}
+
+/** The account's apps are as a check read them (`readFingerprint`), as drizzle SQL for a guarded write. */
+function appsUnchanged(accountId: string, value: string): SQL {
+  return sql`(SELECT count(*) || ':' || coalesce(sum(revision), 0) || ':' || coalesce(max(updated_at), 0) FROM app WHERE account_id = ${accountId}) = ${value}`;
+}
+
 function uniqueViolation(error: unknown): boolean {
   return String(error).includes("UNIQUE");
 }
@@ -399,7 +409,7 @@ async function providerAddWrite(
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
-  await checkConnectionRates(env.DB, accountId, { slug: review.slug, type: review.type }, null, rates);
+  const apps = await checkConnectionRates(env.DB, accountId, { slug: review.slug, type: review.type }, null, rates);
   const statement = guardedInsert(
     database(env.DB) as never,
     providerConnection,
@@ -419,7 +429,7 @@ async function providerAddWrite(
       createdAt: now,
       updatedAt: now,
     },
-    and(guard, capCondition(cap))!,
+    and(guard, capCondition(cap), appsUnchanged(accountId, apps))!,
   );
   const row: ConnectionRow = {
     id,
@@ -616,11 +626,14 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
   const apiKeyApp = payload.config.authentication.type === "api_key";
   const digest = await requestDigest("app.add", payload);
 
+  /** The account's connections as the last check read them: the fresh write is made only if they are unchanged. */
+  let checkedConnections = "";
   /** What `createApp` checks against the account as it stands: when reserving, and before a fresh write. */
   const liveChecks = async () => {
     // A key needs a page to be revealed on, checked before anything is written.
     if (apiKeyApp) consoleAt(c.env);
-    await checkAppConfig(c.env.DB, actor.accountId, request.config);
+    const { connections } = await checkedAppConfig(c.env.DB, actor.accountId, request.config);
+    checkedConnections = connections;
     // The first key is not counted against the key ceiling, as v1, except
     // when the plan allows no keys at all.
     if (apiKeyApp && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {
@@ -662,7 +675,7 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
           db as never,
           appTable,
           { id, accountId: actor.accountId, name: payload.name, config: payload.config, revision: 1, status: payload.status, createdAt: now, updatedAt: now },
-          and(guard, capCondition(cap))!,
+          and(guard, capCondition(cap), connectionsUnchanged(actor.accountId, checkedConnections))!,
         ),
       ];
       let key: { id: string; name: string; key: string; key_prefix: string; created_at: string } | null = null;

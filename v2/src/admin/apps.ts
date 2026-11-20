@@ -19,9 +19,19 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
-import { billing, callGap, priceSources, reachableCalls, rewriteTargetBillable, type PriceSources, type ReachableCall } from "../pricing/billability.ts";
+import {
+  billing,
+  callGap,
+  callKey,
+  priceSources,
+  reachableCalls,
+  rewriteTargetBillable,
+  type AppCall,
+  type AppCallConfig,
+  type ConnectionView,
+  type Gap,
+} from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
-import type { OperationDescription } from "../providers/operation.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -163,6 +173,23 @@ export async function checkAppConfig(
   raw: unknown,
   stored: StoredEntries = NOTHING_STORED,
 ): Promise<AppConfig> {
+  return (await checkedAppConfig(db, accountId, raw, stored)).config;
+}
+
+/**
+ * `checkAppConfig`, with the state of the account's connections it was
+ * judged against (`readFingerprint`): the write that follows is made only if
+ * no connection changed since (`fingerprintGuard`), so a rate saved at the
+ * same moment cannot slip past either check.
+ */
+export async function checkedAppConfig(
+  db: D1Database,
+  accountId: string,
+  raw: unknown,
+  stored: StoredEntries = NOTHING_STORED,
+): Promise<{ readonly config: AppConfig; readonly connections: string }> {
+  // Read first: a connection written after this is caught by the guard.
+  const connections = await readFingerprint(db, "provider_connection", accountId);
   const config = parseAppConfig(raw);
   const changed = changesAgainst(stored, config);
   const rows = new Map<string, ConnectionRow | null>();
@@ -204,124 +231,171 @@ export async function checkAppConfig(
         });
       }
     }
-    // Rates are read only when a call is judged, so an unchanged route whose
-    // connection has unreadable rates does not stop a rename.
-    const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    judgeRoute(slug, { operations: enabled, models: routing.models }, rewrites, priceSources(connection), () =>
-      storedCalls(stored, slug, description.operations, priceSources(connection)),
-    );
   }
   for (const [slug, preset] of Object.entries(config.presets ?? {})) {
     // Unchanged, it may keep a connection deleted since, as routing does.
     if (!changed.preset(slug)) continue;
     await checkPreset(slug, preset, connectionRow);
   }
-  return config;
+  // Every call the app lets through, at every entry point serving has, judged by one rule.
+  const slugs = new Set([
+    ...Object.keys(config.routing.providers),
+    ...Object.values(config.presets ?? {}).flatMap((preset) => [preset.provider, ...(preset.fallback ?? []).map((one) => one.provider)]),
+  ]);
+  const views = new Map<string, ConnectionView | null>();
+  for (const slug of slugs) {
+    const row = await connectionRow(slug);
+    const description = row === null ? null : builtInProvider(row.type);
+    // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
+    views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description });
+  }
+  judgeApp(config, stored, (slug) => views.get(slug) ?? null);
+  return { config, connections };
 }
 
-/** A call's identity across a save: the operation, the model the request names and the one it is sent as. */
-function callKey(call: ReachableCall): string {
-  return `${call.operation.name}\u0000${call.requested}\u0000${call.model}`;
-}
-
-/** What a stored route let through: its calls, and the models it listed. */
-interface StoredCalls {
-  readonly keys: ReadonlySet<string>;
-  readonly listed: ReadonlySet<string>;
-}
-
-/**
- * The calls a stored route let through, read loosely: it was valid when
- * saved. Null when it cannot be read, which judges nothing on it, so a
- * rename never fails on a route stored long ago.
- */
-function storedCalls(
-  stored: StoredEntries,
-  slug: string,
-  operations: readonly OperationDescription[],
-  sources: PriceSources,
-): StoredCalls | null {
+/** The parts of a stored app that decide its calls, read loosely: it was valid when saved. Null when they cannot be read. */
+function storedCallConfig(stored: StoredEntries): AppCallConfig | null {
   try {
-    const entry = stored.providers[slug] as { operations?: unknown; models?: unknown } | undefined;
-    if (entry === undefined) return { keys: new Set(), listed: new Set() };
-    const names = Array.isArray(entry.operations) ? entry.operations.filter((name): name is string => typeof name === "string") : [];
-    const models = Array.isArray(entry.models) ? entry.models.filter((model): model is string => typeof model === "string") : undefined;
+    const strings = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : undefined);
+    const providers = Object.fromEntries(
+      Object.entries(stored.providers).map(([slug, entry]) => {
+        const route = entry as { operations?: unknown; models?: unknown };
+        return [slug, { operations: strings(route.operations) ?? [], models: strings(route.models) }];
+      }),
+    );
     const rewrites = Object.fromEntries(Object.entries(stored.rewrites).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
-    const enabled = operations.filter((operation) => names.includes(operation.name));
-    return { keys: new Set(reachableCalls({ operations: enabled, models }, rewrites, sources).map(callKey)), listed: new Set(models ?? []) };
+    const presets = Object.fromEntries(
+      Object.entries(stored.presets).flatMap(([slug, entry]) => {
+        const preset = entry as { provider?: unknown; operation?: unknown; model?: unknown; fallback?: unknown };
+        if (typeof preset.provider !== "string" || typeof preset.operation !== "string" || typeof preset.model !== "string") return [];
+        const fallback = (Array.isArray(preset.fallback) ? preset.fallback : []).flatMap((one: { provider?: unknown; operation?: unknown; model?: unknown }) =>
+          typeof one?.provider === "string" && typeof one.model === "string"
+            ? [{ provider: one.provider, model: one.model, ...(typeof one.operation === "string" ? { operation: one.operation } : {}) }]
+            : [],
+        );
+        return [[slug, { provider: preset.provider, operation: preset.operation, model: preset.model, fallback }]];
+      }),
+    );
+    return { routing: { providers, model_rewrites: rewrites }, presets };
   } catch {
     return null;
   }
 }
 
 /**
- * Judges a route's calls on save, by the one rule for a call serving admits
- * (`callGap`): only the calls the save makes reachable, those a stored route
- * did not let through. Each model the route lists must also be served by
- * some operation it enables.
+ * Judges an app's calls on save, by the one rule for a call serving admits
+ * (`callGap`): only the calls the save makes reachable, those the stored app
+ * did not let through. Calls on a connection whose rates cannot be read are
+ * left out on both sides. Each model a proxy route lists must also be served
+ * by some operation it enables, when the save could have changed that.
  */
-function judgeRoute(
-  slug: string,
-  route: { readonly operations: readonly OperationDescription[]; readonly models?: readonly string[] | undefined },
-  rewrites: Readonly<Record<string, string>>,
-  sources: PriceSources,
-  before: () => StoredCalls | null,
-): void {
-  // The stored side first: when it cannot be read (rates unreadable since), nothing is judged.
-  const was = before();
-  if (was === null) return;
-  const calls = reachableCalls(route, rewrites, sources);
-  const fresh = calls.filter((call) => !was.keys.has(callKey(call)));
-  for (const call of fresh) {
+function judgeApp(config: AppConfig, stored: StoredEntries, view: (slug: string) => ConnectionView | null): void {
+  const before = storedCallConfig(stored);
+  // A stored app that cannot be read judges nothing, so a rename never fails on it.
+  if (before === null) return;
+  const was = reachableCalls(before, view);
+  const now = reachableCalls(config, view);
+  const skipped = new Set([...was.unreadable, ...now.unreadable]);
+  const wasKeys = new Set(was.calls.map(callKey));
+  for (const call of now.calls) {
+    if (skipped.has(call.slug) || wasKeys.has(callKey(call))) continue;
     const gap = callGap(call);
-    if (gap === null) continue;
-    throw callRefused(slug, route, call.requested, call.model, gap.operation ?? call.operation.name, route.models !== undefined);
+    if (gap !== null) throw callRefused(config, call, gap);
   }
-  for (const listed of route.models ?? []) {
-    const served = calls.filter((call) => call.requested === listed);
-    if (served.length > 0) continue;
-    // Judged when this save could have changed it: newly listed, or listed before and served then.
-    const servedBefore = [...was.keys].some((key) => key.split("\u0000")[1] === listed);
-    if (was.listed.has(listed) && !servedBefore) continue;
-    const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-    throw callRefused(slug, route, listed, model, undefined, true);
+  const servedName = (calls: readonly AppCall[]) => new Set(calls.filter((call) => call.entry === "proxy").map((call) => `${call.slug}\u0000${call.requested}`));
+  const servedNow = servedName(now.calls);
+  const servedBefore = servedName(was.calls);
+  for (const [slug, route] of Object.entries(config.routing.providers)) {
+    if (skipped.has(slug) || view(slug) === null) continue;
+    const listedBefore = new Set(before.routing.providers[slug]?.models ?? []);
+    for (const listed of route.models ?? []) {
+      const name = `${slug}\u0000${listed}`;
+      if (servedNow.has(name)) continue;
+      // Listed before and not served then either: this save did not change it.
+      if (listedBefore.has(listed) && !servedBefore.has(name)) continue;
+      const rewrites = config.routing.model_rewrites ?? {};
+      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
+      const operations = view(slug)!.description.operations.filter((operation) => route.operations.includes(operation.name));
+      throw new GatewayError(
+        400,
+        "pricing_not_configured",
+        `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that any of ${operations
+          .map((operation) => operation.name)
+          .join(", ")} can bill; add one to the provider connection first`,
+        undefined,
+        { data: { slug, model } },
+      );
+    }
   }
 }
 
-function callRefused(
-  slug: string,
-  route: { readonly operations: readonly OperationDescription[] },
-  listed: string,
-  model: string,
-  operation: string | undefined,
-  inList: boolean,
-): GatewayError {
-  if (!inList && operation !== undefined) {
+/** The refusal for a call that cannot be charged every way its answers come out, said where the app lets it through. */
+function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
+  const operation = gap.operation ?? call.operation.name;
+  const data = { slug: call.slug, model: call.model, operation };
+  if (call.entry.startsWith("preset:")) {
+    const [, name, index] = call.entry.split(":");
+    const where = `config.presets.${name}${index === "0" ? "" : `.fallback.${Number(index) - 1}`}`;
     return new GatewayError(
       400,
       "pricing_not_configured",
-      `config.routing.providers.${slug}: ${model} has a price that ${operation} can bill only partly; give it a rate for every way it answers, or list the route's models`,
+      `${where}.model: ${call.model} has no price that ${operation} can bill every way it answers; add one to the provider connection first`,
       undefined,
-      { data: { slug, model, operation } },
+      { data: { ...data, preset: name ?? "" } },
+    );
+  }
+  const listed = config.routing.providers[call.slug]?.models !== undefined;
+  if (call.entry === "alternative") {
+    return new GatewayError(
+      400,
+      "pricing_not_configured",
+      `config.routing.providers.${call.slug}: ${call.model} can be named as a fallback model, and ${operation} cannot bill it every way it answers; give it a rate for every way it answers`,
+      undefined,
+      { data },
+    );
+  }
+  if (!listed && gap.operation !== undefined) {
+    return new GatewayError(
+      400,
+      "pricing_not_configured",
+      `config.routing.providers.${call.slug}: ${call.model} has a price that ${operation} can bill only partly; give it a rate for every way it answers, or list the route's models`,
+      undefined,
+      { data },
     );
   }
   return new GatewayError(
     400,
     "pricing_not_configured",
-    `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that ${
-      operation ?? `any of ${route.operations.map((one) => one.name).join(", ")}`
-    } can bill; add one to the provider connection first`,
+    `config.routing.providers.${call.slug}.models: ${call.requested}${call.model === call.requested ? "" : ` (rewritten to ${call.model})`} has no price that ${operation} can bill; add one to the provider connection first`,
     undefined,
-    { data: { slug, model, ...(operation !== undefined ? { operation } : {}) } },
+    { data },
   );
 }
 
+/** A fingerprint of an account's rows of one table: it changes whenever a row is added, removed or written. */
+function fingerprintOf(table: "app" | "provider_connection"): string {
+  return `(SELECT count(*) || ':' || coalesce(sum(revision), 0) || ':' || coalesce(max(updated_at), 0) FROM ${table} WHERE account_id = ?)`;
+}
+
+/** The account's rows of one table, as a fingerprint, read before a check that depends on them. */
+export async function readFingerprint(db: D1Database, table: "app" | "provider_connection", accountId: string): Promise<string> {
+  return (await db.prepare(`SELECT ${fingerprintOf(table)} AS value`).bind(accountId).first<string>("value")) ?? "";
+}
+
+/** SQL to AND into a write's `WHERE`, with its values: the write is made only if the table's rows are still as `readFingerprint` read them. */
+export function fingerprintGuard(table: "app" | "provider_connection", accountId: string, value: string): { readonly condition: string; readonly binds: readonly unknown[] } {
+  return { condition: `${fingerprintOf(table)} = ?`, binds: [accountId, value] };
+}
+
 /**
- * A connection's rates are about to change: each app that routes to it is
- * judged on the calls the change can affect, by the same rule as an app save
- * (`callGap`), so a rate added after an app was saved cannot leave its calls
- * charged only partly. Only models whose rates are new or changed are judged:
- * a removed rate is served and priced later, as before.
+ * A connection's rates are about to change: each active app that routes to
+ * it is judged on the calls the change can affect, at every entry point
+ * (`reachableCalls`), by the same rule as an app save (`callGap`), so a rate
+ * added after an app was saved cannot leave its calls charged only partly.
+ * Only models whose rates are new or changed are judged: a removed rate is
+ * served and priced later, as before. A disabled app is judged in full when
+ * it is turned on again. Returns the state of the account's apps the check
+ * read (`readFingerprint`), for the write's guard.
  */
 export async function checkConnectionRates(
   db: D1Database,
@@ -329,39 +403,43 @@ export async function checkConnectionRates(
   connection: { readonly slug: string; readonly type: string },
   before: CustomerRates | null,
   after: CustomerRates | null,
-): Promise<void> {
+): Promise<string> {
+  // Read first: an app written after this is caught by the guard.
+  const apps = await readFingerprint(db, "app", accountId);
   const description = builtInProvider(connection.type);
-  if (description === null || after === null) return;
+  if (description === null || after === null) return apps;
   const changedModels = new Set(Object.keys(after).filter((model) => before === null || !Object.hasOwn(before, model) || !sameJson(before[model], after[model])));
-  if (changedModels.size === 0) return;
-  const { results } = await db.prepare("SELECT name, config_json FROM app WHERE account_id = ?").bind(accountId).all<{ name: string; config_json: string }>();
-  const sources = priceSources({ type: connection.type, rates: after });
+  if (changedModels.size === 0) return apps;
+  const { results } = await db
+    .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
+    .bind(accountId)
+    .all<{ name: string; status: string; config_json: string }>();
+  const view: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description };
   for (const app of results) {
-    let stored: StoredEntries;
+    if (app.status !== "active") continue;
+    let config: AppCallConfig | null;
     try {
-      stored = storedRouting({ config_json: app.config_json } as AppRow);
+      config = storedCallConfig(storedRouting({ config_json: app.config_json } as AppRow));
     } catch {
       continue;
     }
-    const entry = stored.providers[connection.slug] as { operations?: unknown; models?: unknown } | undefined;
-    if (entry === undefined) continue;
-    const names = Array.isArray(entry.operations) ? entry.operations.filter((name): name is string => typeof name === "string") : [];
-    const models = Array.isArray(entry.models) ? entry.models.filter((model): model is string => typeof model === "string") : undefined;
-    const rewrites = Object.fromEntries(Object.entries(stored.rewrites).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
-    const operations = description.operations.filter((operation) => names.includes(operation.name));
-    const calls = reachableCalls({ operations, models }, rewrites, sources);
+    if (config === null) continue;
+    const { calls } = reachableCalls(config, (slug) => (slug === connection.slug ? view : null));
     for (const call of calls) {
       if (!changedModels.has(call.model)) continue;
       const gap = callGap(call);
-      if (gap === null) continue;
-      throw ratesRefused(call.model, app.name, connection.slug, gap.operation ?? call.operation.name);
+      if (gap !== null) throw ratesRefused(call.model, app.name, connection.slug, gap.operation ?? call.operation.name);
     }
-    for (const listed of models ?? []) {
+    const route = config.routing.providers[connection.slug];
+    const rewrites = config.routing.model_rewrites ?? {};
+    const served = new Set(calls.filter((call) => call.entry === "proxy").map((call) => call.requested));
+    for (const listed of route?.models ?? []) {
       const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-      if (!changedModels.has(model) || calls.some((call) => call.requested === listed)) continue;
+      if (!changedModels.has(model) || served.has(listed)) continue;
       throw ratesRefused(model, app.name, connection.slug, undefined);
     }
   }
+  return apps;
 }
 
 function ratesRefused(model: string, app: string, slug: string, operation: string | undefined): GatewayError {
@@ -562,7 +640,7 @@ export async function createApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, AppCreateRequestSchema);
-  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  const { config, connections } = await checkedAppConfig(c.env.DB, actor.accountId, body.config);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
   // The first key is not counted against the key ceiling, as v1, except when
   // the plan allows no keys at all: such a plan allows only App Attest apps.
@@ -573,16 +651,18 @@ export async function createApp(c: AdminContext): Promise<Response> {
   }
   const now = Date.now();
   const id = newAppId(body.name);
+  // Written only if no connection changed since the check read them.
+  const unchanged = fingerprintGuard("provider_connection", actor.accountId, connections);
   const insert = c.env.DB.prepare(
     `INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at)
-     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
-  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds);
+     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition} AND ${unchanged.condition}`,
+  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds, ...unchanged.binds);
   // An app-key app gets its first key, shown once, as v1. Written only if the app was.
   const key = config.authentication.type === "api_key" ? await createKey(c.env.DB, id, "Initial key", now, true) : null;
   const [written] = await c.env.DB.batch(key === null ? [insert] : [insert, key.statement]);
   if (written?.meta.changes !== 1) {
     await cap.assertNotReached();
-    throw new GatewayError(409, "conflict", "The app could not be created; retry");
+    throw new GatewayError(409, "conflict", "The app could not be created: a provider connection may have changed while it was checked; retry");
   }
   const row = await appRow(c.env.DB, actor.accountId, id);
   return c.json({ app: appView(row), api_key: key?.created ?? null } satisfies OperationResponse<"createApp">, 201);
@@ -595,6 +675,15 @@ function storedRouting(row: AppRow): StoredEntries {
     presets?: Record<string, unknown>;
   };
   return { providers: config.routing?.providers ?? {}, presets: config.presets ?? {}, rewrites: config.routing?.model_rewrites ?? {} };
+}
+
+/**
+ * What a save of `current` is judged against: its stored routing, unless the
+ * save turns a disabled app on. A disabled app serves nothing, so turning it
+ * on judges everything, as creating it would.
+ */
+function judgedAgainst(current: AppRow, status: "active" | "disabled" | undefined): StoredEntries {
+  return current.status !== "active" && (status ?? current.status) === "active" ? NOTHING_STORED : storedRouting(current);
 }
 
 /** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */
@@ -628,15 +717,21 @@ async function saveApp(
   if (revision === undefined) {
     throw new GatewayError(400, "app_revision_required", "Send the revision the app was read at");
   }
-  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, storedRouting(current));
+  const { config, connections } = await checkedAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
+  // Written only if neither the app nor any connection changed since the check read them.
+  const unchanged = fingerprintGuard("provider_connection", actor.accountId, connections);
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
-     WHERE id = ? AND account_id = ? AND revision = ?`,
+     WHERE id = ? AND account_id = ? AND revision = ? AND ${unchanged.condition}`,
   )
-    .bind(body.name, JSON.stringify(config), body.status ?? null, Date.now(), current.id, actor.accountId, revision)
+    .bind(body.name, JSON.stringify(config), body.status ?? null, Date.now(), current.id, actor.accountId, revision, ...unchanged.binds)
     .run();
   if (result.meta.changes === 0) {
-    throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
+    const now = await appRow(c.env.DB, actor.accountId, current.id);
+    if (now.revision !== revision) {
+      throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
+    }
+    throw new GatewayError(409, "conflict", "A provider connection changed while the app was checked; retry");
   }
   invalidateApp(current.id);
   const row = await appRow(c.env.DB, actor.accountId, current.id);
@@ -684,7 +779,7 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const body = await parseBody(c, AppValidateRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config, storedRouting(current));
+  await checkAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 

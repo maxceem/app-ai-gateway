@@ -6,7 +6,7 @@
  * keep the work a save does bounded (Fable's design review of step 4b).
  */
 import { describe, expect, it } from "vitest";
-import { CHECK_PROBES, callGap, priceSources, reachableCalls, resolveCall } from "../src/pricing/billability.ts";
+import { CHECK_PROBES, RESOLVED_CALLS, callGap, priceSources, reachableCalls, resolveCall } from "../src/pricing/billability.ts";
 import { keyCandidates, PRICE_LIST, reportsCost, servedModes, type CustomerRates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
@@ -126,20 +126,26 @@ describe("our price list", () => {
 describe("the work a save does", () => {
   it("grows with the number of models a route lists, not with its square", () => {
     const openai = BUILT_IN_PROVIDERS.openai!;
-    const operations = openai.operations.filter((op) => op.name === "openai.chat" || op.name === "openai.responses");
-    const probes = (count: number): number => {
+    const view = (rates: Record<string, unknown>) => ({ sources: priceSources({ type: "openai", rates: rates as CustomerRates }), description: openai });
+    const work = (count: number): number => {
       const rates: Record<string, unknown> = {};
-      for (let index = 0; index < count; index += 1) rates[`m${index}`] = { input: 1_000_000 + index, output: 2_000_000 + index };
-      const sources = priceSources({ type: "openai", rates: rates as CustomerRates });
-      const before = CHECK_PROBES.count;
-      for (const call of reachableCalls({ operations }, undefined, sources)) callGap(call);
-      return CHECK_PROBES.count - before;
+      const models: string[] = [];
+      for (let index = 0; index < count; index += 1) {
+        rates[`m${index}`] = { input: 1_000_000 + index, output: 2_000_000 + index };
+        models.push(`m${index}`);
+      }
+      // A real allowlist: the route lists every model by name.
+      const app = { routing: { providers: { main: { operations: ["openai.chat", "openai.responses"], models } } } };
+      const connection = view(rates);
+      const before = CHECK_PROBES.count + RESOLVED_CALLS.count;
+      for (const call of reachableCalls(app, (slug) => (slug === "main" ? connection : null)).calls) callGap(call);
+      return CHECK_PROBES.count + RESOLVED_CALLS.count - before;
     };
-    const small = probes(1_500);
-    const large = probes(3_000);
+    const small = work(1_500);
+    const large = work(3_000);
     expect(small).toBeGreaterThan(0);
     expect(large).toBeLessThanOrEqual(small * 2.2);
-    // A handful of charge-function runs per model and operation, whatever the route's size.
-    expect(large / (3_000 * operations.length)).toBeLessThan(20);
+    // A handful of resolutions and charge-function runs per model and operation, whatever the route's size.
+    expect(large / (3_000 * 2)).toBeLessThan(20);
   });
 });

@@ -210,6 +210,103 @@ describe("validate and check", () => {
     expect(full.status).toBe(200);
   });
 
+  it("judges a preset's targets when a connection's rates change (PR #199 S1)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const slug = provider.provider.slug as string;
+    const config = { ...apiKeyConfig(), presets: { support: { provider: slug, operation: "openai.chat", model: "house" } } };
+    expect((await createApp(key, config)).status).toBe(201);
+    // Priced per minute, chat could no longer bill the preset's model: the rate save is refused.
+    const changed = await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, { revision: 1, pricing: { house: { per_minute: 1 } } });
+    expect(changed).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+  });
+
+  it("judges a model a request may name besides its own, under its own name (PR #199 S2)", async () => {
+    const key = await seedManagementKey();
+    const slug = `vercel-${crypto.randomUUID().slice(0, 6)}`;
+    await createProvider(key, { type: "vercel", name: "Vercel", slug });
+    // `house` is rewritten for the request's own model, but a fallback model is judged, and billed, as named.
+    const config = {
+      ...apiKeyConfig({ [slug]: { operations: ["vercel.chat"], models: ["house", "openai/gpt-4o-mini"] } }),
+    };
+    config.routing = { ...config.routing, model_rewrites: { house: "openai/gpt-4o-mini" } } as typeof config.routing;
+    const saved = await createApp(key, config);
+    expect(saved).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+    expect(saved.body.error.message).toContain("fallback model");
+  });
+
+  it("judges everything when a disabled app is turned on again (PR #199 S4)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const slug = provider.provider.slug as string;
+    const config = apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["house"] } });
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}`;
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "disabled", revision: 1 })).status).toBe(200);
+    // The price goes while the app is off: removing a rate is allowed.
+    expect((await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, { revision: 1, pricing: null })).status).toBe(200);
+    expect(await request(key, "POST", `${path}/validate`, { name: "Mgmt", config, status: "active" })).toMatchObject({ status: 400 });
+    expect(await request(key, "PUT", path, { name: "Mgmt", config, status: "active", revision: 2 })).toMatchObject({
+      status: 400,
+      body: { error: { code: "pricing_not_configured" } },
+    });
+    // Staying off, a rename is not judged again.
+    expect((await request(key, "PUT", path, { name: "Off", config, revision: 2 })).status).toBe(200);
+  });
+
+  it("adds a model list to a route whose connection's rates cannot be read, without failing (PR #199 S5)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key);
+    const slug = provider.provider.slug as string;
+    const { body } = await createApp(key, apiKeyConfig({ [slug]: { operations: ["openai.chat"] } }));
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind("{not json", provider.provider.id).run();
+    const listed = apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } });
+    expect((await request(key, "PUT", `/v2/admin/apps/${body.app.id}`, { name: "Mgmt", config: listed, revision: 1 })).status).toBe(200);
+  });
+
+  it("refuses an app save and a rate save that race each other's check (PR #199 S6)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const slug = provider.provider.slug as string;
+    const config = apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["house"] } });
+    const { body } = await createApp(key, config);
+    /** An environment whose database writes `race` just before the statement that starts with `write` is prepared. */
+    const racing = (write: string, race: string, id: string): Env => {
+      const db = env.DB;
+      return {
+        ...env,
+        DB: new Proxy(db, {
+          get(target, property) {
+            if (property !== "prepare") return Reflect.get(target, property);
+            return (query: string) => {
+              if (!query.trimStart().startsWith(write)) return target.prepare(query);
+              // The other save lands between this check and this write.
+              const statement = target.prepare(query);
+              const raced = target.prepare(race).bind(Date.now(), id);
+              const bind = statement.bind.bind(statement);
+              return Object.assign(Object.create(statement), {
+                bind: (...values: unknown[]) => {
+                  const bound = bind(...values);
+                  return Object.assign(Object.create(bound), { run: async () => (await raced.run(), bound.run()) });
+                },
+              });
+            };
+          },
+        }),
+      };
+    };
+    const appRace = racing("UPDATE app SET name", "UPDATE provider_connection SET revision = revision + 1, updated_at = ? WHERE id = ?", provider.provider.id);
+    expect(await request(key, "PUT", `/v2/admin/apps/${body.app.id}`, { name: "Again", config, revision: 1 }, appRace)).toMatchObject({
+      status: 409,
+      body: { error: { code: "conflict" } },
+    });
+    const { body: current } = await request(key, "GET", `/v2/admin/providers/${provider.provider.id}`);
+    const rateRace = racing("UPDATE provider_connection SET name", "UPDATE app SET revision = revision + 1, updated_at = ? WHERE id = ?", body.app.id);
+    expect(
+      await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, { revision: current.provider.revision, pricing: { house: { input: 3, output: 4 } } }, rateRace),
+    ).toMatchObject({ status: 409, body: { error: { code: "conflict" } } });
+  });
+
   it("reports each named connection's status, and ready only with an active one", async () => {
     const key = await seedManagementKey();
     const { body: first } = await createProvider(key);

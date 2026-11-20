@@ -39,7 +39,7 @@ import type { ProviderDescription } from "../providers/operation.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
-import { checkConnectionRates, parseBody } from "./apps.ts";
+import { checkConnectionRates, fingerprintGuard, parseBody } from "./apps.ts";
 import { planCap } from "./plan-caps.ts";
 import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
@@ -290,7 +290,9 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const servingJson = servingProvidersJson(description, body.servingProviders);
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
-  await checkConnectionRates(c.env.DB, actor.accountId, { slug, type: body.type }, null, newRates);
+  const apps = await checkConnectionRates(c.env.DB, actor.accountId, { slug, type: body.type }, null, newRates);
+  // Written only if no app changed since the check read them.
+  const unchanged = fingerprintGuard("app", actor.accountId, apps);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
@@ -298,7 +300,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
     written = await c.env.DB.prepare(
       `INSERT INTO provider_connection
         (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, serving_providers_json, rates_json, revision, created_by, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
+       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition} AND ${unchanged.condition}`,
     )
       .bind(
         id,
@@ -316,6 +318,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         now,
         now,
         ...cap.binds,
+        ...unchanged.binds,
       )
       .run();
   } catch (error) {
@@ -419,6 +422,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         ? null
         : servingProvidersJson(description, body.servingProviders);
   const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
+  let appsGuard: { readonly condition: string; readonly binds: readonly unknown[] } = { condition: "1", binds: [] };
   if (newRates !== null) {
     // The apps that route to this connection are judged on the calls the new rates change.
     const before = (() => {
@@ -428,13 +432,15 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         return null;
       }
     })();
-    await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type }, before, newRates);
+    const apps = await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type }, before, newRates);
+    // Written only if no app changed since the check read them.
+    appsGuard = fingerprintGuard("app", actor.accountId, apps);
   }
   const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(
     `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, cloudflare_gateway_json = ?,
        serving_providers_json = ?, rates_json = ?, revision = revision + 1, updated_at = ?
-     WHERE id = ? AND account_id = ? AND revision = ?`,
+     WHERE id = ? AND account_id = ? AND revision = ? AND ${appsGuard.condition}`,
   )
     .bind(
       body.name ?? current.name,
@@ -449,10 +455,11 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       current.id,
       actor.accountId,
       body.revision,
+      ...appsGuard.binds,
     )
     .run();
   if (result.meta.changes === 0) {
-    throw new GatewayError(409, "conflict", "The provider connection changed since it was read; read it again and retry");
+    throw new GatewayError(409, "conflict", "The provider connection, or an app that routes to it, changed since it was read; read it again and retry");
   }
   invalidateConnection(actor.accountId, current.slug);
   const row = await connectionRow(c.env.DB, actor.accountId, current.id);

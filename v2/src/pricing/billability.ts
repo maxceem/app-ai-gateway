@@ -35,7 +35,8 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import { rewrittenModel, type OperationDescription } from "../providers/operation.ts";
+import { rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
@@ -102,13 +103,29 @@ export function priceSources(
     rates: () => {
       if (read === undefined) {
         const text = "rates_json" in connection ? connection.rates_json : undefined;
-        const value =
-          text === undefined ? (connection as { readonly rates: CustomerRates | null }).rates : text === null ? null : (JSON.parse(text) as CustomerRates);
+        let value: CustomerRates | null;
+        if (text === undefined) value = (connection as { readonly rates: CustomerRates | null }).rates;
+        else if (text === null) value = null;
+        else {
+          try {
+            value = JSON.parse(text) as CustomerRates;
+          } catch {
+            throw new UnreadableRates(type);
+          }
+        }
         read = { value };
       }
       return read.value;
     },
   };
+}
+
+/** A connection's stored rates cannot be read: a decision that needs them cannot be made. A `SyntaxError`, as the parse that failed. */
+export class UnreadableRates extends SyntaxError {
+  constructor(readonly connectionType: string) {
+    super(`The ${connectionType} connection's rates cannot be read`);
+    this.name = "UnreadableRates";
+  }
 }
 
 /** A model's price on a connection: its own rate, else ours. The one place a price is looked up. */
@@ -300,6 +317,14 @@ export interface ReachableCall {
   readonly bill: Billing;
 }
 
+/** A call an app lets through, and where it comes in: a proxy route, a preset target, or a model a request names besides its own. */
+export interface AppCall extends ReachableCall {
+  /** The connection's slug. */
+  readonly slug: string;
+  /** Where the call comes in, as `proxy`, `alternative` or `preset:<slug>:<target index>`. */
+  readonly entry: string;
+}
+
 /** A route's model policy: its model list, when it has one. */
 export interface RouteModels {
   readonly models?: readonly string[] | undefined;
@@ -322,8 +347,9 @@ export function resolveCall(
   sources: PriceSources,
   operation: OperationDescription,
   requested: string,
+  listed: ReadonlySet<string> | null = listOf(route),
 ): CallResolution {
-  if (route.models !== undefined && !route.models.includes(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
+  if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
   const bill = billing(operation, sources, model);
   const problem = admissionProblem(bill, route.models !== undefined);
@@ -331,37 +357,134 @@ export function resolveCall(
   return { kind: "admitted", operation, requested, model, bill };
 }
 
-/** The model names a request to a route can carry: its model list, or, with none, every model it could name that has a price of the connection's own or a rewrite. */
-function candidateModels(route: RouteModels, rewrites: Readonly<Record<string, string>> | undefined, sources: PriceSources): readonly string[] {
-  if (route.models !== undefined) return route.models;
-  let own: readonly string[] = [];
-  try {
-    own = Object.keys(sources.rates() ?? {});
-  } catch {
-    // Unreadable rates name no model of their own; the same on both sides of a save, so a rename still goes through.
-  }
-  return [...new Set([...own, ...Object.keys(rewrites ?? {}), ...Object.values(rewrites ?? {})])];
+/** A route's model names, a set for membership; null when it has no list. */
+function listOf(route: RouteModels): ReadonlySet<string> | null {
+  return route.models === undefined ? null : new Set(route.models);
 }
 
+/** The model names a request to a route can carry: its model list, or, with none, every model it could name that has a price of the connection's own or a rewrite. */
+function candidateModels(route: RouteModels, rewrites: Readonly<Record<string, string>> | undefined, sources: PriceSources): readonly string[] {
+  if (route.models !== undefined) return [...new Set(route.models)];
+  return [...new Set([...Object.keys(sources.rates() ?? {}), ...Object.keys(rewrites ?? {}), ...Object.values(rewrites ?? {})])];
+}
+
+/** One provider connection as an app's calls see it: its prices and what it can serve. */
+export interface ConnectionView {
+  readonly sources: PriceSources;
+  readonly description: ProviderDescription;
+}
+
+/** The parts of an app's configuration that decide which calls it lets through, read loosely. */
+export interface AppCallConfig {
+  readonly routing: {
+    readonly providers: Readonly<Record<string, { readonly operations: readonly string[]; readonly models?: readonly string[] | undefined }>>;
+    readonly model_rewrites?: Readonly<Record<string, string>> | undefined;
+  };
+  readonly presets?:
+    | Readonly<
+        Record<
+          string,
+          {
+            readonly provider: string;
+            readonly operation: string;
+            readonly model: string;
+            readonly fallback?: readonly { readonly provider: string; readonly operation?: string | undefined; readonly model: string }[] | undefined;
+          }
+        >
+      >
+    | undefined;
+}
+
+/** Counts the calls resolved while enumerating, beside `CHECK_PROBES`: tests read it to count work, never time. */
+export const RESOLVED_CALLS = { count: 0 };
+
 /**
- * Every call a route lets through: `resolveCall` over its operations and
- * every model name a request can carry (`candidateModels`). A route with no
+ * Every call an app lets through, at every entry point serving has:
+ *
+ * - each proxy route: `resolveCall` over its enabled operations and every
+ *   model name a request can carry (`candidateModels`);
+ * - each model a request may name besides its own (`alternativeModels`,
+ *   Vercel's fallback models), judged under its own name as serving judges
+ *   it (`admissionProblem`);
+ * - each preset's first target, served even when it cannot be billed, and
+ *   each fallback that can be, on the operation the preset picks
+ *   (`presetOperation`) and its streaming sibling.
+ *
+ * A connection whose rates cannot be read is named in `unreadable`, and its
+ * calls are left out: no decision about them can be made. A route with no
  * model list allows any model with a price, our list's included: those are
  * judged by a test over the price list, as no save could name them all.
  */
 export function reachableCalls(
-  route: RouteModels & { readonly operations: readonly OperationDescription[] },
-  rewrites: Readonly<Record<string, string>> | undefined,
-  sources: PriceSources,
-): readonly ReachableCall[] {
-  const calls: ReachableCall[] = [];
-  for (const requested of candidateModels(route, rewrites, sources)) {
-    for (const operation of route.operations) {
-      const call = resolveCall(route, rewrites, sources, operation, requested);
-      if (call.kind === "admitted") calls.push(call);
+  app: AppCallConfig,
+  connection: (slug: string) => ConnectionView | null,
+): { readonly calls: readonly AppCall[]; readonly unreadable: ReadonlySet<string> } {
+  const calls: AppCall[] = [];
+  const unreadable = new Set<string>();
+  const rewrites = app.routing.model_rewrites;
+  const guarded = (slug: string, collect: () => AppCall[]): void => {
+    try {
+      calls.push(...collect());
+    } catch (error) {
+      if (!(error instanceof UnreadableRates)) throw error;
+      unreadable.add(slug);
     }
+  };
+  for (const [slug, route] of Object.entries(app.routing.providers)) {
+    const view = connection(slug);
+    if (view === null) continue;
+    const operations = view.description.operations.filter((operation) => route.operations.includes(operation.name));
+    guarded(slug, () => {
+      const found: AppCall[] = [];
+      const listed = listOf(route);
+      const names = candidateModels(route, rewrites, view.sources);
+      for (const requested of names) {
+        for (const operation of operations) {
+          RESOLVED_CALLS.count += 1;
+          const call = resolveCall(route, rewrites, view.sources, operation, requested, listed);
+          if (call.kind === "admitted") found.push({ ...call, slug, entry: "proxy" });
+        }
+      }
+      if (view.description.alternativeModels !== undefined) {
+        for (const named of names) {
+          for (const operation of operations) {
+            RESOLVED_CALLS.count += 1;
+            const bill = billing(operation, view.sources, named);
+            if (admissionProblem(bill, listed !== null) !== null) continue;
+            found.push({ kind: "admitted", operation, requested: named, model: named, bill, slug, entry: "alternative" });
+          }
+        }
+      }
+      return found;
+    });
   }
-  return calls;
+  for (const [name, preset] of Object.entries(app.presets ?? {})) {
+    const style = declaredOperation(preset.operation)?.style;
+    if (style === undefined) continue;
+    const targets = [{ provider: preset.provider, operation: preset.operation as string | undefined, model: preset.model }, ...(preset.fallback ?? [])];
+    targets.forEach((target, index) => {
+      const view = connection(target.provider);
+      if (view === null) return;
+      const chosen = presetOperation(view.description, style, target.operation);
+      if (chosen === null) return;
+      const operations = [chosen, ...[streamingSibling(view.description, chosen)].filter((one): one is OperationDescription => one !== null)];
+      guarded(target.provider, () =>
+        operations.flatMap((operation): AppCall[] => {
+          RESOLVED_CALLS.count += 1;
+          const bill = billing(operation, view.sources, target.model);
+          // The first target is served even when its price has gone since; a fallback that cannot be billed is left out.
+          if (index > 0 && bill.problem !== null) return [];
+          return [{ kind: "admitted", operation, requested: target.model, model: target.model, bill, slug: target.provider, entry: `preset:${name}:${index}` }];
+        }),
+      );
+    });
+  }
+  return { calls, unreadable };
+}
+
+/** A call's identity across a save: where it comes in, the connection, the operation, the model the request names and the one it is sent as. */
+export function callKey(call: AppCall): string {
+  return [call.entry, call.slug, call.operation.name, call.requested, call.model].join("\u0000");
 }
 
 /**
@@ -391,7 +514,10 @@ export function listedModelProblem(
   model: string,
 ): { readonly operation?: string } | null {
   if (operations.length === 0) return null;
-  const calls = reachableCalls({ operations, models: [model] }, undefined, connection);
+  const calls = operations.flatMap((operation) => {
+    const call = resolveCall({ models: [model] }, undefined, connection, operation, model);
+    return call.kind === "admitted" ? [call] : [];
+  });
   if (calls.length === 0) return {};
   for (const call of calls) {
     if (callGap(call) !== null) return { operation: call.operation.name };
