@@ -133,14 +133,16 @@ describe("reading chat usage", () => {
 
 describe("reading chat usage from a cut stream (S2)", () => {
   it("recovers a whole usage object from an event whose JSON never closed", async () => {
-    const { readUsage, responseValues } = await import("../src/usage/readers.ts");
+    const { readBody } = await import("../src/usage/readers.ts");
     const intact = `data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`;
     const cut = 'data: {"id":"x","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3},"extra":"never clo';
-    expect(readUsage(responseValues({ head: intact + cut, tail: "", truncated: false }, "text/event-stream"), "openai-chat")).toEqual({
+    // The stream did not end whole, so the count is billed as an estimate, never as exact.
+    expect(readBody(intact + cut, "text/event-stream", "openai-chat").usage).toEqual({
       inputTokens: 12,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
       outputTokens: 3,
+      finalEventUnread: true,
     });
   });
 });

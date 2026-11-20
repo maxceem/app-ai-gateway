@@ -44,11 +44,6 @@ export interface UsageObservation extends TokenCounts {
    * what they mean.
    */
   readonly reportedModes?: Readonly<Record<string, string>>;
-  /**
-   * Set when a reported mode was found by scanning the text of a body too big
-   * to keep whole: the client may have written it, echoed back.
-   */
-  readonly modesScanned?: true;
   /** Seconds of audio a transcription reports, for a model priced by time. */
   readonly audioSeconds?: number;
   /** Images an image API reports it made, for a model priced per image. */
@@ -60,9 +55,9 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly noTokens?: true;
   /**
-   * A stream's final event was cut by the kept window and its usage could not
-   * be read: what was read came from an earlier event, so it may be short.
-   * Billed as an estimate, never as exact.
+   * The answer did not end whole: its last document was cut, the stream did
+   * not close, or a value was too large to keep. What was read may be short,
+   * an earlier event's count, say. Billed as an estimate, never as exact.
    */
   readonly finalEventUnread?: true;
 }

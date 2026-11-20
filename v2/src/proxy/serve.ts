@@ -58,8 +58,8 @@ import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
-import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
-import { observeBody, streamClosed } from "./observe.ts";
+import { requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
+import { observeBody } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -916,20 +916,24 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
 
-  const { stream, observed } = observeBody(upstream.body);
+  // The answer is read as it streams past, keeping only what the meter needs.
+  const reader = ok
+    ? responseReader(contentType, description, operation, { app: attempt.appId, providerSlug: attempt.providerSlug, model: attempt.model })
+    : null;
+  const { stream, observed } = observeBody(upstream.body, {
+    ...(reader !== null ? { onChunk: (chunk: Uint8Array) => reader.push(chunk) } : {}),
+    keepHead: !ok,
+  });
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        const reading = ok ? readResponse(body, contentType, upstream.headers, description, operation) : null;
+        const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
         const usage = reading?.usage ?? null;
         // A stream is whole once its style's closing event arrived, even if the
         // app went away right after. One that ended without it was cut short,
         // however it ended. A style with no closing event, and an answer that
         // is not a stream, are whole when they were read to the end.
-        const closed =
-          ok && operation.style !== undefined && contentType.toLowerCase().includes("text/event-stream")
-            ? streamClosed(body, operation.style)
-            : null;
+        const closed = reading?.closed ?? null;
         const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
         // Charged as the model that served it, when the request named another it could be served with:
         // its price, and the mode the request asked of its provider, which the served mode starts from.

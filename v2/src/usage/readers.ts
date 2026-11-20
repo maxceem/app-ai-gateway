@@ -13,13 +13,18 @@
  * - A count that is not an exact whole number is not usage the gateway can
  *   price. The reader returns nothing, so the charge is recorded unresolved
  *   and logged, never stored rounded.
- * - A stream event whose JSON never closed (a cut stream) still gives up a
- *   whole `usage` object it holds, after every intact event was tried.
+ * - A document whose JSON never closed (a cut stream) still gives up a whole
+ *   `usage` object it holds, after every whole one was tried.
+ *
+ * A body is read as it streams past (`./frames.ts`, `./skim.ts`), every byte
+ * once, keeping only the values at `READ_PATHS`: a body of any size is read
+ * whole, never from kept fragments.
  */
-import type { ObservedText } from "../proxy/observe.ts";
-import type { ApiStyle } from "../providers/operation.ts";
+import type { ApiStyle, ProviderCostReport } from "../providers/operation.ts";
+import { costReader } from "./cost-reports.ts";
+import { framer, isEventStream, type BodyDocument, type SseFrame } from "./frames.ts";
 import type { Modality, ModalityCounts, TokenVariants, UsageObservation } from "./observation.ts";
-import { anchoredRootFields, type AnchoredText } from "./root-fields.ts";
+import type { PathTree } from "./skim.ts";
 import { VARIANTS } from "./token-rates.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -101,15 +106,11 @@ function openAiModalities(
 export const REPORTED_MODE_FIELDS = ["service_tier", "speed", "inference_geo", "serviceTier", "response_service_tier"] as const;
 type ReportedModeField = (typeof REPORTED_MODE_FIELDS)[number];
 
-/** Documents and objects read by scanning text, not parsed whole: a mode in one may be the client's own text. */
-const SCANNED = new WeakSet<object>();
-
 function reportedModes(
   records: readonly (Record<string, unknown> | null)[],
   names: readonly ReportedModeField[],
-): Pick<UsageObservation, "reportedModes" | "modesScanned"> {
+): Pick<UsageObservation, "reportedModes"> {
   let found: Record<string, string> | undefined;
-  let scanned = false;
   for (const name of names) {
     for (const record of records) {
       const value = record?.[name];
@@ -117,11 +118,10 @@ function reportedModes(
       // A value that is not a usable string is kept too, as one no table
       // knows: the gateway then bills at least at standard, as an estimate.
       (found ??= {})[name] = typeof value === "string" && value.length > 0 ? value : "(other)";
-      if (record && SCANNED.has(record)) scanned = true;
       break;
     }
   }
-  return found ? { reportedModes: found, ...(scanned ? { modesScanned: true as const } : {}) } : {};
+  return found ? { reportedModes: found } : {};
 }
 
 /** The count at `path` under `usage`, read as `numberAt` reads one. */
@@ -379,92 +379,59 @@ export function geminiUsage(value: unknown): UsageObservation | null {
 }
 
 // ---------------------------------------------------------------------------
-// Response bodies as values
+// Reading a response as it streams past
 
-/** Marks a block that carries no value: empty, `[DONE]`, or cut. */
-const NO_VALUE = Symbol("no SSE value");
-
-/** One SSE block's `data:` payload, or null when it carries nothing. */
 /**
- * An SSE event's data: its `data:` lines only, each without the field name and
- * one space after it, joined with line breaks as SSE does. Comments and other
- * fields are dropped. The one place an event's data is taken, for whole events
- * and cut ones alike. `cutAtStart` is for an event that a window cut at its
- * start, and that ended: its first line is the rest of a line whose field name
- * was cut off, of unknown kind. When a whole `data:` line follows it, it is
- * dropped: only whole lines after a line break the reader saw are classified.
- * When none does, it is the event's last line, holding the end of its data
- * (an image or a final answer larger than the kept tail), and it is kept as
- * data, read as a tail from the event's end.
+ * The values any reader takes from a document (`./frames.ts` keeps only
+ * these, as they arrive): the usage objects, and what names the served
+ * model, its tier, a transcription's duration and an SSE event's type. A
+ * Responses event keeps its answer's under `response`, a Messages stream's
+ * first event under `message`.
  */
-function sseData(block: string, cutAtStart = false): string | null {
-  const lines = block.split("\n");
-  const keepFirst = cutAtStart && !lines.slice(1).some((line) => line.startsWith("data:"));
-  const data = lines
-    .flatMap((line, index) => {
-      if (index === 0 && cutAtStart) return keepFirst ? [line] : [];
-      if (!line.startsWith("data:")) return [];
-      const value = line.slice(5);
-      return [value.startsWith(" ") ? value.slice(1) : value];
-    })
-    .join("\n");
-  return data === "" || data === "[DONE]" ? null : data;
+export const READ_PATHS: PathTree = {
+  usage: true,
+  usageMetadata: true,
+  model: true,
+  service_tier: true,
+  response_service_tier: true,
+  duration: true,
+  type: true,
+  response: { usage: true, model: true, service_tier: true, response_service_tier: true },
+  message: { usage: true, model: true },
+};
+
+/**
+ * A reducer: folds a response's documents, in order, into one reading,
+ * keeping only what it needs. A stream of any length costs it the same.
+ */
+export interface Reducer<T> {
+  step(document: BodyDocument): void;
+  finish(): T;
 }
 
 /**
- * One SSE window as its events, each parsed only when a reader reaches it,
- * and at most once. `cut` gives the events whose JSON never closed, as the
- * usage documents they may still hold, for the readers to try last.
+ * The reading the last document gives that `read` can read, as a whole
+ * answer would give it: the latest whole document's, else the earliest cut
+ * one's, since a cut document holds only what was whole when it stopped.
  */
-function sseEvents(text: string): { forwards(): Iterable<unknown>; backwards(): Iterable<unknown>; cut(): Iterable<unknown> } {
-  const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
-  const parsed = new Array<unknown>(blocks.length);
-  // Events whose data is not whole JSON: each starts where its event starts,
-  // and ended when a blank line follows it inside the text.
-  const broken: { data: string; ended: boolean }[] = [];
-  function valueAt(index: number): unknown {
-    const seen = parsed[index];
-    if (seen !== undefined) return seen;
-    const data = sseData(blocks[index]!);
-    let value: unknown = NO_VALUE;
-    if (data !== null) {
-      try {
-        value = JSON.parse(data) as unknown;
-      } catch {
-        broken.push({ data, ended: index < blocks.length - 1 });
-      }
-    }
-    parsed[index] = value;
-    return value;
-  }
+function lastRead<T>(read: (value: Record<string, unknown>) => T | null): Reducer<T | null> {
+  let whole: T | null = null;
+  let cut: T | null = null;
   return {
-    *forwards() {
-      for (let index = 0; index < blocks.length; index += 1) {
-        const value = valueAt(index);
-        if (value !== NO_VALUE) yield value;
-      }
+    step(document) {
+      if (document.whole) {
+        const found = read(document.value);
+        if (found !== null) whole = found;
+      } else if (cut === null) cut = read(document.value);
     },
-    *backwards() {
-      for (let index = blocks.length - 1; index >= 0; index -= 1) {
-        const value = valueAt(index);
-        if (value !== NO_VALUE) yield value;
-      }
-    },
-    *cut() {
-      // Every block is parsed by now, so `broken` is complete.
-      for (let index = 0; index < blocks.length; index += 1) valueAt(index);
-      for (const { data, ended } of broken) {
-        const document = rootFields({ head: data, ...(ended ? { tail: data } : {}) });
-        if (document) yield document;
-      }
-    },
+    finish: () => whole ?? cut,
   };
 }
 
 /** Two Anthropic events as one: field-wise `max`, as each reports its own half. */
 function mergeAnthropicUsage(left: UsageObservation, right: UsageObservation): UsageObservation {
   const tokenVariants = mergeTokenVariants(left.tokenVariants, right.tokenVariants);
-  // The later event's word wins where both name the mode.
+  // The left event's word wins where both name the mode.
   const modes = left.reportedModes || right.reportedModes ? { ...right.reportedModes, ...left.reportedModes } : undefined;
   return {
     inputTokens: Math.max(left.inputTokens, right.inputTokens),
@@ -473,185 +440,43 @@ function mergeAnthropicUsage(left: UsageObservation, right: UsageObservation): U
     outputTokens: Math.max(left.outputTokens, right.outputTokens),
     ...(tokenVariants ? { tokenVariants } : {}),
     ...(modes ? { reportedModes: modes } : {}),
-    ...(left.modesScanned || right.modesScanned ? { modesScanned: true as const } : {}),
   };
 }
 
 /** Whether a value carries usage under `message`: Anthropic's `message_start`, the stream's first event. */
-function carriesMessageUsage(value: unknown): boolean {
-  return asRecord(asRecord(value)?.message)?.usage !== undefined;
-}
-
-/**
- * A tail window opens in the middle of an event, and half an event must never
- * read as a whole one, so the events are only those after the first boundary.
- * What comes before it is kept apart as `cut`.
- */
-/**
- * A kept tail's first event, cut at its start, and the whole events after it.
- * `ended` says the cut event did end inside the tail, so its end is known.
- */
-function splitTail(tail: string): { cut: string; ended: boolean; events: string } {
-  const normalized = tail.replace(/\r\n/gu, "\n");
-  const boundary = normalized.indexOf("\n\n");
-  return boundary === -1
-    ? { cut: normalized, ended: false, events: "" }
-    : { cut: normalized.slice(0, boundary), ended: true, events: normalized.slice(boundary + 2) };
-}
-
-/**
- * The root fields a reader or the meter needs from a document it cannot parse
- * whole: its usage objects, and the values naming what served it and how much
- * (the model, the tier, a transcription's duration). `./root-fields.ts` is
- * the only way any reader gets them, through explicit anchors. Each value is
- * raw, whatever its type: the reader judges it, so a tier that is a number or
- * empty is present but unusable, which means unknown.
- */
-const ROOT_PATHS: readonly (readonly string[])[] = [
-  ["usage"],
-  ["usageMetadata"],
-  ["model"],
-  ["service_tier"],
-  ["duration"],
-  // A Responses event keeps its answer's fields under `response`.
-  ["response", "usage"],
-  ["response", "model"],
-  ["response", "service_tier"],
-];
-
-/** Marks a document and every object in it as scanned, not parsed whole. */
-function markScanned(value: unknown): void {
-  if (typeof value !== "object" || value === null) return;
-  SCANNED.add(value);
-  for (const inner of Object.values(value)) markScanned(inner);
-}
-
-function rootFields(text: AnchoredText): Record<string, unknown> | null {
-  const root = anchoredRootFields(text, ROOT_PATHS);
-  if (root !== null) markScanned(root);
-  return root;
-}
-
-/** Whether a body was read to its real end: neither the app nor the provider cut it. */
-function readToEnd(body: ObservedText): boolean {
-  const flags = body as Partial<{ clientAborted: boolean; upstreamFailed: boolean }>;
-  return flags.clientAborted !== true && flags.upstreamFailed !== true;
-}
-
-/** The values of one response, parsed where a reader reaches one and nowhere else. */
-export interface ResponseValues {
-  /** Every value, the last one first, then the cut ones. */
-  backwards(): Iterable<unknown>;
-  /** The values of the head window, first first. Only Anthropic needs it: `message_start` opens the stream. */
-  headForwards(): Iterable<unknown>;
-  /** A stream whose final event was cut and gave no usage: any usage read is from an earlier event. */
-  finalEventUnread?(): boolean;
-}
-
-function documentValues(values: readonly unknown[]): ResponseValues {
-  return {
-    *backwards() {
-      for (let index = values.length - 1; index >= 0; index -= 1) yield values[index];
-    },
-    headForwards: () => values,
-  };
-}
-
-function isEventStream(contentType: string): boolean {
-  return contentType.toLowerCase().includes("text/event-stream");
-}
-
-/** One response body as its values: the document, or every SSE event. */
-export function responseValues(body: ObservedText, contentType: string): ResponseValues {
-  if (isEventStream(contentType)) {
-    // Both windows are read: an Anthropic stream reports its input tokens at
-    // the head and its output tokens at the tail.
-    const head = sseEvents(body.head);
-    const split = body.truncated ? splitTail(body.tail) : null;
-    const tail = split ? sseEvents(split.events) : null;
-    let cutDocument: Record<string, unknown> | null | undefined;
-    // The event the tail window cut at its start, read from its end when it ended.
-    const cutEvent = (): Record<string, unknown> | null => {
-      if (cutDocument === undefined) {
-        const data = split?.ended ? sseData(split.cut, true) : null;
-        cutDocument = data === null ? null : rootFields({ tail: data });
-      }
-      return cutDocument;
-    };
-    return {
-      *backwards() {
-        if (tail) yield* tail.backwards();
-        if (split) {
-          // The duration a transcription's cut event still shows counts too, as v1.
-          const document = cutEvent();
-          if (document) yield document;
-        }
-        yield* head.backwards();
-        // Events cut inside a window, tried only after every intact one.
-        if (tail) yield* tail.cut();
-        yield* head.cut();
-      },
-      headForwards: () => head.forwards(),
-      finalEventUnread() {
-        // Only when the cut event is the stream's last with data, and gave no usage.
-        if (split === null || tail === null || split.cut.trim() === "") return false;
-        for (const _value of tail.forwards()) return false;
-        const document = cutEvent();
-        const response = document?.response as Record<string, unknown> | undefined;
-        return document === null || (document.usage === undefined && document.usageMetadata === undefined && response?.usage === undefined);
-      },
-    };
-  }
-  if (body.truncated) {
-    // One root, read field by field: each root field is taken from the kept
-    // tail, where most answers report, else from the top of the kept head,
-    // for an answer that reports it before a large payload.
-    // The head starts at the body's start; the tail ends at its end only when it was read to the end.
-    const document = rootFields({ head: body.head, ...(readToEnd(body) ? { tail: body.tail } : {}) });
-    return documentValues(document === null ? [] : [document]);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.head) as unknown;
-  } catch {
-    // A body whose JSON never closed (a cut answer): its start is known, its end is not.
-    const document = rootFields({ head: body.head });
-    return documentValues(document === null ? [] : [document]);
-  }
-  return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
-}
-
-/** `counts` merged with the stream's `message_start`, which is the only event naming the input tokens. */
-function withMessageStart(counts: UsageObservation, values: ResponseValues): UsageObservation {
-  let merged = counts;
-  for (const value of values.headForwards()) {
-    const earlier = anthropicUsage(value);
-    if (earlier) merged = mergeAnthropicUsage(merged, earlier);
-    if (carriesMessageUsage(value)) break;
-  }
-  return merged;
-}
-
-function lastReported(values: ResponseValues, read: (value: unknown) => UsageObservation | null): UsageObservation | null {
-  for (const value of values.backwards()) {
-    const parsed = read(value);
-    if (parsed) return parsed;
-  }
-  return null;
+function carriesMessageUsage(value: Record<string, unknown>): boolean {
+  return asRecord(value.message)?.usage !== undefined;
 }
 
 /**
  * Anthropic splits a stream in two: `message_start` has the input tokens and
- * every `message_delta` the cumulative output tokens. The last one merged with
- * `message_start` is the whole.
+ * every `message_delta` the cumulative output tokens. The last one, merged
+ * with every event up to `message_start`, is the whole. A whole message, or
+ * a last event that is `message_start` itself, is read alone.
  */
-function anthropicReader(values: ResponseValues): UsageObservation | null {
-  for (const value of values.backwards()) {
-    const counts = anthropicUsage(value);
-    if (!counts) continue;
-    return carriesMessageUsage(value) ? counts : withMessageStart(counts, values);
-  }
-  return null;
+function anthropicReducer(): Reducer<UsageObservation | null> {
+  const last = lastRead((value) => {
+    const usage = anthropicUsage(value);
+    return usage === null ? null : { usage, carries: carriesMessageUsage(value) };
+  });
+  // The events up to and including `message_start`, merged in order: an earlier event's mode wins.
+  let start: UsageObservation | null = null;
+  let started = false;
+  return {
+    step(document) {
+      last.step(document);
+      if (started || !document.whole) return;
+      const usage = anthropicUsage(document.value);
+      if (usage !== null) start = start === null ? usage : mergeAnthropicUsage(start, usage);
+      if (carriesMessageUsage(document.value)) started = true;
+    },
+    finish() {
+      const found = last.finish();
+      if (found === null) return null;
+      if (found.carries || start === null) return found.usage;
+      return mergeAnthropicUsage(found.usage, start);
+    },
+  };
 }
 
 const CHUNK_TIER_FIELDS = ["service_tier", "response_service_tier"] as const;
@@ -660,67 +485,213 @@ const CHUNK_TIER_FIELDS = ["service_tier", "response_service_tier"] as const;
  * A Chat Completions stream names its served tier on its chunks, not always
  * on the last one with the usage: a content chunk may say `default` and the
  * usage chunk nothing. So the tier is read across every chunk, apart from the
- * counts: the last value reported wins. Two different values say nothing the
- * gateway can price, so they read as one no table knows, which bills at least
- * at standard, as an estimate.
+ * counts. Two different values say nothing the gateway can price, so they
+ * read as one no table knows, which bills at least at standard, as an
+ * estimate.
  */
-function withStreamTier(usage: UsageObservation, values: ResponseValues): UsageObservation {
-  let found: Record<string, string> | undefined;
-  let scanned = usage.modesScanned === true;
-  for (const name of CHUNK_TIER_FIELDS) {
-    let last: string | undefined;
-    for (const value of values.backwards()) {
-      const root = asRecord(value);
-      if (root === null) continue;
-      for (const record of [root, asRecord(root.usage)]) {
-        const raw = record?.[name];
-        if (raw === undefined || raw === null) continue;
-        const named = typeof raw === "string" && raw.length > 0 ? raw : "(other)";
-        if (record !== null && SCANNED.has(record)) scanned = true;
-        if (last === undefined) last = named;
-        else if (named !== last) last = "(other)";
+function chatReducer(counted: readonly Modality[]): Reducer<UsageObservation | null> {
+  const usage = lastRead((value) => openAiUsage(value, counted));
+  const tiers = new Map<string, string>();
+  return {
+    step(document) {
+      usage.step(document);
+      for (const record of [document.value, asRecord(document.value.usage)]) {
+        for (const name of CHUNK_TIER_FIELDS) {
+          const raw = record?.[name];
+          if (raw === undefined || raw === null) continue;
+          const named = typeof raw === "string" && raw.length > 0 ? raw : "(other)";
+          const seen = tiers.get(name);
+          tiers.set(name, seen === undefined || seen === named ? named : "(other)");
+        }
       }
-    }
-    if (last !== undefined) (found ??= {})[name] = last;
-  }
-  if (found === undefined) return usage;
-  return { ...usage, reportedModes: { ...usage.reportedModes, ...found }, ...(scanned ? { modesScanned: true as const } : {}) };
+    },
+    finish() {
+      const found = usage.finish();
+      if (found === null || tiers.size === 0) return found;
+      return { ...found, reportedModes: { ...found.reportedModes, ...Object.fromEntries(tiers) } };
+    },
+  };
 }
 
-/**
- * The usage a response reports, read by its API style's reader, or null when
- * it reports none this gateway can read. `counted` is the input modalities
- * the provider declares it always counts, which only the OpenAI shape reads.
- */
-export function readUsage(values: ResponseValues, style: ApiStyle, counted: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
-  const usage = readStyleUsage(values, style, counted);
-  return usage !== null && values.finalEventUnread?.() === true ? { ...usage, finalEventUnread: true } : usage;
-}
-
-function readStyleUsage(values: ResponseValues, style: ApiStyle, counted: readonly Modality[]): UsageObservation | null {
+/** The reducer of an API style's usage. `counted` is what the provider always counts in the input. */
+export function usageReducer(style: ApiStyle, counted: readonly Modality[] = NOTHING_COUNTED): Reducer<UsageObservation | null> {
   switch (style) {
     case "openai-chat":
-    case "openai-completions": {
-      const usage = lastReported(values, (value) => openAiUsage(value, counted));
-      return usage === null ? null : withStreamTier(usage, values);
-    }
+    case "openai-completions":
+      return chatReducer(counted);
     case "openai-responses":
       // The closing event carries the served tier beside the usage.
-      return lastReported(values, (value) => openAiUsage(value, counted));
+      return lastRead((value) => openAiUsage(value, counted));
     case "anthropic-messages":
-      return anthropicReader(values);
+      return anthropicReducer();
     case "gemini-generate":
     case "gemini-embed":
-      return lastReported(values, geminiUsage);
+      return lastRead(geminiUsage);
     case "openai-transcription":
-      return lastReported(values, (value) => audioUsage(value, counted));
+      return lastRead((value) => audioUsage(value, counted));
     case "openai-images":
-      return lastReported(values, (value) => imagesUsage(value, counted));
+      return lastRead((value) => imagesUsage(value, counted));
     case "openai-embeddings":
     case "openai-speech":
       // A speech answer streamed as events ends with its usage; a plain audio answer has none.
-      return lastReported(values, (value) => openAiUsage(value, counted));
+      return lastRead((value) => openAiUsage(value, counted));
   }
+}
+
+/** The model an answer names: its root `model`, or a stream event's `response.model` (Responses) or `message.model` (Messages). */
+export function answeredModel(value: Record<string, unknown>): string | null {
+  for (const holder of [value, value.response, value.message]) {
+    const model = asRecord(holder)?.model;
+    if (typeof model === "string" && model.length > 0) return model;
+  }
+  return null;
+}
+
+/** Whether an SSE frame is one of `names`, by its data's `type`, else by its event name with whole JSON data. */
+function namedFrame(frame: SseFrame, names: readonly string[]): boolean {
+  if (frame.type !== null) return names.includes(frame.type);
+  return frame.event !== null && names.includes(frame.event) && frame.data === "json";
+}
+
+/** Whether a frame is its style's closing event. Null for a style whose stream has none. */
+const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>> = {
+  "openai-chat": (frame) => frame.data === "done",
+  "openai-completions": (frame) => frame.data === "done",
+  "openai-responses": (frame) => namedFrame(frame, ["response.completed", "response.incomplete", "response.failed"]),
+  "anthropic-messages": (frame) => namedFrame(frame, ["message_stop"]),
+  // Gemini's stream has no closing event: it simply ends.
+  "gemini-generate": null,
+  // The media APIs' streams are judged by how they ended, as in v1: their
+  // closing events differ from one provider to the next, and a stream booked
+  // as cut that was not would say a successful call failed.
+  "openai-transcription": null,
+  "openai-images": null,
+  "openai-embeddings": null,
+  "gemini-embed": null,
+  "openai-speech": null,
+};
+
+/**
+ * Whether a stream ended with its style's closing event: the provider had
+ * sent everything. Null for a style whose stream has no closing event, so
+ * only the end of the stream says it is whole. A `[DONE]` some services send
+ * after a Responses or Messages stream's closing event is not the stream's
+ * own last word.
+ */
+function closingReader(style: ApiStyle): { frame(frame: SseFrame): void; settle(): void; finish(): boolean | null } {
+  const closing = CLOSING[style];
+  const doneCloses = style === "openai-chat" || style === "openai-completions";
+  let last: SseFrame | null = null;
+  return {
+    frame(frame) {
+      // Told without judging the data: only the last frame is ever judged.
+      if (!doneCloses && (frame.isDone ?? frame.data === "done")) return;
+      last = frame;
+    },
+    /** The frame held when a push returns is kept past it. */
+    settle: () => last?.settle?.(),
+    finish: () => (closing === null ? null : last !== null && closing(last)),
+  };
+}
+
+/** What a response says about itself, read as it streamed past. */
+export interface BodyReading {
+  readonly usage: UsageObservation | null;
+  /** The provider's own cost report, when the operation has one. */
+  readonly providerCostUsd: number | null;
+  /** The model the answer says served it. */
+  readonly servedModel: string | null;
+  /** For a stream: whether it ended with its style's closing event; null when the style has none, or it is no stream. */
+  readonly closed: boolean | null;
+  /** A declared value was too large to keep. */
+  readonly overflow: boolean;
+  /** More events came than the reader's limit: it stopped, and the reading is not to be used. */
+  readonly stopped: boolean;
+}
+
+export interface BodyReader {
+  push(text: string): void;
+  /** Nothing more pushed would be read: the body is not JSON (a binary answer, say). */
+  readonly failed: boolean;
+  /** More events came than `maxEvents`: nothing more pushed is read. */
+  readonly stopped: boolean;
+  /** The body ended. `clean` says it was read to its real end: neither the app nor the provider cut it. */
+  end(clean?: boolean): BodyReading;
+}
+
+export interface BodyReaderOptions {
+  readonly counted?: readonly Modality[];
+  readonly providerCost?: ProviderCostReport;
+  /** The most events read (an SSE stream's, or a JSON array's elements). */
+  readonly maxEvents?: number;
+}
+
+/**
+ * Reads a response body of `contentType`, by its API style, as its text
+ * streams past.
+ *
+ * The usage read is complete only when the answer ended whole: a stream with
+ * its style's closing event (or, for a style that has none, read to its real
+ * end), a JSON body closed and read to its end, the last document whole, and
+ * no declared value too large to keep. Otherwise what was read may be short,
+ * an earlier event's count, say: it is marked `finalEventUnread`, and billed
+ * as an estimate, never as exact. One rule, for every style.
+ */
+export function bodyReader(contentType: string, style: ApiStyle, options: BodyReaderOptions = {}): BodyReader {
+  const usage = usageReducer(style, options.counted);
+  const cost = options.providerCost === undefined ? null : lastRead(costReader(options.providerCost));
+  const model = lastRead(answeredModel);
+  const stream = isEventStream(contentType);
+  const closing = closingReader(style);
+  const frames = framer(
+    contentType,
+    READ_PATHS,
+    {
+      onDocument(document) {
+        usage.step(document);
+        cost?.step(document);
+        model.step(document);
+      },
+      onFrame: (frame) => closing.frame(frame),
+    },
+    options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents },
+  );
+  return {
+    push(text) {
+      frames.push(text);
+      closing.settle();
+    },
+    get failed() {
+      return frames.failed;
+    },
+    get stopped() {
+      return frames.stopped;
+    },
+    end(clean = true) {
+      frames.end();
+      const closed = stream ? closing.finish() : null;
+      // A closing event says the stream is whole; without one, its real end does.
+      const ended = closed ?? clean;
+      const whole = ended && !frames.cut && !frames.overflow;
+      let read = usage.finish();
+      if (read !== null && !whole) read = { ...read, finalEventUnread: true };
+      return {
+        usage: read,
+        providerCostUsd: cost?.finish() ?? null,
+        servedModel: model.finish(),
+        closed,
+        overflow: frames.overflow,
+        stopped: frames.stopped,
+      };
+    },
+  };
+}
+
+/** Reads a whole body at once. For tests, and the place a body's whole text is at hand. */
+export function readBody(text: string, contentType: string, style: ApiStyle, options: BodyReaderOptions = {}): BodyReading {
+  const reader = bodyReader(contentType, style, options);
+  reader.push(text);
+  return reader.end();
 }
 
 /** A header's value as a count: a whole number and nothing else, or null. */

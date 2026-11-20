@@ -12,7 +12,7 @@ import { listPrice } from "../src/pricing/prices.ts";
 import { priceTokens, priceUsage } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
-import { audioUsage, imagesUsage, readUsage, responseValues } from "../src/usage/readers.ts";
+import { audioUsage, imagesUsage, readBody } from "../src/usage/readers.ts";
 import { requestBody } from "../src/proxy/serve.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
@@ -456,27 +456,24 @@ describe("usage in other units", () => {
     expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, noTokens: true })).toBeNull();
   });
 
-  it("reads each root field of a large answer wherever it was kept: usage in the head, the model and duration in the tail (3c S10)", () => {
-    const head = `{"usage":{"type":"tokens","input_tokens":40,"output_tokens":10,"total_tokens":50},"text":"${"a".repeat(64)}`;
-    const tail = `${"a".repeat(64)}","model":"gpt-4o-transcribe","duration":42}`;
-    const values = responseValues({ head, tail, truncated: true }, "application/json");
-    expect(readUsage(values, "openai-transcription")).toMatchObject({ inputTokens: 40, outputTokens: 10 });
-    expect([...values.backwards()][0]).toMatchObject({ model: "gpt-4o-transcribe", duration: 42, usage: { input_tokens: 40 } });
+  it("reads each root field of a large answer wherever it is: usage at the start, the model and duration at the end (3c S10)", () => {
+    const body = `{"usage":{"type":"tokens","input_tokens":40,"output_tokens":10,"total_tokens":50},"text":"${"a".repeat(2_000_000)}","model":"gpt-4o-transcribe","duration":42}`;
+    const reading = readBody(body, "application/json", "openai-transcription");
+    expect(reading.usage).toMatchObject({ inputTokens: 40, outputTokens: 10, audioSeconds: 42 });
+    expect(reading.servedModel).toBe("gpt-4o-transcribe");
   });
 
   it("takes the root duration, never one nested in the content (3c S10)", () => {
-    const head = `{"duration":42,"text":"${"a".repeat(64)}`;
-    const tail = `${"a".repeat(64)}","segments":[{"id":0,"duration":2}]}`;
-    const values = responseValues({ head, tail, truncated: true }, "application/json");
-    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42 });
+    const body = `{"duration":42,"text":"${"a".repeat(2_000_000)}","segments":[{"id":0,"duration":2}]}`;
+    expect(readBody(body, "application/json", "openai-transcription").usage).toMatchObject({ audioSeconds: 42 });
   });
 
-  it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
-    // The event's last line, cut at its start, with no whole data line after
-    // it: the end of its data, read as a tail from the event's end.
-    const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
-    const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");
-    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42.5, noTokens: true });
+  it("reads a duration from a stream's large final event, as v1", () => {
+    const body = [
+      `data: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`,
+      `data: ${JSON.stringify({ type: "transcript.text.done", text: "a".repeat(2_000_000), duration: 42.5 })}\n\n`,
+    ].join("");
+    expect(readBody(body, "text/event-stream", "openai-transcription").usage).toMatchObject({ audioSeconds: 42.5, noTokens: true });
   });
 
   it("does not read a form whose model is in the path, as v1, so its shape is never refused", async () => {

@@ -33,6 +33,10 @@
  * - `mock_delay_ms`: wait this long before answering (at most 120 s), for a
  *   slow provider.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
+ * - `mock_output_bytes`: make the answer's payload this many bytes (at most
+ *   32 MB): the image's base64, the Responses output text (in a stream, on
+ *   its closing event) or the transcript, before the usage, so a check can
+ *   see a large answer metered whole.
  *
  * A path that starts with `/fail-{status}/`, such as `/fail-503/v1/chat/completions`,
  * is answered with that status and an OpenAI-style error, after its body is
@@ -48,6 +52,14 @@
  * see a rejected key.
  */
 const MAX_DELAY_MS = 120_000;
+const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+/** A payload of `mock_output_bytes`, or `fallback`. */
+function payload(body: Record<string, unknown>, fallback: string): string {
+  const size = body.mock_output_bytes;
+  if (typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0) return fallback;
+  return "QUJD".repeat(Math.ceil(Math.min(size, MAX_OUTPUT_BYTES) / 4)).slice(0, Math.min(size, MAX_OUTPUT_BYTES));
+}
 
 function promptTokens(bytes: number): number {
   return Math.max(1, Math.ceil(bytes / 4));
@@ -121,13 +133,13 @@ const chat: Answer = ({ body, bytes, model, stream }) => {
   });
 };
 
-const responses: Answer = ({ bytes, model, stream }) => {
+const responses: Answer = ({ body, bytes, model, stream }) => {
   const response = {
     id: "resp_mock",
     object: "response",
     model,
     status: "completed",
-    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] }],
+    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: payload(body, "Hello") }] }],
     usage: { input_tokens: promptTokens(bytes), output_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS },
   };
   if (!stream) return Response.json(response);
@@ -175,15 +187,15 @@ const transcription: Answer = ({ body, bytes, model, path }) => {
   const seconds = typeof body.mock_seconds === "number" ? body.mock_seconds : 30;
   const byTime = model.startsWith("whisper") || model.startsWith("grok");
   if (path === "/v1/stt" || body.response_format === "verbose_json") {
-    return Response.json({ text: "Hello", language: "en", duration: seconds, segments: [] });
+    return Response.json({ text: payload(body, "Hello"), language: "en", duration: seconds, segments: [] });
   }
-  if (byTime) return Response.json({ text: "Hello", usage: { type: "duration", seconds } });
-  return Response.json({ text: "Hello", usage: { type: "tokens", input_tokens: promptTokens(bytes), output_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS } });
+  if (byTime) return Response.json({ text: payload(body, "Hello"), usage: { type: "duration", seconds } });
+  return Response.json({ text: payload(body, "Hello"), usage: { type: "tokens", input_tokens: promptTokens(bytes), output_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS } });
 };
 
 const images: Answer = ({ body, bytes, model }) => {
   const count = typeof body.n === "number" && body.n > 0 ? Math.floor(body.n) : 1;
-  const data = Array.from({ length: count }, () => ({ b64_json: "iVBORw0KGgo=" }));
+  const data = Array.from({ length: count }, () => ({ b64_json: payload(body, "iVBORw0KGgo=") }));
   if (model.startsWith("seedream")) return Response.json({ model, data, usage: { generated_images: count, output_tokens: 16384, total_tokens: 16384 } });
   const input = promptTokens(bytes);
   return Response.json({

@@ -57,17 +57,10 @@ const READERS: Readonly<Record<ProviderCostReport, (root: Record<string, unknown
 };
 
 /**
- * The cost in dollars a response reports, or null when it reports none.
- * Values come last first, as the usage walk gives them: a stream reports its
- * cost in its final chunk.
+ * The reader of one document's cost in dollars, or null when it reports
+ * none. A stream reports its cost in its final chunk: the body reader keeps
+ * the last one reported.
  */
-export function readProviderCost(values: Iterable<unknown>, report: ProviderCostReport): number | null {
-  const read = READERS[report];
-  for (const value of values) {
-    const root = asRecord(value);
-    if (root === null) continue;
-    const cost = read(root);
-    if (cost !== null) return cost;
-  }
-  return null;
+export function costReader(report: ProviderCostReport): (root: Record<string, unknown>) => number | null {
+  return READERS[report];
 }
