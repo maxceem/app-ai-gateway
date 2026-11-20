@@ -259,7 +259,7 @@ describe("saving a custom provider", () => {
     [{ auth: { header: "x-appattest-proof", format: "{key}" } }, "reads who is calling from it"],
     [
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
-      "no path this provider lists reads the us mode",
+      "no call on this connection is billed in us",
     ],
     [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "never allows"],
   ])("refuses %j", async (fields, message) => {
@@ -365,6 +365,37 @@ describe("saving a custom provider", () => {
     expect(back.body.error.code).toBe("pricing_not_configured");
     // With its rate, it saves.
     expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 3, passthrough: [chatPath], pricing: PRICING })).status).toBe(200);
+  });
+
+  it("refuses a mode rate on a regional host that no call there is billed in, and saves the one it is", async () => {
+    const key = await seedManagementKey();
+    const fields = (modes: Record<string, unknown>) => ({
+      baseUrl: "https://us.api.x.ai/",
+      passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }],
+      pricing: { "grok-fast": { input: 1, output: 2, modes } },
+    });
+    // A priority call there is billed in `priority+us`, which a `priority` rate alone never reaches.
+    // With a `us` rate beside it, `priority` does bill there, scaled by the region's factor.
+    const refused = await createCustom(key, fields({ priority: { input: 2, output: 4 } }));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("modes.priority: no call on this connection is billed in priority");
+    expect((await createCustom(key, fields({ "priority+us": { input: 2.2, output: 4.4 } }))).status).toBe(201);
+    expect((await createCustom(key, fields({ priority: { input: 2, output: 4 }, us: { factor: 1.1 } }))).status).toBe(201);
+  });
+
+  it("judges only mode rates a save adds or changes, never ones stored before", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: PRICING });
+    const id = created.body.provider.id as string;
+    // As if stored by an earlier release.
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ "local-llm": { input: 1_000_000_000, output: 2_000_000_000, modes: { eu: { factor: 1.1 } } } }), id)
+      .run();
+    const kept = await admin(key, "PUT", `/v2/admin/providers/${id}`, {
+      revision: 1,
+      pricing: { "local-llm": { input: 1, output: 2, modes: { eu: { factor: 1.1 } } }, "other-llm": { input: 1, output: 2 } },
+    });
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
   });
 
   it("saves an API-style path with no rate yet: an app that routes it is judged when saved", async () => {

@@ -44,9 +44,11 @@ import type { PassthroughPath } from "../providers/matcher.ts";
 import { PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
+  customerPrice,
   effectivePrices,
   keyCandidates,
   listPrice,
+  modeEntries,
   priceInMode,
   reportsCost,
   resolvePrice,
@@ -804,6 +806,19 @@ function ownRatesGap(operations: readonly OperationDescription[], price: ModelPr
  * or null when the list has no rate for it. Only a comparison: a cross-check
  * header is judged by it (`src/proxy/meter.ts`), and nothing is billed by it.
  */
+/**
+ * The entries of a model's saved `modes` that no selectable mode bills
+ * (`modeEntries`, the rule `priceInMode` bills by): a rate saved there would
+ * never be charged, and the call would bill another rate instead. Saving
+ * refuses them.
+ */
+export function unselectableModeRates(rates: CustomerRates, model: string, selectable: readonly ServiceMode[]): readonly string[] {
+  const price = customerPrice(rates, model);
+  if (price === null || price.modes === undefined) return [];
+  const reached = new Set(selectable.flatMap((mode) => modeEntries(price, mode) ?? []));
+  return Object.keys(price.modes).filter((name) => !reached.has(name));
+}
+
 export function listedUnitRate(providerType: string, model: string, unit: Unit): number | null {
   const price = listPrice(providerType, model);
   if (price === null) return null;

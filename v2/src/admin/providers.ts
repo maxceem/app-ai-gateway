@@ -41,9 +41,9 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unselectableModeRates } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { parseServiceModeName } from "../usage/service-modes.ts";
+import { selectableModes } from "../proxy/meter.ts";
 import {
   describeConnection,
   keyOrigin,
@@ -69,7 +69,7 @@ import {
   type PassthroughPath,
   type UpstreamRoute,
 } from "../providers/matcher.ts";
-import { readingRules, type OperationDescription, type ProviderAuth, type ProviderDescription } from "../providers/operation.ts";
+import type { OperationDescription, ProviderAuth, ProviderDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
 import { normalizePath, TemplateError, type PathRefusal } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
@@ -359,36 +359,31 @@ function passthroughJson(
 }
 
 /**
- * A custom provider's rates in a service mode no path of it can be read in:
- * refused. A mode is billed only when a request or answer names it in a field
- * its API style reads (`readingRules`), or a regional host serves it, so a
- * rate in any other mode would never bill and the call would be billed at
- * standard instead. A built-in provider's modes are judged by its own tables
- * (`savedPriceProblem`).
+ * A saved rate in a service mode no call on the connection can be billed in:
+ * refused. The modes a call can be billed in are read by the same code that
+ * reads them when serving (`selectableModes`), for the connection's base URL
+ * and each of its operations, and the entry each mode bills by the same rule
+ * as a charge (`unselectableModeRates`). A rate there would never bill, and
+ * the call would bill another rate instead, possibly a lower one. Only rates
+ * new or changed by this save are judged (`before`): rates already stored
+ * are not judged again.
  */
-function assertModesReadable(description: ProviderDescription, baseUrl: string, rates: CustomerRates | null): void {
-  const tiers = new Set<string>(["standard"]);
-  const regions = new Set<string>(["global"]);
-  for (const operation of description.operations) {
-    const rules = readingRules(description, operation);
-    for (const field of [...rules.serviceModes, ...(rules.servedModes ?? [])]) {
-      for (const value of Object.values(field.values)) (field.axis === "tier" ? tiers : regions).add(value);
-    }
-  }
-  const origin = `${new URL(baseUrl).origin}/`;
-  const regional = description.regionalOrigins !== undefined && Object.hasOwn(description.regionalOrigins, origin) ? description.regionalOrigins[origin] : undefined;
-  if (regional !== undefined) regions.add(regional);
-  for (const [model, entry] of Object.entries(rates ?? {})) {
-    const modes = (entry as { modes?: Record<string, unknown> }).modes;
-    for (const name of Object.keys(modes ?? {})) {
-      const mode = parseServiceModeName(name);
-      if (mode !== null && tiers.has(mode.tier) && regions.has(mode.region)) continue;
-      throw new GatewayError(
-        400,
-        "invalid_request",
-        `pricing.${model}.modes.${name}: no path this provider lists reads the ${name} mode, so the rate would never bill`,
-      );
-    }
+function assertModesSelectable(
+  description: ProviderDescription,
+  baseUrl: string | null,
+  rates: CustomerRates | null,
+  before: CustomerRates | null,
+): void {
+  for (const model of Object.keys(rates ?? {})) {
+    if (before !== null && Object.hasOwn(before, model) && JSON.stringify(before[model]) === JSON.stringify(rates![model])) continue;
+    const selectable = description.operations.flatMap((operation) => selectableModes(description, operation, baseUrl, model));
+    const [unused] = unselectableModeRates(rates!, model, selectable);
+    if (unused === undefined) continue;
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `pricing.${model}.modes.${unused}: no call on this connection is billed in ${unused}, so the rate would never bill; price the mode its calls are served in instead`,
+    );
   }
 }
 
@@ -610,7 +605,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const passthroughStored = listing?.stored ?? null;
   const operations = listing?.description.operations ?? builtIn!.operations;
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type, operations);
-  if (customSetting !== null && listing !== null) assertModesReadable(listing.description, customSetting.baseUrl, newRates);
+  assertModesSelectable(listing?.description ?? builtIn!, baseUrl, newRates, null);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
   await checkNewConnection(
     c.env.DB,
@@ -787,7 +782,16 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   }
   const newRates =
     body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type, operationsDescription?.operations ?? []);
-  if (customSetting !== null && operationsDescription !== null && body.pricing !== undefined) assertModesReadable(operationsDescription, customSetting.baseUrl, newRates);
+  if (operationsDescription !== null && body.pricing !== undefined) {
+    const stored = (() => {
+      try {
+        return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
+      } catch {
+        return null;
+      }
+    })();
+    assertModesSelectable(operationsDescription, baseUrl, newRates, stored);
+  }
   // Every change that affects which calls the connection serves, or their price, is judged against the
   // apps that route to it, by one rule (`checkConnectionChange`): its rates (a replacement, a deletion
   // inside it, or `null`), its paths and a custom provider's API styles, its base URL.

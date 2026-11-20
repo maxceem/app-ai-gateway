@@ -95,6 +95,37 @@ export function requestedServiceMode(
 }
 
 /**
+ * Every service mode a call of `operation` on a connection at `baseUrl` can
+ * be billed in: each tier and region its request and answer can name, read
+ * with the same tables and the base URL's region as `requestedServiceMode`
+ * and `servedServiceMode`. A request that names no region is in the base
+ * URL's. Saving judges a mode rate against these (`unselectableModeRates`).
+ */
+export function selectableModes(
+  description: ProviderDescription,
+  operation: OperationDescription | undefined,
+  baseUrl: string | null,
+  model?: string,
+): ServiceMode[] {
+  const rules = readingRules(description, operation);
+  const base = baseUrlRegion(description, baseUrl);
+  const tiers = new Set<ServiceMode["tier"]>(["standard"]);
+  const regions = new Set<ServiceRegion>([base]);
+  const add = (fields: readonly ServiceModeField[], asked: boolean) => {
+    for (const field of fields) {
+      for (const value of Object.values(field.values)) {
+        if (field.axis === "tier") tiers.add(value as ServiceMode["tier"]);
+        // As `requestedServiceMode`: a request read as global is in the base URL's region.
+        else regions.add(asked && value === "global" ? base : (value as ServiceRegion));
+      }
+    }
+  };
+  add(fieldsFor(description, rules.serviceModes, model, true), true);
+  add(fieldsFor(description, rules.servedModes ?? rules.serviceModes, model, false), false);
+  return [...tiers].flatMap((tier) => [...regions].map((region) => ({ tier, region })));
+}
+
+/**
  * The service mode that served a call: each axis the response names, else
  * the one the request asked for. A provider may serve a cheaper tier than
  * asked (OpenAI sheds fast traffic to standard), or a dearer one the request
