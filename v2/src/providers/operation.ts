@@ -520,6 +520,20 @@ export type OperationInput<P extends string, U extends string> = Omit<
  * operation, so a mistake in a template is a compile error. The run-time
  * parser (`./path.ts`) checks the same rules again, for paths a customer lists.
  */
+/**
+ * The model a request is sent and billed as: the app's rewrite of the model
+ * it named, if any (v1). A fixed model is never rewritten. The one rule, for
+ * serving and for the app save's checks alike.
+ */
+export function rewrittenModel(
+  operation: Pick<OperationDescription, "model">,
+  model: string,
+  rewrites: Readonly<Record<string, string>> | undefined,
+): string {
+  if (operation.model.in === "fixed" || rewrites === undefined) return model;
+  return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
+}
+
 export function defineOperation<const P extends string, const U extends string = P>(
   operation: OperationInput<P, U>,
 ): OperationDescription {

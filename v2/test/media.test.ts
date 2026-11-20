@@ -239,15 +239,15 @@ describe("transcription", () => {
     ]);
   });
 
-  it("leaves a time-priced answer that reports only tokens unpriced, with nothing for the sweep", async () => {
+  it("leaves a time-priced answer that reports only tokens unpriced, with work for the sweep: tokens are a measure (4b A2)", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.transcription"] });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(Response.json({ text: "hi", usage: { input_tokens: 40, output_tokens: 6 } }));
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, { model: "whisper-1", file: AUDIO });
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, input_tokens: 40 });
-    expect(await env.DB.prepare("SELECT 1 FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toBeNull();
-    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(/no_priced_measure.*"retried":true/));
   });
 
   it("refuses a format whose answer carries no usage, before the provider and before admission", async () => {

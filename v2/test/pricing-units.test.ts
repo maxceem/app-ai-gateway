@@ -293,6 +293,20 @@ describe("request measures and headers", () => {
     const usage = { ...counted({ characters: 9 }), estimatedUnits: ["characters" as const], reportMissing: true as const, priceKeys: { size: "1024x1024" } };
     expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject(usage);
   });
+
+  it("keeps which units are usage measures beside the billing unit, so the sweep ranks them as the request did (4b A1)", () => {
+    const usage = { ...counted({ credits: 5_000 }), audioSeconds: 4.709, secondaryUnits: ["audio_seconds" as const] };
+    expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject({ secondaryUnits: ["audio_seconds"] });
+  });
+
+  it("bills by measure rank first, then the dearest: billing unit, then a usage measure beside it, then the estimate (4b A1)", () => {
+    const price = priced({ per_credit: 50_000, per_hour: 200_000_000, per_million_characters: 80_000_000_000 });
+    const both = { ...counted({ credits: 5_000, characters: 9_000 }), audioSeconds: 4.7090625, secondaryUnits: ["audio_seconds" as const], estimatedUnits: ["characters" as const] };
+    expect(priceInServedMode(price, both)).toMatchObject({ unit: "credits", cost: 250_000 });
+    const noCredits = { ...counted({ characters: 9_000 }), audioSeconds: 4.7090625, secondaryUnits: ["audio_seconds" as const], estimatedUnits: ["characters" as const] };
+    expect(priceInServedMode(price, noCredits)).toMatchObject({ unit: "audio_seconds", cost: 261_667 });
+    expect(priceInServedMode(price, { ...counted({ characters: 9_000 }), estimatedUnits: ["characters" as const] })).toMatchObject({ unit: "characters" });
+  });
 });
 
 describe("outbound fields", () => {

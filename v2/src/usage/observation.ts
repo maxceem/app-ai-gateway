@@ -71,6 +71,14 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly estimatedUnits?: readonly Unit[];
   /**
+   * The units the provider reported beside its own billing unit, as a usage
+   * measure (an answer's audio length beside the credits it charged), which
+   * the meter declares (`body` on a response header meter). One bills only
+   * when no billing unit the provider reported can, and before the request's
+   * estimate (`measureRank` in `src/pricing/tokens.ts`).
+   */
+  readonly secondaryUnits?: readonly Unit[];
+  /**
    * The provider was meant to report the billed amount (a response header)
    * and did not, so the request's estimate bills instead: priced as an estimate.
    */
@@ -86,6 +94,14 @@ export interface UsageObservation extends TokenCounts {
    * an earlier event's count, say. Billed as an estimate, never as exact.
    */
   readonly finalEventUnread?: true;
+}
+
+/** Whether a usage measures anything a price could bill: tokens, or a count above 0 in another unit. */
+export function hasMeasure(usage: UsageObservation): boolean {
+  if ((usage.audioSeconds ?? 0) > 0 || (usage.images ?? 0) > 0) return true;
+  if (Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0)) return true;
+  if (usage.noTokens === true) return false;
+  return usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens > 0;
 }
 
 /**

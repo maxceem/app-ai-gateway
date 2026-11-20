@@ -16,7 +16,7 @@ import type { ApiStyle, OperationDescription, ProviderDescription } from "../pro
 import { errorFacts } from "../core/error-facts.ts";
 import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
-import type { UsageObservation } from "../usage/observation.ts";
+import { hasMeasure, type UsageObservation } from "../usage/observation.ts";
 import type { Unit } from "../providers/operation.ts";
 import { scaledCount } from "../pricing/units.ts";
 import { bodyReader, withHeaderVariants, type BodyReader } from "../usage/readers.ts";
@@ -324,23 +324,17 @@ function reportedCostUsd(operation: OperationDescription, reading: ResponseReadi
   // $0 beside any positive reported measure, the header's amount or the
   // body's (ElevenLabs before overages, on a plan's included credits), is no
   // report: the measure bills instead, never as free.
-  if (value === 0 && ((headerNumber(headers.get(meter.header)) ?? 0) > 0 || measuresSomething(reading?.usage ?? null))) return null;
+  if (value === 0 && ((headerNumber(headers.get(meter.header)) ?? 0) > 0 || (reading?.usage != null && hasMeasure(reading.usage)))) return null;
   return value;
 }
 
-/** Whether a usage the body reported counts anything above 0. */
-function measuresSomething(usage: UsageObservation | null): boolean {
-  if (usage === null) return false;
-  if ((usage.audioSeconds ?? 0) > 0 || (usage.images ?? 0) > 0) return true;
-  if (Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0)) return true;
-  return usage.noTokens !== true && usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens > 0;
-}
-
 /** A header's usage with the body's beside it: both are the provider's reports. Either alone stands for both. */
-function withBodyUsage(header: UsageObservation | null, body: UsageObservation | null): UsageObservation | null {
+function withBodyUsage(header: UsageObservation | null, body: UsageObservation | null, bodyUnits: readonly Unit[] = []): UsageObservation | null {
   if (body === null) return header;
-  if (header === null) return body;
-  return { ...body, units: { ...body.units, ...header.units } };
+  // What the body reports is a usage measure beside the header's billing unit, as the meter declares.
+  const measured = bodyUnits.length > 0 ? { ...body, secondaryUnits: bodyUnits } : body;
+  if (header === null) return measured;
+  return { ...measured, units: { ...body.units, ...header.units } };
 }
 
 /**
@@ -392,7 +386,7 @@ export function attemptUsage(
       // reports where the meter reads it, and the request's estimate. The
       // price bills a reported one where it can, else the estimate
       // (`priceInServedMode`).
-      const reported = withBodyUsage(headerUsage(headers, meter.header, meter.unit), meter.body !== undefined ? reading : null);
+      const reported = withBodyUsage(headerUsage(headers, meter.header, meter.unit), meter.body !== undefined ? reading : null, meter.body?.units);
       usage = reported === null ? (fromRequest === null ? null : { ...fromRequest, reportMissing: true }) : withRequestMeasure(reported, fromRequest);
       break;
     }

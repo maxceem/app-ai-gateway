@@ -119,14 +119,15 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
       const estimate = meter.estimate?.unit;
       const body = Object.fromEntries((meter.body?.units ?? []).map((unit) => [unit, sample(unit)]));
       const header = { [meter.unit]: sample(meter.unit) };
+      const secondary = meter.body === undefined ? {} : { secondaryUnits: meter.body.units };
       // One way, since the same model's answers can come any of these ways:
       // the header, beside the body's measures where the meter reads them;
       // the header alone; the body alone; and, with an estimate, neither,
       // where the request's estimate bills.
-      const way: UsageObservation[] = [withEstimate({ ...NO_TOKENS, units: { ...header, ...body } }, estimate)];
+      const way: UsageObservation[] = [withEstimate({ ...NO_TOKENS, ...secondary, units: { ...header, ...body } }, estimate)];
       if (meter.body !== undefined) {
         way.push(withEstimate({ ...NO_TOKENS, units: header }, estimate));
-        way.push(withEstimate({ ...NO_TOKENS, units: body }, estimate));
+        way.push(withEstimate({ ...NO_TOKENS, ...secondary, units: body }, estimate));
       }
       if (estimate !== undefined) way.push({ ...withEstimate(NO_TOKENS, estimate), reportMissing: true });
       return [way];

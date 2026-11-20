@@ -30,7 +30,7 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import type { OperationDescription } from "../providers/operation.ts";
+import { rewrittenModel, type OperationDescription } from "../providers/operation.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
@@ -304,17 +304,22 @@ export function listedModelProblem(
  * partly, or null. Serving stays lenient (a call whose fallback cannot be
  * priced was served in v1), so the app save closes the hole: no operation it
  * enables may reach such a model in some ways and not others. A model none of
- * them reaches is fine; its calls are refused when made.
+ * them reaches is fine; its calls are refused when made. Nor is one the
+ * app's rewrites always send as another model on an operation
+ * (`rewrittenModel`, the rule serving uses): that operation never charges it.
  */
 export function partialCustomerModel(
   operations: readonly OperationDescription[],
   connection: PriceSources,
+  rewrites?: Readonly<Record<string, string>>,
 ): { readonly model: string; readonly operation: string } | null {
   if (operations.length === 0) return null;
   for (const model of Object.keys(connection.rates() ?? {})) {
+    const reaching = operations.filter((operation) => rewrittenModel(operation, model, rewrites) === model);
+    if (reaching.length === 0) continue;
     const resolved = resolve(connection, model);
     if (resolved === null) continue;
-    const gap = firstGap(operations, resolved.price, { costCounts: true, needsFull: false });
+    const gap = firstGap(reaching, resolved.price, { costCounts: true, needsFull: false });
     if (gap?.operation !== undefined) return { model, operation: gap.operation };
   }
   return null;

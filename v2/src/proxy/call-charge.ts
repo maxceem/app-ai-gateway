@@ -37,7 +37,7 @@ import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } fr
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
-import { withoutReport, type UsageObservation } from "../usage/observation.ts";
+import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { Alternatives } from "./alternatives.ts";
 
@@ -95,19 +95,6 @@ export interface AttemptOutcome {
   /** The app or the provider ended the answer before it was complete. */
   readonly cut: boolean;
   readonly latencyMs: number | null;
-}
-
-/** Whether a usage counts something other than tokens: credits, characters, seconds or images. */
-function hasUnitCount(usage: UsageObservation): boolean {
-  if ((usage.audioSeconds ?? 0) > 0 || (usage.images ?? 0) > 0) return true;
-  return Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0);
-}
-
-/** Whether a usage measures anything a price could bill: tokens, or a count in another unit. */
-function hasMeasure(usage: UsageObservation): boolean {
-  if (hasUnitCount(usage)) return true;
-  if (usage.noTokens === true) return false;
-  return usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens > 0;
 }
 
 /** `priceInServedMode`, with a figure too large to price read as no price, so the caller can fall back. */
@@ -194,13 +181,12 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     if (attempt.price !== null && priced === null) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
-      // Tokens priced by time would multiply counters that were never sent, so
-      // a token count alone is not retried (v1). A count in another unit
-      // (credits, seconds, images) is: a rate for it may be added later.
+      // Like every unresolved charge with a measure, it is retried: a rate for
+      // that measure (tokens included) may be added later.
       costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
-      const unitCount = hasUnitCount(usage);
-      if (unitCount) retried();
-      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure", retried: unitCount });
+      const measured = hasMeasure(usage);
+      if (measured) retried();
+      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure", retried: measured });
     } else if (priced !== null) {
       costed = {
         costNano: priced.cost,

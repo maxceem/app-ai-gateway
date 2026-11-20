@@ -52,7 +52,7 @@ import {
 } from "../providers/connections.ts";
 import { ProviderMatcher } from "../providers/matcher.ts";
 import { upstreamRequest } from "../providers/route.ts";
-import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -209,13 +209,6 @@ export async function serveCaller(
   }
 }
 
-/** The model a request is sent and billed as: the app's rewrite of it, if any (v1). A fixed model is never rewritten. */
-export function rewrittenModel(app: AppRecord, operation: OperationDescription, model: string): string {
-  if (operation.model.in === "fixed") return model;
-  const rewrites = app.routing.model_rewrites ?? {};
-  return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
-}
-
 export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const startedAt = Date.now();
   const appId = c.req.param("app");
@@ -273,7 +266,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       }
       // The app's model list judges the model the request names; everything
       // after it, the price included, the model it is sent as.
-      const model = rewrittenModel(app, operation, requested);
+      const model = rewrittenModel(operation, requested, app.routing.model_rewrites);
       const bill = billing(operation, priceSources(connection), model);
       const price = bill.price;
       // Never served: a model with no price is refused, unless the app lists it

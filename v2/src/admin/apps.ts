@@ -233,7 +233,7 @@ export async function checkAppConfig(
     const description = connection === null ? null : builtInProvider(connection.type);
     if (connection === null || description === null) continue;
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    const partial = partialCustomerModel(enabled, priceSources(connection));
+    const partial = partialCustomerModel(enabled, priceSources(connection), rewrites);
     if (partial !== null) {
       throw new GatewayError(
         400,
