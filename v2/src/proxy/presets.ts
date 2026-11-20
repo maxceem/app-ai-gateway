@@ -36,7 +36,7 @@ import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { admitRequest } from "../limits/admission.ts";
-import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
+import { billing } from "../pricing/billability.ts";
 import { connectionDescription, connectionSecret, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
@@ -159,12 +159,12 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
   }
   const operation: OperationDescription = (input.streaming && streamingSibling(description, chosen)) || chosen;
   const model = target.model;
-  const resolved = resolvePrice(connection.type, model, connection.rates);
-  const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
+  const bill = billing(operation, connection, model);
+  const price = bill.price;
   // Saving checked every target's price. A first target whose price has gone
   // since is still served, and priced later (`unresolved`), as a listed model
   // on the proxy is. A fallback with none is left out.
-  if (price === null && !reportsCost(operation) && !input.primary) {
+  if (bill.problem !== null && !input.primary) {
     throw new TargetProblem(
       new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
         data: { model, operation: operation.name },
@@ -227,7 +227,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     model,
     preset: input.slug,
     price,
-    reportsCost: reportsCost(operation),
+    reportsCost: bill.reportsCost,
     requestedMode: mode.mode,
     ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
     startedAt: input.startedAt,

@@ -19,12 +19,13 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
-import { listPrice, priceInMode, pricesOperation, reportsCost, resolvePrice, type CustomerRates } from "../pricing/prices.ts";
+import { billing, listedModelProblem, rewriteTargetBillable } from "../pricing/billability.ts";
+import type { CustomerRates } from "../pricing/prices.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
-import { isStandardMode, serviceModeName } from "../usage/service-modes.ts";
+import { serviceModeName } from "../usage/service-modes.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
@@ -76,18 +77,6 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
 }
 
 /**
- * Checks a whole configuration against the account: the shape, then each
- * provider connection it names, each operation, and each listed model's price.
- *
- * `stored` is the app's stored routing and presets, by slug. When a
- * connection an entry names has since been deleted, an update may keep that
- * entry exactly as it is, as v1: otherwise deleting a connection would make
- * every app that used it impossible to save, even to rename. Its requests are
- * refused with `provider_not_configured` until it is back (a preset's
- * fallback is left out of its chain). An added or changed entry needs its
- * connections, because nothing could check it.
- */
-/**
  * An app document's config as it is saved, read by its schema and the
  * save-only rules, without the account's current state.
  */
@@ -124,6 +113,35 @@ interface ConnectionRow {
   base_url: string | null;
 }
 
+/**
+ * What a save changes against the stored app. Saving judges only what is new
+ * or changed: what is stored was judged when it was saved, and something gone
+ * since (a connection deleted, a price removed) must not stop the app being
+ * saved, even to rename it. Its requests are judged when they are made.
+ * Creating an app judges everything.
+ */
+export interface Changes {
+  readonly routing: (slug: string) => boolean;
+  readonly rewrite: (source: string) => boolean;
+  readonly preset: (slug: string) => boolean;
+}
+
+export function changesAgainst(stored: StoredEntries, config: AppConfig): Changes {
+  const own = (entries: Readonly<Record<string, unknown>>, key: string) => (Object.hasOwn(entries, key) ? entries[key] : undefined);
+  const rewrites = config.routing.model_rewrites ?? {};
+  return {
+    routing: (slug) => !sameJson(own(stored.providers, slug), config.routing.providers[slug]),
+    rewrite: (source) => !sameJson(own(stored.rewrites, source), own(rewrites, source)),
+    preset: (slug) => !sameJson(own(stored.presets, slug), own(config.presets ?? {}, slug)),
+  };
+}
+
+/**
+ * Checks a configuration against the account: the shape, then each provider
+ * connection it names, each operation, and whether each listed model can be
+ * billed (`../pricing/billability.ts` decides). Only what is new or changed
+ * against `stored` is judged (`changesAgainst`).
+ */
 export async function checkAppConfig(
   db: D1Database,
   accountId: string,
@@ -131,6 +149,7 @@ export async function checkAppConfig(
   stored: StoredEntries = NOTHING_STORED,
 ): Promise<AppConfig> {
   const config = parseAppConfig(raw);
+  const changed = changesAgainst(stored, config);
   const rows = new Map<string, ConnectionRow | null>();
   const connectionRow = async (slug: string): Promise<ConnectionRow | null> => {
     if (!rows.has(slug)) {
@@ -145,11 +164,17 @@ export async function checkAppConfig(
     return rows.get(slug) ?? null;
   };
   const rewrites = config.routing.model_rewrites ?? {};
-  await checkRewrites(db, accountId, rewrites, stored.rewrites);
+  await checkRewrites(
+    db,
+    accountId,
+    Object.entries(rewrites).filter(([source]) => changed.rewrite(source)),
+  );
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
     const connection = await connectionRow(slug);
     if (connection === null) {
-      if (Object.hasOwn(stored.providers, slug) && sameJson(stored.providers[slug], routing)) continue;
+      // Unchanged, an entry may keep a connection deleted since, as v1. Its
+      // requests are refused with `provider_not_configured` until it is back.
+      if (!changed.routing(slug)) continue;
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
     const description = builtInProvider(connection.type);
@@ -164,81 +189,50 @@ export async function checkAppConfig(
         });
       }
     }
-    const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
+    const sources = { type: connection.type, rates: connectionRates(connection) };
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
-    // An entry saved as it is, with each of its models' rewrites unchanged,
-    // was checked when it was saved; a price gone since must not stop the
-    // app being saved, even to rename it. A newly listed model, or a changed
-    // route, is checked.
-    const routingUnchanged = Object.hasOwn(stored.providers, slug) && sameJson(stored.providers[slug], routing);
     for (const listed of routing.models ?? []) {
+      // A listed model is judged when its route or its rewrite is new or changed.
+      if (!changed.routing(slug) && !changed.rewrite(listed)) continue;
       // A listed model is sent, and priced, as the model it is rewritten to.
       const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-      const storedRewrite = Object.hasOwn(stored.rewrites, listed) ? stored.rewrites[listed] : undefined;
-      if (routingUnchanged && storedRewrite === (Object.hasOwn(rewrites, listed) ? rewrites[listed] : undefined)) continue;
-      const resolved = resolvePrice(connection.type, model, rates);
-      // An operation whose answers carry the provider's own cost (OpenRouter's,
-      // xAI's) needs no price of ours (v1). A model with no price at all needs
-      // that from every enabled operation: listed by name, it would be served
-      // unpriced by the others.
-      const unpriced = resolved === null ? enabled.find((operation) => !reportsCost(operation)) : undefined;
-      // A priced model needs a price in the unit of at least one enabled
-      // operation: an app may list `whisper-1` beside its chat models for its
-      // transcriptions. A call to an operation that cannot bill its unit is
-      // refused when it is made.
-      const billable = resolved === null || enabled.length === 0 || enabled.some((operation) => reportsCost(operation) || pricesOperation(operation, resolved.price));
-      if (unpriced !== undefined || !billable) {
+      const problem = listedModelProblem(enabled, sources, model);
+      if (problem !== null) {
         throw new GatewayError(
           400,
           "pricing_not_configured",
           `config.routing.providers.${slug}.models: ${listed}${model === listed ? "" : ` (rewritten to ${model})`} has no price that ${
-            unpriced !== undefined ? unpriced.name : `any of ${enabled.map((operation) => operation.name).join(", ")}`
+            problem.operation ?? `any of ${enabled.map((operation) => operation.name).join(", ")}`
           } can bill; add one to the provider connection first`,
           undefined,
-          { data: { slug, model, ...(unpriced !== undefined ? { operation: unpriced.name } : {}) } },
+          { data: { slug, model, ...(problem.operation !== undefined ? { operation: problem.operation } : {}) } },
         );
       }
     }
   }
   for (const [slug, preset] of Object.entries(config.presets ?? {})) {
-    // Unchanged, it may keep a connection that was deleted since, as routing does.
-    if (Object.hasOwn(stored.presets, slug) && sameJson(stored.presets[slug], preset)) continue;
+    // Unchanged, it may keep a connection deleted since, as routing does.
+    if (!changed.preset(slug)) continue;
     await checkPreset(slug, preset, connectionRow);
   }
   return config;
 }
 
-/**
- * Each rewrite's target needs a price this account could bill it at: ours,
- * for any provider, or a connection's own rate. A rewrite names no provider,
- * so the app's model lists and each request judge the rest (v1).
- */
-async function checkRewrites(
-  db: D1Database,
-  accountId: string,
-  rewrites: Readonly<Record<string, string>>,
-  stored: Readonly<Record<string, unknown>>,
-): Promise<void> {
-  // An unchanged rewrite was checked when it was saved. Its price may have
-  // gone since; that must not stop the app being saved, even to rename it.
-  const targets = Object.entries(rewrites).filter(([source, target]) => !(Object.hasOwn(stored, source) && stored[source] === target));
+function connectionRates(connection: { rates_json: string | null }): CustomerRates | null {
+  return connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
+}
+
+/** Each new or changed rewrite's target needs a price this account could bill it at (`rewriteTargetBillable`). */
+async function checkRewrites(db: D1Database, accountId: string, targets: readonly (readonly [string, string])[]): Promise<void> {
   if (targets.length === 0) return;
   const { results } = await db
     .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ?")
     .bind(accountId)
     .all<{ type: string; rates_json: string | null }>();
+  const connections = results.map((row) => ({ type: row.type, rates: connectionRates(row) }));
+  const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
   for (const [source, target] of targets) {
-    // A connection whose provider reports its own cost (OpenRouter's, xAI's)
-    // bills any model it serves, as v1 accepted. Each route is judged again
-    // where the model is listed, and on each request.
-    const priced =
-      Object.keys(BUILT_IN_PROVIDERS).some((type) => listPrice(type, target) !== null) ||
-      results.some(
-        (row) =>
-          resolvePrice(row.type, target, row.rates_json === null ? null : (JSON.parse(row.rates_json) as CustomerRates)) !== null ||
-          (builtInProvider(row.type)?.operations.some(reportsCost) ?? false),
-      );
-    if (!priced) {
+    if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {
       throw new GatewayError(
         400,
         "pricing_not_configured",
@@ -300,10 +294,8 @@ async function checkPreset(
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
     }
-    const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
-    const resolved = resolvePrice(connection.type, target.model, rates);
-    const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved.price : null;
-    if (price === null && !reportsCost(operation)) {
+    const sources = { type: connection.type, rates: connectionRates(connection) };
+    if (billing(operation, sources, target.model).problem !== null) {
       throw new GatewayError(
         400,
         "pricing_not_configured",
@@ -332,8 +324,7 @@ async function checkPreset(
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
       }
-      // An operation that reports its own cost bills any mode it serves (v1).
-      if (price !== null && !reportsCost(operation) && !isStandardMode(mode.mode) && priceInMode(price, mode.mode) === undefined) {
+      if (billing(operation, sources, target.model, mode.mode).problem === "no_mode_price") {
         throw new GatewayError(
           400,
           "pricing_not_configured",

@@ -42,7 +42,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
+import { billing } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionSecret,
@@ -267,23 +267,20 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // The app's model list judges the model the request names; everything
       // after it, the price included, the model it is sent as.
       const model = rewrittenModel(app, operation, requested);
-      const resolved = resolvePrice(connection.type, model, connection.rates);
-      // A price in another unit (per minute, say) cannot bill this operation.
-      const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
-      if (price === null && !reportsCost(operation)) {
-        // Never served: a model with no price is refused, unless the app lists
-        // it by name (its price may have gone since: it is served, and priced
-        // later). A model priced only in a unit this operation cannot bill (a
-        // per-minute price on chat) was never served on it, so it is refused
-        // even when listed: an app may list it for another of its operations.
-        if (resolved !== null) {
-          throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
-            data: { model, operation: operation.name },
-          });
-        }
-        if (routing.models === undefined) {
-          throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
-        }
+      const bill = billing(operation, connection, model);
+      const price = bill.price;
+      // Never served: a model with no price is refused, unless the app lists it
+      // by name (its price may have gone since: it is served, and priced later).
+      // A model priced only in a unit this operation cannot bill (a per-minute
+      // price on chat) was never served on it, so it is refused even when
+      // listed: an app may list it for another of its operations.
+      if (bill.problem === "wrong_unit") {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+          data: { model, operation: operation.name },
+        });
+      }
+      if (bill.problem === "no_price" && routing.models === undefined) {
+        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
       }
       // A rewritten model is written where the request named it: the path,
       // or the body or form field.
@@ -356,7 +353,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         operation: operation.name,
         model,
         price,
-        reportsCost: reportsCost(operation),
+        reportsCost: bill.reportsCost,
         requestedMode: mode.mode,
         ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
         startedAt,
