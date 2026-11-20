@@ -55,13 +55,19 @@ function refusedBySet(method: string, path: string, tags: readonly string[]): bo
 }
 
 /**
+ * Two unlike values for a parameter the spec leaves free, so a rule that
+ * reaches only some values (`p{voice_id}` reaches `p1`) shows up.
+ */
+const FREE_VALUES = ["p1", "x9"];
+
+/**
  * Every request path an operation stands for: each parameter filled with each
- * value its enum allows, or with a free value where the spec allows any.
+ * value its enum allows, or with each of `FREE_VALUES` where the spec allows any.
  */
 function requestPaths(path: string, enums: Readonly<Record<string, readonly string[]>> = {}): string[] {
   let paths = [path.replace(/^\//u, "")];
   for (const name of [...path.matchAll(/\{([^}/]+)\}/gu)].map((found) => found[1]!)) {
-    const values = enums[name] ?? ["p1"];
+    const values = enums[name] ?? FREE_VALUES;
     paths = paths.flatMap((one) => values.map((value) => one.replace(`{${name}}`, value)));
   }
   return paths;
@@ -74,8 +80,9 @@ const rulesOf = (refused: ProviderDescription["refused"]): Rule[] =>
 /**
  * Whether a refused rule can match a real request of a spec operation,
  * template against template: a rule's literal stands against a spec literal
- * equal to it, or a parameter whose enum holds it. A literal facing a free
- * parameter matches no request anyone was told to make, so it does not count.
+ * equal to it, or a parameter whose enum holds it. A literal, or a part with
+ * a prefix or suffix, facing a free parameter matches only some requests
+ * anyone was told to make, so it does not count.
  */
 function ruleReaches(rule: Rule, method: string, path: string, enums: Readonly<Record<string, readonly string[]>> = {}): boolean {
   if (rule.methods !== null && !rule.methods.includes(method)) return false;
@@ -87,10 +94,17 @@ function ruleReaches(rule: Rule, method: string, path: string, enums: Readonly<R
   return fixed.every((segment, index) => {
     const piece = spec[index]!;
     const parameter = /^\{([^}/]+)\}$/u.exec(piece)?.[1];
-    if (segment.kind === "part") return true;
-    if (segment.kind !== "literal") return false;
-    if (parameter === undefined) return segment.value.toLowerCase() === piece.toLowerCase();
-    return (enums[parameter] ?? []).some((value) => value.toLowerCase() === segment.value.toLowerCase());
+    const fits = (value: string): boolean => {
+      const lower = value.toLowerCase();
+      if (segment.kind === "literal") return segment.value.toLowerCase() === lower;
+      if (segment.kind !== "part") return false;
+      const { prefix, suffix } = segment;
+      return lower.length > prefix.length + suffix.length && lower.startsWith(prefix.toLowerCase()) && lower.endsWith(suffix.toLowerCase());
+    };
+    // A bare part reaches any value; a free parameter is reached only by one.
+    if (segment.kind === "part" && segment.prefix === "" && segment.suffix === "") return true;
+    if (parameter === undefined) return fits(piece);
+    return (enums[parameter] ?? []).some(fits);
   });
 }
 
@@ -134,6 +148,7 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
     ["a rule narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/single-use-token/*" ? { ...rule, path: "v1/single-use-token/p1" } : rule))],
     ["voice deletion widened to collections and samples", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/*" } : rule))],
     ["an agent's link left out", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/convai/agents/{agent_id}/link")],
+    ["voice deletion narrowed to ids with a prefix", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/p{voice_id}" } : rule))],
   ])("fails when the list has %s", (_, mutate) => {
     const refused = mutate(rulesOf(elevenlabs.refused)).map((rule) => (rule.methods === null ? rule.path : { path: rule.path, methods: rule.methods as HttpMethod[] }));
     const { wrong, dead } = judge({ ...elevenlabs, refused });
