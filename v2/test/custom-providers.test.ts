@@ -29,7 +29,6 @@ import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
-import { strippedHeaders } from "../src/proxy/serve.ts";
 import { ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
@@ -220,14 +219,6 @@ describe("a custom provider's description", () => {
     [{ header: "cf-aig-authorization", format: "{key}" }, "cannot carry the key"],
     [{ header: "x api key", format: "{key}" }, "header name"],
     [{ header: "x-end-user-id", format: "{key}" }, "reads who is calling from it"],
-    [{ header: "x-request-id", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "idempotency-key", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "traceparent", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "x-correlation-id", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "content-md5", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "accept-language", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "openai-beta", format: "{key}" }, "clients send it, or providers send it back"],
-    [{ header: "x-stainless-lang", format: "{key}" }, "clients send it, or providers send it back"],
     [{ header: "x-api-key", format: "Bearer key" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "{key}{key}" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "Bearer\n{key}" }, "printable ASCII"],
@@ -682,6 +673,7 @@ async function setup(
   baseUrl = BASE,
   ratesJson: Record<string, unknown> = { "local-llm": { input: 1_000_000_000, output: 2_000_000_000 } },
   models?: readonly string[],
+  auth: { header: string; format: string } = AUTH,
 ) {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -694,7 +686,7 @@ async function setup(
       (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, passthrough_json, revision, created_by, created_at, updated_at)
      VALUES (?, ?, 'custom', ?, 'Mine', 'active', ?, '9876', ?, ?, ?, 1, 'usr_test', ?, ?)`,
   )
-    .bind(id, ACCOUNT_ID, slug, blob, baseUrl, rates, storedPassthrough(paths as never, AUTH), now, now)
+    .bind(id, ACCOUNT_ID, slug, blob, baseUrl, rates, storedPassthrough(paths as never, auth), now, now)
     .run();
   const appId = await seedRoutedApp(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
@@ -906,10 +898,44 @@ describe("serving a custom provider", () => {
     expect(failed.response.headers.get("x-api-key")).toBeNull();
   });
 
-  it("strips every header a request could authenticate with, not only the one it did", () => {
-    const app = { authentication: { type: "api_key", end_user: { source: "none" } } } as never;
-    const stripped = strippedHeaders(app, { credentialHeader: "authorization" } as never, "Idempotency-Key");
-    expect(stripped).toEqual(expect.arrayContaining(["authorization", "idempotency-key"]));
+  it("never passes a key header the upstream echoes back, such as x-request-id, whatever its case", async () => {
+    const auth = { header: "x-request-id", format: "{key}" };
+    const { appId, slug, key } = await setup(paths, ["passthrough"], BASE, undefined, undefined, auth);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "local-llm" }, { headers: { "X-Request-Id": SECRET } }));
+    const { response } = await send("GET", `/v2/apps/${appId}/proxy/${slug}/models/x`, key, { headers: { "X-REQUEST-ID": "client-value" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-request-id")).toBeNull();
+    // The provider got the key there, never the client's value.
+    expect(new Headers(fetchSpy.mock.calls[0]![1]!.headers).get("x-request-id")).toBe(SECRET);
+  });
+
+  it("never gives a fallback on another host the client's value of the primary's key header", async () => {
+    const chat = [{ method: "POST", path: "chat/completions", style: "openai-chat" }];
+    const primary = await setup(chat, ["custom.openai-chat"], BASE, undefined, undefined, { header: "idempotency-key", format: "{key}" });
+    const fallback = await setup(chat, ["custom.openai-chat"], "https://other.example.org/v1/");
+    const stored = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(primary.appId).first<{ config_json: string }>();
+    const config = {
+      ...JSON.parse(stored!.config_json),
+      presets: {
+        chat: { provider: primary.slug, operation: "custom.openai-chat", model: "local-llm", fallback: [{ provider: fallback.slug, model: "local-llm" }] },
+      },
+    };
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify(config), primary.appId).run();
+    fetchSpy
+      .mockResolvedValueOnce(Response.json({ error: { message: "down" } }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ id: "c1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    const { response, text } = await send("POST", `/v2/apps/${primary.appId}/presets/chat`, primary.key, {
+      body: JSON.stringify({ messages: [] }),
+      headers: { "content-type": "application/json", "Idempotency-Key": "client-retry-1" },
+    });
+    expect(response.status, text).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchSpy.mock.calls.map(([url, init]) => ({ url: String(url), headers: new Headers(init!.headers) }));
+    expect(first!.url).toBe("https://llm.example.com/v1/chat/completions");
+    expect(first!.headers.get("idempotency-key")).toBe(SECRET);
+    expect(second!.url).toBe("https://other.example.org/v1/chat/completions");
+    expect(second!.headers.get("idempotency-key")).toBeNull();
+    expect(second!.headers.get("x-api-key")).toBe(`Key ${SECRET}`);
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

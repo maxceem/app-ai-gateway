@@ -405,7 +405,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
-      return await sendAttempts(c, strippedHeaders(app, caller, description.auth.header), [
+      return await sendAttempts(c, strippedHeaders(app, caller), [
         {
           connection,
           description,
@@ -483,7 +483,7 @@ async function servePassthrough(
     clientTraceId: caller.clientTraceId,
     ...facts,
   };
-  return await sendAttempts(c, strippedHeaders(app, caller, description.auth.header), [
+  return await sendAttempts(c, strippedHeaders(app, caller), [
     {
       connection,
       description,
@@ -748,20 +748,8 @@ export function sanitizedQuery(url: URL): string {
 }
 
 /** Client headers that never reach a provider, even if allowlisted: the gateway's own credentials and end-user ids. */
-/**
- * The client headers no attempt is sent with: every header the request could
- * authenticate with (`Authorization`, the first provider's key header, the
- * app's token header), not only the one it did, and the ones the gateway
- * read. A fallback on another host never gets a client's credential.
- */
-export function strippedHeaders(app: AppRecord, caller: Caller, providerAuthHeader?: string): readonly string[] {
-  return [
-    "authorization",
-    caller.credentialHeader,
-    ...(providerAuthHeader === undefined ? [] : [providerAuthHeader.toLowerCase()]),
-    ...clientAuth(app).consumedHeaders,
-    DEFAULT_END_USER_HEADER,
-  ];
+export function strippedHeaders(app: AppRecord, caller: Caller): readonly string[] {
+  return [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER];
 }
 
 /** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
@@ -879,6 +867,10 @@ export async function sendAttempts(
     });
     return new GatewayError(504, "provider_error", "Provider did not respond in time");
   };
+  // The header each connection's key is sent in belongs to the gateway alone: a client's value in any of
+  // them, for any connection of the chain, never reaches any attempt. Its answers never pass it back
+  // either (`clientResponseHeaders` in `answer`).
+  const keyHeaders = attempts.map((one) => one.description.auth.header.toLowerCase());
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
@@ -915,7 +907,7 @@ export async function sendAttempts(
       const body = prepared.body();
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
-      const client = withoutHeaders(c.req.raw.headers, stripped);
+      const client = withoutHeaders(c.req.raw.headers, [...stripped, ...keyHeaders]);
       // A listed passthrough path also forwards the headers its provider declares for one.
       const headers = upstreamHeaders(client, isPassthrough(prepared.operation) ? (description.passthroughHeaders ?? []) : []);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {

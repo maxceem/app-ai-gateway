@@ -83,41 +83,6 @@ export const GATEWAY_IDENTITY_HEADERS: ReadonlySet<string> = new Set([
   "x-conversation-storage",
 ]);
 
-/**
- * Request headers a provider key may never be sent in, besides the gateway's
- * identity headers: ones the request, its body or its connection depend on,
- * and the common request, correlation and tracing headers clients send and
- * providers echo back. A key there could come back to the app in an
- * answer, or a client's value could reach another host. Exact names, and
- * prefixes ending in `-` or naming a family (`accept`). A custom provider's
- * key header is refused on any of them (`src/providers/custom.ts`).
- */
-export const COMMON_REQUEST_HEADERS: ReadonlySet<string> = new Set([
-  "host",
-  "origin",
-  "referer",
-  "cookie",
-  "user-agent",
-  "connection",
-  "keep-alive",
-  "upgrade",
-  "te",
-  "trailer",
-  "expect",
-  "transfer-encoding",
-  "x-request-id",
-  "idempotency-key",
-  "x-correlation-id",
-  "traceparent",
-  "tracestate",
-]);
-export const COMMON_REQUEST_HEADER_PREFIXES: readonly string[] = ["content-", "accept", "sec-", "cf-", "x-forwarded-", "x-agw-"];
-
-/** Whether `name` (lowercase) is a common request header (`COMMON_REQUEST_HEADERS`). */
-export function isCommonRequestHeader(name: string): boolean {
-  return COMMON_REQUEST_HEADERS.has(name) || COMMON_REQUEST_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix));
-}
-
 /** Every built-in provider's key header, so a provider key is never read as a user id. */
 const PROVIDER_KEY_HEADERS: ReadonlySet<string> = new Set(
   Object.values(BUILT_IN_PROVIDERS).map((provider) => provider.auth.header.toLowerCase()),
