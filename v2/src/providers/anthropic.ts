@@ -24,11 +24,13 @@ export const anthropic = defineProvider({
     { names: ["service_tier"], axis: "tier", values: { auto: "standard", standard_only: "standard" } },
     { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" } },
   ],
-  // `usage` names the speed and the region that served the request.
+  // `usage` names the speed and the region that served the request. A
+  // request that asked for no region reports `inference_geo: "not_available"`
+  // (seen on real calls, T27): it names no region, so the asked one stands.
   servedModes: [
     { names: ["speed"], axis: "tier", values: { standard: "standard", fast: "fast" } },
     { names: ["service_tier"], axis: "tier", values: { standard: "standard", priority: "standard", batch: "standard" } },
-    { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" } },
+    { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" }, unstated: ["not_available"] },
   ],
   operations: withV1Paths("anthropic", [messages("anthropic.messages", "v1/messages")]),
 });

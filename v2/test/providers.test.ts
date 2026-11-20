@@ -363,6 +363,26 @@ describe("service modes through the proxy", () => {
     expect(measures).toMatchObject({ service_mode_unknown: 1 });
   });
 
+  it("bills Anthropic's region `not_available` at global when no region was asked, exactly, and at the US rate as an estimate when the US was asked (T27)", async () => {
+    const { appId, slug, key } = await setup("anthropic", { operations: ["anthropic.messages"] });
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const answer = () => Response.json({ usage: { input_tokens: 1000, output_tokens: 100, inference_geo: "not_available" } });
+    fetchSpy.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
+    for (const body of [{ model: "claude-sonnet-5" }, { model: "claude-sonnet-5", inference_geo: "us" }]) {
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/messages`, key, body);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    const standard = listedCost("anthropic", "claude-sonnet-5", tokens);
+    expect(standard).toBe(3_000_000);
+    const [global, us] = await chargesOf(appId);
+    expect(global).toMatchObject({ price_is_estimate: 0, cost_nano: standard });
+    // Claude Sonnet 5 costs 1.1 times as much in the US.
+    expect(us).toMatchObject({ price_is_estimate: 1, cost_nano: 3_300_000 });
+    const unknown = warnings.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("service_mode_unknown"));
+    expect(unknown).toEqual([expect.stringContaining("not_available")]);
+  });
+
   it("estimates a mode the model has no price in, never under standard", async () => {
     const { appId, slug, key } = await setup("anthropic", { operations: ["anthropic.messages"] });
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);

@@ -42,7 +42,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { priceSources, resolveCall, servedNow, type CallRefusal } from "../pricing/billability.ts";
+import { listedUnitRate, priceSources, resolveCall, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionCredentials,
@@ -945,7 +945,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
       status: ok ? "ok" : "provider_error",
       httpStatus: upstream.status,
       errorCode: null,
-      usage: ok ? attemptUsage(operation, attempt, null, upstream.headers) : null,
+      usage: ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, null, upstream.headers) : null,
       providerCostUsd: ok ? attemptCostUsd(operation, null, upstream.headers) : null,
       cut: false,
       latencyMs,
@@ -965,7 +965,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
     observed.then(
       (body) => {
         const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
-        const usage = ok ? attemptUsage(operation, attempt, reading?.usage ?? null, upstream.headers) : null;
+        const usage = ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, reading?.usage ?? null, upstream.headers) : null;
         // A stream is whole once its style's closing event arrived, even if the
         // app went away right after. One that ended without it was cut short,
         // however it ended. A style with no closing event, and an answer that

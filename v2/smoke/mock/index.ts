@@ -227,9 +227,11 @@ const speech: Answer = ({ body, bytes }) => {
 };
 
 /**
- * ElevenLabs text to speech: audio (or JSON with timestamps), with the credits
- * charged in `character-cost`: the text's characters, halved for the flash
- * and turbo models (T2). `mock_no_cost_header` leaves the header out.
+ * ElevenLabs text to speech: audio (or JSON with timestamps), with credits in
+ * `character-cost`: the text's characters, halved for the flash and turbo
+ * models (T2). The gateway bills the request's characters and keeps these
+ * credits only as a cross-check (T27). `mock_no_cost_header` leaves the
+ * header out.
  */
 const elevenTts: Answer = ({ body, path }) => {
   const text = typeof body.text === "string" ? body.text : "";

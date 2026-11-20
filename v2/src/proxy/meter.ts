@@ -18,7 +18,7 @@ import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
 import { hasMeasure, type UsageObservation } from "../usage/observation.ts";
 import type { Unit } from "../providers/operation.ts";
-import { scaledCount } from "../pricing/units.ts";
+import { scaledCount, unitScale } from "../pricing/units.ts";
 import { bodyReader, withHeaderVariants, type BodyReader } from "../usage/readers.ts";
 import {
   readServiceMode,
@@ -109,7 +109,7 @@ export function servedServiceMode(
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
-  const { named, unknown } = readServiceMode(fields, read);
+  const { named, unknown, unstated } = readServiceMode(fields, read);
   let tier = named.tier ?? requested.tier;
   // A tier the response names in a value the table does not know, or in two
   // sources that disagree, says nothing the gateway can price: it may be
@@ -118,7 +118,11 @@ export function servedServiceMode(
   const doubt = doubtfulTier(fields, read);
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
-  const flagged = unknown ?? doubt;
+  // An answer that names no region where the request asked for one: billed
+  // at the asked region's rate, as an estimate, since it may have been served
+  // elsewhere. With no region asked, global is what it was served at.
+  const unsure = unstated !== undefined && named.region === undefined && requested.region !== "global" ? unstated : undefined;
+  const flagged = unknown ?? doubt ?? unsure;
   return flagged ? { mode, unknown: flagged } : { mode };
 }
 
@@ -355,6 +359,70 @@ function withRequestMeasure(reported: UsageObservation | null, fromRequest: Usag
   };
 }
 
+/** What one whole unit costs at the model's list price, in nano-dollars, or null (`listedUnitRate`). */
+export type ListedRate = (unit: Unit) => number | null;
+
+/**
+ * The request's measure as the billed usage, exact, with the header's amount
+ * kept beside it as a secondary measure (`headerRole: "cross_check"`). With
+ * no header, the request's measure bills alone, still exact. With only the
+ * header, it bills as an estimate.
+ */
+function crossChecked(
+  operation: OperationDescription,
+  header: UsageObservation | null,
+  fromRequest: UsageObservation | null,
+  headerUnit: Unit,
+  listedRate: ListedRate | null,
+): UsageObservation | null {
+  const measured = fromRequest === null ? null : (({ estimatedUnits: _estimated, ...exact }) => exact)(fromRequest);
+  if (header === null) return measured;
+  if (measured === null) return { ...header, estimatedUnits: [headerUnit] };
+  checkHeader(operation, header, measured, headerUnit, listedRate);
+  return { ...measured, units: { ...header.units, ...measured.units }, secondaryUnits: [headerUnit] };
+}
+
+/**
+ * A cross-checked usage whose request measure may be less than the provider
+ * bills (`inDoubtWhen`): every unit becomes an estimate, so the price bills
+ * the dearest of them, the header's amount included.
+ */
+function inDoubt(usage: UsageObservation | null): UsageObservation | null {
+  if (usage === null) return null;
+  const { secondaryUnits: _secondary, ...rest } = usage;
+  return { ...rest, estimatedUnits: Object.keys(usage.units ?? {}) as Unit[] };
+}
+
+/**
+ * Logs a cross-check header at `info` when it looks wrong: zero, or far from
+ * what the model's list price implies. The list price states both rates, so
+ * their ratio is the header's expected amount per unit of the request's
+ * measure (ElevenLabs: about 0.2 credits per character on Flash, 0.4 on
+ * Multilingual v2, T27). A small text may round up a little, so a gap of 2
+ * whole units, or half the expected amount, is allowed.
+ */
+function checkHeader(operation: OperationDescription, header: UsageObservation, measured: UsageObservation, headerUnit: Unit, listedRate: ListedRate | null): void {
+  const headerAmount = (header.units?.[headerUnit] ?? 0) / unitScale(headerUnit);
+  const headerRate = listedRate?.(headerUnit) ?? null;
+  for (const [unit, count] of Object.entries(measured.units ?? {}) as [Unit, number][]) {
+    if (unit === headerUnit) continue;
+    const amount = count / unitScale(unit);
+    const unitRate = listedRate?.(unit) ?? null;
+    const expected = headerRate === null || unitRate === null ? null : (amount * unitRate) / headerRate;
+    const far = expected !== null && Math.abs(headerAmount - expected) > Math.max(2, expected / 2);
+    if ((headerAmount === 0 && amount > 0) || far) {
+      log("info", "header_cross_check_differs", {
+        operation: operation.name,
+        header_unit: headerUnit,
+        header_amount: headerAmount,
+        unit,
+        amount,
+        expected_amount: expected === null ? null : Math.round(expected * 1000) / 1000,
+      });
+    }
+  }
+}
+
 /**
  * The usage a successful attempt is billed by, by its meter kind (plan
  * section 4.1, "Meter"), with the request's price key values on it:
@@ -372,6 +440,10 @@ export function attemptUsage(
     readonly priceKeys?: Readonly<Record<string, string>>;
     readonly answeredKeys?: readonly string[];
     readonly perChannel?: true;
+    /** The provider may bill more than the request's measure (`inDoubtWhen`). */
+    readonly measureInDoubt?: true;
+    /** The model's list rates, which say what a cross-check header should report. */
+    readonly listedRate?: ListedRate;
   },
   reading: UsageObservation | null,
   headers: Headers,
@@ -387,6 +459,11 @@ export function attemptUsage(
       usage = withRequestMeasure(reading, meter.requestMeasure !== undefined ? fromRequest : null);
       break;
     case "response_header": {
+      if (meter.headerRole === "cross_check") {
+        const checked = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit, attempt.listedRate ?? null);
+        usage = attempt.measureInDoubt === true ? inDoubt(checked) : checked;
+        break;
+      }
       // Every measure is kept: the amount the header reports, what the body
       // reports where the meter reads it, and the request's estimate. The
       // price bills a reported one where it can, else the estimate

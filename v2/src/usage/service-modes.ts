@@ -132,6 +132,14 @@ export type ServiceModeField =
     readonly values: Readonly<Record<string, ServiceRegion>>;
     readonly as?: string;
     readonly forProvider?: string;
+    /**
+     * Values that name no region: the answer does not say where it was
+     * served (Anthropic's `inference_geo: "not_available"`, T27). The region
+     * stays the one the request asked for. That is exact when it asked for
+     * none; a request for another region is then billed at that region's
+     * rate as an estimate (`servedServiceMode`).
+     */
+    readonly unstated?: readonly string[];
   };
 
 /** One field's value, as a request or a response gave it: the field's name and the value, made safe to log. */
@@ -157,6 +165,8 @@ export interface ServiceModeReading {
   readonly askedBy: readonly ServiceModeValue[];
   /** The first value the table does not know, if any. */
   readonly unknown?: ServiceModeValue;
+  /** The first value that names no region (`unstated`), if any. */
+  readonly unstated?: ServiceModeValue;
 }
 
 /**
@@ -182,11 +192,16 @@ export function readServiceMode(
   let regionNamed = false;
   let regionAskedBy: ServiceModeValue | undefined;
   let unknown: ServiceModeValue | undefined;
+  let unstated: ServiceModeValue | undefined;
   for (const field of fields) {
     for (const name of field.names) {
       const value = fieldValue(read, name);
       if (value === undefined || value === null) continue;
       const key = typeof value === "string" ? value.toLowerCase() : undefined;
+      if (field.axis === "region" && key !== undefined && field.unstated?.includes(key) === true) {
+        unstated ??= { field: name, value: describeValue(value) };
+        continue;
+      }
       const meaning = key !== undefined && Object.hasOwn(field.values, key) ? field.values[key] : undefined;
       if (meaning === undefined) {
         unknown ??= { field: name, value: describeValue(value) };
@@ -218,7 +233,7 @@ export function readServiceMode(
     ...(tier !== undefined && { tier }),
     ...(regionNamed && { region }),
   };
-  return unknown ? { mode, named, askedBy, unknown } : { mode, named, askedBy };
+  return { mode, named, askedBy, ...(unknown ? { unknown } : {}), ...(unstated ? { unstated } : {}) };
 }
 
 /** A field's value, following a dotted name into nested objects. */

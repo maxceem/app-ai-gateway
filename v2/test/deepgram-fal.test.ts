@@ -150,7 +150,7 @@ describe("Deepgram operations and prices", () => {
       priceKeys: { redact: "false", detect_entities: "false", keyterm: "true" },
       unpricedOptions: ["summarize"],
       answeredKeys: ["language"],
-      servedModels: { "nova-3": ["nova-3", "nova-3-general"] },
+      servedModels: { "nova-3": ["nova-3", "nova-3-general"], "large-whisper": ["whisper-large"] },
       perChannel: true,
     });
   });
@@ -412,6 +412,22 @@ describe("Deepgram through the proxy", () => {
     const charges = await chargesOf(appId);
     expect(charges.map((charge) => charge.price_is_estimate)).toEqual([1, 0]);
     expect(warnings.mock.calls.some((call) => String(call[0]).includes("served_model_unexpected"))).toBe(true);
+  });
+
+  it("bills Whisper Large exactly when the answer names it as Deepgram really does (T27)", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    // The model_info a real whisper-large call with language detection answered.
+    fetchSpy.mockResolvedValue(
+      Response.json({
+        metadata: { duration: 60, channels: 1, model_info: { m: { arch: "whisper", name: "large-whisper", version: "2022-12-08.0" } } },
+        results: { channels: [{ detected_language: "en" }] },
+      }),
+    );
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=whisper-large&detect_language=true`, key, new Uint8Array([1]), {
+      "content-type": "audio/wav",
+    });
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ model: "whisper-large", price_is_estimate: 0, cost_nano: 4_800_000 });
   });
 
   it("treats every model the answer names as served: one fallback channel makes the charge an estimate, floored at standard", async () => {

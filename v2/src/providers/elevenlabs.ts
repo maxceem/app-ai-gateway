@@ -3,14 +3,14 @@
  *
  * - The voice is in the path, the model in the body's `model_id`.
  * - A text-to-speech answer is audio (or JSON with timestamps); it is never
- *   read. The billed amount is the `character-cost` response header, in
- *   credits, on every answer, `/stream` included (T2). Before the answer, and
- *   when the header is missing, the request's characters give the estimate:
- *   ElevenLabs charges characters × the model's `character_cost_multiplier`
- *   (1, or 0.5 for the flash and turbo models), within 1 credit (T2).
- * - Credits are priced at the model's list rate or the customer's own rate per
- *   credit; characters at its rate per million characters. A model's price
- *   states both, so the estimate and the header bill alike.
+ *   read. It is billed by the request's characters, exactly, at the model's
+ *   published rate per million characters: ElevenLabs bills API usage in
+ *   dollars per character, not in credits. The `character-cost` header, in
+ *   credits, is recorded beside the characters as a cross-check (T27); it
+ *   bills only a price that has a rate per credit and none per character.
+ *   The list rate per credit, $0.0002, is the per-character price over what
+ *   real calls reported: about 0.2 credits a character on Flash and 0.4 on
+ *   Multilingual v2.
  * - Speech to text is a form upload. ElevenLabs also sends its own dollar
  *   figure for it, `fiat-cost-before-overages`, which is billed as it is
  *   (`provider_usd`, plan section 4.2). Without it, the audio's length in
@@ -24,12 +24,25 @@ import { defineOperation, defineProvider } from "./operation.ts";
 /** ElevenLabs' default text-to-speech model, used when the request names none. */
 const DEFAULT_TTS_MODEL = "eleven_multilingual_v2";
 
-/** Credits are measured exactly by `character-cost` (plan T2). Characters give the estimate before the answer. */
+/**
+ * Text to speech is billed per character of the request, in dollars:
+ * ElevenLabs' pricing page bills API usage in US dollars, not credits, per
+ * character. The `character-cost` header counts credits, which is not
+ * documented and is not the billed amount: real calls gave 7 credits for 33
+ * characters on Flash v2.5 and 13 for 33 on Multilingual v2 (T27). It is
+ * recorded beside the characters as a cross-check, and still bills a price
+ * that has only a rate per credit.
+ */
 const ttsMeter = {
   kind: "response_header",
   header: "character-cost",
   unit: "credits",
   estimate: { measure: "characters", field: "text", unit: "characters" },
+  headerRole: "cross_check",
+  // ElevenLabs documents that pronunciation dictionaries can change the billed
+  // characters: an alias may expand the text. Then the characters are an
+  // estimate, and the credits bill instead when they cost more.
+  inDoubtWhen: { in: "body", field: "pronunciation_dictionary_locators", kind: "list" },
 } as const;
 
 const ttsModel = { in: "body", field: "model_id", default: DEFAULT_TTS_MODEL } as const;

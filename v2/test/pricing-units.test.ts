@@ -11,14 +11,14 @@ import { ratesFromPricing } from "../src/admin/providers.ts";
 import { ModelPricingSchema } from "../src/contracts/admin.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
 import { MILLI_SCALE, rate } from "../src/money.ts";
-import { billing, priceSources } from "../src/pricing/billability.ts";
+import { billing, listedUnitRate, priceSources } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
 import { requestBody } from "../src/proxy/serve.ts";
 import { PRICE_LIST, listPrice } from "../src/pricing/prices.ts";
 import { V1_PRICE_FILE, V2_PRICE_OVERLAY } from "../src/pricing/price-file.ts";
-import type { ProviderDescription } from "../src/providers/operation.ts";
+import type { Meter, ProviderDescription, Unit } from "../src/providers/operation.ts";
 import { meterCases, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
 import { openai } from "../src/providers/openai.ts";
@@ -287,6 +287,69 @@ describe("request measures and headers", () => {
     expect(priceInServedMode(priced({ per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "characters", units: 5, fromEstimate: true });
     // With both, the reported measure wins.
     expect(priceInServedMode(priced({ per_credit: 1, per_million_characters: 1 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits" });
+  });
+
+  it("bills the request's measure exactly with a cross-check header, and keeps the header beside it (T27)", () => {
+    const op = operation({
+      kind: "response_header",
+      header: "character-cost",
+      unit: "credits",
+      estimate: { measure: "characters", field: "text", unit: "characters" },
+      headerRole: "cross_check",
+    });
+    const request = requestUsage(op, fields({ text: "x".repeat(33) }));
+    const lines = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const logged = () => lines.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((line) => line.message === "header_cross_check_differs");
+    const flash = { requestUsage: request, listedRate: (unit: Unit) => listedUnitRate("elevenlabs", "eleven_flash_v2_5", unit) };
+    // Flash v2.5 really reported 7 credits for 33 characters: about the 6.6 its list price implies, so nothing is logged.
+    const both = attemptUsage(op, flash, null, new Headers({ "character-cost": "7" }))!;
+    expect(both).toMatchObject({ units: { characters: 33, credits: 7_000 }, secondaryUnits: ["credits"] });
+    expect(both.estimatedUnits).toBeUndefined();
+    expect(logged()).toEqual([]);
+    // Zero credits, or far more than expected, is logged.
+    attemptUsage(op, flash, null, new Headers({ "character-cost": "0" }));
+    attemptUsage(op, flash, null, new Headers({ "character-cost": "33" }));
+    expect(logged()).toEqual([
+      expect.objectContaining({ level: "info", header_amount: 0, unit: "characters", amount: 33, expected_amount: 6.6 }),
+      expect.objectContaining({ level: "info", header_amount: 33, expected_amount: 6.6 }),
+    ]);
+    // Without a list price to compare with, only zero is logged.
+    attemptUsage(op, { requestUsage: request }, null, new Headers({ "character-cost": "33" }));
+    expect(logged()).toHaveLength(2);
+    // Only the header: its credits bill, as an estimate.
+    expect(attemptUsage(op, { requestUsage: null }, null, new Headers({ "character-cost": "7" }))).toMatchObject({ units: { credits: 7_000 }, estimatedUnits: ["credits"] });
+    // A price with both rates bills the characters, exactly, by rank: here the
+    // 7 credits would cost 7,000,000 nano-dollars and the 33 characters 33, so
+    // the dearer measure loses.
+    expect(priceInServedMode(priced({ per_credit: 1_000_000, per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({
+      unit: "characters",
+      units: 33,
+      cost: 33,
+      estimated: false,
+    });
+    // A price with only a rate per credit still bills the credits.
+    expect(priceInServedMode(priced({ per_credit: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits", units: 7_000, estimated: false });
+    // No header: the characters bill alone, still exact, and nothing is missing.
+    const alone = attemptUsage(op, { requestUsage: request }, null, new Headers())!;
+    expect(alone).toMatchObject({ units: { characters: 33 } });
+    expect(alone.reportMissing).toBeUndefined();
+    expect(priceInServedMode(priced({ per_million_characters: 1_000_000 }), alone, STANDARD_MODE)).toMatchObject({ estimated: false });
+    // Saving: characters bill every way; credits alone miss the answer without its header.
+    expect(ways(op)).toEqual([["credits+characters", "characters"]]);
+    lines.mockRestore();
+  });
+
+  it("takes a cross-check header only with a request measure, and never with a body reader", () => {
+    const base = { kind: "response_header", header: "h", unit: "credits", headerRole: "cross_check" } as const;
+    // @ts-expect-error A cross-check needs the request's measure to bill.
+    const noEstimate: Meter = base;
+    // @ts-expect-error Only a cross-check takes a rule that puts the request's measure in doubt.
+    const doubtless: Meter = { kind: "response_header", header: "h", unit: "credits", inDoubtWhen: { in: "body", field: "x", kind: "list" } };
+    expect(doubtless).toBeDefined();
+    // @ts-expect-error A cross-check does not read the body.
+    const withBody: Meter = { ...base, estimate: { measure: "characters", field: "text", unit: "characters" }, body: { style: "openai", units: ["audio_seconds"] } };
+    const fine: Meter = { ...base, estimate: { measure: "characters", field: "text", unit: "characters" } };
+    expect([noEstimate, withBody, fine]).toHaveLength(3);
   });
 
   it("keeps units, price keys and the request's facts in the charge's measures", () => {

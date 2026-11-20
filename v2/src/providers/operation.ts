@@ -191,19 +191,46 @@ export type Meter =
    * sends `fiat-cost-before-overages`), which wins over our price as a JSON
    * report does.
    */
-  | {
+  | ({
       readonly kind: "response_header";
       readonly header: string;
       readonly unit: Unit;
-      readonly estimate?: (RequestMeasure & { readonly unit: Unit }) | readonly (RequestMeasure & { readonly unit: Unit })[];
       readonly providerCost?: HeaderCostReport;
-      /**
-       * A reader of the answer's body, whose measures are kept beside the
-       * header's: ElevenLabs' speech to text reports its audio's length. `units`
-       * are the units the reader reports.
-       */
-      readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
-    }
+    } & (
+      | {
+          readonly estimate?: HeaderEstimate;
+          /**
+           * A reader of the answer's body, whose measures are kept beside the
+           * header's: ElevenLabs' speech to text reports its audio's length. `units`
+           * are the units the reader reports.
+           */
+          readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
+          readonly headerRole?: undefined;
+          readonly inDoubtWhen?: undefined;
+        }
+      | {
+          readonly estimate: HeaderEstimate;
+          readonly body?: undefined;
+          /**
+           * `cross_check`: the request's measure (`estimate`) is what the provider
+           * bills, exactly, and the header is only recorded beside it, as a
+           * secondary measure. ElevenLabs bills text to speech per character of
+           * the request in dollars; its `character-cost` header counts credits,
+           * which are not the billed amount (T27). A price in the header's unit
+           * still bills it, when that is the only rate a price has. It needs an
+           * `estimate`, and does not take `body`.
+           */
+          readonly headerRole: "cross_check";
+          /**
+           * A request field that may make the provider bill more than the
+           * request's measure: ElevenLabs' pronunciation dictionaries can
+           * change the billed characters. When it is on, the measure and the
+           * header's amount are both estimates, and the dearer at the price
+           * bills, so an alias that expands the text is not underbilled.
+           */
+          readonly inDoubtWhen?: SwitchRef;
+        }
+    ))
   /** For providers that report no usage: measured from the request. */
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)
   /** One unit per request, at a flat price. */
@@ -294,8 +321,10 @@ export interface BackgroundOption {
  *   `"false"`, null or empty). `redact=pii` is on; `redact=false` is off.
  * - `text`: free text that may repeat, such as Deepgram's `keyterm`. On when
  *   present with any value, even the text `false`. Its text is never stored.
+ * - `list`: a list, such as ElevenLabs' `pronunciation_dictionary_locators`.
+ *   On when it has at least one item.
  */
-export type SwitchKind = "flag" | "text";
+export type SwitchKind = "flag" | "text" | "list";
 
 /** A request field that turns on a charge, and how it is read. */
 export type SwitchRef = FieldRef & { readonly kind: SwitchKind };
@@ -632,6 +661,9 @@ export function defineOperation<const P extends string, const U extends string =
 export function defineProvider<const D extends ProviderDescription>(provider: D): D {
   return provider;
 }
+
+/** A header meter's request measure: one, or several in different units. */
+type HeaderEstimate = (RequestMeasure & { readonly unit: Unit }) | readonly (RequestMeasure & { readonly unit: Unit })[];
 
 /** The request measures a meter takes: none, one, or several in different units (a header meter's `estimate`). */
 export function requestMeasuresOf(meter: Meter): readonly (RequestMeasure & { readonly unit: Unit })[] {

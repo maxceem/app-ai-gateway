@@ -54,7 +54,8 @@ import {
   type PriceSourceKind,
 } from "./prices.ts";
 import { priceInServedMode } from "./tokens.ts";
-import { meterCases } from "./units.ts";
+import { meterCases, UNIT_RATES, unitScale } from "./units.ts";
+import type { Unit } from "../providers/operation.ts";
 
 /** Why a model cannot be billed on an operation. */
 export type BillingProblem =
@@ -770,6 +771,21 @@ function ownRatesGap(operations: readonly OperationDescription[], price: ModelPr
       const partly = all.indexOf("partial");
       return { values: candidate.values, mode: serviceModeName(mode), ...(partly === -1 ? {} : { operation: operations[partly]!.name }) };
     }
+  }
+  return null;
+}
+
+/**
+ * What one whole unit costs at our list price for a model, in nano-dollars,
+ * or null when the list has no rate for it. Only a comparison: a cross-check
+ * header is judged by it (`src/proxy/meter.ts`), and nothing is billed by it.
+ */
+export function listedUnitRate(providerType: string, model: string, unit: Unit): number | null {
+  const price = listPrice(providerType, model);
+  if (price === null) return null;
+  for (const { field, units, per } of UNIT_RATES) {
+    const value = price.rates[field as keyof ModelPrice["rates"]];
+    if (units.includes(unit) && typeof value === "number" && value > 0) return (value * unitScale(unit)) / per;
   }
   return null;
 }

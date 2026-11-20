@@ -115,12 +115,13 @@ describe("ElevenLabs operations", () => {
     for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(true);
   });
 
-  it("prices each listed model's credits and characters alike, so the estimate and the header bill the same", () => {
-    // 33 characters on multilingual v2 cost 33 credits; on flash v2.5, 16.5 (T2).
+  it("prices each listed model's credits at what its characters cost, as real calls measured them (T27)", () => {
+    // 33 characters gave 13 credits on Multilingual v2 (about 0.4 a character) and 7 on Flash v2.5
+    // (about 0.2), against $80 and $40 per million characters: $0.0002 a credit either way.
     const multilingual = listPrice("elevenlabs", "eleven_multilingual_v2")!;
     const flash = listPrice("elevenlabs", "eleven_flash_v2_5")!;
-    expect(multilingual.rates).toMatchObject({ per_credit: 80_000, per_million_characters: 80_000_000_000 });
-    expect(flash.rates).toMatchObject({ per_credit: 80_000, per_million_characters: 40_000_000_000 });
+    expect(multilingual.rates).toMatchObject({ per_credit: 200_000, per_million_characters: 80_000_000_000 });
+    expect(flash.rates).toMatchObject({ per_credit: 200_000, per_million_characters: 40_000_000_000 });
   });
 
   it("bills text to speech without a price of ours only through a customer rate, and speech to text through ElevenLabs' own dollars", () => {
@@ -270,9 +271,10 @@ describe("ElevenLabs operations", () => {
 });
 
 describe("text to speech through the proxy", () => {
-  it("sends the voice in the path and the key in its header, passes the audio through, and bills the credits the header reports", async () => {
+  it("sends the voice in the path and the key in its header, passes the audio through, and bills the request's characters, keeping the credits beside them (T27)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
-    fetchSpy.mockResolvedValue(audio("33"));
+    // Multilingual v2 really reported 13 credits for these 33 characters.
+    fetchSpy.mockResolvedValue(audio("13"));
     const { response, bytes } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}?output_format=mp3_44100_128`, key, {
       text: "Hello from the gateway cost test.",
       model_id: "eleven_multilingual_v2",
@@ -283,38 +285,68 @@ describe("text to speech through the proxy", () => {
     const [input, init] = fetchSpy.mock.calls[0]!;
     expect(String(input)).toBe(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE}?output_format=mp3_44100_128`);
     expect(new Headers(init?.headers).get("xi-api-key")).toBe(SECRET);
-    // 33 credits at $0.00008 each.
-    expect(await chargesOf(appId)).toMatchObject([
-      { operation: "elevenlabs.tts", model: "eleven_multilingual_v2", status: "ok", unit: "credits", price_source: "list_rate", measured: "complete", cost_nano: 2_640_000 },
+    // 33 characters at $80 per million, exact; the 13 credits are recorded beside them.
+    const charges = await chargesOf(appId);
+    expect(charges).toMatchObject([
+      { operation: "elevenlabs.tts", model: "eleven_multilingual_v2", status: "ok", unit: "characters", units: 33, price_source: "list_rate", measured: "complete", price_is_estimate: 0, cost_nano: 2_640_000 },
     ]);
+    expect(JSON.parse(String(charges[0]!.measures_json))).toMatchObject({ secondary_units: "credits" });
+    expect(String(charges[0]!.measures_json)).toContain("13000");
   });
 
   it("uses ElevenLabs' default model when the request names none", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
-    fetchSpy.mockResolvedValue(audio("5"));
+    fetchSpy.mockResolvedValue(audio("2"));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello" });
     expect(await chargesOf(appId)).toMatchObject([{ model: "eleven_multilingual_v2", cost_nano: 400_000 }]);
   });
 
   it("bills a stream by the header it sends before the audio", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts_stream"] });
-    fetchSpy.mockResolvedValue(audio("16"));
+    fetchSpy.mockResolvedValue(audio("7"));
     const { response } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}/stream`, key, {
       text: "Hello from the gateway cost test.",
       model_id: "eleven_flash_v2_5",
     });
     expect(response.status).toBe(200);
-    expect(await chargesOf(appId)).toMatchObject([{ operation: "elevenlabs.tts_stream", model: "eleven_flash_v2_5", unit: "credits", cost_nano: 1_280_000 }]);
+    // 33 characters at $40 per million, whatever the credits header says.
+    expect(await chargesOf(appId)).toMatchObject([{ operation: "elevenlabs.tts_stream", model: "eleven_flash_v2_5", unit: "characters", cost_nano: 1_320_000 }]);
   });
 
-  it("bills the request's characters as an estimate when the header is missing, never as free", async () => {
+  it("bills the dearer of the characters and the credits, as an estimate, when a pronunciation dictionary may expand the text (Astra A1)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
+    const dictionary = [{ pronunciation_dictionary_id: "dict_1", version_id: "v_1" }];
+    const send = async (credits: string, locators: unknown[]) => {
+      fetchSpy.mockResolvedValueOnce(audio(credits));
+      const { response } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, {
+        text: "WHO",
+        model_id: "eleven_multilingual_v2",
+        pronunciation_dictionary_locators: locators,
+      });
+      expect(response.status).toBe(200);
+    };
+    // An alias expands "WHO" to "World Health Organization": 3 characters imply about 1.2 credits, the header says 10.
+    await send("10", dictionary);
+    // The header says less than the characters cost: the characters bill, still as an estimate.
+    await send("0.5", dictionary);
+    // An empty list asks for no dictionary: the characters bill exactly.
+    await send("10", []);
+    expect(await chargesOf(appId)).toMatchObject([
+      // 10 credits at $0.0002 ($0.002), over 3 characters at $80 per million ($0.00024).
+      { status: "ok", unit: "credits", measured: "estimated", cost_nano: 2_000_000 },
+      { status: "ok", unit: "characters", measured: "estimated", cost_nano: 240_000 },
+      { status: "ok", unit: "characters", measured: "complete", cost_nano: 240_000 },
+    ]);
+  });
+
+  it("bills the request's characters exactly when the header is missing", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(audio(null));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello", model_id: "eleven_flash_v2_5" });
-    // 5 characters at $40 per million characters.
-    expect(await chargesOf(appId)).toMatchObject([{ unit: "characters", measured: "estimated", cost_nano: 200_000 }]);
-    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_report_missing"));
+    // 5 characters at $40 per million characters: the header is only a cross-check.
+    expect(await chargesOf(appId)).toMatchObject([{ unit: "characters", measured: "complete", price_is_estimate: 0, cost_nano: 200_000 }]);
+    expect(warnings).not.toHaveBeenCalled();
   });
 
   it("bills JSON with timestamps by its header too, without reading the body", async () => {
@@ -328,28 +360,27 @@ describe("text to speech through the proxy", () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
     fetchSpy.mockResolvedValue(audio("0x21"));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello", model_id: "eleven_flash_v2_5" });
-    expect(await chargesOf(appId)).toMatchObject([{ unit: "characters", measured: "estimated", cost_nano: 200_000 }]);
+    expect(await chargesOf(appId)).toMatchObject([{ unit: "characters", measured: "complete", cost_nano: 200_000 }]);
   });
 
   it("bills the request's characters when the credits reported are too large to charge, never leaving the call unpriced (4b S2)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
-    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(audio("1e12"));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "Hello", model_id: "eleven_multilingual_v2" });
     // 5 characters at $80 per million.
-    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", unit: "characters", measured: "estimated", price_source: "list_rate", cost_nano: 400_000 }]);
-    expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_report_unpriceable"));
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", unit: "characters", measured: "complete", price_source: "list_rate", cost_nano: 400_000 }]);
   });
 
-  it("bills credits at the customer's own rate per credit", async () => {
+  it("bills characters at the customer's own rate, with credits only a cross-check beside them", async () => {
     // $0.00005 a credit, stored as nano-dollars; characters at $50 per million.
     const { appId, slug, key } = await setup(
       { operations: ["elevenlabs.tts"], models: ["eleven_multilingual_v2"] },
       { eleven_multilingual_v2: { per_credit: 50_000, per_million_characters: 50_000_000_000 } },
     );
-    fetchSpy.mockResolvedValue(audio("33"));
+    fetchSpy.mockResolvedValue(audio("13"));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, { text: "x".repeat(33), model_id: "eleven_multilingual_v2" });
-    expect(await chargesOf(appId)).toMatchObject([{ price_source: "customer_rate", cost_nano: 1_650_000 }]);
+    // 33 characters at $50 per million, not 13 credits at $0.00005.
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "customer_rate", unit: "characters", cost_nano: 1_650_000 }]);
   });
 });
 
