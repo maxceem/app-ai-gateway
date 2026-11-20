@@ -42,6 +42,29 @@ function cost(parts: readonly (readonly [number, RateNanoPerMillion | undefined]
 }
 
 describe("usage readers", () => {
+  it("reads a Chat Completions stream's served tier from any chunk, and two different ones as unknown", () => {
+    const shed = read(
+      sse([
+        { choices: [{ delta: { content: "Hi" } }], service_tier: "default" },
+        { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } },
+      ]),
+      "text/event-stream",
+      "openai-chat",
+    );
+    expect(shed.reportedModes).toEqual({ service_tier: "default" });
+    expect(servedServiceMode(openai, { tier: "fast", region: "global" }, shed, new Headers()).mode).toEqual(STANDARD_MODE);
+    const mixed = read(
+      sse([
+        { choices: [], service_tier: "priority" },
+        { choices: [], service_tier: "flex", usage: { prompt_tokens: 10, completion_tokens: 2 } },
+      ]),
+      "text/event-stream",
+      "openai-chat",
+    );
+    expect(mixed.reportedModes).toEqual({ service_tier: "(other)" });
+    expect(servedServiceMode(openai, { tier: "flex", region: "global" }, mixed, new Headers())).toMatchObject({ mode: STANDARD_MODE, unknown: { field: "service_tier" } });
+  });
+
   it("normalizes OpenAI cached and cache-write tokens as subsets of input", () => {
     const usage = read(
       `event: response.completed\n${sse([

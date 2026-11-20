@@ -578,6 +578,39 @@ function anthropicReader(values: ResponseValues): UsageObservation | null {
   return null;
 }
 
+const CHUNK_TIER_FIELDS = ["service_tier", "response_service_tier"] as const;
+
+/**
+ * A Chat Completions stream names its served tier on its chunks, not always
+ * on the last one with the usage: a content chunk may say `default` and the
+ * usage chunk nothing. So the tier is read across every chunk, apart from the
+ * counts: the last value reported wins. Two different values say nothing the
+ * gateway can price, so they read as one no table knows, which bills at least
+ * at standard, as an estimate.
+ */
+function withStreamTier(usage: UsageObservation, values: ResponseValues): UsageObservation {
+  let found: Record<string, string> | undefined;
+  let scanned = usage.modesScanned === true;
+  for (const name of CHUNK_TIER_FIELDS) {
+    let last: string | undefined;
+    for (const value of values.backwards()) {
+      const root = asRecord(value);
+      if (root === null) continue;
+      for (const record of [root, asRecord(root.usage)]) {
+        const raw = record?.[name];
+        if (raw === undefined || raw === null) continue;
+        const named = typeof raw === "string" && raw.length > 0 ? raw : "(other)";
+        if (record !== null && SCANNED.has(record)) scanned = true;
+        if (last === undefined) last = named;
+        else if (named !== last) last = "(other)";
+      }
+    }
+    if (last !== undefined) (found ??= {})[name] = last;
+  }
+  if (found === undefined) return usage;
+  return { ...usage, reportedModes: { ...usage.reportedModes, ...found }, ...(scanned ? { modesScanned: true as const } : {}) };
+}
+
 /**
  * The usage a response reports, read by its API style's reader, or null when
  * it reports none this gateway can read. `counted` is the input modalities
@@ -586,8 +619,12 @@ function anthropicReader(values: ResponseValues): UsageObservation | null {
 export function readUsage(values: ResponseValues, style: ApiStyle, counted: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
   switch (style) {
     case "openai-chat":
-    case "openai-completions":
+    case "openai-completions": {
+      const usage = lastReported(values, (value) => openAiUsage(value, counted));
+      return usage === null ? null : withStreamTier(usage, values);
+    }
     case "openai-responses":
+      // The closing event carries the served tier beside the usage.
       return lastReported(values, (value) => openAiUsage(value, counted));
     case "anthropic-messages":
       return anthropicReader(values);
