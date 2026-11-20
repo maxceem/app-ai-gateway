@@ -44,7 +44,7 @@ export interface OutputSink {
 }
 
 export interface MainOptions {
-  store?: Pick<StateStore, "read" | "update" | "keyOutput">;
+  store?: Pick<StateStore, "read" | "update" | "keyOutput" | "handoffFile">;
   transport?: Pick<Transport, "request" | "postForm">;
   stdout?: OutputSink;
   stderr?: OutputSink;

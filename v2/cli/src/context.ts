@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { GatewayClient, type CallOptions, type CallResult, type OperationName } from "./client.ts";
-import { CLOUD, fail, MANAGEMENT_KEY_ENV, origin, VERSION } from "./common.ts";
+import { CliError, CLOUD, fail, MANAGEMENT_KEY_ENV, origin, VERSION } from "./common.ts";
 import { browserAvailable, listenLoopback, type Loopback } from "./login.ts";
 import type { OutputSink } from "./main.ts";
 import {
@@ -15,6 +15,7 @@ import {
   discover,
   exchangeCode,
   pkce,
+  refuseOlderGateway,
   refresh,
   revoke,
   type DeviceClock,
@@ -56,7 +57,7 @@ const defaultIo = (): ContextIo => ({
 });
 
 /** The subset of a state store the context uses; the real one is `state.ts`. */
-export type ContextStore = Pick<StateStore, "update" | "keyOutput">;
+export type ContextStore = Pick<StateStore, "update" | "keyOutput" | "handoffFile">;
 
 /**
  * Something a command wants the person running it to know without it being
@@ -148,15 +149,30 @@ export class Context {
   }
 
   /**
+   * The stored sign-in, if it is still the one this command started with: the
+   * same gateway and the same sign-in id. Another command may have renewed it
+   * (same id, new tokens) or replaced it with another sign-in (new id).
+   */
+  private ownLogin(disk: CliState, mine: OAuthLogin): OAuthLogin | undefined {
+    const current = disk.active?.url === this.url ? disk.active.login : undefined;
+    return current?.id === mine.id ? current : undefined;
+  }
+
+  /** Refuses to go on with a sign-in another command has replaced since this one started. */
+  private replaced(): never {
+    fail("login_changed", "The stored sign-in changed while this command ran.", "Run the command again.", 4);
+  }
+
+  /**
    * Renews the access token under the state lock. Another command may have
-   * renewed it meanwhile: then its new token is used, and the one-use refresh
-   * token this command holds is never presented again.
+   * renewed this same sign-in meanwhile: then its new token is used, and the
+   * one-use refresh token this command holds is never presented again.
    */
   private async renew(stale: OAuthLogin): Promise<string> {
     const url = this.url;
     const { state, result } = await this.store.update(async (disk) => {
-      const current = disk.active?.url === url ? disk.active.login : undefined;
-      if (!current) return null;
+      const current = this.ownLogin(disk, stale);
+      if (!current) return "replaced" as const;
       if (current.refreshToken !== stale.refreshToken && Date.parse(current.expiresAt) - this.io.clock.now() > RENEW_EARLY_MS)
         return current.accessToken;
       const renewed = await refresh(this.transport, url, current, () => this.io.clock.now());
@@ -169,9 +185,21 @@ export class Context {
       return renewed.accessToken;
     });
     this.state = state;
+    if (result === "replaced") this.replaced();
     if (result === null)
       fail("login_required", "This CLI's sign-in has ended.", `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`, 4);
     return result;
+  }
+
+  /**
+   * After a 401 on this command's access token: the token another command
+   * renewed this same sign-in to meanwhile, or undefined when there is none.
+   */
+  private async newerToken(used: OAuthLogin): Promise<string | undefined> {
+    const { state, result } = await this.store.update((disk) => this.ownLogin(disk, used));
+    this.state = state;
+    if (!result || result.accessToken === used.accessToken) return undefined;
+    return result.accessToken;
   }
 
   /** One documented operation, sent with only the credential `options` names. */
@@ -179,9 +207,22 @@ export class Context {
     return this.noticed(await this.client.publicCall(name, options));
   }
 
-  /** The same call, with the selected credential attached. */
+  /**
+   * The same call, with the selected credential attached. An access token
+   * refused with 401 is tried once more when another command has renewed the
+   * same sign-in meanwhile, since renewing ends the old token.
+   */
   async call<K extends OperationName>(name: K, options: CallOptions<K> = {}): Promise<CallResult<OperationResponse<K>>> {
-    return this.noticed(await this.client.call(name, options));
+    const login = options.key === undefined && !this.environmentKey ? this.active?.login : undefined;
+    try {
+      return this.noticed(await this.client.call(name, options));
+    } catch (error) {
+      if (!login || !(error instanceof CliError) || error.details?.status !== 401) throw error;
+      const used = this.active?.login?.id === login.id ? this.active.login : login;
+      const newer = await this.newerToken(used);
+      if (!newer) throw error;
+      return this.noticed(await this.client.call(name, { ...options, key: newer }));
+    }
   }
 
   /**
@@ -229,7 +270,14 @@ export class Context {
 
   /** Who the credential is, as the gateway says. */
   private async whoAmI(url: string, key: string): Promise<Omit<LoginResult, "connected" | "url" | "credential">> {
-    const { data } = await this.publicCall("getAdminSession", { url, key });
+    let data;
+    try {
+      ({ data } = await this.publicCall("getAdminSession", { url, key }));
+    } catch (error) {
+      // A gateway with no v2 management API may be a v1 one, which agw 2 cannot manage.
+      if (error instanceof CliError && error.details?.status === 404) await refuseOlderGateway(this.transport, url);
+      throw error;
+    }
     const { user, account, role, grant } = data.session;
     return { user: { id: user.id, email: user.email, name: user.name }, account, role, grant };
   }
@@ -345,37 +393,71 @@ export class Context {
     return { connected: true, url: target, credential: "environment", ...who };
   }
 
-  /** `account logout`: revokes this CLI's sign-in and forgets it. */
+  /**
+   * `account logout`: revokes this CLI's sign-in, then forgets it. The
+   * revocation runs under the lock with the refresh token on disk, which is
+   * the newest; until the gateway accepts it the sign-in is kept, so running
+   * the command again can still end it.
+   */
   async logout(): Promise<LogoutResult> {
+    const mine = this.active?.login;
+    if (!mine) return { loggedOut: true, revoked: false };
     const url = this.url;
-    const { state, result: login } = await this.store.update((disk) => {
-      const held = disk.active?.url === url ? disk.active.login : undefined;
-      if (disk.active) delete disk.active.login;
-      return held;
+    const { state, result } = await this.store.update(async (disk) => {
+      const current = this.ownLogin(disk, mine);
+      if (!current) return "replaced" as const;
+      let revoked = false;
+      try {
+        revoked = await revoke(this.transport, url, current);
+      } catch {
+        revoked = false;
+      }
+      if (revoked) delete disk.active!.login;
+      return revoked;
     });
     this.state = state;
-    if (!login) return { loggedOut: true, revoked: false };
-    let revoked = false;
-    try {
-      revoked = await revoke(this.transport, url, login);
-    } catch {
-      // Forgotten here already; an unrevoked sign-in still ends within its lifetime.
-      revoked = false;
-    }
-    if (!revoked) this.say("The gateway could not be told; the sign-in is forgotten here and ends on its own. You can also revoke it in the console, under Access.");
-    return { loggedOut: true, revoked };
+    if (result === "replaced") this.replaced();
+    if (!result)
+      fail(
+        "logout_failed",
+        "The gateway did not confirm the sign-in was ended, so it is kept on this machine.",
+        "Run agw account logout again, or revoke it in the console under Access.",
+        3,
+      );
+    return { loggedOut: true, revoked: true };
   }
 }
 
-export async function openBrowser(url: string): Promise<boolean> {
+/** How long a browser launcher may run before it counts as having opened the page. */
+const LAUNCH_WAIT_MS = 3000;
+
+/**
+ * Runs a browser launcher and says whether it opened the page: false when it
+ * cannot start or exits unsuccessfully (such as `xdg-open` with no browser),
+ * true when it exits cleanly or is still running after a few seconds.
+ */
+export function launch(command: string, args: readonly string[]): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn(command, [...args], { stdio: "ignore", detached: true });
+    const timer = setTimeout(() => {
+      child.unref();
+      settle(true);
+    }, LAUNCH_WAIT_MS);
+    timer.unref();
+    child.once("error", () => settle(false));
+    child.once("exit", (code, signal) => settle(code === 0 && signal === null));
+  });
+}
+
+export function openBrowser(url: string): Promise<boolean> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
-  return new Promise<boolean>((resolve) => {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
-    child.once("error", () => resolve(false));
-    child.once("spawn", () => {
-      child.unref();
-      resolve(true);
-    });
-  });
+  return launch(command, args);
 }

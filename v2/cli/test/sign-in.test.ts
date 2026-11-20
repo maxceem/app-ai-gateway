@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { CliError } from "../src/common.ts";
-import { Context } from "../src/context.ts";
+import { Context, launch } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
 import type { FormResponse } from "../src/transport.ts";
@@ -263,7 +263,7 @@ test("the environment's key wins over a stored sign-in, and signing in while it 
   await assert.rejects(ctx.login(URL_), hasCode("environment_credential"));
 });
 
-test("logout revokes the refresh token and forgets the sign-in, even when the gateway cannot be told", async () => {
+test("logout revokes the refresh token, and forgets the sign-in only once the gateway accepted it", async () => {
   const store = memoryStore(signedInState(URL_, "agw_oat_1"));
   const sent: Record<string, string>[] = [];
   const ok = fakeTransport(notFound, (path, fields) => {
@@ -281,8 +281,82 @@ test("logout revokes the refresh token and forgets the sign-in, even when the ga
     throw new CliError("connection_failed", "Could not reach the selected gateway.", "", 3);
   });
   const offline = new Context(down, down.held, failing, {}, { env: {}, stderr: sinks().stderr });
-  assert.deepEqual(await offline.logout(), { loggedOut: true, revoked: false });
-  assert.equal(down.held.active?.login, undefined);
+  await assert.rejects(offline.logout(), hasCode("logout_failed"));
+  assert.equal(down.held.active?.login?.refreshToken, "agw_ort_test");
+});
+
+test("logout revokes the newest refresh token on disk, and leaves another sign-in stored meanwhile alone", async () => {
+  const started = signedInState(URL_, "agw_oat_1");
+  const store = memoryStore(started);
+  // Another command renewed this same sign-in: its refresh token is the one to end.
+  store.held = { ...started, active: { ...started.active!, login: { ...started.active!.login!, refreshToken: "agw_ort_newer" } } };
+  const sent: string[] = [];
+  const ok = fakeTransport(notFound, (_path, fields) => {
+    sent.push(fields["token"]!);
+    return { status: 200, data: {} };
+  });
+  await new Context(store, started, ok, {}, { env: {}, stderr: sinks().stderr }).logout();
+  assert.deepEqual(sent, ["agw_ort_newer"]);
+
+  const other = memoryStore(started);
+  other.held = { ...started, active: { ...started.active!, login: { ...started.active!.login!, id: "login_2", refreshToken: "agw_ort_other" } } };
+  const never = fakeTransport(notFound, () => assert.fail("nothing is revoked"));
+  await assert.rejects(new Context(other, started, never, {}, { env: {}, stderr: sinks().stderr }).logout(), hasCode("login_changed"));
+  assert.equal(other.held.active?.login?.id, "login_2");
+});
+
+test("renewal never adopts or clears another sign-in stored while the command ran", async () => {
+  const clock = fakeClock();
+  const started = signedInState(URL_, "agw_oat_old", new Date(clock.time + 10_000).toISOString());
+  const store = memoryStore(started);
+  store.held = {
+    ...started,
+    active: { ...started.active!, login: { ...started.active!.login!, id: "login_2", accessToken: "agw_oat_other", expiresAt: new Date(clock.time + 3_600_000).toISOString() } },
+  };
+  const transport = fakeTransport(notFound, () => assert.fail("nothing is refreshed"));
+  const ctx = new Context(store, started, transport, {}, { env: {}, clock, stderr: sinks().stderr });
+  await assert.rejects(ctx.credential(), hasCode("login_changed"));
+  assert.equal(store.held.active?.login?.accessToken, "agw_oat_other");
+});
+
+test("a 401 on a token another command just renewed is tried once more with the renewed one", async () => {
+  const started = signedInState(URL_, "agw_oat_old");
+  const store = memoryStore(started);
+  store.held = { ...started, active: { ...started.active!, login: { ...started.active!.login!, accessToken: "agw_oat_new", refreshToken: "agw_ort_new" } } };
+  const keys: (string | undefined)[] = [];
+  const transport = fakeTransport((_path, options) => {
+    keys.push(options.key);
+    if (options.key === "agw_oat_old") throw new CliError("auth_required", "no", "", 3, { status: 401 });
+    return { data: SESSION };
+  });
+  const ctx = new Context(store, started, transport, {}, { env: {}, stderr: sinks().stderr });
+  const { data } = await ctx.call("getAdminSession");
+  assert.equal(data.session.account.id, "org_1");
+  assert.deepEqual(keys, ["agw_oat_old", "agw_oat_new"]);
+
+  // With nothing newer stored, the 401 stands.
+  const alone = memoryStore(started);
+  const refusing = fakeTransport(() => {
+    throw new CliError("auth_required", "no", "", 3, { status: 401 });
+  });
+  await assert.rejects(new Context(alone, started, refusing, {}, { env: {}, stderr: sinks().stderr }).call("getAdminSession"), hasCode("auth_required"));
+});
+
+test("connecting with AGW_MANAGEMENT_KEY to a v1 gateway gets the agw 1.x message", async () => {
+  const store = memoryStore();
+  const transport = fakeTransport((path) => {
+    if (path === "/v1/cli/capabilities") return { data: { serverVersion: "0.22.1" } };
+    return notFound();
+  });
+  const ctx = new Context(store, store.held, transport, {}, { env: { AGW_MANAGEMENT_KEY: "agw_mgmt_env" }, stderr: sinks().stderr });
+  await assert.rejects(ctx.connect(URL_), hasCode("gateway_v1"));
+  assert.equal(store.held.active, null);
+});
+
+test("a browser launcher that exits unsuccessfully counts as no browser", { skip: process.platform === "win32" }, async () => {
+  assert.equal(await launch("false", []), false);
+  assert.equal(await launch("true", []), true);
+  assert.equal(await launch("agw-no-such-launcher", []), false);
 });
 
 test("the loopback listener answers only the sign-in whose state matches, once", async () => {

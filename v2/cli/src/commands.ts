@@ -5,6 +5,7 @@
  * built from its tool list.
  */
 import { readFile } from "node:fs/promises";
+import { APP_STATUSES } from "../../src/contracts/admin.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { CliError, fail } from "./common.ts";
 import type { Context } from "./context.ts";
@@ -99,8 +100,14 @@ async function browserStep(
 ): Promise<ProviderResult | OperationStatus> {
   assertOwnPage(ctx, opened.url);
   if (opened.notice) ctx.say(`Note: ${opened.notice}`);
+  // The link carries the page's proof, so it is never printed: a browser
+  // opened here gets it, and otherwise it goes to a private file.
   const shown = !ctx.flags["no-open"] && (await ctx.io.openBrowser(opened.url));
-  ctx.say(`${shown ? "Enter the key in your browser." : "Open this page to enter the key:"}\n${opened.url}\nOperation: ${opened.id}`);
+  if (shown) ctx.say(`Enter the key in the browser window that opened.\nOperation: ${opened.id}`);
+  else {
+    const file = await ctx.store.handoffFile(opened.id, opened.url);
+    ctx.say(`Open the link saved in ${file} (readable only by you) to enter the key, then delete the file.\nOperation: ${opened.id}`);
+  }
   if (ctx.flags.json || ctx.flags["no-input"]) {
     const { data } = await ctx.call("getOperation", { params: { id: opened.id } });
     return data;
@@ -166,7 +173,7 @@ export async function providerRotateKey(ctx: Context, reference: string, flags: 
 }
 
 /** The app document `app add` sends: the one `--file` holds, or one built from flags. */
-async function appDocument(flags: Flags): Promise<{ name: string; config: unknown; status?: "enabled" | "disabled" }> {
+async function appDocument(flags: Flags): Promise<{ name: string; config: unknown; status?: (typeof APP_STATUSES)[number] }> {
   if (flags.file !== undefined) {
     const document = await jsonFlag("file", flags.file.startsWith("@") ? flags.file : `@${flags.file}`);
     if (typeof document !== "object" || document === null || Array.isArray(document))
@@ -247,7 +254,7 @@ export async function appKeyAdd(ctx: Context, app: string, flags: Flags): Promis
   }
 }
 
-const STATUSES = new Set(["enabled", "disabled"]);
+const STATUSES: ReadonlySet<string> = new Set(APP_STATUSES);
 
 /**
  * `agw app update <app>`: `--name` and `--status` as shortcuts, or
@@ -263,7 +270,7 @@ export async function appUpdate(ctx: Context, app: string, flags: Flags): Promis
     shortcuts.push({ op: "replace", path: "/name", value: flags.name.trim() });
   }
   if (flags.status !== undefined) {
-    if (!STATUSES.has(flags.status)) fail("invalid_input", "--status must be enabled or disabled.");
+    if (!STATUSES.has(flags.status)) fail("invalid_input", `--status must be one of ${APP_STATUSES.join(", ")}.`);
     shortcuts.push({ op: "replace", path: "/status", value: flags.status });
   }
   if (flags.operations !== undefined) {

@@ -20,7 +20,7 @@ const URL_ = "https://console.gw.example";
 const APP = {
   id: "app_1",
   name: "Backend",
-  status: "enabled",
+  status: "active",
   revision: 3,
   config: { authentication: { type: "api_key", end_user: { source: "none" } } },
   created_at: "2026-11-20T10:00:00.000Z",
@@ -142,7 +142,7 @@ test("app update with --operations needs --revision and sends the patch as given
   assert.equal(result.code, 0, result.err);
 });
 
-test("provider add --browser opens the gateway's own page, and --json answers the pending step", async () => {
+test("provider add --browser opens the gateway's own page without printing its link, and --json answers the pending step", async () => {
   const result = await run(["provider", "add", "--type", "openai", "--browser", "--json"], (path, options) => {
     if (path === "/v2/admin/provider-handoffs") {
       assert.deepEqual(options.body, { type: "openai", name: "openai" });
@@ -153,7 +153,55 @@ test("provider add --browser opens the gateway's own page, and --json answers th
   });
   assert.equal(result.code, 0, result.err);
   assert.equal(result.json().result.state, "pending");
-  assert.match(result.err, /v2\/approve\/op_1/);
+  // The link's fragment is the page's proof: it never reaches the terminal.
+  assert.doesNotMatch(result.err + result.out, /proof|v2\/approve/);
+  assert.match(result.err, /browser window/);
+});
+
+test("when no browser opens, the hand-off link goes to a private file and only its path is printed", async () => {
+  const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+  const out = sinks();
+  const transport = fakeTransport(async (path) => ({
+    data:
+      path === "/v2/admin/provider-handoffs"
+        ? { id: "op_9", kind: "provider.add", url: `${URL_}/v2/approve/op_9#proof`, expiresAt: "2026-11-20T10:15:00.000Z" }
+        : { id: "op_9", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" },
+  }));
+  const code = await main(["provider", "add", "--type", "openai", "--browser", "--json"], {
+    store,
+    transport,
+    stdout: out.stdout,
+    stderr: out.stderr,
+    io: { env: {}, clock: fakeClock(), openBrowser: async () => false },
+    catalogCache: new MemoryCatalogCache(),
+  });
+  assert.equal(code, 0, out.err.text);
+  assert.equal(store.handoffs.get("op_9"), `${URL_}/v2/approve/op_9#proof`);
+  assert.match(out.err.text, /\/private\/handoffs\/op_9\.url/);
+  assert.doesNotMatch(out.err.text + out.out.text, /proof/);
+});
+
+test("the handoff file is private", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const path = await new StateStore(dir).handoffFile("op_1", "https://console.gw.example/v2/approve/op_1#proof");
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal(await readFile(path, "utf8"), "https://console.gw.example/v2/approve/op_1#proof\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("app update --status active turns an app back on", async () => {
+  const result = await run(["app", "update", "app_1", "--status", "active", "--json"], (_path, options) => {
+    if (options.method === undefined || options.method === "GET") return { app: { ...APP, status: "disabled" } };
+    assert.deepEqual((options.body as { operations: unknown[] }).operations, [{ op: "replace", path: "/status", value: "active" }]);
+    return { app: { ...APP, status: "active", revision: 4 } };
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.json().result.app.status, "active");
+  const wrong = await run(["app", "update", "app_1", "--status", "enabled", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(wrong.json().error.code, "invalid_input");
 });
 
 test("a hand-off link off the gateway's origin is never opened", async () => {

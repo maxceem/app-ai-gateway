@@ -134,8 +134,11 @@ export function authorizeUrl(
 
 const GRANTS = new Set(["read", "manage"]);
 
+/** A new sign-in's id, kept through every renewal. */
+const newLoginId = (): string => randomBytes(12).toString("base64url");
+
 /** A token endpoint's success, as a stored sign-in; anything else is refused. */
-function loginFrom(answer: FormResponse, now: number): OAuthLogin {
+function loginFrom(answer: FormResponse, now: number, id: string): OAuthLogin {
   const data = answer.data;
   const access = data["access_token"];
   const refresh = data["refresh_token"];
@@ -152,6 +155,7 @@ function loginFrom(answer: FormResponse, now: number): OAuthLogin {
   )
     fail("invalid_response", "The gateway answered the sign-in with an unusable token response.", "Run agw account login again.", 3);
   return {
+    id,
     clientId: CLI_CLIENT_ID,
     accessToken: access,
     refreshToken: refresh,
@@ -190,7 +194,7 @@ export async function exchangeCode(
     resource: server.issuer,
   });
   if (answer.status !== 200) tokenRefusal(answer, "The sign-in");
-  return loginFrom(answer, now());
+  return loginFrom(answer, now(), newLoginId());
 }
 
 /** What the device flow shows the person. */
@@ -246,7 +250,7 @@ export async function deviceLogin(
       device_code: deviceCode,
       client_id: CLI_CLIENT_ID,
     });
-    if (answer.status === 200) return loginFrom(answer, clock.now());
+    if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId());
     const error = answer.data["error"];
     if (error === "authorization_pending") continue;
     // RFC 8628 §3.5: every slow_down adds five seconds to the interval.
@@ -278,7 +282,7 @@ export async function refresh(
     client_id: login.clientId,
     resource: url + V2_PATH,
   });
-  if (answer.status === 200) return loginFrom(answer, now());
+  if (answer.status === 200) return loginFrom(answer, now(), login.id);
   if (answer.data["error"] === "invalid_grant") return null;
   tokenRefusal(answer, "Renewing the sign-in");
 }

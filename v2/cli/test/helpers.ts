@@ -11,7 +11,7 @@ export function signedInState(url: string, accessToken: string, expiresAt = "299
     schemaVersion: 1,
     active: {
       url,
-      login: { clientId: "agw-cli", accessToken, refreshToken: "agw_ort_test", expiresAt, grant: "manage" },
+      login: { id: "login_1", clientId: "agw-cli", accessToken, refreshToken: "agw_ort_test", expiresAt, grant: "manage" },
       account: { id: "org_1", name: "Acme" },
     },
   };
@@ -41,6 +41,12 @@ export function memoryStore(initial: CliState = fresh()) {
     },
     keyOutput: async (_path?: string): Promise<KeyOutput> => {
       throw new Error("keyOutput is not stubbed in this test");
+    },
+    /** Hand-off links "written", by operation id; nothing reaches a disk. */
+    handoffs: new Map<string, string>(),
+    handoffFile: async (id: string, url: string): Promise<string> => {
+      store.handoffs.set(id, url);
+      return `/private/handoffs/${id}.url`;
     },
   };
   return store;

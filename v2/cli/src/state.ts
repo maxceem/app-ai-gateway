@@ -24,6 +24,12 @@ const posixPermissions = (): boolean => process.platform !== "win32";
 
 /** An OAuth sign-in of this CLI: a short-lived access token and a one-use refresh token. */
 export const OAuthLoginSchema = z.object({
+  /**
+   * This sign-in's own id, made when it starts and kept through every
+   * renewal, so a command can tell its sign-in from a newer one another
+   * command stored in its place.
+   */
+  id: z.string().min(1),
   clientId: z.string().min(1),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1),
@@ -196,6 +202,26 @@ export class StateStore {
       await unlink(temp).catch(() => {});
       throw error;
     }
+  }
+
+  /**
+   * A private file holding a browser step's link, whose fragment is the
+   * page's proof: printed, it would reach terminal logs. Returns its path.
+   */
+  async handoffFile(id: string, url: string): Promise<string> {
+    const dir = join(this.directory, "handoffs");
+    await protectedDirectory(dir);
+    const name = /^[A-Za-z0-9._-]{1,128}$/u.test(id) ? id : randomToken().slice(0, 16);
+    const path = join(dir, `${name}.url`);
+    await unlink(path).catch(() => {});
+    const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+    try {
+      await handle.writeFile(url + "\n");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    return path;
   }
 
   /**
