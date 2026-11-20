@@ -101,6 +101,24 @@ export function priceUnitsSum(parts: readonly (readonly [units: number, rate: Ra
   return Number(cost) as NanoDollars;
 }
 
+/**
+ * The cost of `units` at a rate per `per` units, rounded up: units × rate ÷
+ * per. For a rate per minute applied to milliseconds of audio, `per` is
+ * 60,000, so the measure is never a fraction (plan section 4.2: priced once
+ * per charge as nano-dollars per minute × seconds ÷ 60). In BigInt, as
+ * {@link priceUnits}.
+ */
+export function priceUnitsPer(units: number, ratePerUnit: RateNanoPerMillion, per: number): NanoDollars {
+  assertSafeInteger(units, "A count of units");
+  assertSafeInteger(per, "A unit divisor");
+  if (units < 0) throw new MoneyError(`A count of units cannot be negative, got ${units}`);
+  if (per <= 0) throw new MoneyError(`A unit divisor must be positive, got ${per}`);
+  const divisor = BigInt(per);
+  const cost = (BigInt(units) * BigInt(ratePerUnit) + divisor - 1n) / divisor;
+  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
+  return Number(cost) as NanoDollars;
+}
+
 /** Exact integer sum of a list of amounts. */
 export function sumMoney(amounts: Iterable<NanoDollars>): NanoDollars {
   let total = 0;

@@ -156,6 +156,14 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
   "anthropic-messages": (frame) => namedFrame(frame, ["message_stop"]),
   // Gemini's stream has no closing event: it simply ends.
   "gemini-generate": null,
+  // The media APIs' streams are judged by how they ended, as in v1: their
+  // closing events differ from one provider to the next, and a stream booked
+  // as cut that was not would say a successful call failed.
+  "openai-transcription": null,
+  "openai-images": null,
+  "openai-embeddings": null,
+  "gemini-embed": null,
+  "openai-speech": null,
 };
 
 /** Whether a style's stream closes with `[DONE]` itself. */

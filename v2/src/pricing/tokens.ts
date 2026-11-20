@@ -14,9 +14,10 @@
  * - A variant (Anthropic's one-hour cache write, say) bills its share of the
  *   bucket at its own rate.
  *
- * The whole is rounded up once.
+ * The whole is rounded up once. A model priced per minute, per hour or per
+ * image bills that measure instead (`priceUsage`).
  */
-import { priceUnitsSum, rate, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { MILLI_SCALE, priceUnitsPer, priceUnitsSum, rate, toMilli, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
@@ -156,6 +157,55 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
 }
 
 /**
+ * The cost of a usage at a price per minute, per hour or per image (v1's
+ * `costAt`), or undefined when the price is not one of those. Time is priced
+ * on the audio's milliseconds, so the measure is a whole number; images on
+ * their count. A measure the usage does not report prices as null: its
+ * counter was never sent, and pricing it would claim a confident $0.
+ */
+function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
+  const { rates } = price;
+  for (const [field, per] of [
+    ["per_minute", 60 * MILLI_SCALE],
+    ["per_hour", 3600 * MILLI_SCALE],
+  ] as const) {
+    const value = rates[field];
+    if (value === undefined) continue;
+    if (usage.audioSeconds === undefined) return null;
+    return { cost: priceUnitsPer(toMilli(usage.audioSeconds), value, per), rates: { [field]: value }, longContext: false };
+  }
+  const perImage = rates.per_image;
+  if (perImage === undefined) return undefined;
+  if (usage.images === undefined) return null;
+  return { cost: priceUnitsPer(usage.images, perImage, 1), rates: { per_image: perImage }, longContext: false };
+}
+
+/**
+ * The cost of one usage at one price, in the unit the price is in: time or
+ * images where it states one, else tokens. Null when the usage does not
+ * report that unit (v1's `reportsPricedMeasure`): a duration alone for a
+ * token-priced model, or tokens alone for a time-priced one.
+ */
+export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
+  const unit = priceUnitRate(price, usage);
+  if (unit !== undefined) return unit;
+  if (usage.durationOnly === true) return null;
+  return priceTokens(price, usage);
+}
+
+/**
+ * Whether a usage reports the measure a price bills (v1's
+ * `reportsPricedMeasure`): a duration for a time price, an image count for an
+ * image price, tokens for a token price.
+ */
+export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation): boolean {
+  const { rates } = price;
+  if (rates.per_minute !== undefined || rates.per_hour !== undefined) return usage.audioSeconds !== undefined;
+  if (rates.per_image !== undefined) return usage.images !== undefined;
+  return usage.durationOnly !== true;
+}
+
+/**
  * The cost of one usage in the service mode that served it (v1's
  * `computeCost`). A mode the model has no price in is billed at an estimate,
  * on the axis that lacks a price only: a tier cheaper than standard at
@@ -169,7 +219,7 @@ export function priceInServedMode(
 ): (Pricing & { readonly estimated: boolean }) | null {
   const served = priceInMode(price, mode);
   if (served !== undefined) {
-    const priced = priceTokens(served, usage);
+    const priced = priceUsage(served, usage);
     return priced === null ? null : { ...priced, estimated: false };
   }
   const tiers = new Set<ServiceTier>();
@@ -189,15 +239,29 @@ export function priceInServedMode(
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
       const candidate = priceInMode(price, { tier, region });
-      const priced = candidate === undefined ? null : priceTokens(candidate, usage);
+      const priced = candidate === undefined ? null : priceUsage(candidate, usage);
       if (priced !== null && (dearest === null || priced.cost > dearest.cost)) dearest = priced;
     }
   }
-  const fallback = dearest ?? priceTokens(price, usage);
+  const fallback = dearest ?? priceUsage(price, usage);
   return fallback === null ? null : { ...fallback, estimated: true };
 }
 
 /** All tokens of a usage: the main billed unit kept in the rollups. */
 export function totalTokens(usage: TokenCounts): number {
   return usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens;
+}
+
+/**
+ * A usage's main billed unit and its count, kept on the charge and in the
+ * rollups: the unit its price bills, else the one the usage reports. Audio is
+ * in milliseconds (`audio_seconds` at `MILLI_SCALE`).
+ */
+export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: "tokens" | "audio_seconds" | "images"; units: number } {
+  const rates = price?.rates;
+  const byTime = rates !== undefined ? rates.per_minute !== undefined || rates.per_hour !== undefined : usage.durationOnly === true;
+  if (byTime && usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
+  const byImage = rates !== undefined ? rates.per_image !== undefined : false;
+  if (byImage && usage.images !== undefined) return { unit: "images", units: usage.images };
+  return { unit: "tokens", units: totalTokens(usage) };
 }

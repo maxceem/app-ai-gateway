@@ -57,6 +57,17 @@ export type Transport =
  * - `anthropic-messages`: the Messages API, on Anthropic and the services
  *   that offer it.
  * - `gemini-generate`: Gemini's own `generateContent`.
+ * - `openai-transcription`: speech to text, an upload whose answer reports
+ *   tokens, a duration, or both (`usage.seconds`, `duration`). The model's
+ *   price decides which one bills.
+ * - `openai-images`: image generation and edits. Usage in the OpenAI shape,
+ *   with image tokens apart, or the number of images made
+ *   (`generated_images`) for a model priced per image.
+ * - `openai-embeddings`: embeddings, billed on their input tokens.
+ * - `gemini-embed`: Gemini's own `embedContent`, usage in `usageMetadata`.
+ * - `openai-speech`: text to speech. Usage in the OpenAI shape when the answer
+ *   is a stream of events. A plain audio answer reports none, so its cost is
+ *   unknown, as in v1, until step 4 measures the request.
  */
 export const API_STYLES = [
   "openai-chat",
@@ -64,6 +75,11 @@ export const API_STYLES = [
   "openai-responses",
   "anthropic-messages",
   "gemini-generate",
+  "openai-transcription",
+  "openai-images",
+  "openai-embeddings",
+  "gemini-embed",
+  "openai-speech",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
 
@@ -81,6 +97,7 @@ export const UNITS = [
   "tokens",
   "characters",
   "credits",
+  /** Stored in milliseconds (`MILLI_SCALE`), so a fractional second stays a whole number. */
   "audio_seconds",
   "session_seconds",
   "text_messages",
@@ -312,6 +329,20 @@ export interface ProviderDescription {
    * whose base URL points at one. Keyed by origin with a trailing `/`.
    */
   readonly regionalOrigins?: Readonly<Record<string, ServiceRegion>>;
+  /**
+   * The `response_format` values of a transcription whose answer carries what
+   * it is billed by, usage or a duration (v1's `transcriptionFormats`). A
+   * request in a format without one is sent in the format that extends it
+   * (`upgrades`), or refused: its answer could not be priced. Without this,
+   * any format is sent as asked.
+   */
+  readonly transcriptionFormats?: {
+    readonly metered: readonly string[];
+    /** What the provider answers in when the request names no format. */
+    readonly default: string;
+    /** A format with no measure, and the metered format that extends it. */
+    readonly upgrades?: Readonly<Record<string, string>>;
+  };
   /**
    * Input modalities this provider always counts in its usage details, as
    * `<modality>_tokens`. A prompt with no count for one has none of it, and

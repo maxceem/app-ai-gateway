@@ -148,12 +148,20 @@ function isComplete(price: ModelPrice): boolean {
 }
 
 /**
- * Whether a price is in the unit an operation measures: an operation read by
- * a usage reader is billed in tokens, so a price per minute or per image
- * cannot bill it. The units of other meters arrive with their providers.
+ * Whether a price is in a unit an operation measures. An operation read by a
+ * usage reader is billed in tokens, except where its answers also report
+ * another unit: a transcription its audio's duration (a price per minute or
+ * per hour), an image API the images it made (a price per image). The units
+ * of other meters arrive with their providers.
  */
 export function pricesOperation(operation: OperationDescription, price: ModelPrice): boolean {
-  return operation.meter.kind === "response_json" ? pricesTokens(price) : isComplete(price);
+  const { meter } = operation;
+  if (meter.kind !== "response_json") return isComplete(price);
+  if (pricesTokens(price)) return true;
+  const { rates } = price;
+  if (meter.style === "openai-transcription") return rates.per_minute !== undefined || rates.per_hour !== undefined;
+  if (meter.style === "openai-images") return rates.per_image !== undefined;
+  return false;
 }
 
 /** Whether the operation's answers carry the provider's own cost, so it bills without a price of ours. */

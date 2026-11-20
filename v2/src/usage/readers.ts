@@ -205,6 +205,53 @@ export function openAiUsage(value: unknown, countedInput: readonly Modality[] = 
   };
 }
 
+/** A count that is a finite number, 0 or more, else null. */
+function nonNegativeNumber(value: unknown): number | null {
+  const number = finiteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
+const EMPTY_USAGE: UsageObservation = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+
+/**
+ * A transcription reports whatever its model is billed by, and the reader
+ * does not choose between them (v1's `audioUsage`): OpenAI's token-priced
+ * models answer with a `usage` of tokens, its time-priced ones with
+ * `usage: {type: "duration", seconds}`, and xAI and `verbose_json` with a
+ * top-level `duration`. Every measure present is kept, and the model's price
+ * decides which one bills, so a response shape can never move a model onto
+ * another model's unit.
+ *
+ * `usage.seconds` wins over `duration` where both appear: it is the figure
+ * the usage bills, and `duration` is the length of the audio as transcribed.
+ * Mistral names the billed audio `prompt_audio_seconds`, beside its tokens.
+ */
+export function audioUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
+  const root = asRecord(value);
+  if (!root) return null;
+  const usage = asRecord(root.usage);
+  const seconds =
+    nonNegativeNumber(usage?.seconds) ?? nonNegativeNumber(usage?.prompt_audio_seconds) ?? nonNegativeNumber(root.duration);
+  const tokens = openAiUsage(root, countedInput);
+  if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
+  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, durationOnly: true };
+}
+
+/**
+ * An image API's usage: the OpenAI shape, with image tokens apart, plus the
+ * images BytePlus Seedream bills per image and counts as `generated_images`
+ * (v1).
+ */
+export function imagesUsage(value: unknown, countedInput: readonly Modality[] = NOTHING_COUNTED): UsageObservation | null {
+  const root = asRecord(value);
+  if (!root) return null;
+  const usage = asRecord(root.usage);
+  const images = usage === null ? null : nonNegativeNumber(usage.generated_images);
+  const tokens = openAiUsage(root, countedInput);
+  if (images === null) return tokens;
+  return { ...(tokens ?? EMPTY_USAGE), images: Math.trunc(images) };
+}
+
 const ANTHROPIC_COUNTS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
 
 /** Anthropic usage: a whole message, or one stream event. */
@@ -480,6 +527,29 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
   return document;
 }
 
+/** A transcription's duration is a number, not an object, so it is matched as one. */
+const TAIL_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/gu;
+/**
+ * A `verbose_json` transcription states its top-level `duration` before its
+ * segments, so the head's first one is the whole audio's. Quotes inside the
+ * transcript are escaped, so text that says "duration" never matches.
+ */
+const HEAD_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/u;
+
+/**
+ * A truncated document with the duration the text still shows: the tail's
+ * last, else the head's first (v1). Only the transcription reader reads it,
+ * so a token-priced answer that mentions a duration is still priced from its
+ * tokens.
+ */
+function withDuration(document: Record<string, unknown> | null, tail: string, head: string): Record<string, unknown> | null {
+  const found = [...tail.matchAll(TAIL_DURATION)].at(-1)?.[1] ?? HEAD_DURATION.exec(head)?.[1];
+  if (found === undefined) return document;
+  const withIt = document ?? {};
+  withIt.duration = Number(found);
+  return withIt;
+}
+
 /** The values of one response, parsed where a reader reaches one and nowhere else. */
 export interface ResponseValues {
   /** Every value, the last one first, then the cut ones. */
@@ -526,7 +596,7 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    const document = tailUsageDocument(body.tail);
+    const document = withDuration(tailUsageDocument(body.tail), body.tail, body.head);
     // Only beside usage it found: the tier says what that usage was billed in.
     if (document !== null && document.usage !== undefined) {
       const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
@@ -539,7 +609,7 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     parsed = JSON.parse(body.head) as unknown;
   } catch {
     // A body whose JSON never closed (a cut answer) may still end with its usage.
-    const document = tailUsageDocument(body.head);
+    const document = withDuration(tailUsageDocument(body.head), body.head, body.head);
     return documentValues(document === null ? [] : [document]);
   }
   return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
@@ -629,7 +699,16 @@ export function readUsage(values: ResponseValues, style: ApiStyle, counted: read
     case "anthropic-messages":
       return anthropicReader(values);
     case "gemini-generate":
+    case "gemini-embed":
       return lastReported(values, geminiUsage);
+    case "openai-transcription":
+      return lastReported(values, (value) => audioUsage(value, counted));
+    case "openai-images":
+      return lastReported(values, (value) => imagesUsage(value, counted));
+    case "openai-embeddings":
+    case "openai-speech":
+      // A speech answer streamed as events ends with its usage; a plain audio answer has none.
+      return lastReported(values, (value) => openAiUsage(value, counted));
   }
 }
 

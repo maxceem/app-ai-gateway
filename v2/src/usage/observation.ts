@@ -49,4 +49,13 @@ export interface UsageObservation extends TokenCounts {
    * to keep whole: the client may have written it, echoed back.
    */
   readonly modesScanned?: true;
+  /** Seconds of audio a transcription reports, for a model priced by time. */
+  readonly audioSeconds?: number;
+  /** Images an image API reports it made, for a model priced per image. */
+  readonly images?: number;
+  /**
+   * The answer reported a duration and no token counts. Its zero token counts
+   * are not a measure: a token-priced model cannot be billed from them.
+   */
+  readonly durationOnly?: true;
 }

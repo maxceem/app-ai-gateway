@@ -19,7 +19,14 @@
  *   never $0. The cost stays empty, `price_source: unresolved`, `measured:
  *   estimated` (or `partial` when cut), and it is logged as
  *   `usage_unresolved_cost` so the monitor alerts.
+ * - Usage in another unit than the model's price (a duration alone for a
+ *   token-priced model): the cost is unknown, `unresolved`, logged as
+ *   `usage_unresolved_cost`, and the sweep is not asked, since no later
+ *   price can bill a measure that was never sent.
  * - A failed attempt that cost nothing: empty cost, shown as "—".
+ *
+ * The charge's unit is the one its price bills: tokens, or audio seconds
+ * (stored in milliseconds) or images for a model priced by time or per image.
  */
 import { storedAppVersion } from "../core/app-version.ts";
 import { log } from "../core/log.ts";
@@ -28,7 +35,7 @@ import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
-import { priceInServedMode, totalTokens } from "../pricing/tokens.ts";
+import { billedUnits, priceInServedMode, reportsPricedMeasure } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -109,7 +116,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = outcome.cut ? "partial" : "complete";
   } else if (usage !== null) {
     measured = outcome.cut ? "partial" : "complete";
-    if (priced !== null) {
+    if (attempt.price !== null && !reportsPricedMeasure(attempt.price.price, usage)) {
+      // The answer reported a measure, but not the one the model is priced in:
+      // a duration for a token-priced model, or tokens for a time-priced one.
+      // Its price would multiply counters that were never sent, and no later
+      // price can fix that, so the sweep is not asked (v1).
+      costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
+      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure" });
+    } else if (priced !== null) {
       costed = {
         costNano: priced.cost,
         priceSource: attempt.price!.source,
@@ -154,6 +168,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = "complete";
   }
 
+  const billed = usage === null ? null : billedUnits(usage, attempt.price?.price ?? null);
   const charge: ChargeRow = {
     id,
     kind: "attempt",
@@ -182,8 +197,8 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     cachedInputTokens: usage?.cachedInputTokens ?? null,
     cacheWriteTokens: usage?.cacheWriteTokens ?? null,
     outputTokens: usage?.outputTokens ?? null,
-    unit: usage === null ? null : "tokens",
-    units: usage === null ? null : totalTokens(usage),
+    unit: billed === null ? null : billed.unit,
+    units: billed === null ? null : billed.units,
     measures: usage === null ? {} : usageMeasures(usage, servedMode, modeUnknown),
     rates: costed.rates,
     sessionMs: null,

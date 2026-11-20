@@ -18,8 +18,10 @@
  * 6. After the answer is sent, read its usage, price it and write one charge.
  *    Counting never fails or delays the request (`AGENTS.md`).
  *
- * Calls measured from the response body are served: today's LLM APIs (step
- * 3). Fallback chains, presets and conversation storage come in later steps.
+ * Calls measured from the response body are served: today's LLM APIs, with
+ * their transcription, image, embedding and speech APIs (step 3). A body is
+ * JSON, or a multipart form (an upload), read by its content type. Fallback
+ * chains, presets and conversation storage come in later steps.
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
@@ -184,8 +186,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     }
 
     const bytes = await readBody();
-    const body = jsonBody(bytes);
-    refuseBackground(operation, body);
+    const contentType = c.req.header("content-type") ?? "";
+    const parsed = await requestBody(bytes, contentType, operation, description);
+    const body = parsed.kind === "json" ? parsed.body : formFields(parsed.form);
+    if (parsed.kind === "json") refuseBackground(operation, body);
     model = requestModel(operation, body, match.parts);
     if (routing.models !== undefined && !routing.models.includes(model)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
@@ -201,9 +205,12 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
     const mode = requestedServiceMode(description, connection.baseUrl, body);
 
     // The output cap refuses on its own, so it runs before admission: a request
-    // it refuses must not spend a request limit or the plan allowance.
-    const capped = applyOutputCap(operation, body, routing.max_output_tokens);
-    const metered = requestStreamUsage(operation, body);
+    // it refuses must not spend a request limit or the plan allowance. Only a
+    // JSON body has one; a form is an upload with no output to cap.
+    const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
+    const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
+    // A transcription is only sent in a format whose answer can be priced.
+    const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.form) : null;
 
     // Admission comes last, once the request is known to be one that can be
     // served: the app's own limits, then the plan allowance.
@@ -215,7 +222,14 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       refuse: refusal,
     });
 
-    const sent = capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes;
+    // An untouched body is sent as the client's own bytes, with its own content
+    // type. A changed form is sent as a new form, so fetch writes a fresh boundary.
+    const sent: OutgoingBody =
+      parsed.kind === "json"
+        ? { bytes: capped || metered ? new TextEncoder().encode(JSON.stringify(body)) : bytes, contentType: "application/json" }
+        : format !== null
+          ? { form: withField(parsed.form, "response_format", format), contentType: null }
+          : { bytes, contentType };
 
     const attempt: CallAttempt = {
       requestId: timeOrderedId(startedAt),
@@ -284,6 +298,96 @@ function refusalReason(error: unknown): { reason: string; scope: string | null }
   return { reason: error instanceof GatewayError ? error.code : "internal_error", scope: null };
 }
 
+type ParsedBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
+
+/** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
+type OutgoingBody =
+  | { readonly bytes: Uint8Array; readonly contentType: string; readonly form?: undefined }
+  | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
+
+function isMultipart(contentType: string): boolean {
+  return contentType.toLowerCase().startsWith("multipart/form-data");
+}
+
+/**
+ * A request body, read by its content type: a multipart form, else JSON (v1).
+ * A form that names its model more than once is refused: pricing reads the
+ * first, and a provider that read another would run a model nobody priced.
+ * A transcription to a provider that judges its format must be a form, since
+ * only a form names the format where it can be read.
+ */
+async function requestBody(
+  bytes: Uint8Array,
+  contentType: string,
+  operation: OperationDescription,
+  description: ProviderDescription,
+): Promise<ParsedBody> {
+  if (isMultipart(contentType)) {
+    let form: FormData;
+    try {
+      form = await new Request("https://local.invalid", {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body: bytes as Uint8Array<ArrayBuffer>,
+      }).formData();
+    } catch {
+      throw new GatewayError(400, "invalid_request", "Request body must be a valid multipart form");
+    }
+    if (form.getAll("model").length > 1) throw new GatewayError(400, "invalid_request", "The form names its model more than once");
+    return { kind: "form", form };
+  }
+  if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
+    throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
+  }
+  return { kind: "json", body: jsonBody(bytes) };
+}
+
+/** A form's text fields as a record, first value of each, for the model and service mode readers. Files are left out. */
+function formFields(form: FormData): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  form.forEach((value, name) => {
+    if (typeof value === "string" && !Object.hasOwn(fields, name)) fields[name] = value;
+  });
+  return fields;
+}
+
+/** A copy of a form with one field set, so fetch writes a fresh boundary for it. */
+function withField(source: FormData, name: string, value: string): FormData {
+  const form = new FormData();
+  source.forEach((entry, key) => {
+    if (key !== name) form.append(key, entry);
+  });
+  form.set(name, value);
+  return form;
+}
+
+/**
+ * The `response_format` a transcription must be sent with so its answer
+ * carries what it is billed by (v1's `meteredTranscriptionFormat`): null where
+ * the request's is fine as it is, else the format that extends it. A format
+ * with no measure and no extension is refused, and so is a form naming two.
+ */
+function meteredTranscriptionFormat(operation: OperationDescription, description: ProviderDescription, form: FormData): string | null {
+  const formats = description.transcriptionFormats;
+  if (operation.style !== "openai-transcription" || formats === undefined) return null;
+  const requested = form.getAll("response_format");
+  const named = requested[0];
+  if (requested.length > 1 || (named !== undefined && typeof named !== "string")) throw unmeteredFormat(formats.metered);
+  const format = named ?? formats.default;
+  if (formats.metered.includes(format)) return null;
+  const upgrade = formats.upgrades !== undefined && Object.hasOwn(formats.upgrades, format) ? formats.upgrades[format] : undefined;
+  if (upgrade === undefined) throw unmeteredFormat(formats.metered);
+  return upgrade;
+}
+
+function unmeteredFormat(metered: readonly string[]): GatewayError {
+  return new GatewayError(
+    400,
+    "invalid_request",
+    `This response_format answers without the usage or duration a transcription is billed by; use ${metered.join(" or ")}`,
+  );
+}
+
 function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   let value: unknown;
   try {
@@ -305,8 +409,10 @@ function requestModel(operation: OperationDescription, body: Record<string, unkn
     if (value === undefined || value.trim() === "") throw new GatewayError(400, "invalid_request", "Request path must name a model");
     return value;
   }
-  if (location.in !== "body") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
-  const value = body[location.field] ?? location.default;
+  if (location.in === "query") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
+  // A body field and a form field are read the same way: the request's
+  // content type, not the operation, says which the body is.
+  const value = (Object.hasOwn(body, location.field) ? body[location.field] : undefined) ?? location.default;
   if (typeof value !== "string" || value.trim() === "") {
     throw new GatewayError(400, "invalid_request", `Request body must name a model in ${location.field}`);
   }
@@ -354,7 +460,7 @@ async function sendUpstream(
     query: string;
     /** Client headers that must never reach the provider, even if allowlisted: the gateway's own credentials and end-user ids. */
     stripped: readonly string[];
-    body: Uint8Array;
+    body: OutgoingBody;
     attempt: CallAttempt;
   },
 ): Promise<Response> {
@@ -362,8 +468,11 @@ async function sendUpstream(
   const secret = await connectionSecret(c.env, connection);
   const headers = upstreamHeaders(c.req.raw.headers);
   for (const name of input.stripped) headers.delete(name);
-  // Every operation served now sends a JSON body, whatever type the client named, as v1.
-  headers.set("content-type", "application/json");
+  // A JSON body is sent as JSON whatever type the client named, as v1. An
+  // untouched form keeps the client's type and boundary; a changed one gets
+  // the type fetch writes for it.
+  if (input.body.contentType === null) headers.delete("content-type");
+  else headers.set("content-type", input.body.contentType);
   // A callback, so a key containing `$&` or `$1` is sent as it is.
   headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
   const origin = upstreamOrigin(connection, description, input.hostKey);
@@ -377,7 +486,7 @@ async function sendUpstream(
     upstream = await fetch(url, {
       method: c.req.method,
       headers,
-      body: input.body as Uint8Array<ArrayBuffer>,
+      body: input.body.form ?? (input.body.bytes as Uint8Array<ArrayBuffer>),
       // Never follow a redirect: it could take the key to another host.
       redirect: "manual",
       signal: controller.signal,

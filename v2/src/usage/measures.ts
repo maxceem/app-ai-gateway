@@ -3,10 +3,12 @@
  *
  * Token buckets keep their own columns too. The measures add what a token
  * count alone cannot price again: each modality's share of a side, each
- * variant's share of a bucket, and the service mode
- * that served the request when it is not standard. So the sweep can price an
+ * variant's share of a bucket, the seconds of audio or the images a model
+ * priced by time or per image bills, and the service mode that served the
+ * request when it is not standard. So the sweep can price an
  * `unresolved` charge later exactly as the request would have been.
  */
+import { toMilli } from "../money.ts";
 import type { Modality, ModalityCounts, TokenVariants, UsageObservation } from "./observation.ts";
 import { isStandardMode, parseServiceModeName, serviceModeName, STANDARD_MODE, type ServiceMode } from "./service-modes.ts";
 import { VARIANTS } from "./token-rates.ts";
@@ -41,6 +43,10 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUn
     const count = counts?.[variant.name];
     if (count !== undefined && count > 0) measures[`${variant.field}_tokens`] = count;
   }
+  // Seconds at the fixed scale, so the stored figure is a whole number.
+  if (usage.audioSeconds !== undefined) measures.audio_ms = toMilli(usage.audioSeconds);
+  if (usage.images !== undefined) measures.images = usage.images;
+  if (usage.durationOnly === true) measures.duration_only = 1;
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
   if (modeUnknown) measures.service_mode_unknown = 1;
   return measures;
@@ -76,6 +82,8 @@ export function usageFromMeasures(
     (tokenVariants[variant.bucket] ??= {})[variant.name] = value;
   }
   const modeName = measures.service_mode;
+  const audioMs = count(measures, "audio_ms");
+  const images = count(measures, "images");
   const usage: UsageObservation = {
     inputTokens: input,
     cachedInputTokens: count(measures, "cached_input_tokens") ?? 0,
@@ -83,6 +91,9 @@ export function usageFromMeasures(
     outputTokens: output,
     ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
     ...(tokenVariants !== undefined ? { tokenVariants: tokenVariants as TokenVariants } : {}),
+    ...(audioMs !== undefined ? { audioSeconds: audioMs / 1000 } : {}),
+    ...(images !== undefined ? { images } : {}),
+    ...(count(measures, "duration_only") !== undefined ? { durationOnly: true as const } : {}),
   };
   return {
     usage,

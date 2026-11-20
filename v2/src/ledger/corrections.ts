@@ -25,7 +25,7 @@
  */
 import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
 import { resolvePrice, type CustomerRates } from "../pricing/prices.ts";
-import { priceInServedMode, totalTokens } from "../pricing/tokens.ts";
+import { billedUnits, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
@@ -306,6 +306,7 @@ export async function priceUnresolvedCharge(
   const { usage } = stored;
   const priced = priceInServedMode(resolved.price, usage, stored.mode);
   if (priced === null) return { status: "no_price" };
+  const billed = billedUnits(usage, resolved.price);
   const correction = correctionOf(original, {
     id: pricingCorrectionId(original.id),
     kind: "pricing",
@@ -313,7 +314,7 @@ export async function priceUnresolvedCharge(
     unitsDelta: null,
     priceSource: resolved.source,
     rates: priced.rates,
-    measures: { tokens: totalTokens(usage) },
+    measures: { [billed.unit]: billed.units },
     now: input.now,
     estimate: priced.estimated || stored.modeUnknown,
   });
