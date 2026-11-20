@@ -351,6 +351,17 @@ describe("images", () => {
     expect(await chargesOf(appId)).toMatchObject([{ price_source: "list_rate", input_tokens: 50, output_tokens: 4160, cost_nano: expected }]);
   });
 
+  it("never takes a usage nested in a large answer's content over the root's own, in the head", async () => {
+    const { appId, slug, key } = await setup("gemini", { operations: ["gemini.generate.v1beta"] });
+    const usageMetadata = { promptTokenCount: 120, candidatesTokenCount: 40, totalTokenCount: 160 };
+    const call = { functionCall: { name: "report", args: { text: "x".repeat(2 * 1024 * 1024), usage: {} } } };
+    const body = `{"usageMetadata":${JSON.stringify(usageMetadata)},"candidates":[{"content":{"role":"model","parts":[${JSON.stringify(call)}]}}]}`;
+    fetchSpy.mockResolvedValue(new Response(body, { headers: { "content-type": "application/json" } }));
+    const { response } = await json(`/v2/apps/${appId}/proxy/${slug}/v1beta/models/gemini-3.5-flash:generateContent`, key, { contents: [] });
+    expect(response.status).toBe(200);
+    expect(await chargesOf(appId)).toMatchObject([{ input_tokens: 120, output_tokens: 40, price_source: "list_rate" }]);
+  });
+
   it("reads the model of an image edit from its form", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.images.edits"] });
     fetchSpy.mockResolvedValue(Response.json({ data: [], usage: { input_tokens: 10, output_tokens: 100 } }));

@@ -574,6 +574,58 @@ function headUsageDocument(head: string): Record<string, unknown> | null {
   return document;
 }
 
+/** Whether the quote at `at` is escaped: an odd run of backslashes before it. */
+function escapedQuote(text: string, at: number): boolean {
+  let slashes = 0;
+  for (let index = at - 1; index >= 0 && text[index] === "\\"; index -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+/**
+ * The root's `usage` and `usageMetadata` objects found in a document's kept
+ * tail, read backwards from where the root object ends, so only keys of the
+ * root count: a `usage` nested in the answer's content (a Gemini function
+ * call's arguments, say) never does. The tail's start may be cut, but every
+ * position read backwards from the real end is placed exactly. Null when the
+ * tail holds none whole.
+ */
+function rootTailUsageDocument(tail: string): Record<string, unknown> | null {
+  let at = tail.length - 1;
+  while (at >= 0 && /\s/u.test(tail[at]!)) at -= 1;
+  if (tail[at] !== "}") return null;
+  const document: Record<string, unknown> = {};
+  let depth = 0;
+  for (; at >= 0; at -= 1) {
+    const character = tail[at];
+    if (character === "}" || character === "]") depth += 1;
+    else if (character === "{" || character === "[") {
+      depth -= 1;
+      if (depth === 0) break;
+    } else if (character === '"' && !escapedQuote(tail, at)) {
+      // A whole string, read back to its opening quote.
+      const end = at;
+      at -= 1;
+      while (at >= 0 && !(tail[at] === '"' && !escapedQuote(tail, at))) at -= 1;
+      if (at < 0) break;
+      const key = tail.slice(at + 1, end);
+      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key) || Object.hasOwn(document, key)) continue;
+      const separator = /^\s*:\s*\{/u.exec(tail.slice(end + 1));
+      if (!separator) continue;
+      const object = jsonObjectAt(tail, end + 1 + separator[0].length - 1);
+      if (!object) continue;
+      try {
+        document[key] = JSON.parse(object) as unknown;
+      } catch {
+        // Not a whole object after all.
+      }
+    }
+  }
+  if (Object.keys(document).length === 0) return null;
+  SCANNED.add(document);
+  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return document;
+}
+
 /** A transcription's duration is a number, not an object, so it is matched as one. */
 const TAIL_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/gu;
 /**
@@ -644,16 +696,18 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    // The tail first, where most answers report; else a usage the answer
-    // reported first, at the top of its kept head.
-    const tailDocument = tailUsageDocument(body.tail);
-    const document = withDuration(tailDocument ?? headUsageDocument(body.head), body.tail, body.head);
+    // The root's usage in the tail, where most answers report, tried first;
+    // then the root's usage at the top of the kept head, for an answer that
+    // reports it before a large payload. A reader takes the first it can use.
+    const documents = [headUsageDocument(body.head), rootTailUsageDocument(body.tail)].filter(
+      (document): document is Record<string, unknown> => document !== null,
+    );
+    const last = withDuration(documents.at(-1) ?? null, body.tail, body.head);
+    if (documents.length === 0 && last !== null) documents.push(last);
+    const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
     // Only beside usage it found: the tier says what that usage was billed in.
-    if (document !== null && document.usage !== undefined) {
-      const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];
-      if (tier !== undefined) document.service_tier = tier;
-    }
-    return documentValues(document === null ? [] : [document]);
+    for (const document of documents) if (tier !== undefined && document.usage !== undefined) document.service_tier = tier;
+    return documentValues(documents);
   }
   let parsed: unknown;
   try {
