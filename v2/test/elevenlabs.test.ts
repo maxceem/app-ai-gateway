@@ -6,7 +6,8 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { billing, listedModelProblem, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { listedJudgement } from "./listed-model.ts";
+import { billing, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { meterCases } from "../src/pricing/units.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
@@ -14,7 +15,7 @@ import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { attemptCostUsd, headerNumber } from "../src/proxy/meter.ts";
 import { checkAppConfig } from "../src/admin/apps.ts";
-import { servedNow } from "../src/proxy/serve.ts";
+import { servedNow } from "../src/pricing/billability.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
 
@@ -147,15 +148,15 @@ describe("ElevenLabs operations", () => {
     const stored = { eleven_multilingual_v2: { per_credit: 80_000 } };
     expect(savedPriceProblem(stored, "eleven_multilingual_v2", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "bills_nothing", operation: expect.stringMatching(/^elevenlabs\.tts/u) });
     const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
-    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: stored }), "eleven_multilingual_v2")).toEqual({ operation: "elevenlabs.tts" });
+    expect(listedJudgement(enabled, priceSources({ type: "elevenlabs", rates: stored }), "eleven_multilingual_v2")).toEqual({ operation: "elevenlabs.tts" });
     // Both rates: every way text to speech answers is charged, and the model lists beside speech to text.
     const both = { eleven_multilingual_v2: { per_credit: 80_000, per_million_characters: 80_000_000_000 } };
-    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: both }), "eleven_multilingual_v2")).toBeNull();
+    expect(listedJudgement(enabled, priceSources({ type: "elevenlabs", rates: both }), "eleven_multilingual_v2")).toBeNull();
     // A transcription model is not judged against text to speech, so it lists beside it.
-    expect(listedModelProblem(elevenlabs.operations, priceSources({ type: "elevenlabs", rates: null }), "scribe_v2")).toBeNull();
+    expect(listedJudgement(elevenlabs.operations, priceSources({ type: "elevenlabs", rates: null }), "scribe_v2")).toBeNull();
     // A model priced for an operation it cannot reach at all is still fine there: whisper-1 beside chat (3a-2 S1).
     const openai = BUILT_IN_PROVIDERS.openai!.operations.filter((op) => op.name === "openai.chat" || op.name === "openai.transcription");
-    expect(listedModelProblem(openai, priceSources({ type: "openai", rates: null }), "whisper-1")).toBeNull();
+    expect(listedJudgement(openai, priceSources({ type: "openai", rates: null }), "whisper-1")).toBeNull();
   });
 
   it("prices the flash v2, turbo v2 and Scribe v3 models like their siblings, and Scribe at $0.20 an hour (4b S4, F4)", () => {

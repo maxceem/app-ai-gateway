@@ -42,7 +42,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { billing, priceSources } from "../pricing/billability.ts";
+import { priceSources, resolveCall, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionCredentials,
@@ -52,7 +52,7 @@ import {
 } from "../providers/connections.ts";
 import { ProviderMatcher } from "../providers/matcher.ts";
 import { upstreamRequest } from "../providers/route.ts";
-import { rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -78,15 +78,22 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
   return matcher;
 }
 
-/** Whether this build can serve an operation: a call measured from its response or its request. */
-export function servedNow(operation: OperationDescription): boolean {
-  const { kind } = operation.meter;
-  return (
-    operation.lifecycle === "call" &&
-    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
-  );
+/** The answer to a call serving refuses (`resolveCall`). */
+function callRefusal(call: CallRefusal, operation: OperationDescription): GatewayError {
+  const { model } = call;
+  if (call.reason === "not_served") return new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
+  // A path naming a model outside its closed list was never declared.
+  if (call.reason === "unpriced_path") return new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  if (call.reason === "model_not_allowed") {
+    return new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
+  }
+  if (call.reason === "wrong_unit") {
+    return new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
+      data: { model, operation: operation.name },
+    });
+  }
+  return new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
 }
-
 
 /** The parts of the URL after `/v2/apps/{app}/proxy/`, still encoded. */
 function proxyTarget(url: URL): { slug: string; path: string } {
@@ -250,9 +257,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (!routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
-      if (!servedNow(operation)) {
-        throw new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
-      }
+      // `resolveCall` refuses an operation not served yet; refused here too, with its answer, before the body is read.
+      if (!servedNow(operation)) throw callRefusal({ kind: "refused", reason: "not_served", model: "" }, operation);
 
       const bytes = await caller.readBody();
       const contentType = c.req.header("content-type") ?? "";
@@ -261,27 +267,12 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (parsed.kind === "json") refuseBackground(operation, body);
       const requested = requestModel(operation, body, match.parts);
       caller.facts.model = requested;
-      if (routing.models !== undefined && !routing.models.includes(requested)) {
-        throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model: requested } });
-      }
-      // The app's model list judges the model the request names; everything
-      // after it, the price included, the model it is sent as.
-      const model = rewrittenModel(operation, requested, app.routing.model_rewrites);
-      const bill = billing(operation, priceSources(connection), model);
+      // The route a request takes to a price is resolved in one place, which
+      // saving runs over every call a route allows (`resolveCall`).
+      const call = resolveCall(routing, app.routing.model_rewrites, priceSources(connection), operation, requested);
+      if (call.kind === "refused") throw callRefusal(call, operation);
+      const { model, bill } = call;
       const price = bill.price;
-      // Never served: a model with no price is refused, unless the app lists it
-      // by name (its price may have gone since: it is served, and priced later).
-      // A model priced only in a unit this operation cannot bill (a per-minute
-      // price on chat) was never served on it, so it is refused even when
-      // listed: an app may list it for another of its operations.
-      if (bill.problem === "wrong_unit") {
-        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
-          data: { model, operation: operation.name },
-        });
-      }
-      if (bill.problem === "no_price" && routing.models === undefined) {
-        throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
-      }
       // Models the provider may serve the request with instead pass the same policy.
       const alternatives = judgedAlternatives(description, operation, body, {
         allowed: routing.models,

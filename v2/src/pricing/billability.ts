@@ -21,6 +21,11 @@
  * The mode a request was served in is priced on the serve side by
  * `priceInServedMode` (`./tokens.ts`), the other half of this rule.
  *
+ * The route a request takes to a price (model list, rewrite, billing) is
+ * written once, in `resolveCall`. Serving calls it per request; saving runs it
+ * over every call a route allows (`reachableCalls`) and judges each by one
+ * rule (`callGap`), so saving never predicts serving by hand.
+ *
  * What each caller does with a "no" is its own rule, written where it is used:
  * saving refuses; serving refuses only what was never served; the sweep leaves
  * a charge unpriced.
@@ -30,10 +35,12 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import { modelReachable, type OperationDescription } from "../providers/operation.ts";
+import { rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
+import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   effectivePrices,
   keyCandidates,
@@ -97,13 +104,29 @@ export function priceSources(
     rates: () => {
       if (read === undefined) {
         const text = "rates_json" in connection ? connection.rates_json : undefined;
-        const value =
-          text === undefined ? (connection as { readonly rates: CustomerRates | null }).rates : text === null ? null : (JSON.parse(text) as CustomerRates);
+        let value: CustomerRates | null;
+        if (text === undefined) value = (connection as { readonly rates: CustomerRates | null }).rates;
+        else if (text === null) value = null;
+        else {
+          try {
+            value = JSON.parse(text) as CustomerRates;
+          } catch {
+            throw new UnreadableRates(type);
+          }
+        }
         read = { value };
       }
       return read.value;
     },
   };
+}
+
+/** A connection's stored rates cannot be read: a decision that needs them cannot be made. A `SyntaxError`, as the parse that failed. */
+export class UnreadableRates extends SyntaxError {
+  constructor(readonly connectionType: string) {
+    super(`The ${connectionType} connection's rates cannot be read`);
+    this.name = "UnreadableRates";
+  }
 }
 
 /** A model's price on a connection: its own rate, else ours. The one place a price is looked up. */
@@ -151,10 +174,9 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
 
 /**
  * How far an operation can charge a price, at the key values it reads
- * (`keysRead`), if any:
+ * (`keysRead`), if any, from the price's own rates:
  *
- * - `full`: one of its ways (`meterCases`) prices every usage in it, or, where
- *   `costCounts`, the operation reports its own cost;
+ * - `full`: one of its ways (`meterCases`) prices every usage in it;
  * - `partial`: some usage is priced, but no way fully, as a price in credits
  *   alone on text to speech, whose answer can come without its header;
  * - `none`: no usage at all, as `whisper-1` on chat, or a model the price list
@@ -172,9 +194,8 @@ function kindServed(operation: OperationDescription, price: ModelPrice): boolean
   return operation.modelKinds === undefined || price.kind === undefined || operation.modelKinds.includes(price.kind);
 }
 
-function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined, costCounts: boolean): Reach {
+function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined): Reach {
   if (!kindServed(operation, price)) return "none";
-  if (costCounts && reportsCost(operation)) return "full";
   let some = false;
   for (const way of meterCases(operation)) {
     const priced = way.map((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode));
@@ -184,43 +205,45 @@ function reach(operation: OperationDescription, price: ModelPrice, mode: Service
   return some ? "partial" : "none";
 }
 
+/** Where a price falls short: the key values and mode at which it does, and the operation, when one reaches it only partly. */
+export interface Gap {
+  readonly values: Readonly<Record<string, string>>;
+  readonly mode: string;
+  readonly operation?: string;
+  /** The gap is the mode the call selects (`ReachableCall.mode`), which its price lacks. */
+  readonly selectedMode?: true;
+}
+
 /**
- * The first price-key values and mode at which `operations` cannot be saved
- * with a price, or null when they can: the `save` check. At every key value
- * and mode, some operation charges the price fully, and none partly: an
- * operation the model can reach must charge every way its answers come out.
- * An operation it cannot reach at all is fine, as `whisper-1` listed beside
- * chat models for transcriptions. With `costCounts`, an operation that
- * reports its own cost charges fully whatever the price, as a listed model is
- * served there (`billingAt`); a connection's rates are judged on what they
- * price themselves.
- *
- * `partialBlocks` says whether partial reach refuses. An app save knows the
- * operations it enables, so it always does. A connection save does not, so
- * for a model the price list gives no kind it does not: the app that enables
- * an operation is refused there instead.
+ * Each operation's reach of `price` at each price-key value and mode serving
+ * can select, worked out once per operation, mode and key values the
+ * operation reads: an operation that reads none of the keys is checked once
+ * per mode, whatever the number of combinations.
  */
-function firstGap(
-  operations: readonly OperationDescription[],
-  price: ModelPrice,
-  { costCounts = false, partialBlocks = true, needsFull = true }: { costCounts?: boolean; partialBlocks?: boolean; needsFull?: boolean } = {},
-): { readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string } | null {
-  const modes = servedModes(price);
-  // An operation sees only the keys it reads, so many combinations are the same check: each is run once.
+function reaches(price: ModelPrice): (operation: OperationDescription, mode: ServiceMode, values: Readonly<Record<string, string>>) => Reach {
   const known = new Map<string, Reach>();
-  const reachOf = (operation: OperationDescription, mode: ServiceMode, values: Readonly<Record<string, string>>): Reach => {
+  return (operation, mode, values) => {
     const keys = keysRead(operation, values);
     const id = `${operation.name}\u0000${serviceModeName(mode)}\u0000${keys === undefined ? "" : JSON.stringify(Object.entries(keys).sort())}`;
     let answer = known.get(id);
-    if (answer === undefined) known.set(id, (answer = reach(operation, price, mode, keys, costCounts)));
+    if (answer === undefined) known.set(id, (answer = reach(operation, price, mode, keys)));
     return answer;
   };
+}
+
+/**
+ * The first key values and mode at which `operation` does not charge `price`
+ * fully from its rates, or null when it does at all of them: the `save` rule
+ * for one call. Every way the call's answers come out must be charged.
+ */
+function chargeGap(operation: OperationDescription, price: ModelPrice): Gap | null {
+  const reachOf = reaches(price);
   for (const candidate of keyCandidates(price).candidates) {
-    for (const mode of modes) {
-      const reaches = operations.map((operation) => reachOf(operation, mode, candidate.values));
-      const partly = partialBlocks ? reaches.indexOf("partial") : -1;
-      if (partly !== -1) return { values: candidate.values, mode: serviceModeName(mode), operation: operations[partly]!.name };
-      if (needsFull && !reaches.includes("full")) return { values: candidate.values, mode: serviceModeName(mode) };
+    for (const mode of servedModes(price)) {
+      const answer = reachOf(operation, mode, candidate.values);
+      if (answer !== "full") {
+        return { values: candidate.values, mode: serviceModeName(mode), ...(answer === "partial" ? { operation: operation.name } : {}) };
+      }
     }
   }
   return null;
@@ -247,7 +270,7 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
 
 /** Whether `operation` can bill `price`, by the check asked for. */
 function operationBillable(operation: OperationDescription, price: ModelPrice, check: BillingCheck): boolean {
-  return check === "serve" ? servable(operation, price) : firstGap([operation], price) === null;
+  return check === "serve" ? servable(operation, price) : chargeGap(operation, price) === null;
 }
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about, by the check asked for. */
@@ -272,57 +295,380 @@ function billingAt(operation: OperationDescription, resolved: ResolvedPrice | nu
 }
 
 /**
- * The rule for a model an app lists on a connection, across the operations it
- * enables there. Returns null when the model may be listed, or the problem.
+ * How serving resolves a call: the one place the route a request takes to a
+ * price is written. Serving calls it for each request; saving runs it over
+ * every call a route allows (`reachableCalls`), so the two cannot disagree.
  *
- * - A model with no price at all must be billable on every enabled operation
- *   (each must report its own cost): listed by name, it would be served, and
- *   left unpriced, by any that cannot.
- * - A model with a price must be billable on at least one: an app may list
- *   `whisper-1` beside its chat models for its transcriptions. A call to an
- *   operation that cannot bill it is refused when it is made.
+ * - An operation this build does not serve yet is refused (`servedNow`).
+ *   Saving asks `asIfServed`: it judges such an operation as if it were
+ *   served, so it stays strict, and a release that serves it finds its calls
+ *   already judged.
+ * - The app's model list judges the model the request names.
+ * - Everything after it uses the model it is sent as (`rewrittenModel`: a
+ *   rewrite is applied once, never to a fixed model): the price, and, for a
+ *   model in a path part whose closed list is the priced models
+ *   (`priced_models`, fal's `run/{model...}`), that list. A path whose model
+ *   is sent as one with no price is refused, as if it were not declared,
+ *   exactly as a body's model is judged after its rewrite.
+ * - A model priced only in a unit the operation cannot bill was never served
+ *   on it, so it is refused even when listed. A model with no price at all is
+ *   refused unless the app lists it by name: its price may have gone since,
+ *   and it is served and priced later (`admissionProblem`).
  */
-export function listedModelProblem(
-  operations: readonly OperationDescription[],
-  connection: PriceSources,
-  model: string,
-): { readonly operation?: string } | null {
-  if (operations.length === 0) return null;
-  const resolved = resolve(connection, model);
-  if (resolved === null) {
-    const refused = operations.find((operation) => billingAt(operation, null, undefined, "save").problem !== null);
-    return refused === undefined ? null : { operation: refused.name };
-  }
-  // One rule with saving a connection's rates: some operation charges it fully, and none only partly.
-  const gap = firstGap(operations, resolved.price, { costCounts: true });
-  return gap === null ? null : gap.operation !== undefined ? { operation: gap.operation } : {};
+export type CallResolution = CallRefusal | ReachableCall;
+
+/** Why serving refuses a call, and the model it names: the one the request names, or, after the model list, the one it is sent as. */
+export interface CallRefusal {
+  readonly kind: "refused";
+  readonly reason: "not_served" | "unpriced_path" | "model_not_allowed" | "wrong_unit" | "no_price";
+  readonly model: string;
+}
+
+/** A call serving admits: the operation, the model the request names and the one it is sent as, and how it is billed. */
+export interface ReachableCall {
+  readonly kind: "admitted";
+  readonly operation: OperationDescription;
+  readonly requested: string;
+  readonly model: string;
+  readonly bill: Billing;
+  /**
+   * The service mode the call selects whatever the request says: a preset's
+   * `params`, read with its connection's region. Set only when it is not
+   * standard; a request's own mode is never refused (`AGENTS.md`).
+   */
+  readonly mode?: ServiceMode;
+}
+
+/** A call an app lets through, and where it comes in: a proxy route, a preset target, or a model a request names besides its own. */
+export interface AppCall extends ReachableCall {
+  /** The connection's slug. */
+  readonly slug: string;
+  /** Where the call comes in, as `proxy`, `alternative` or `preset:<slug>:<target index>`. */
+  readonly entry: string;
+}
+
+/** A route's model policy: its model list, when it has one. */
+export interface RouteModels {
+  readonly models?: readonly string[] | undefined;
+}
+
+/** Whether this build can serve an operation: a call measured from its response or its request. */
+export function servedNow(operation: OperationDescription): boolean {
+  const { kind } = operation.meter;
+  return (
+    operation.lifecycle === "call" &&
+    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
+  );
+}
+
+/** Whether the operation's model is a path part whose closed list is the priced models. */
+function pricedModelsPath(operation: OperationDescription): boolean {
+  const location = operation.model;
+  return location.in === "path" && operation.multiSegment?.[location.part] === "priced_models";
 }
 
 /**
- * For a route with no model list, which allows any model: the first model
- * with the connection's own rate that an enabled operation charges only
- * partly, or null. Serving stays lenient (a call whose fallback cannot be
- * priced was served in v1), so the app save closes the hole: no operation it
- * enables may reach such a model in some ways and not others. A model none of
- * them reaches is fine; its calls are refused when made. Nor is one the
- * app's rewrites put out of reach on an operation (`modelReachable`, the
- * rule serving uses): that operation never charges it.
+ * Why serving refuses a call it can bill this way, or null when it serves it.
+ * `listed`: the model policy names models one by one (an app's model list, a
+ * request's other models judged against it).
  */
-export function partialCustomerModel(
-  operations: readonly OperationDescription[],
-  connection: PriceSources,
-  rewrites?: Readonly<Record<string, string>>,
-): { readonly model: string; readonly operation: string } | null {
-  if (operations.length === 0) return null;
-  for (const model of Object.keys(connection.rates() ?? {})) {
-    const reaching = operations.filter((operation) => modelReachable(operation, model, rewrites));
-    if (reaching.length === 0) continue;
-    const resolved = resolve(connection, model);
-    if (resolved === null) continue;
-    const gap = firstGap(reaching, resolved.price, { costCounts: true, needsFull: false });
-    if (gap?.operation !== undefined) return { model, operation: gap.operation };
-  }
+function admissionProblem(bill: Billing, listed: boolean): "wrong_unit" | "no_price" | null {
+  if (bill.problem === "wrong_unit") return "wrong_unit";
+  if (bill.problem === "no_price" && !listed) return "no_price";
   return null;
+}
+
+/** How a caller resolves a call. `asIfServed`: judge an operation this build does not serve yet as if it did, as saving does. */
+export interface ResolveOptions {
+  readonly asIfServed?: boolean;
+}
+
+export function resolveCall(
+  route: RouteModels,
+  rewrites: Readonly<Record<string, string>> | undefined,
+  sources: PriceSources,
+  operation: OperationDescription,
+  requested: string,
+  listed: ReadonlySet<string> | null = listOf(route),
+  options: ResolveOptions = {},
+): CallResolution {
+  if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
+  if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
+  const model = rewrittenModel(operation, requested, rewrites);
+  if (pricedModelsPath(operation) && resolve(sources, model) === null) return { kind: "refused", reason: "unpriced_path", model };
+  const bill = billing(operation, sources, model);
+  const problem = admissionProblem(bill, listed !== null);
+  if (problem !== null) return { kind: "refused", reason: problem, model };
+  return { kind: "admitted", operation, requested, model, bill };
+}
+
+/**
+ * How serving resolves a model a request names besides its own
+ * (`alternativeModels`, Vercel's fallback models), on an operation that
+ * admitted the request's own model: it passes the same model list
+ * (`allowed`), is judged under its own name, never rewritten, and is admitted
+ * by the request's own rule (`admissionProblem`).
+ */
+export function resolveAlternative(
+  operation: OperationDescription,
+  sources: PriceSources,
+  named: string,
+  allowed: ReadonlySet<string> | null,
+  options: ResolveOptions = {},
+): CallResolution {
+  if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: named };
+  if (allowed !== null && !allowed.has(named)) return { kind: "refused", reason: "model_not_allowed", model: named };
+  const bill = billing(operation, sources, named);
+  const problem = admissionProblem(bill, allowed !== null);
+  if (problem !== null) return { kind: "refused", reason: problem, model: named };
+  return { kind: "admitted", operation, requested: named, model: named, bill };
+}
+
+/** Why serving leaves a preset target out of its chain: its connection has no operation for the preset, or, for a fallback, the model cannot be billed there. */
+export type PresetTargetResolution =
+  | { readonly kind: "refused"; readonly reason: "no_operation" }
+  | { readonly kind: "refused"; readonly reason: "unbillable"; readonly operation: OperationDescription; readonly model: string; readonly bill: Billing }
+  | ReachableCall;
+
+/**
+ * How serving resolves one target of a preset's chain on its connection:
+ *
+ * - the operation is the one the target names, or the first of the preset's
+ *   API style a preset can use (`presetOperation`); a caller asking for
+ *   Gemini's stream gets its streaming sibling (`streamingSibling`);
+ * - the model is the target's own: an app's rewrites never apply;
+ * - with `select`, the call carries the service mode the preset's `params`
+ *   select (`requestedServiceMode`), which saving judges (`callGap`);
+ * - the first target is served even when its price has gone since the preset
+ *   was saved, and priced later; a fallback that cannot be billed is left out.
+ */
+export function resolvePresetTarget(
+  description: ProviderDescription,
+  style: ApiStyle,
+  target: { readonly operation?: string | undefined; readonly model: string },
+  sources: PriceSources,
+  options: {
+    readonly primary: boolean;
+    readonly streaming: boolean;
+    readonly select?: { readonly params: Readonly<Record<string, unknown>>; readonly baseUrl: string | null } | undefined;
+  },
+): PresetTargetResolution {
+  const chosen = presetOperation(description, style, target.operation);
+  if (chosen === null) return { kind: "refused", reason: "no_operation" };
+  const operation = (options.streaming && streamingSibling(description, chosen)) || chosen;
+  const model = target.model;
+  const bill = billing(operation, sources, model);
+  if (bill.problem !== null && !options.primary) return { kind: "refused", reason: "unbillable", operation, model, bill };
+  const select = options.select;
+  const mode = select === undefined ? undefined : requestedServiceMode(description, select.baseUrl, select.params as Record<string, unknown>, model).mode;
+  return { kind: "admitted", operation, requested: model, model, bill, ...(mode !== undefined && !isStandardMode(mode) ? { mode } : {}) };
+}
+
+/** Each allowlist as a set, built once per list: a route's config is one object for the Worker's life, so serving and saving share it. */
+const LISTS = new WeakMap<readonly string[], ReadonlySet<string>>();
+
+/** A model list as a set for membership, the one cached set for that list; null when there is no list. */
+export function modelSet(models: readonly string[] | undefined): ReadonlySet<string> | null {
+  if (models === undefined) return null;
+  let set = LISTS.get(models);
+  if (set === undefined) LISTS.set(models, (set = new Set(models)));
+  return set;
+}
+
+/** A route's model names, a set for membership; null when it has no list. */
+function listOf(route: RouteModels): ReadonlySet<string> | null {
+  return modelSet(route.models);
+}
+
+/**
+ * The model names a request to `operation` on a route can carry: its fixed
+ * model, when it has one; otherwise the route's model list, or, with none,
+ * every model it could name that has a price of the connection's own or a
+ * rewrite, and the model a request naming none is sent with (`default`).
+ * `named` is the route's part, worked out once for all its operations.
+ */
+function candidateModels(operation: OperationDescription, named: readonly string[], listed: boolean): readonly string[] {
+  const location = operation.model;
+  if (location.in === "fixed") return [location.model];
+  const fallback = "default" in location ? location.default : undefined;
+  if (listed || fallback === undefined || named.includes(fallback)) return named;
+  return [...named, fallback];
+}
+
+/** The names `candidateModels` starts from on a route: its list, or the connection's own rates and the app's rewrites. */
+function routeNames(route: RouteModels, rewrites: Readonly<Record<string, string>> | undefined, sources: PriceSources): readonly string[] {
+  const listed = listOf(route);
+  if (listed !== null) return [...listed];
+  return [...new Set([...Object.keys(sources.rates() ?? {}), ...Object.keys(rewrites ?? {}), ...Object.values(rewrites ?? {})])];
+}
+
+/** One provider connection as an app's calls see it: its prices and what it can serve. */
+export interface ConnectionView {
+  readonly sources: PriceSources;
+  readonly description: ProviderDescription;
+  /** Its base URL, whose region a selected service mode takes (`requestedServiceMode`). */
+  readonly baseUrl?: string | null | undefined;
+}
+
+/** The parts of an app's configuration that decide which calls it lets through, read loosely. */
+export interface AppCallConfig {
+  readonly routing: {
+    readonly providers: Readonly<Record<string, { readonly operations: readonly string[]; readonly models?: readonly string[] | undefined }>>;
+    readonly model_rewrites?: Readonly<Record<string, string>> | undefined;
+  };
+  readonly presets?:
+    | Readonly<
+        Record<
+          string,
+          {
+            readonly provider: string;
+            readonly operation: string;
+            readonly model: string;
+            readonly params?: Readonly<Record<string, unknown>> | undefined;
+            readonly fallback?: readonly { readonly provider: string; readonly operation?: string | undefined; readonly model: string }[] | undefined;
+          }
+        >
+      >
+    | undefined;
+}
+
+/** Saving judges every operation, served yet or not (`ResolveOptions`). */
+const SAVING: ResolveOptions = { asIfServed: true };
+
+/** Counts the calls resolved while enumerating, beside `CHECK_PROBES`: tests read it to count work, never time. */
+export const RESOLVED_CALLS = { count: 0 };
+
+/**
+ * Every call an app lets through, at every entry point serving has, each
+ * resolved by the function serving calls there:
+ *
+ * - each proxy route: `resolveCall` over its enabled operations and every
+ *   model name a request to each can carry (`candidateModels`);
+ * - each model a request may name besides its own (`resolveAlternative`,
+ *   Vercel's fallback models);
+ * - each preset target (`resolvePresetTarget`), on the operation it picks and
+ *   its streaming sibling, in the service mode its `params` select. A
+ *   fallback serving cannot bill is included: serving would drop it without
+ *   a word, so saving judges it (`callGap`) and refuses it.
+ *
+ * Operations this build does not serve yet are judged as if they were.
+ *
+ * A connection whose rates cannot be read is named in `unreadable`, and its
+ * calls are left out: no decision about them can be made. A route with no
+ * model list allows any model with a price, our list's included: those are
+ * judged by a test over the price list, as no save could name them all.
+ */
+export function reachableCalls(
+  app: AppCallConfig,
+  connection: (slug: string) => ConnectionView | null,
+): { readonly calls: readonly AppCall[]; readonly unreadable: ReadonlySet<string> } {
+  const calls: AppCall[] = [];
+  const unreadable = new Set<string>();
+  const rewrites = app.routing.model_rewrites;
+  const guarded = (slug: string, collect: () => AppCall[]): void => {
+    try {
+      calls.push(...collect());
+    } catch (error) {
+      if (!(error instanceof UnreadableRates)) throw error;
+      unreadable.add(slug);
+    }
+  };
+  for (const [slug, route] of Object.entries(app.routing.providers)) {
+    const view = connection(slug);
+    if (view === null) continue;
+    const operations = view.description.operations.filter((operation) => route.operations.includes(operation.name));
+    guarded(slug, () => {
+      const found: AppCall[] = [];
+      const listed = listOf(route);
+      const named = routeNames(route, rewrites, view.sources);
+      for (const operation of operations) {
+        const names = candidateModels(operation, named, listed !== null);
+        for (const requested of names) {
+          RESOLVED_CALLS.count += 1;
+          const call = resolveCall(route, rewrites, view.sources, operation, requested, listed, SAVING);
+          if (call.kind === "admitted") found.push({ ...call, slug, entry: "proxy" });
+        }
+        if (view.description.alternativeModels === undefined) continue;
+        for (const other of names) {
+          RESOLVED_CALLS.count += 1;
+          const call = resolveAlternative(operation, view.sources, other, listed, SAVING);
+          if (call.kind === "admitted") found.push({ ...call, slug, entry: "alternative" });
+        }
+      }
+      return found;
+    });
+  }
+  for (const [name, preset] of Object.entries(app.presets ?? {})) {
+    const style = declaredOperation(preset.operation)?.style;
+    if (style === undefined) continue;
+    const targets = [{ provider: preset.provider, operation: preset.operation as string | undefined, model: preset.model }, ...(preset.fallback ?? [])];
+    targets.forEach((target, index) => {
+      const view = connection(target.provider);
+      if (view === null) return;
+      guarded(target.provider, () => {
+        const found: AppCall[] = [];
+        for (const streaming of [false, true]) {
+          RESOLVED_CALLS.count += 1;
+          const select = preset.params === undefined ? undefined : { params: preset.params, baseUrl: view.baseUrl ?? null };
+          // Every target as serving bills it once reached: serving leaves out a fallback it cannot bill without a word, so saving judges it instead.
+          const call = resolvePresetTarget(view.description, style, target, view.sources, { primary: true, streaming, select });
+          if (call.kind !== "admitted" || found.some((one) => one.operation === call.operation)) continue;
+          found.push({ ...call, slug: target.provider, entry: `preset:${name}:${index}` });
+        }
+        return found;
+      });
+    });
+  }
+  return { calls, unreadable };
+}
+
+/** A call's identity across a save: where it comes in, the connection, the operation, the model the request names, the one it is sent as, and the mode it selects. */
+export function callKey(call: AppCall): string {
+  return [call.entry, call.slug, call.operation.name, call.requested, call.model, call.mode === undefined ? "" : serviceModeName(call.mode)].join("\u0000");
+}
+
+/**
+ * The `save` rule for a call serving admits: every way its answers come out
+ * is charged. An operation that reports its own cost charges it whatever the
+ * price (`billingAt`); otherwise the call's price must charge every way, at
+ * every key value and mode (`chargeGap`), and a call with no price at all
+ * (a listed model whose price is gone) cannot. A call that selects a
+ * service mode (`mode`) also needs a price in that mode (`no_mode_price`).
+ * Returns the gap, or null.
+ */
+export function callGap(call: ReachableCall): Gap | null {
+  if (call.bill.reportsCost) return null;
+  if (call.bill.price === null) return { values: {}, mode: "standard", operation: call.operation.name };
+  if (call.mode !== undefined && billingAt(call.operation, call.bill.price, call.mode).problem === "no_mode_price") {
+    return { values: {}, mode: serviceModeName(call.mode), operation: call.operation.name, selectedMode: true };
+  }
+  return chargeGap(call.operation, call.bill.price.price);
+}
+
+/**
+ * The one rule for a model an app lists on a route: some operation the route
+ * enables serves it (`resolveCall`). An app may list `whisper-1` beside its
+ * chat models for its transcriptions: a call to one that cannot bill it is
+ * refused when made. Each call it admits is judged as any other (`callGap`).
+ * Returns null when it may be listed, or the refusal that stands for all:
+ * the first refusal over its price (`wrong_unit`, `no_price`,
+ * `unpriced_path`). An operation this build does not serve yet is judged as
+ * if it were, as every save judges it.
+ */
+export function listedModelRefusal(
+  route: RouteModels,
+  rewrites: Readonly<Record<string, string>> | undefined,
+  sources: PriceSources,
+  operations: readonly OperationDescription[],
+  listed: string,
+): CallRefusal | null {
+  let refusal: CallRefusal | null = null;
+  for (const operation of operations) {
+    const call = resolveCall(route, rewrites, sources, operation, listed, undefined, SAVING);
+    if (call.kind === "admitted") return null;
+    if (refusal === null && call.reason !== "model_not_allowed") refusal = call;
+  }
+  return refusal;
 }
 
 /**
@@ -401,8 +747,29 @@ export function savedPriceProblem(
     const empty = effectivePrices(price).find((one) => Object.keys(one.price.rates).length === 0);
     return empty === undefined ? null : { kind: "bills_nothing", values: empty.values, mode: empty.mode };
   }
-  // The connection does not know which operations an app will enable: a model with no listed kind
-  // needs only one it charges fully; the app save refuses the ones it charges partly.
-  const gap = firstGap(operations, price, { partialBlocks: price.kind !== undefined });
+  // The connection does not know which operations an app will enable: its own rates must charge some
+  // operation fully, at every key value and mode. The apps that route to it are judged call by call when
+  // its rates are saved (`../admin/apps.ts`, `checkConnectionRates`).
+  const gap = ownRatesGap(operations, price);
   return gap === null ? null : { kind: "bills_nothing", ...gap };
+}
+
+/**
+ * The first key values and mode at which no operation charges `price` fully
+ * from its own rates, or null: a connection's rates must be usable somewhere.
+ * An operation that reports its own cost does not count: the rates must
+ * charge something themselves. The first operation reaching it only partly is
+ * named, when one does.
+ */
+function ownRatesGap(operations: readonly OperationDescription[], price: ModelPrice): Gap | null {
+  const reachOf = reaches(price);
+  for (const candidate of keyCandidates(price).candidates) {
+    for (const mode of servedModes(price)) {
+      const all = operations.map((operation) => reachOf(operation, mode, candidate.values));
+      if (all.includes("full")) continue;
+      const partly = all.indexOf("partial");
+      return { values: candidate.values, mode: serviceModeName(mode), ...(partly === -1 ? {} : { operation: operations[partly]!.name }) };
+    }
+  }
+  return null;
 }

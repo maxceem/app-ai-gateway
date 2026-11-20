@@ -39,7 +39,7 @@ import type { ProviderDescription } from "../providers/operation.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
-import { parseBody } from "./apps.ts";
+import { checkConnectionRates, checkNewConnection, parseBody } from "./apps.ts";
 import { planCap } from "./plan-caps.ts";
 import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
@@ -288,6 +288,9 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
   const servingJson = servingProvidersJson(description, body.servingProviders);
+  const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
+  // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
+  await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type, baseUrl }, newRates);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
@@ -308,7 +311,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         baseUrl,
         cloudflareJson,
         servingJson,
-        body.pricing === undefined ? null : JSON.stringify(ratesFromPricing(body.pricing, body.type)),
+        newRates === null ? null : JSON.stringify(newRates),
         actor.userId,
         now,
         now,
@@ -415,12 +418,20 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       : description === null
         ? null
         : servingProvidersJson(description, body.servingProviders);
-  const rates =
-    body.pricing === undefined
-      ? current.rates_json
-      : body.pricing === null
-        ? null
-        : JSON.stringify(ratesFromPricing(body.pricing, current.type));
+  const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
+  if (body.pricing !== undefined) {
+    // Every change of rates, whatever its shape (a replacement, a deletion inside it, or `null`, every
+    // model's rate deleted), is judged against the apps that route to this connection.
+    const before = (() => {
+      try {
+        return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
+      } catch {
+        return null;
+      }
+    })();
+    await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type, baseUrl }, before, newRates);
+  }
+  const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(
     `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, cloudflare_gateway_json = ?,
        serving_providers_json = ?, rates_json = ?, revision = revision + 1, updated_at = ?

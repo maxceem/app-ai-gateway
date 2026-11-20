@@ -3,9 +3,9 @@
  * with instead (`alternativeModels`, Vercel's fallback models). The one place
  * they are judged and priced, for the proxy path and presets alike:
  *
- * - each must pass the same model policy as the request's own model, and be
- *   billable by the same rule (`../pricing/billability.ts`), or the request
- *   is refused before it spends anything;
+ * - each is resolved by the rule saving runs too (`resolveAlternative`): the
+ *   same model policy as the request's own model, and the same admission, or
+ *   the request is refused before it spends anything;
  * - the charge is priced at the model the answer says served the request, if
  *   it is one of them, in the service mode the request asks of that model's
  *   provider (`chargedAs`);
@@ -14,7 +14,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { billing, type Billing, type PriceSources } from "../pricing/billability.ts";
+import { modelSet, resolveAlternative, type Billing, type PriceSources } from "../pricing/billability.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { fieldValue, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
@@ -50,18 +50,19 @@ export function judgedAlternatives(
     throw new GatewayError(400, "invalid_request", `${field} must be a list of model ids`);
   }
   const judged = new Map<string, Alternative>();
+  const allowed = modelSet(policy.allowed);
   for (const model of listed as string[]) {
-    if (policy.allowed !== undefined && !policy.allowed.includes(model)) {
-      throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });
-    }
-    const bill = billing(operation, policy.sources, model);
-    // The request's own model's rule: a model never served is refused; one the
-    // app lists by name is served, and priced later if its price has gone.
-    if (bill.problem === "wrong_unit" || (bill.problem === "no_price" && policy.allowed === undefined)) {
+    // Resolved by the one rule saving runs too (`resolveAlternative`).
+    const call = resolveAlternative(operation, policy.sources, model, allowed);
+    if (call.kind === "refused") {
+      if (call.reason === "model_not_allowed") {
+        throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });
+      }
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
         data: { model, field },
       });
     }
+    const bill = call.bill;
     // Read with that model's provider's table: one request may name an
     // Anthropic model and a Gemini one, whose tiers mean different things.
     judged.set(model, { billing: bill, requestedMode: requestedServiceMode(description, policy.baseUrl, body, model) });
