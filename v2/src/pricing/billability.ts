@@ -30,7 +30,7 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import { rewrittenModel, type OperationDescription } from "../providers/operation.ts";
+import { modelReachable, type OperationDescription } from "../providers/operation.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
@@ -305,8 +305,8 @@ export function listedModelProblem(
  * priced was served in v1), so the app save closes the hole: no operation it
  * enables may reach such a model in some ways and not others. A model none of
  * them reaches is fine; its calls are refused when made. Nor is one the
- * app's rewrites always send as another model on an operation
- * (`rewrittenModel`, the rule serving uses): that operation never charges it.
+ * app's rewrites put out of reach on an operation (`modelReachable`, the
+ * rule serving uses): that operation never charges it.
  */
 export function partialCustomerModel(
   operations: readonly OperationDescription[],
@@ -315,7 +315,7 @@ export function partialCustomerModel(
 ): { readonly model: string; readonly operation: string } | null {
   if (operations.length === 0) return null;
   for (const model of Object.keys(connection.rates() ?? {})) {
-    const reaching = operations.filter((operation) => rewrittenModel(operation, model, rewrites) === model);
+    const reaching = operations.filter((operation) => modelReachable(operation, model, rewrites));
     if (reaching.length === 0) continue;
     const resolved = resolve(connection, model);
     if (resolved === null) continue;

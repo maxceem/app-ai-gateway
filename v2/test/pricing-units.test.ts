@@ -307,6 +307,13 @@ describe("request measures and headers", () => {
     expect(priceInServedMode(price, noCredits)).toMatchObject({ unit: "audio_seconds", cost: 261_667 });
     expect(priceInServedMode(price, { ...counted({ characters: 9_000 }), estimatedUnits: ["characters" as const] })).toMatchObject({ unit: "characters" });
   });
+
+  it("prices rank by rank, the floor too: a usage measure too large to store never voids the credits that win (4b A1)", () => {
+    const price = priced({ per_credit: 50_000, per_second: 3e12 });
+    const usage = { ...counted({ credits: 5_000 }), audioSeconds: 3_600, secondaryUnits: ["audio_seconds" as const] };
+    expect(priceInServedMode(price, usage, STANDARD_MODE, true)).toMatchObject({ unit: "credits", cost: 250_000, estimated: true });
+    expect(priceInServedMode(price, usage)).toMatchObject({ unit: "credits", cost: 250_000 });
+  });
 });
 
 describe("outbound fields", () => {

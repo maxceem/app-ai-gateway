@@ -217,6 +217,17 @@ describe("ElevenLabs operations", () => {
     });
     await expect(checkAppConfig(env.DB, ACCOUNT_ID, config())).rejects.toMatchObject({ code: "pricing_not_configured", data: { model: "scribe_v1" } });
     await expect(checkAppConfig(env.DB, ACCOUNT_ID, config({ scribe_v1: "scribe_v2" }))).resolves.toBeDefined();
+    // A rewrite is applied once, so another rewrite's target stays reachable: alias → scribe_v1 sends scribe_v1 (4b A3).
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config({ alias: "scribe_v1", scribe_v1: "scribe_v2" }))).rejects.toMatchObject({
+      code: "pricing_not_configured",
+      data: { model: "scribe_v1" },
+    });
+    // Removing the rewrite later, with the route unchanged, is judged too (4b A4).
+    const saved = config({ scribe_v1: "scribe_v2" });
+    const stored = { providers: saved.routing.providers, presets: {}, rewrites: saved.routing.model_rewrites! };
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(), stored)).rejects.toMatchObject({ code: "pricing_not_configured", data: { model: "scribe_v1" } });
+    // A change elsewhere, with the rewrite kept, still saves.
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config({ scribe_v1: "scribe_v2" }), stored)).resolves.toBeDefined();
   });
 
   it("judges speech to text on every way its answers come: credits and duration, credits only, duration only (4b F8)", () => {

@@ -534,6 +534,22 @@ export function rewrittenModel(
   return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
 }
 
+/**
+ * Whether a request can reach an operation's provider as this model, after
+ * the app's rewrites (`rewrittenModel`): a rewrite is applied once, so a
+ * model is out of reach only when it is a rewrite's source and no rewrite's
+ * target (`alias` → `scribe_v1` reaches `scribe_v1`, even beside
+ * `scribe_v1` → `scribe_v2`).
+ */
+export function modelReachable(
+  operation: Pick<OperationDescription, "model">,
+  model: string,
+  rewrites: Readonly<Record<string, string>> | undefined,
+): boolean {
+  if (rewrittenModel(operation, model, rewrites) === model) return true;
+  return Object.values(rewrites ?? {}).includes(model);
+}
+
 export function defineOperation<const P extends string, const U extends string = P>(
   operation: OperationInput<P, U>,
 ): OperationDescription {

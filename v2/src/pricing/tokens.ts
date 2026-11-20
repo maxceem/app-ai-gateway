@@ -296,7 +296,28 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | 
   const billed = preferred(unitOptions(price, usage, () => true, 0));
   if (billed !== null) return billed;
   if (billsTokens) return undefined;
-  return preferred([...unitOptions(price, usage, () => true, 1), ...unitOptions(price, usage, () => true, 2)]);
+  return atBestRank(price, usage, [1, 2]);
+}
+
+const RANKS: readonly MeasureRank[] = [0, 1, 2];
+
+/**
+ * The dearest charge at the best rank a price can bill, rank by rank: a
+ * lower rank's measures are priced only when nothing in the higher ones can
+ * bill, so a measure that never wins never voids one that does (a duration
+ * too large to store beside credits). Rank 0 includes the usage's tokens.
+ * Throws `MoneyError` when a cost it must compare cannot be stored.
+ */
+function atBestRank(price: ModelPrice, usage: UsageObservation, ranks: readonly MeasureRank[] = RANKS): Candidate | null {
+  for (const rank of ranks) {
+    const options = unitOptions(price, usage, () => true, rank);
+    if (rank === 0 && usage.noTokens !== true) {
+      const tokens = tokenCandidate(price, usage);
+      if (tokens !== null) options.push(tokens);
+    }
+    if (options.length > 0) return preferred(options);
+  }
+  return null;
 }
 
 /**
@@ -310,16 +331,13 @@ function onUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens
 }
 
 /**
- * The dearest charge a price can make for a usage, at the best measure rank
- * it can bill (`preferred`): across the billing units the provider reported
- * and its tokens; only when it can bill none of them, across the usage
- * measures reported beside them; only then across the units worked out from
- * the request. Throws `MoneyError` when a cost it must compare cannot be stored.
+ * The dearest charge a price can make for a usage, rank by rank
+ * (`atBestRank`): at the best rank it can bill, so a lower rank's measure is
+ * never priced when a higher one bills. Throws `MoneyError` when a cost it
+ * must compare cannot be stored.
  */
 function dearestCharge(price: ModelPrice, usage: UsageObservation): Candidate | null {
-  const tokens = usage.noTokens === true ? null : tokenCandidate(price, usage);
-  const ranks = [0, 1, 2] as const;
-  return preferred([...ranks.flatMap((rank) => unitOptions(price, usage, () => true, rank)), ...(tokens === null ? [] : [tokens])]);
+  return atBestRank(price, usage);
 }
 
 /**
@@ -392,17 +410,17 @@ export type ChargePricing = Pricing & {
  *
  * 1. Each candidate (the price, or one per listed value of a price key the
  *    request named no listed value for) is priced on its own, never merged,
- *    in the service mode that served the request, billing the measure the
- *    provider reported first, else the request's estimate.
- * 2. The dearest candidate that bills a reported measure wins; only when none
- *    can, the dearest that bills the estimate.
+ *    in the service mode that served the request, rank by rank
+ *    (`measureRank`): the provider's billing unit, then a usage measure it
+ *    reported beside it, then the request's estimate.
+ * 2. The candidate at the best rank wins; within it, the dearest.
  * 3. An estimate (a mode or key value with no price, a missing report, or
  *    `doubt`: a mode value the gateway does not know, a served model it
  *    cannot tell, ...) is floored at the model's own standard price, before
  *    any key value or mode: the dearer of that price on the unit the
- *    estimate billed, and the dearest charge that price can make across every
- *    measure the provider reported (the request's estimate only when none can
- *    be billed). An estimate bills more than either, never less (`AGENTS.md`).
+ *    estimate billed, and the dearest charge that price can make at the best
+ *    rank it can bill, priced rank by rank. An estimate bills more than
+ *    either, never less (`AGENTS.md`).
  *
  * A candidate whose cost cannot be stored is skipped and logged; a floor that
  * cannot be stored leaves the usage unpriced, never billed below it.
@@ -435,8 +453,9 @@ export function priceInServedMode(
   if (!estimated) return withCost({ ...chosen, estimated: false, measured });
   // The one floor, both parts applied: the dearer of (a) the model's own standard price on the unit the
   // estimate billed, so it never bills below the standard rate for its own unit, and (b) the dearest charge
-  // the standard price can make for this usage (`dearestCharge`), so it never bills below base whichever
-  // unit won. A floor that cannot be stored is never dropped for the lower estimate: the charge is left
+  // the standard price can make for this usage, rank by rank (`dearestCharge`), so it never bills below base
+  // whichever unit won. A standard price that cannot bill the rank that won still floors it at the best rank
+  // it can bill: an estimate never bills below the model's own price. A floor that cannot be stored is never dropped for the lower estimate: the charge is left
   // unresolved.
   let floor: Candidate | null;
   try {

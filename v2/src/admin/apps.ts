@@ -122,6 +122,8 @@ interface ConnectionRow {
 export interface Changes {
   readonly routing: (slug: string) => boolean;
   readonly rewrite: (source: string) => boolean;
+  /** Any rewrite is new, changed or removed: which models a route reaches may have changed. */
+  readonly anyRewrite: boolean;
   readonly preset: (slug: string) => boolean;
 }
 
@@ -142,9 +144,11 @@ export function changesAgainst(stored: StoredEntries, config: AppConfig): Change
       return answers.get(key)!;
     };
   };
+  const rewrite = once((source) => differs(stored.rewrites, rewrites, source));
   return {
     routing: once((slug) => differs(stored.providers, config.routing.providers, slug)),
-    rewrite: once((source) => differs(stored.rewrites, rewrites, source)),
+    rewrite,
+    anyRewrite: [...Object.keys(stored.rewrites), ...Object.keys(rewrites)].some(rewrite),
     preset: once((slug) => differs(stored.presets, config.presets ?? {}, slug)),
   };
 }
@@ -228,7 +232,8 @@ export async function checkAppConfig(
   }
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
     // A route with no model list allows any model, the connection's own included: none may be charged only partly.
-    if (routing.models !== undefined || !changed.routing(slug)) continue;
+    // Judged whenever which models it reaches may change: the route (its model list included) or any rewrite.
+    if (routing.models !== undefined || (!changed.routing(slug) && !changed.anyRewrite)) continue;
     const connection = await connectionRow(slug);
     const description = connection === null ? null : builtInProvider(connection.type);
     if (connection === null || description === null) continue;
