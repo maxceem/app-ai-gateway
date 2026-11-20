@@ -750,42 +750,43 @@ export async function sendAttempts(
       });
       continue;
     }
-    // Only now is a fallback really sent: the failed answer before it is charged and let go.
-    if (previous !== null) {
-      retire(c, previous);
-      previous = null;
-    }
-    const body = prepared.body();
-    const headers = upstreamHeaders(c.req.raw.headers);
-    for (const name of stripped) headers.delete(name);
-    for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
-      if (!headers.has(name)) headers.set(name, value);
-    }
-    // A JSON body is sent as JSON whatever type the client named, as v1. An
-    // untouched form keeps the client's type and boundary; a changed one gets
-    // the type fetch writes for it.
-    if (body.contentType === null) headers.delete("content-type");
-    else headers.set("content-type", body.contentType);
-    // A callback, so a key containing `$&` or `$1` is sent as it is.
-    headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
-    const origin = upstreamOrigin(connection, description, prepared.hostKey);
-    const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
-
-    // Checked just before each fetch: nothing is sent for an app that went
-    // away. The app's own signal is never passed to the provider, so an
-    // answer already on its way is read to the end and charged.
-    if (clientGone(c)) {
-      throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
-    }
-    const providerStart = Date.now();
-    deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
-    const remainingMs = deadline - providerStart;
-    if (remainingMs <= 0) throw budgetExhausted(index);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), remainingMs);
-    let upstream: Response;
+    // Everything up to the fetch can still end the call. Until the fetch is
+    // under way, a held failed answer is kept, and any exit returns it.
+    let fetching: Promise<Response>;
+    let controller: AbortController;
+    let timer: ReturnType<typeof setTimeout>;
+    let providerStart: number;
     try {
-      upstream = await fetch(url, {
+      const body = prepared.body();
+      const headers = upstreamHeaders(c.req.raw.headers);
+      for (const name of stripped) headers.delete(name);
+      for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
+        if (!headers.has(name)) headers.set(name, value);
+      }
+      // A JSON body is sent as JSON whatever type the client named, as v1. An
+      // untouched form keeps the client's type and boundary; a changed one gets
+      // the type fetch writes for it.
+      if (body.contentType === null) headers.delete("content-type");
+      else headers.set("content-type", body.contentType);
+      // A callback, so a key containing `$&` or `$1` is sent as it is.
+      headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
+      const origin = upstreamOrigin(connection, description, prepared.hostKey);
+      const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
+
+      // Checked just before each fetch: nothing is sent for an app that went
+      // away. The app's own signal is never passed to the provider, so an
+      // answer already on its way is read to the end and charged.
+      if (clientGone(c)) {
+        throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
+      }
+      providerStart = Date.now();
+      deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
+      const remainingMs = deadline - providerStart;
+      if (remainingMs <= 0) throw budgetExhausted(index);
+      controller = new AbortController();
+      const abort = controller;
+      timer = setTimeout(() => abort.abort(), remainingMs);
+      fetching = fetch(url, {
         method: c.req.method,
         headers,
         body: body.form ?? (body.bytes as Uint8Array<ArrayBuffer>),
@@ -793,6 +794,18 @@ export async function sendAttempts(
         redirect: "manual",
         signal: controller.signal,
       });
+    } catch (error) {
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      throw error;
+    }
+    // The fallback is under way: the failed answer before it is charged and let go.
+    if (previous !== null) {
+      retire(c, previous);
+      previous = null;
+    }
+    let upstream: Response;
+    try {
+      upstream = await fetching;
     } catch (error) {
       const timedOut = controller.signal.aborted;
       log("warn", timedOut ? "provider_ttfb_timeout" : "provider_request_failed", {

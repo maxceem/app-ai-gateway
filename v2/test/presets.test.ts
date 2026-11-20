@@ -437,6 +437,31 @@ describe("presets", () => {
     }
   });
 
+  it("passes the held 503 on when building a fallback's body uses up the budget", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { c, done } = fakeContext();
+      const requestId = `req_${crypto.randomUUID()}`;
+      const slow = unitAttempt(2, {
+        requestId,
+        body: vi.fn(() => {
+          vi.setSystemTime(Date.now() + 121_000);
+          return jsonBody();
+        }),
+      });
+      fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
+      const response = await sendAttempts(c, [], [unitAttempt(1, { requestId }), slow]);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "busy" } });
+      await done();
+      expect(slow.body).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect((await chargesOfCall(requestId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("answers from the first attempt at once, never opening a fallback's key it does not need", async () => {
     const { c, done } = fakeContext();
     const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)) });
