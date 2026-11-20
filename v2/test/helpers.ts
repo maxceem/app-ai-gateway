@@ -7,6 +7,7 @@ import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { encode } from "cbor-x";
+import { vi } from "vitest";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { base64url, requestClientData } from "../src/client-auth/request-proof.ts";
@@ -165,6 +166,63 @@ export function clearCaches(): void {
   clearAllCaches();
   appCache.clear();
   resetStallHold();
+}
+
+/**
+ * Slow fakes for tests, without real timers. A fake awaits `held()`, so it
+ * answers only once the test calls `release()`. `reached(n)` resolves once
+ * `n` fakes are waiting, so a test can move fake time only after the code
+ * under test has started its deadline. Call `release()` in `afterEach` so
+ * nothing is left waiting.
+ */
+export function slowFakes(): {
+  held: () => Promise<void>;
+  reached: (count?: number) => Promise<void>;
+  release: () => void;
+} {
+  const waiting: (() => void)[] = [];
+  const watchers: { count: number; resolve: () => void }[] = [];
+  let arrived = 0;
+  const notify = () => {
+    for (const watcher of [...watchers]) {
+      if (arrived >= watcher.count) {
+        watchers.splice(watchers.indexOf(watcher), 1);
+        watcher.resolve();
+      }
+    }
+  };
+  return {
+    held: () => {
+      const answer = new Promise<void>((resolve) => waiting.push(resolve));
+      arrived += 1;
+      notify();
+      return answer;
+    },
+    reached: (count = 1) =>
+      new Promise<void>((resolve) => {
+        watchers.push({ count, resolve });
+        notify();
+      }),
+    release: () => {
+      arrived = 0;
+      for (const go of waiting.splice(0)) go();
+    },
+  };
+}
+
+/** Whether a promise has settled yet, read without awaiting it. */
+export function watch(promise: Promise<unknown>): { settled: boolean } {
+  const state = { settled: false };
+  promise.then(
+    () => (state.settled = true),
+    () => (state.settled = true),
+  );
+  return state;
+}
+
+/** Fake time for deadline tests: timers and the clock, nothing else. */
+export function useFakeClock(): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 }
 
 /** The auth events of one app, oldest first. */

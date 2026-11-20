@@ -2,18 +2,27 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appCache, loadApp } from "../src/apps/app-records.ts";
 import { readOrKnown, resetStallHold, STALE_READ_MAX_MS, STALL_HOLD_MS } from "../src/core/stale-read.ts";
-import { clearCaches, seedApp } from "./helpers.ts";
+import { clearCaches, seedApp, slowFakes, useFakeClock, watch } from "./helpers.ts";
 
 const BUDGET_MS = 20;
 const transient = () => new Error("D1_ERROR: Network connection lost.");
-const later = <V>(value: V, ms: number) => new Promise<V>((resolve) => setTimeout(() => resolve(value), ms));
+const slow = slowFakes();
+/** A read that answers only once the test lets it: past any budget, with no real timer. */
+const late = async <V>(value: V): Promise<V> => {
+  await slow.held();
+  return value;
+};
 
 beforeEach(() => {
   clearCaches();
   resetStallHold();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  slow.release();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("readOrKnown", () => {
   const known = (ageMs = 60_000) => ({ value: "known", storedAt: Date.now() - ageMs });
@@ -25,7 +34,12 @@ describe("readOrKnown", () => {
   });
 
   it("answers what the read answers in time, even a refusal", async () => {
-    await expect(readOrKnown("t", known(), () => later("fresh", 1), BUDGET_MS)).resolves.toBe("fresh");
+    useFakeClock();
+    const read = readOrKnown("t", known(), () => late("fresh"), BUDGET_MS);
+    await slow.reached();
+    await vi.advanceTimersByTimeAsync(1);
+    slow.release();
+    await expect(read).resolves.toBe("fresh");
     const refusal = new Error("App is not registered");
     await expect(readOrKnown("t", known(), () => Promise.reject(refusal), BUDGET_MS)).rejects.toBe(refusal);
   });
@@ -37,13 +51,21 @@ describe("readOrKnown", () => {
   });
 
   it("serves the known record at the budget, then skips D1 while the stall holds", async () => {
-    const slow = vi.fn(() => later("fresh", BUDGET_MS * 10));
-    await expect(readOrKnown("t", known(), slow, BUDGET_MS)).resolves.toBe("known");
-    const skipped = vi.fn(() => later("fresh", 1));
+    useFakeClock();
+    const stalled = vi.fn(() => late("fresh"));
+    const read = readOrKnown("t", known(), stalled, BUDGET_MS);
+    const answered = watch(read);
+    await slow.reached();
+    await vi.advanceTimersByTimeAsync(BUDGET_MS - 1);
+    expect(answered.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(answered.settled).toBe(true);
+    await expect(read).resolves.toBe("known");
+    const skipped = vi.fn(() => Promise.resolve("fresh"));
     await expect(readOrKnown("t", known(), skipped, BUDGET_MS)).resolves.toBe("known");
     expect(skipped).not.toHaveBeenCalled();
-    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + STALL_HOLD_MS + 1);
-    await expect(readOrKnown("t", { value: "known", storedAt: clock() - 60_000 }, skipped, BUDGET_MS)).resolves.toBe("fresh");
+    vi.setSystemTime(Date.now() + STALL_HOLD_MS + 1);
+    await expect(readOrKnown("t", known(), skipped, BUDGET_MS)).resolves.toBe("fresh");
   });
 });
 

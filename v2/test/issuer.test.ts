@@ -258,7 +258,7 @@ describe("issuer JWT verification", () => {
     });
 
     const saved = jwksFetch.timeoutMs;
-    jwksFetch.timeoutMs = 50;
+    jwksFetch.timeoutMs = 50; // real-timer: workerd's AbortSignal.timeout runs on the runtime's clock, which fake timers cannot drive
     try {
       await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
         status: 503,
