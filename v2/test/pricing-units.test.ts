@@ -343,6 +343,9 @@ describe("request measures and headers", () => {
     const base = { kind: "response_header", header: "h", unit: "credits", headerRole: "cross_check" } as const;
     // @ts-expect-error A cross-check needs the request's measure to bill.
     const noEstimate: Meter = base;
+    // @ts-expect-error Only a cross-check takes a rule that puts the request's measure in doubt.
+    const doubtless: Meter = { kind: "response_header", header: "h", unit: "credits", inDoubtWhen: { in: "body", field: "x", kind: "list" } };
+    expect(doubtless).toBeDefined();
     // @ts-expect-error A cross-check does not read the body.
     const withBody: Meter = { ...base, estimate: { measure: "characters", field: "text", unit: "characters" }, body: { style: "openai", units: ["audio_seconds"] } };
     const fine: Meter = { ...base, estimate: { measure: "characters", field: "text", unit: "characters" } };

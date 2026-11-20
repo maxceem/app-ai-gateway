@@ -313,6 +313,32 @@ describe("text to speech through the proxy", () => {
     expect(await chargesOf(appId)).toMatchObject([{ operation: "elevenlabs.tts_stream", model: "eleven_flash_v2_5", unit: "characters", cost_nano: 1_320_000 }]);
   });
 
+  it("bills the dearer of the characters and the credits, as an estimate, when a pronunciation dictionary may expand the text (Astra A1)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
+    const dictionary = [{ pronunciation_dictionary_id: "dict_1", version_id: "v_1" }];
+    const send = async (credits: string, locators: unknown[]) => {
+      fetchSpy.mockResolvedValueOnce(audio(credits));
+      const { response } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/text-to-speech/${VOICE}`, key, {
+        text: "WHO",
+        model_id: "eleven_multilingual_v2",
+        pronunciation_dictionary_locators: locators,
+      });
+      expect(response.status).toBe(200);
+    };
+    // An alias expands "WHO" to "World Health Organization": 3 characters imply about 1.2 credits, the header says 10.
+    await send("10", dictionary);
+    // The header says less than the characters cost: the characters bill, still as an estimate.
+    await send("0.5", dictionary);
+    // An empty list asks for no dictionary: the characters bill exactly.
+    await send("10", []);
+    expect(await chargesOf(appId)).toMatchObject([
+      // 10 credits at $0.0002 ($0.002), over 3 characters at $80 per million ($0.00024).
+      { status: "ok", unit: "credits", measured: "estimated", cost_nano: 2_000_000 },
+      { status: "ok", unit: "characters", measured: "estimated", cost_nano: 240_000 },
+      { status: "ok", unit: "characters", measured: "complete", cost_nano: 240_000 },
+    ]);
+  });
+
   it("bills the request's characters exactly when the header is missing", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.tts"] });
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);

@@ -123,7 +123,13 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
         // The request's measure bills, exactly, with the header beside it
         // when it comes; without the header, the measure alone.
         const exact = { ...NO_TOKENS, units: Object.fromEntries(measures.map((measure) => [measure.unit, sample(measure.unit)])) };
-        return [[{ ...exact, units: { [meter.unit]: sample(meter.unit), ...exact.units }, secondaryUnits: [meter.unit] }, exact]];
+        const way: UsageObservation[] = [{ ...exact, units: { [meter.unit]: sample(meter.unit), ...exact.units }, secondaryUnits: [meter.unit] }, exact];
+        // A request whose measure is in doubt: every unit an estimate, the dearest billed.
+        if (meter.inDoubtWhen !== undefined) {
+          const both = { ...exact, units: { [meter.unit]: sample(meter.unit), ...exact.units } };
+          way.push({ ...both, estimatedUnits: Object.keys(both.units) as Unit[] }, { ...exact, estimatedUnits: Object.keys(exact.units) as Unit[] });
+        }
+        return [way];
       }
       const body = Object.fromEntries((meter.body?.units ?? []).map((unit) => [unit, sample(unit)]));
       const header = { [meter.unit]: sample(meter.unit) };

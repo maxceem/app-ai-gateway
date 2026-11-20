@@ -152,6 +152,7 @@ const MAX_PRICE_KEY_VALUE = 100;
 export function switchedOn(fields: RequestFields, ref: FieldRef, kind: SwitchKind): boolean {
   const values = ref.in === "query" ? fields.query.getAll(ref.field) : [fieldValue(fields, ref)].filter((value) => value !== undefined);
   if (kind === "text") return values.length > 0;
+  if (kind === "list") return values.some((value) => Array.isArray(value) && value.length > 0);
   return values.some((value) => !(value === null || value === false || value === "false" || value === ""));
 }
 
@@ -216,6 +217,8 @@ export interface RequestFacts {
   readonly servedModels?: Readonly<Record<string, readonly string[]>>;
   /** The audio is billed once per channel (`perChannelWhen`). */
   readonly perChannel?: true;
+  /** The provider may bill more than the request's measure (`inDoubtWhen`). */
+  readonly measureInDoubt?: true;
 }
 
 /**
@@ -237,6 +240,8 @@ export function requestFacts(
   const served = servedModels(operation, fields);
   const { meter } = operation;
   const perChannel = meter.kind === "response_json" && meter.perChannelWhen !== undefined && switchedOn(fields, meter.perChannelWhen, "flag");
+  const doubtWhen = meter.kind === "response_header" ? meter.inDoubtWhen : undefined;
+  const inDoubt = doubtWhen !== undefined && switchedOn(fields, doubtWhen, doubtWhen.kind);
   return {
     ...(measured !== null ? { requestUsage: measured } : {}),
     ...(priceKeys !== undefined ? { priceKeys } : {}),
@@ -244,6 +249,7 @@ export function requestFacts(
     ...(answered.length > 0 ? { answeredKeys: answered } : {}),
     ...(served !== null ? { servedModels: served } : {}),
     ...(perChannel ? { perChannel: true as const } : {}),
+    ...(inDoubt ? { measureInDoubt: true as const } : {}),
   };
 }
 

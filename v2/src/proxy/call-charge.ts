@@ -87,6 +87,8 @@ export interface CallAttempt {
   readonly servedModels?: Readonly<Record<string, readonly string[]>>;
   /** The audio is billed once per channel (`perChannelWhen`, `./meter.ts`). */
   readonly perChannel?: true;
+  /** The provider may bill more than the request's measure (`inDoubtWhen`, `./meter.ts`). */
+  readonly measureInDoubt?: true;
 }
 
 export interface AttemptOutcome {

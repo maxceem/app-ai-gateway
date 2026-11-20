@@ -39,6 +39,10 @@ const ttsMeter = {
   unit: "credits",
   estimate: { measure: "characters", field: "text", unit: "characters" },
   headerRole: "cross_check",
+  // ElevenLabs documents that pronunciation dictionaries can change the billed
+  // characters: an alias may expand the text. Then the characters are an
+  // estimate, and the credits bill instead when they cost more.
+  inDoubtWhen: { in: "body", field: "pronunciation_dictionary_locators", kind: "list" },
 } as const;
 
 const ttsModel = { in: "body", field: "model_id", default: DEFAULT_TTS_MODEL } as const;

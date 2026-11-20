@@ -383,6 +383,17 @@ function crossChecked(
 }
 
 /**
+ * A cross-checked usage whose request measure may be less than the provider
+ * bills (`inDoubtWhen`): every unit becomes an estimate, so the price bills
+ * the dearest of them, the header's amount included.
+ */
+function inDoubt(usage: UsageObservation | null): UsageObservation | null {
+  if (usage === null) return null;
+  const { secondaryUnits: _secondary, ...rest } = usage;
+  return { ...rest, estimatedUnits: Object.keys(usage.units ?? {}) as Unit[] };
+}
+
+/**
  * Logs a cross-check header at `info` when it looks wrong: zero, or far from
  * what the model's list price implies. The list price states both rates, so
  * their ratio is the header's expected amount per unit of the request's
@@ -429,6 +440,8 @@ export function attemptUsage(
     readonly priceKeys?: Readonly<Record<string, string>>;
     readonly answeredKeys?: readonly string[];
     readonly perChannel?: true;
+    /** The provider may bill more than the request's measure (`inDoubtWhen`). */
+    readonly measureInDoubt?: true;
     /** The model's list rates, which say what a cross-check header should report. */
     readonly listedRate?: ListedRate;
   },
@@ -447,7 +460,8 @@ export function attemptUsage(
       break;
     case "response_header": {
       if (meter.headerRole === "cross_check") {
-        usage = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit, attempt.listedRate ?? null);
+        const checked = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit, attempt.listedRate ?? null);
+        usage = attempt.measureInDoubt === true ? inDoubt(checked) : checked;
         break;
       }
       // Every measure is kept: the amount the header reports, what the body

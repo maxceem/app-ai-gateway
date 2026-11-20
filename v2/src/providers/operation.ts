@@ -206,6 +206,7 @@ export type Meter =
            */
           readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
           readonly headerRole?: undefined;
+          readonly inDoubtWhen?: undefined;
         }
       | {
           readonly estimate: HeaderEstimate;
@@ -220,6 +221,14 @@ export type Meter =
            * `estimate`, and does not take `body`.
            */
           readonly headerRole: "cross_check";
+          /**
+           * A request field that may make the provider bill more than the
+           * request's measure: ElevenLabs' pronunciation dictionaries can
+           * change the billed characters. When it is on, the measure and the
+           * header's amount are both estimates, and the dearer at the price
+           * bills, so an alias that expands the text is not underbilled.
+           */
+          readonly inDoubtWhen?: SwitchRef;
         }
     ))
   /** For providers that report no usage: measured from the request. */
@@ -312,8 +321,10 @@ export interface BackgroundOption {
  *   `"false"`, null or empty). `redact=pii` is on; `redact=false` is off.
  * - `text`: free text that may repeat, such as Deepgram's `keyterm`. On when
  *   present with any value, even the text `false`. Its text is never stored.
+ * - `list`: a list, such as ElevenLabs' `pronunciation_dictionary_locators`.
+ *   On when it has at least one item.
  */
-export type SwitchKind = "flag" | "text";
+export type SwitchKind = "flag" | "text" | "list";
 
 /** A request field that turns on a charge, and how it is read. */
 export type SwitchRef = FieldRef & { readonly kind: SwitchKind };
