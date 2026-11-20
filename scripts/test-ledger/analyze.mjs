@@ -316,7 +316,10 @@ export function analyze(allRuns, { now = new Date(), repo, rules = RULES } = {})
       moduleMs.get(m.file).loadMs.push(m.loadMs);
     }
   }
+  // Only files that exist here, like the candidates: runs from other branches
+  // (such as a v2 branch with its own test folder) are recorded too.
   const costliestFiles = [...moduleMs]
+    .filter(([file]) => view.exists(file))
     .map(([file, m]) => ({ file, medianMs: median(m.ms), medianLoadMs: median(m.loadMs), runs: m.ms.length }))
     .sort((a, b) => b.medianMs - a.medianMs || (a.file < b.file ? -1 : 1))
     .slice(0, 12);

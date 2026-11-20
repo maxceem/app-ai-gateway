@@ -137,6 +137,19 @@ test("idle tests wait for enough history, then whole idle files are proposed unl
   assert.deepEqual(kept.candidates.filter((c) => c.kind === "idle-file").map((c) => c.file), ["test/b.test.ts"]);
 });
 
+test("the costliest files list only files that exist in the analyzed checkout", () => {
+  const ci = run({ day: 1, source: "ci", tests: [["passed"]] });
+  ci.modules = [
+    { file: FILE, ms: 2000, loadMs: 100 },
+    { file: "v2/test/elsewhere.test.ts", ms: 9000, loadMs: 100 },
+  ];
+  const report = analyze([ci], {
+    now: NOW,
+    repo: { keep: { files: {}, tests: {} }, exists: (file) => file === FILE, resolve: (f) => f },
+  });
+  assert.deepEqual(report.costliestFiles.map((f) => f.file), [FILE]);
+});
+
 test("missing CI or local runs are reported", () => {
   const report = stats([run({ day: 1, tests: [["passed"]] })]);
   assert.equal(report.warnings.length, 1);
