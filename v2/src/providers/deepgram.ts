@@ -73,7 +73,8 @@ export const deepgram = defineProvider({
   auth: { header: "authorization", format: "Token {key}" },
   // Deepgram has no service modes on this API.
   serviceModes: [],
-  // First draft. Step 5 reviews the refused paths of every provider.
+  // Projects hold the keys, members, usage and balances. `v1/auth` grants
+  // short-lived tokens, refused until a customer can opt in to it (plan D4).
   refused: ["v1/projects/*", "v1/auth/*", "v1/keys/*"],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

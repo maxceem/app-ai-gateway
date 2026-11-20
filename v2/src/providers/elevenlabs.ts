@@ -54,7 +54,10 @@ export const elevenlabs = defineProvider({
   auth: { header: "xi-api-key", format: "{key}" },
   // ElevenLabs has no service modes on these APIs.
   serviceModes: [],
-  // First draft. Step 5 reviews the refused paths of every provider.
+  // The account, its workspace, keys (service accounts), history and usage,
+  // the agents' stored secrets, and adding or editing voices. Tokens and
+  // signed URLs for live sessions are refused until a customer can opt in to
+  // them path by path (plan D4).
   refused: [
     "v1/user/*",
     "v1/workspace/*",
@@ -63,6 +66,11 @@ export const elevenlabs = defineProvider({
     "v1/usage/*",
     "v1/voices/add",
     "v1/voices/{voice_id}/edit",
+    "v1/convai/secrets/*",
+    "v1/convai/conversation/token/*",
+    "v1/convai/conversation/get-signed-url/*",
+    "v1/convai/conversation/get_signed_url/*",
+    "v1/single-use-token/*",
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

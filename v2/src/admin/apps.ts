@@ -33,6 +33,7 @@ import {
   type Gap,
 } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
+import { PASSTHROUGH } from "../providers/passthrough.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -210,6 +211,8 @@ export async function checkAppConfig(
       throw invalid(`config.routing.providers.${slug}: provider type ${connection.type} is not supported`, { slug });
     }
     for (const operation of routing.operations) {
+      // `passthrough` reaches the paths the connection lists (plan section 4.5): each was checked when the connection was saved.
+      if (operation === PASSTHROUGH) continue;
       if (!description.operations.some((declared) => declared.name === operation)) {
         throw invalid(`config.routing.providers.${slug}.operations: ${operation} is not an operation of ${connection.type}`, {
           slug,

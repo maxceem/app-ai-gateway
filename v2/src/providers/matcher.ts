@@ -97,9 +97,29 @@ export function compilePassthrough(paths: readonly PassthroughPath[]): readonly 
     if (listed.priceNano !== undefined && !(Number.isSafeInteger(listed.priceNano) && listed.priceNano >= 0)) {
       throw new TemplateError(listed.path, "price must be a whole number of nano-dollars, 0 or more");
     }
+    // Only characters a path segment may hold as they are: a literal is
+    // compared with the decoded request, so an encoded one could never match.
+    if (!LISTED_PATH.test(listed.path)) {
+      throw new TemplateError(listed.path, "may hold only letters, digits, {name} parts and - . _ ~ : @ ! $ & ' ( ) + , ; = /");
+    }
     return { listed, template: parseTemplate(listed.path) };
   });
 }
+
+/** The characters a listed path may hold: RFC 3986 `pchar` without `%` and `*`, plus `/`, `{` and `}`. */
+const LISTED_PATH = /^[A-Za-z0-9\-._~:@!$&'()+,;=/{}]+$/u;
+
+/**
+ * A value no template literal can hold (a `{` always starts a part), standing
+ * for any value of a listed path's part. If a pattern matches a path with it,
+ * the pattern matches the path whatever the part holds.
+ */
+const ANY_VALUE = "{}";
+
+/** What takes every request a listed path could match, whatever its parts hold: one of the provider's refused paths, or a declared operation. */
+export type Covering =
+  | { readonly kind: "refused"; readonly pattern: string }
+  | { readonly kind: "operation"; readonly operation: string };
 
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
@@ -200,6 +220,30 @@ export class ProviderMatcher {
     }
 
     return { kind: "refused", reason: "not_declared" };
+  }
+
+  /**
+   * What always takes a listed path's requests instead of it, whatever its
+   * parts hold: a refused path (checked first, so the listing could never be
+   * reached), or a declared operation (the customer should enable that, which
+   * meters and prices it). Null when neither does. A refused path or an
+   * operation that takes only some of its requests is not reported: refused
+   * paths are checked first on every request anyway.
+   */
+  covering(listed: CompiledPassthrough): Covering | null {
+    const segments = listed.template.segments.map((segment) =>
+      segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
+    );
+    for (const pattern of this.refused) {
+      if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return { kind: "refused", pattern: pattern.source };
+    }
+    for (const compiled of this.operations) {
+      if (compiled.operation.match.method !== listed.listed.method) continue;
+      if (matchTemplate(compiled.template, segments, { closedLists: compiled.closedLists }) !== null) {
+        return { kind: "operation", operation: compiled.operation.name };
+      }
+    }
+    return null;
   }
 
   /**

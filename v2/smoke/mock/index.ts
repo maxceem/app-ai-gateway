@@ -302,7 +302,8 @@ function answerFor(path: string): Answer | null {
   if (path === "/v1/responses") return responses;
   if (path === "/v1/messages") return messages;
   if (/^\/v1beta\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/u.test(path)) return gemini;
-  if (path === "/v1/audio/transcriptions" || path === "/openai/v1/audio/transcriptions" || path === "/v1/stt") return transcription;
+  // Translations are reached only as a listed passthrough path (step 5), answered as a transcription.
+  if (path === "/v1/audio/transcriptions" || path === "/openai/v1/audio/transcriptions" || path === "/v1/stt" || path === "/v1/audio/translations") return transcription;
   if (path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/images/generations") return images;
   if (path === "/v1/embeddings" || path === "/embeddings/multimodal") return embeddings;
   if (/^\/v1(?:beta)?\/models\/[^/]+:embedContent$/u.test(path)) return geminiEmbed;
@@ -357,6 +358,19 @@ const mock = {
         return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
       }
       return Response.json({ object: "list", data: [] });
+    }
+    // A path no provider declares, for passthrough (step 5): any method,
+    // answered with what came through, for the smoke checks to see. Never the key.
+    if (url.pathname === "/v1/echo" || url.pathname.startsWith("/v1/echo/")) {
+      const { bytes } = await readCounting(request);
+      return Response.json({
+        method: request.method,
+        path: url.pathname,
+        query: url.search,
+        contentType: request.headers.get("content-type"),
+        bytes,
+        forwarded: [...request.headers.keys()].filter((name) => name.startsWith("x-") || name === "openai-beta").sort(),
+      });
     }
     const failing = /^\/fail-([45]\d\d)(\/.*)$/u.exec(url.pathname);
     if (failing !== null && request.method === "POST") {

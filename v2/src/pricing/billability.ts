@@ -39,7 +39,9 @@ import { rewrittenModel, type ApiStyle, type OperationDescription, type Provider
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
-import { MoneyError } from "../money.ts";
+import { MoneyError, rate } from "../money.ts";
+import type { PassthroughPath } from "../providers/matcher.ts";
+import { PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   effectivePrices,
@@ -75,6 +77,12 @@ export interface Billing {
   readonly reportsCost: boolean;
   /** Null when billable; otherwise why not. */
   readonly problem: BillingProblem | null;
+  /**
+   * A passthrough path listed with no price: billable, charged `not_priced`
+   * (plan section 4.5). Budgets are not enforced on it, and nothing is
+   * retried or logged as unpriced. Only `resolvePassthrough` sets it.
+   */
+  readonly notPriced?: true;
 }
 
 /**
@@ -404,6 +412,22 @@ export function resolveCall(
 }
 
 /**
+ * How a call to a listed passthrough path is billed (plan section 4.5): one
+ * request, at the flat price the connection lists for the path, as the
+ * customer's rate; or, with no price, `not_priced`. It has no model, so no
+ * model list or rewrite applies, and it is always admitted. Serving calls it
+ * for each request, and saving a connection checks each listed price with it
+ * (`callGap`), so the two cannot disagree.
+ */
+export function resolvePassthrough(listed: PassthroughPath): ReachableCall {
+  const bill: Billing =
+    listed.priceNano === undefined
+      ? { price: null, reportsCost: false, problem: null, notPriced: true }
+      : billingAt(PASSTHROUGH_OPERATION, { price: { rates: { per_request: rate(listed.priceNano) }, raw: {} }, source: "customer_rate" });
+  return { kind: "admitted", operation: PASSTHROUGH_OPERATION, requested: "", model: "", bill };
+}
+
+/**
  * How serving resolves a model a request names besides its own
  * (`alternativeModels`, Vercel's fallback models), on an operation that
  * admitted the request's own model: it passes the same model list
@@ -638,7 +662,7 @@ export function callKey(call: AppCall): string {
  * Returns the gap, or null.
  */
 export function callGap(call: ReachableCall): Gap | null {
-  if (call.bill.reportsCost) return null;
+  if (call.bill.reportsCost || call.bill.notPriced === true) return null;
   if (call.bill.price === null) return { values: {}, mode: "standard", operation: call.operation.name };
   if (call.mode !== undefined && billingAt(call.operation, call.bill.price, call.mode).problem === "no_mode_price") {
     return { values: {}, mode: serviceModeName(call.mode), operation: call.operation.name, selectedMode: true };

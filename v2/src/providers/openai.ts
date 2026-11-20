@@ -14,8 +14,17 @@ export const openai = defineProvider({
   label: "OpenAI",
   hosts: { main: "api.openai.com" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The admin API (keys, projects, users, usage and costs) lives under `v1/organization`.
-  refused: ["v1/organization/*"],
+  // The admin API (keys, projects, users, usage and costs) lives under
+  // `v1/organization`. The others mint short-lived secrets for live sessions
+  // and ChatKit: refused until a customer can opt in to them path by path,
+  // with their expiry locked (plan D4).
+  refused: [
+    "v1/organization/*",
+    "v1/realtime/client_secrets/*",
+    "v1/realtime/sessions/*",
+    "v1/realtime/transcription_sessions/*",
+    "v1/chatkit/sessions/*",
+  ],
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },
   // Cloudflare's `openai` name already implies the `v1/` prefix.

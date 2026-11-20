@@ -13,8 +13,10 @@ export const xai = defineProvider({
   label: "xAI",
   hosts: { main: "api.x.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Key management lives on a separate host the gateway never calls.
-  refused: ["v1/api-key/*"],
+  // Key management lives on a separate host the gateway never calls. The
+  // key's own details, and the short-lived secrets for live sessions, refused
+  // until a customer can opt in to them path by path (plan D4).
+  refused: ["v1/api-key/*", "v1/realtime/client_secrets/*"],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
   cloudflareGateway: { slug: "grok" },

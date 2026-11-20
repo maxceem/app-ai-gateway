@@ -14,6 +14,9 @@
  *   write-only as the key is. Through it, the provider key is optional:
  *   Cloudflare can use the keys in its own key store. The key's origin is the
  *   gateway, so turning it on or off moves the key, by the rule above.
+ * - Passthrough paths (plan section 4.5) are checked when saved: each must be
+ *   a valid template, and a newly listed one must not be one the provider
+ *   always refuses or one a declared operation serves (`passthroughJson`).
  */
 import type { Context } from "hono";
 import {
@@ -21,12 +24,13 @@ import {
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   type ModelPricingSchema,
+  type PassthroughPathSchema,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
-import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { MAX_PRICE_KEY_COMBINATIONS, savedPriceProblem } from "../pricing/billability.ts";
+import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import {
   keyOrigin,
@@ -35,7 +39,10 @@ import {
   type CloudflareGatewaySetting,
 } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
+import { compilePassthrough, ProviderMatcher, type CompiledPassthrough, type PassthroughPath } from "../providers/matcher.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
+import { readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
+import { TemplateError } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
@@ -60,6 +67,7 @@ export interface ConnectionRow {
   cloudflare_gateway_json: string | null;
   serving_providers_json: string | null;
   rates_json: string | null;
+  passthrough_json: string | null;
   revision: number;
   created_by: string;
   created_at: number;
@@ -168,7 +176,83 @@ function pricingFromRates(rates: CustomerRates): DollarPricing {
   return pricing as DollarPricing;
 }
 
+/** Listed paths back to how the API writes them, the price in dollars. */
+function passthroughView(stored: string | null): z.output<typeof PassthroughPathSchema>[] | undefined {
+  const paths = readPassthrough(stored);
+  if (paths.length === 0) return undefined;
+  return paths.map((listed) => ({
+    method: listed.method,
+    path: listed.path,
+    ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
+  }));
+}
+
+/**
+ * A connection's passthrough list as stored, checked (plan section 4.5):
+ *
+ * - each path is a template whose `{name}` parts match one segment, listed
+ *   once per method;
+ * - its price, if any, is whole nano-dollars that the one charge function
+ *   bills (`resolvePassthrough`, `callGap`);
+ * - a path not listed before must not be one the provider always refuses
+ *   (it could never be reached), nor one a declared operation serves (the
+ *   app should enable that operation, which meters and prices it). Paths
+ *   listed before are not judged again, so a later release that refuses or
+ *   declares one never stops a save.
+ */
+function passthroughJson(
+  description: ProviderDescription,
+  asked: readonly z.output<typeof PassthroughPathSchema>[],
+  before: readonly PassthroughPath[],
+): string | null {
+  const matcher = new ProviderMatcher(description);
+  const known = new Set(before.map((listed) => `${listed.method} ${listed.path}`));
+  const seen = new Set<string>();
+  const paths: PassthroughPath[] = asked.map((entry, index) => {
+    const where = `passthrough.${index}`;
+    const key = `${entry.method} ${entry.path}`;
+    if (seen.has(key)) throw new GatewayError(400, "invalid_request", `${where}: ${key} is listed twice`);
+    seen.add(key);
+    let priceNano: number | undefined;
+    if (entry.per_request !== undefined) {
+      try {
+        priceNano = fromDollars(entry.per_request);
+      } catch (error) {
+        if (!(error instanceof MoneyError)) throw error;
+        throw new GatewayError(400, "invalid_request", `${where}.per_request: the price is too large`);
+      }
+    }
+    const listed: PassthroughPath = { method: entry.method, path: entry.path, ...(priceNano !== undefined ? { priceNano } : {}) };
+    let compiled: CompiledPassthrough;
+    try {
+      [compiled] = compilePassthrough([listed]) as [CompiledPassthrough];
+    } catch (error) {
+      if (!(error instanceof TemplateError)) throw error;
+      throw new GatewayError(400, "invalid_request", `${where}.path: ${error.message}`);
+    }
+    if (callGap(resolvePassthrough(listed)) !== null) {
+      throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
+    }
+    if (!known.has(key)) {
+      const covering = matcher.covering(compiled);
+      if (covering?.kind === "refused") {
+        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+      }
+      if (covering?.kind === "operation") {
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          `${where}.path: ${key} is served by the ${covering.operation} operation; enable it on the app instead, which meters and prices it`,
+        );
+      }
+    }
+    return listed;
+  });
+  return storedPassthrough(paths);
+}
+
 export function providerView(row: ConnectionRow) {
+  const passthrough = passthroughView(row.passthrough_json);
   return {
     id: row.id,
     type: row.type,
@@ -179,6 +263,7 @@ export function providerView(row: ConnectionRow) {
     baseUrl: row.base_url,
     cloudflareGateway: cloudflareView(readCloudflareGateway(row.cloudflare_gateway_json)),
     servingProviders: row.serving_providers_json === null ? null : (JSON.parse(row.serving_providers_json) as string[]),
+    ...(passthrough !== undefined ? { passthrough } : {}),
     pricing: row.rates_json === null ? null : pricingFromRates(JSON.parse(row.rates_json) as CustomerRates),
     revision: row.revision,
     createdAt: iso(row.created_at),
@@ -288,6 +373,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
   const servingJson = servingProvidersJson(description, body.servingProviders);
+  const passthroughStored = body.passthrough === undefined ? null : passthroughJson(description, body.passthrough, []);
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
   await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type, baseUrl }, newRates);
@@ -297,8 +383,8 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   try {
     written = await c.env.DB.prepare(
       `INSERT INTO provider_connection
-        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, serving_providers_json, rates_json, revision, created_by, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
+        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, serving_providers_json, rates_json, passthrough_json, revision, created_by, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
     )
       .bind(
         id,
@@ -312,6 +398,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         cloudflareJson,
         servingJson,
         newRates === null ? null : JSON.stringify(newRates),
+        passthroughStored,
         actor.userId,
         now,
         now,
@@ -418,6 +505,12 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       : description === null
         ? null
         : servingProvidersJson(description, body.servingProviders);
+  let passthroughStored = current.passthrough_json;
+  if (body.passthrough === null) passthroughStored = null;
+  else if (body.passthrough !== undefined) {
+    if (description === null) throw new GatewayError(400, "invalid_request", `passthrough: provider type ${current.type} is not supported`);
+    passthroughStored = passthroughJson(description, body.passthrough, readPassthrough(current.passthrough_json));
+  }
   const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
   if (body.pricing !== undefined) {
     // Every change of rates, whatever its shape (a replacement, a deletion inside it, or `null`, every
@@ -434,7 +527,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(
     `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, cloudflare_gateway_json = ?,
-       serving_providers_json = ?, rates_json = ?, revision = revision + 1, updated_at = ?
+       serving_providers_json = ?, rates_json = ?, passthrough_json = ?, revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
   )
     .bind(
@@ -446,6 +539,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       cloudflareJson,
       servingJson,
       rates,
+      passthroughStored,
       Date.now(),
       current.id,
       actor.accountId,
