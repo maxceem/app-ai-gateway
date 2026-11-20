@@ -47,6 +47,13 @@ export interface ModelPrice {
   readonly rates: RateSet;
   /** Rates by price key value (`keyedPrices`). */
   readonly keyed?: KeyedRates;
+  /**
+   * Rates a price key value adds on top of the rates billed, rather than
+   * replacing them (`by: { redact: { "*": { add: { per_minute: 0.002 } } } }`):
+   * a surcharge for an option, such as Deepgram's redaction. Only our price
+   * list states them, and only on a rate the model itself states.
+   */
+  readonly keyedAdditions?: KeyedRates;
   /** Prompt size above which the `long_*` rates apply. */
   readonly longContextThreshold?: number;
   readonly kind?: string;
@@ -86,14 +93,36 @@ function readKeyed(by: unknown, convert: (rates: Readonly<Record<string, unknown
   return keyed;
 }
 
+/** The `add` rates each `by` value states, in dollars, converted; each must add to a rate the model states. */
+function readAdditions(by: unknown, rates: RateSet, where: string): KeyedRates | undefined {
+  if (typeof by !== "object" || by === null) return undefined;
+  const additions: Record<string, Record<string, RateSet>> = {};
+  for (const [key, values] of Object.entries(by as Record<string, unknown>)) {
+    if (typeof values !== "object" || values === null) continue;
+    for (const [value, entry] of Object.entries(values as Record<string, unknown>)) {
+      const add = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>).add : undefined;
+      if (typeof add !== "object" || add === null) continue;
+      const at = `${where}.by.${key}.${value}.add`;
+      const converted = dollarRates(add as Record<string, unknown>, at);
+      for (const field of Object.keys(converted)) {
+        if (rates[field] === undefined) throw new MoneyError(`Price file: ${at}.${field} adds to a rate the model does not state`);
+      }
+      (additions[key] ??= {})[value] = converted;
+    }
+  }
+  return Object.keys(additions).length > 0 ? additions : undefined;
+}
+
 function loadEntry(provider: string, model: string, entry: Record<string, unknown>): ModelPrice {
   const rates = dollarRates(entry, `${provider}/${model}`);
   const keyed = readKeyed(entry.by, dollarRates, `${provider}/${model}`);
+  const keyedAdditions = readAdditions(entry.by, rates, `${provider}/${model}`);
   const threshold = entry.long_context_threshold;
   const modes = entry.modes;
   return {
     rates,
     ...(keyed !== undefined ? { keyed } : {}),
+    ...(keyedAdditions !== undefined ? { keyedAdditions } : {}),
     ...(typeof threshold === "number" ? { longContextThreshold: threshold } : {}),
     ...(typeof entry.kind === "string" ? { kind: entry.kind } : {}),
     ...(typeof entry.unlisted_since === "string" ? { unlistedSince: entry.unlisted_since } : {}),
@@ -266,29 +295,47 @@ export interface KeyCandidate {
  */
 export function keyCandidates(price: ModelPrice, values?: Readonly<Record<string, string>>): { candidates: KeyCandidate[]; estimated: boolean } {
   if (price.keyed === undefined) return { candidates: [{ values: {}, price }], estimated: false };
-  let candidates: { values: Record<string, string>; rates: RateSet }[] = [{ values: {}, rates: price.rates }];
+  type Candidate = { values: Record<string, string>; rates: RateSet; added: RateSet };
+  let candidates: Candidate[] = [{ values: {}, rates: price.rates, added: {} }];
   let estimated = false;
+  const applied = (candidate: Candidate, key: string, name: string, rates: RateSet): Candidate => ({
+    values: { ...candidate.values, [key]: name },
+    rates: withValue(candidate.rates, rates),
+    added: plusRates(candidate.added, price.keyedAdditions?.[key]?.[name]),
+  });
   for (const [key, table] of Object.entries(price.keyed)) {
     const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
     if (value !== undefined && Object.hasOwn(table, value)) {
-      candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: value }, rates: withValue(candidate.rates, table[value]!) }));
+      candidates = candidates.map((candidate) => applied(candidate, key, value, table[value]!));
       continue;
     }
     // `*` is the rate of every value the table does not list by name, such
     // as each language Deepgram bills at its monolingual rate: a known
     // price, not an estimate.
     if (value !== undefined && Object.hasOwn(table, OTHER_VALUES)) {
-      candidates = candidates.map((candidate) => ({ values: { ...candidate.values, [key]: OTHER_VALUES }, rates: withValue(candidate.rates, table[OTHER_VALUES]!) }));
+      candidates = candidates.map((candidate) => applied(candidate, key, OTHER_VALUES, table[OTHER_VALUES]!));
       continue;
     }
     estimated = true;
     const listed = Object.entries(table);
     if (listed.length === 0) continue;
-    candidates = candidates.flatMap((candidate) =>
-      listed.map(([name, rates]) => ({ values: { ...candidate.values, [key]: name }, rates: withValue(candidate.rates, rates) })),
-    );
+    candidates = candidates.flatMap((candidate) => listed.map(([name, rates]) => applied(candidate, key, name, rates)));
   }
-  return { candidates: candidates.map(({ values: used, rates }) => ({ values: used, price: { ...price, rates } })), estimated };
+  // Surcharges add last, so they add to the rate the other keys chose, whatever their order.
+  // A candidate's price carries them in its rates, so never again on its own.
+  const { keyedAdditions: _added, ...rest } = price;
+  return {
+    candidates: candidates.map(({ values: used, rates, added }) => ({ values: used, price: { ...rest, rates: plusRates(rates, added) } })),
+    estimated,
+  };
+}
+
+/** `rates` with `more` added field by field. */
+function plusRates(rates: RateSet, more: RateSet | undefined): RateSet {
+  if (more === undefined || Object.keys(more).length === 0) return rates;
+  const sum: Partial<Record<RateField, RateNanoPerMillion>> = { ...rates };
+  for (const [field, value] of Object.entries(more)) sum[field] = rate((sum[field] ?? 0) + value!);
+  return sum;
 }
 
 /**

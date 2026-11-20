@@ -306,7 +306,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const measured = requestUsage(operation, fields);
       const priceKeys = priceKeyValues(operation, fields);
       // Options the provider bills on top at a price the gateway does not have: served, billed as an estimate.
-      const unpriced = unpricedOptionsNamed(operation, fields);
+      const unpriced = unpricedOptionsNamed(operation, fields, price?.price ?? null);
       if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...caller.facts, options: unpriced.join(",") });
       // Webhook fields, and fetch fields the operation does not need, never reach the provider.
       const outbound = removeOutbound(operation, parsed.kind === "json" ? body : null, sentQuery);

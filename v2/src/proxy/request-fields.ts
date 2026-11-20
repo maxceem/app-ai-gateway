@@ -15,6 +15,7 @@
  * took from it (`requestFormFields` names them). A query from the URL.
  */
 import type { FieldRef, Meter, OperationDescription, RequestMeasure, Unit } from "../providers/operation.ts";
+import type { ModelPrice } from "../pricing/prices.ts";
 import { scaledCount } from "../pricing/units.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 
@@ -51,6 +52,7 @@ export function requestFormFields(operation: OperationDescription): string[] {
   const refs: FieldRef[] = [...(operation.priceKeys ?? []).map((key) => key.from)];
   const measure = requestMeasureOf(operation.meter);
   if (measure !== null) refs.push({ in: "form", field: measure.field });
+  if (measure?.measure === "image_megapixels") refs.push({ in: "form", field: measure.size });
   for (const ref of outboundRemoved(operation)) refs.push(ref);
   return refs.filter((ref) => ref.in !== "query").map((ref) => ref.field);
 }
@@ -74,11 +76,34 @@ function measuredAmount(measure: RequestMeasure, fields: RequestFields): number 
       const seconds = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (measure.default ?? null);
       return seconds !== null && Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
     }
-    case "image_count": {
-      const count = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (measure.default ?? null);
-      return count !== null && Number.isSafeInteger(count) && count >= 0 ? count : null;
+    case "image_count":
+      return imageCount(value, measure.default);
+    case "image_megapixels": {
+      const count = imageCount(value, measure.default);
+      if (count === null) return null;
+      return count * (megapixelsOf(fieldValue(fields, { in: "body", field: measure.size }), measure.sizes) ?? 1);
     }
   }
+}
+
+/** A count of images as the request writes it, or the default. */
+function imageCount(value: unknown, fallback: number | undefined): number | null {
+  const count = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : (fallback ?? null);
+  return count !== null && Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+/** Pixels in one megapixel, as fal counts it. */
+const MEGAPIXEL = 1024 * 1024;
+
+/** One image's megapixels, rounded up: from `{ width, height }` or a listed size name. Null when the size is not known. */
+function megapixelsOf(size: unknown, named: Readonly<Record<string, readonly [number, number]>> | undefined): number | null {
+  let width: unknown;
+  let height: unknown;
+  if (typeof size === "string" && named !== undefined && Object.hasOwn(named, size)) [width, height] = named[size]!;
+  else if (typeof size === "object" && size !== null) ({ width, height } = size as { width?: unknown; height?: unknown });
+  if (typeof width !== "number" || typeof height !== "number" || !(width > 0) || !(height > 0)) return null;
+  const megapixels = Math.ceil((width * height) / MEGAPIXEL);
+  return Number.isSafeInteger(megapixels) ? megapixels : null;
 }
 
 /**
@@ -140,13 +165,18 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
 /**
  * The options a request names that the provider bills on top at a price the
  * gateway does not have (`unpricedOptions`): each counts when present with a
- * value other than an explicit false, so `redact=false` is not one.
+ * value other than an explicit false, so `redact=false` is not one. An option
+ * a price key reads is priced when the price has rates for that key (`by`),
+ * as our list has for Deepgram's redaction; a customer's own rate without
+ * them leaves it unpriced.
  */
-export function unpricedOptionsNamed(operation: OperationDescription, fields: RequestFields): string[] {
+export function unpricedOptionsNamed(operation: OperationDescription, fields: RequestFields, price: ModelPrice | null): string[] {
   const named: string[] = [];
   for (const ref of operation.unpricedOptions ?? []) {
     const value = fieldValue(fields, ref);
     if (value === undefined || value === null || value === false || value === "false" || value === "") continue;
+    const key = operation.priceKeys?.find((one) => one.from.in === ref.in && one.from.field === ref.field);
+    if (key !== undefined && price?.keyed?.[key.name] !== undefined) continue;
     named.push(ref.field);
   }
   return named;

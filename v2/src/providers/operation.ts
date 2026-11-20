@@ -134,7 +134,21 @@ export type RequestMeasure =
   /** A length the request asks for, in seconds. */
   | { readonly measure: "requested_seconds"; readonly field: string; readonly default?: number }
   /** How many images the request asks for. */
-  | { readonly measure: "image_count"; readonly field: string; readonly default?: number };
+  | { readonly measure: "image_count"; readonly field: string; readonly default?: number }
+  /**
+   * The megapixels of the images the request asks for, as fal bills them:
+   * per image, width × height in units of 1024 × 1024 pixels, rounded up,
+   * times the count in `field`. `size` names the size field, either
+   * `{ width, height }` or a name listed in `sizes`. With no size, or a name
+   * not listed, each image counts as one.
+   */
+  | {
+      readonly measure: "image_megapixels";
+      readonly field: string;
+      readonly default?: number;
+      readonly size: string;
+      readonly sizes?: Readonly<Record<string, readonly [width: number, height: number]>>;
+    };
 
 /**
  * How an operation is measured. One of a short list of kinds, each

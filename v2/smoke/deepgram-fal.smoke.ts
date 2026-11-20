@@ -123,6 +123,15 @@ test("Deepgram's callback never reaches it, and the answer is still billed", { s
   assert.equal((await usageOf(user)).cost_nano, 2_150_000);
 });
 
+test("Deepgram bills a priced add-on on top of the model's rate", { skip }, async () => {
+  const user = `smoke-dg-redact-${run}`;
+  const response = await call(deepgramSlug, "v1/listen?model=nova-3&redact=pii", AUDIO, user, "audio/wav");
+  assert.equal(response.status, 200, await response.clone().text());
+  await response.json();
+  // 30 seconds at $0.0043 + $0.0020 redaction a minute.
+  assert.equal((await usageOf(user)).cost_nano, 3_150_000);
+});
+
 test("fal.run bills the units its header reports", { skip }, async () => {
   const user = `smoke-fal-${run}`;
   const response = await call(falSlug, "run/fal-ai/flux/dev", JSON.stringify({ prompt: "a lighthouse", num_images: 2 }), user, "application/json");
@@ -140,6 +149,16 @@ test("fal.run with no units header is billed on the images asked for", { skip },
   await response.json();
   // 3 images at $0.025 each, as an estimate.
   assert.equal((await usageOf(user)).cost_nano, 75_000_000);
+});
+
+test("fal.run with no units header works the units out from the requested size", { skip }, async () => {
+  const user = `smoke-fal-size-${run}`;
+  const body = JSON.stringify({ prompt: "a lighthouse", num_images: 2, image_size: { width: 2048, height: 2048 }, mock_no_units: true });
+  const response = await call(falSlug, "run/fal-ai/flux/dev", body, user, "application/json");
+  assert.equal(response.status, 200, await response.clone().text());
+  await response.json();
+  // Two 4-megapixel images: 8 units at $0.025 each, as an estimate.
+  assert.equal((await usageOf(user)).cost_nano, 200_000_000);
 });
 
 test("fal.run refuses a model with no price before calling fal", { skip }, async () => {

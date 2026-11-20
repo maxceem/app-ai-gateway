@@ -89,11 +89,31 @@ describe("Deepgram operations and prices", () => {
 
   it("lists Nova-3 at Deepgram's prerecorded rates: monolingual $0.0043 and multilingual $0.0052 a minute", () => {
     const nova = listPrice("deepgram", "nova-3")!;
+    // The add-ons off, as a request without them reads (each key's default).
+    const off = { redact: "false", detect_entities: "false", keyterm: "false" };
     expect(nova.rates).toMatchObject({ per_minute: 4_300_000 });
-    expect(keyCandidates(nova, { language: "multi" })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 5_200_000 } } }] });
+    expect(keyCandidates(nova, { language: "multi", ...off })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 5_200_000 } } }] });
     // Any other language is the monolingual rate, a known price, not an estimate.
-    expect(keyCandidates(nova, { language: "es" })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 4_300_000 } } }] });
+    expect(keyCandidates(nova, { language: "es", ...off })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 4_300_000 } } }] });
     expect(listPrice("deepgram", "whisper-large")!.rates).toMatchObject({ per_minute: 4_800_000 });
+  });
+
+  it("adds the per-minute add-ons on top of the rate the language chose, in any order", () => {
+    const nova = listPrice("deepgram", "nova-3")!;
+    const rateOf = (values: Record<string, string>) => keyCandidates(nova, values);
+    const off = { redact: "false", detect_entities: "false", keyterm: "false" };
+    expect(rateOf({ language: "en", ...off })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 4_300_000 } } }] });
+    // $0.0043 + $0.0020 redaction.
+    expect(rateOf({ language: "en", ...off, redact: "pii" })).toMatchObject({ estimated: false, candidates: [{ price: { rates: { per_minute: 6_300_000 } } }] });
+    // $0.0052 + $0.0020 + $0.0017 + $0.0013: every add-on on the multilingual rate.
+    expect(rateOf({ keyterm: "gateway", detect_entities: "true", redact: "pci", language: "multi" })).toMatchObject({
+      estimated: false,
+      candidates: [{ price: { rates: { per_minute: 10_200_000 } } }],
+    });
+    // Every price saving checks has the add-ons in its rate once, never twice.
+    const all = keyCandidates(nova).candidates.map((candidate) => candidate.price.rates.per_minute ?? 0);
+    expect(Math.max(...all)).toBe(10_200_000);
+    expect(Math.min(...all)).toBe(4_300_000);
   });
 
   it("reads the audio's length times its channels, as Deepgram bills multichannel audio", () => {
@@ -158,12 +178,40 @@ describe("Deepgram through the proxy", () => {
     expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.deepgram.com/v1/listen?model=nova-3");
   });
 
-  it("serves an option billed on top at a price the gateway lacks, at the model's rate as an estimate", async () => {
+  it("bills a priced add-on exactly, on top of the model's rate", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
     fetchSpy.mockResolvedValue(transcript(60));
-    const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&redact=pii`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&redact=pii&keyterm=gateway`, key, new Uint8Array([1]), {
+      "content-type": "audio/wav",
+    });
+    expect(response.status).toBe(200);
+    // A minute at $0.0043 + $0.0020 + $0.0013.
+    expect(await chargesOf(appId)).toMatchObject([{ unit: "audio_seconds", price_is_estimate: 0, cost_nano: 7_600_000 }]);
+  });
+
+  it("does not bill diarization on top: it is included in the prerecorded rate", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(transcript(60));
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&diarize=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(appId)).toMatchObject([{ price_is_estimate: 0, cost_nano: 4_300_000 }]);
+  });
+
+  it("serves an option billed by tokens the answer does not report, at the model's rate as an estimate", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockResolvedValue(transcript(60));
+    const { response } = await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&summarize=v2`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
     expect(response.status).toBe(200);
     expect(await chargesOf(appId)).toMatchObject([{ unit: "audio_seconds", price_is_estimate: 1, cost_nano: 4_300_000 }]);
+  });
+
+  it("estimates an add-on the price has no rate for: Whisper, or a customer's own rate without it", async () => {
+    const whisper = await setup("deepgram", { operations: ["deepgram.listen"] });
+    fetchSpy.mockImplementation(async () => transcript(60));
+    await send(`/v2/apps/${whisper.appId}/proxy/${whisper.slug}/v1/listen?model=whisper-large&redact=pii`, whisper.key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(whisper.appId)).toMatchObject([{ price_is_estimate: 1, cost_nano: 4_800_000 }]);
+    const own = await setup("deepgram", { operations: ["deepgram.listen"] }, { "nova-3": { per_minute: 5_000_000 } });
+    await send(`/v2/apps/${own.appId}/proxy/${own.slug}/v1/listen?model=nova-3&redact=pii`, own.key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(own.appId)).toMatchObject([{ price_source: "customer_rate", price_is_estimate: 1, cost_nano: 5_000_000 }]);
   });
 
   it("does not count an option turned off as one billed on top", async () => {
@@ -197,7 +245,7 @@ describe("Deepgram through the proxy", () => {
 
 describe("fal.run", () => {
   it("lists a short set of image models priced per megapixel, the unit fal's header reports", () => {
-    expect(listPrice("fal", "fal-ai/flux/schnell")!.rates).toMatchObject({ per_unit: 3_000_000, per_image: 3_000_000 });
+    expect(listPrice("fal", "fal-ai/flux/schnell")!.rates).toEqual({ per_unit: 3_000_000 });
     expect(listPrice("fal", "fal-ai/flux/dev")!.rates).toMatchObject({ per_unit: 25_000_000 });
     expect(listPrice("fal", "fal-ai/flux-pro/v1.1")!.rates).toMatchObject({ per_unit: 40_000_000 });
   });
@@ -225,11 +273,39 @@ describe("fal.run", () => {
     ]);
   });
 
-  it("bills the images asked for as an estimate when fal sends no units, never as free", async () => {
+  it("bills one unit per image as an estimate when fal sends no units and the request names no size, never as free", async () => {
     const { appId, slug, key } = await setup("fal", { operations: ["fal.run"] });
     fetchSpy.mockResolvedValue(Response.json({ images: [{ url: "https://fal.media/x.png" }] }));
     await send(`/v2/apps/${appId}/proxy/${slug}/run/fal-ai/flux/schnell`, key, JSON.stringify({ prompt: "a cat", num_images: 3 }), { "content-type": "application/json" });
-    expect(await chargesOf(appId)).toMatchObject([{ unit: "images", measured: "estimated", cost_nano: 9_000_000 }]);
+    expect(await chargesOf(appId)).toMatchObject([{ unit: "model_units", measured: "estimated", price_is_estimate: 1, cost_nano: 9_000_000 }]);
+  });
+
+  it("works the units out from the requested size when fal sends none: megapixels rounded up, per image", async () => {
+    const { appId, slug, key } = await setup("fal", { operations: ["fal.run"] });
+    fetchSpy.mockImplementation(async () => Response.json({ images: [] }));
+    const sizes: [unknown, number, number][] = [
+      // 2048 × 2048 is 4 megapixels; two images are 8 units at $0.025.
+      [{ width: 2048, height: 2048 }, 2, 200_000_000],
+      // 1440 × 1440 is 1.98 megapixels, rounded up to 2 (T15).
+      [{ width: 1440, height: 1440 }, 1, 50_000_000],
+      // A size name: 1024 × 576, one unit.
+      ["landscape_16_9", 1, 25_000_000],
+      // A size name fal may add later counts one unit per image.
+      ["cinema_wide", 2, 50_000_000],
+    ];
+    for (const [image_size, num_images] of sizes) {
+      await send(`/v2/apps/${appId}/proxy/${slug}/run/fal-ai/flux/dev`, key, JSON.stringify({ prompt: "a cat", image_size, num_images }), { "content-type": "application/json" });
+    }
+    expect((await chargesOf(appId)).map((charge) => [charge.cost_nano, charge.measured])).toEqual(sizes.map(([, , cost]) => [cost, "estimated"]));
+  });
+
+  it("bills the units fal reports over the size the request names", async () => {
+    const { appId, slug, key } = await setup("fal", { operations: ["fal.run"] });
+    fetchSpy.mockResolvedValue(Response.json({ images: [] }, { headers: { "x-fal-billable-units": "1" } }));
+    await send(`/v2/apps/${appId}/proxy/${slug}/run/fal-ai/flux/dev`, key, JSON.stringify({ prompt: "a cat", image_size: { width: 2048, height: 2048 } }), {
+      "content-type": "application/json",
+    });
+    expect(await chargesOf(appId)).toMatchObject([{ measured: "complete", price_is_estimate: 0, cost_nano: 25_000_000 }]);
   });
 
   it("refuses a model with no price, before sending anything", async () => {

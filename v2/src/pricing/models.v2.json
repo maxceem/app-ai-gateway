@@ -89,6 +89,30 @@
             "per_minute": 0.0052
           },
           "*": {}
+        },
+        "redact": {
+          "false": {},
+          "*": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        },
+        "detect_entities": {
+          "false": {},
+          "*": {
+            "add": {
+              "per_minute": 0.0017
+            }
+          }
+        },
+        "keyterm": {
+          "false": {},
+          "*": {
+            "add": {
+              "per_minute": 0.0013
+            }
+          }
         }
       },
       "author": "Deepgram"
@@ -103,25 +127,21 @@
     "fal-ai/flux/schnell": {
       "kind": "image",
       "per_unit": 0.003,
-      "per_image": 0.003,
       "author": "fal"
     },
     "fal-ai/flux/dev": {
       "kind": "image",
       "per_unit": 0.025,
-      "per_image": 0.025,
       "author": "fal"
     },
     "fal-ai/flux/krea": {
       "kind": "image",
       "per_unit": 0.025,
-      "per_image": 0.025,
       "author": "fal"
     },
     "fal-ai/flux-pro/v1.1": {
       "kind": "image",
       "per_unit": 0.04,
-      "per_image": 0.04,
       "author": "fal"
     }
   }
