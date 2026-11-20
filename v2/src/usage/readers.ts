@@ -578,15 +578,18 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
  * after a Responses or Messages stream's closing event is not the stream's
  * own last word.
  */
-function closingReader(style: ApiStyle): { frame(frame: SseFrame): void; finish(): boolean | null } {
+function closingReader(style: ApiStyle): { frame(frame: SseFrame): void; settle(): void; finish(): boolean | null } {
   const closing = CLOSING[style];
   const doneCloses = style === "openai-chat" || style === "openai-completions";
   let last: SseFrame | null = null;
   return {
     frame(frame) {
-      if (!doneCloses && frame.data === "done") return;
+      // Told without judging the data: only the last frame is ever judged.
+      if (!doneCloses && (frame.isDone ?? frame.data === "done")) return;
       last = frame;
     },
+    /** The frame held when a push returns is kept past it. */
+    settle: () => last?.settle?.(),
     finish: () => (closing === null ? null : last !== null && closing(last)),
   };
 }
@@ -650,7 +653,10 @@ export function bodyReader(contentType: string, style: ApiStyle, options: BodyRe
     options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents },
   );
   return {
-    push: (text) => frames.push(text),
+    push(text) {
+      frames.push(text);
+      closing.settle();
+    },
     end(clean = true) {
       frames.end();
       const closed = stream ? closing.finish() : null;

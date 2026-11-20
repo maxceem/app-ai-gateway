@@ -25,9 +25,10 @@
  * `stopped`), for the reader to judge the whole reading by.
  *
  * What the framer holds after a `push()` returns (a line's field name, an
- * event's name, the data it keeps to check, a frame's data) goes through
- * `keep` (`./keep.ts`): nothing it holds shares memory with a piece of the
- * body.
+ * event's name, the data it keeps to check, its last frame's data) goes
+ * through `keep` (`./keep.ts`) at the end of the push: nothing it holds
+ * shares memory with a piece of the body, and nothing it dropped is copied.
+ * A listener that holds a frame past a push calls its `settle`.
  */
 import { keep } from "./keep.ts";
 import { Skimmer, type PathTree } from "./skim.ts";
@@ -46,6 +47,14 @@ export interface SseFrame {
   readonly data: "none" | "done" | "json" | "other";
   /** The data's `type`, when the data is a valid JSON object naming one. */
   readonly type: string | null;
+  /** Whether the data is `[DONE]`, told without judging the data. The framer's frames always say. */
+  readonly isDone?: boolean;
+  /**
+   * Keeps what the frame holds past the push it came in (`keep`). Whoever
+   * holds a frame when a push returns calls it; a frame dropped before then
+   * is never copied.
+   */
+  settle?(): void;
 }
 
 export interface FramerListener {
@@ -180,8 +189,6 @@ class SseFramer implements Framer {
   private events = 0;
   overflow = false;
   stopped = false;
-  /** The frames made in this push, whose data is still a slice of it. */
-  private readonly unsettled: EventEnd[] = [];
   /** The last event with data (not a whole `[DONE]`), and whether it ended. */
   private last: { readonly ended: boolean; readonly frame: EventEnd } | null = null;
 
@@ -205,15 +212,14 @@ class SseFramer implements Framer {
     this.settle();
   }
 
-  /** What this push left held, kept past it. */
+  /** What the framer holds when this push returns, kept past it; nothing it dropped is copied. */
   private settle(): void {
     const event = this.event;
     if (event?.checked != null) {
       for (let index = event.settled; index < event.checked.length; index += 1) event.checked[index] = keep(event.checked[index]!);
       event.settled = event.checked.length;
     }
-    for (const frame of this.unsettled) frame.settle();
-    this.unsettled.length = 0;
+    this.last?.frame.settle();
   }
 
   private read(text: string): void {
@@ -374,7 +380,6 @@ class SseFramer implements Framer {
     // An event with data says whether the answer ended whole. A whole `[DONE]` says nothing about
     // the events before it; one the stream stopped inside (no blank line after it) was cut.
     if (event.dataLines > 0 && (!done || !ended)) this.last = { ended, frame };
-    this.unsettled.push(frame);
     // A document is whole when its root object closed with nothing but space after it.
     if (value !== null && !done) this.listener.onDocument({ value, whole: event.document !== null && structural });
     if (ended) this.listener.onFrame?.(frame);
@@ -389,6 +394,7 @@ class SseFramer implements Framer {
  */
 class EventEnd implements SseFrame {
   readonly event: string | null;
+  readonly isDone: boolean;
   private readonly lines: number;
   private readonly done: boolean;
   private readonly structural: boolean;
@@ -400,13 +406,18 @@ class EventEnd implements SseFrame {
     this.event = event;
     this.lines = lines;
     this.done = done;
+    this.isDone = done;
     this.structural = structural;
     this.text = text;
     this.document = document;
   }
 
-  /** Keeps the data past the push it came in, while it may still be asked. */
+  private settled = false;
+
+  /** Keeps the data past the push it came in, while it may still be asked. Once. */
   settle(): void {
+    if (this.settled) return;
+    this.settled = true;
     if (this.text !== null) this.text = keep(this.text);
   }
 
