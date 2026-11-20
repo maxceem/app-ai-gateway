@@ -129,10 +129,19 @@ export interface Changes {
 export function changesAgainst(stored: StoredEntries, config: AppConfig): Changes {
   const own = (entries: Readonly<Record<string, unknown>>, key: string) => (Object.hasOwn(entries, key) ? entries[key] : undefined);
   const rewrites = config.routing.model_rewrites ?? {};
+  // Each answer is worked out once: a route with thousands of models is
+  // compared once, not once per model.
+  const once = (compare: (key: string) => boolean) => {
+    const answers = new Map<string, boolean>();
+    return (key: string) => {
+      if (!answers.has(key)) answers.set(key, compare(key));
+      return answers.get(key)!;
+    };
+  };
   return {
-    routing: (slug) => !sameJson(own(stored.providers, slug), config.routing.providers[slug]),
-    rewrite: (source) => !sameJson(own(stored.rewrites, source), own(rewrites, source)),
-    preset: (slug) => !sameJson(own(stored.presets, slug), own(config.presets ?? {}, slug)),
+    routing: once((slug) => !sameJson(own(stored.providers, slug), config.routing.providers[slug])),
+    rewrite: once((source) => !sameJson(own(stored.rewrites, source), own(rewrites, source))),
+    preset: once((slug) => !sameJson(own(stored.presets, slug), own(config.presets ?? {}, slug))),
   };
 }
 
@@ -191,9 +200,10 @@ export async function checkAppConfig(
     }
     const sources = { type: connection.type, rates: connectionRates(connection) };
     const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
+    const routeChanged = changed.routing(slug);
     for (const listed of routing.models ?? []) {
       // A listed model is judged when its route or its rewrite is new or changed.
-      if (!changed.routing(slug) && !changed.rewrite(listed)) continue;
+      if (!routeChanged && !changed.rewrite(listed)) continue;
       // A listed model is sent, and priced, as the model it is rewritten to.
       const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
       const problem = listedModelProblem(enabled, sources, model);
@@ -229,7 +239,9 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
     .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ?")
     .bind(accountId)
     .all<{ type: string; rates_json: string | null }>();
-  const connections = results.map((row) => ({ type: row.type, rates: connectionRates(row) }));
+  // Each connection's rates are read only if the search reaches it, so one
+  // with unreadable rates cannot block a target the catalog alone allows.
+  const connections = results.map((row) => ({ type: row.type, rates: () => connectionRates(row) }));
   const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
   for (const [source, target] of targets) {
     if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {

@@ -41,9 +41,11 @@ export type BillingProblem =
   /** A price, but none in the service mode asked for. */
   | "no_mode_price";
 
+type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind };
+
 export interface Billing {
   /** The price the operation bills the model at, or null when it has none it can use. */
-  readonly price: { readonly price: ModelPrice; readonly source: PriceSourceKind } | null;
+  readonly price: ResolvedPrice | null;
   /** The operation's answers carry the provider's own cost. */
   readonly reportsCost: boolean;
   /** Null when billable; otherwise why not. */
@@ -58,7 +60,11 @@ export interface PriceSources {
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about. */
 export function billing(operation: OperationDescription, connection: PriceSources, model: string, mode?: ServiceMode): Billing {
-  const resolved = resolvePrice(connection.type, model, connection.rates);
+  return billingAt(operation, resolvePrice(connection.type, model, connection.rates), mode);
+}
+
+/** `billing`, given the model's resolved price: the one place the rule is written. */
+function billingAt(operation: OperationDescription, resolved: ResolvedPrice | null, mode?: ServiceMode): Billing {
   const cost = reportsCost(operation);
   const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
   if (price === null) {
@@ -88,13 +94,12 @@ export function listedModelProblem(
   model: string,
 ): { readonly operation?: string } | null {
   if (operations.length === 0) return null;
-  const answers = operations.map((operation) => ({ operation, answer: billing(operation, connection, model) }));
-  const unpriced = resolvePrice(connection.type, model, connection.rates) === null;
-  if (unpriced) {
-    const refused = answers.find(({ answer }) => answer.problem !== null);
-    return refused === undefined ? null : { operation: refused.operation.name };
+  const resolved = resolvePrice(connection.type, model, connection.rates);
+  if (resolved === null) {
+    const refused = operations.find((operation) => billingAt(operation, null).problem !== null);
+    return refused === undefined ? null : { operation: refused.name };
   }
-  return answers.some(({ answer }) => answer.problem === null) ? null : {};
+  return operations.some((operation) => billingAt(operation, resolved).problem === null) ? null : {};
 }
 
 /**
@@ -106,12 +111,20 @@ export function listedModelProblem(
  */
 export function rewriteTargetBillable(
   model: string,
-  connections: readonly PriceSources[],
+  connections: readonly LazyPriceSources[],
   providerTypes: readonly string[],
   operationsOf: (type: string) => readonly OperationDescription[],
 ): boolean {
   return (
     providerTypes.some((type) => listPrice(type, model) !== null) ||
-    connections.some((connection) => resolvePrice(connection.type, model, connection.rates) !== null || operationsOf(connection.type).some(reportsCost))
+    connections.some(
+      (connection) => operationsOf(connection.type).some(reportsCost) || resolvePrice(connection.type, model, connection.rates()) !== null,
+    )
   );
+}
+
+/** A connection whose own rates are read only when a search reaches it. */
+export interface LazyPriceSources {
+  readonly type: string;
+  readonly rates: () => CustomerRates | null;
 }

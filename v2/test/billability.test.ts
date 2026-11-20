@@ -77,12 +77,17 @@ describe("rewriteTargetBillable", () => {
 
   it("accepts a target with any price source on the account", () => {
     expect(rewriteTargetBillable("gpt-4o-mini", [], types, operationsOf)).toBe(true);
-    expect(rewriteTargetBillable("house-model", [{ type: "openai", rates: { "house-model": { input: 1, output: 1 } } }], types, operationsOf)).toBe(true);
-    expect(rewriteTargetBillable("no-such-model", [openai], types, operationsOf)).toBe(false);
+    expect(rewriteTargetBillable("house-model", [{ type: "openai", rates: () => ({ "house-model": { input: 1, output: 1 } }) }], types, operationsOf)).toBe(true);
+    expect(rewriteTargetBillable("no-such-model", [{ type: "openai", rates: () => null }], types, operationsOf)).toBe(false);
+  });
+
+  it("never reads a connection's rates when the catalog alone allows the target", () => {
+    const unreadable = { type: "openai", rates: () => { throw new SyntaxError("bad rates"); } };
+    expect(rewriteTargetBillable("gpt-4o-mini", [unreadable], types, operationsOf)).toBe(true);
   });
 
   it("accepts a target a cost-reporting connection could serve (3b A2)", () => {
-    expect(rewriteTargetBillable("openrouter/auto", [{ type: "openrouter", rates: null }], types, operationsOf)).toBe(true);
+    expect(rewriteTargetBillable("openrouter/auto", [{ type: "openrouter", rates: () => null }], types, operationsOf)).toBe(true);
   });
 });
 
@@ -115,6 +120,14 @@ describe("changesAgainst", () => {
     expect(changes.routing("extra")).toBe(true);
     expect(changes.rewrite("house")).toBe(true);
     expect(changes.rewrite("other")).toBe(false);
+  });
+
+  it("compares a route once, however many models it lists", () => {
+    let reads = 0;
+    const route = { operations: ["openai.chat"], get models() { reads += 1; return ["house"]; } };
+    const changes = changesAgainst({ providers: { main: route }, rewrites: {}, presets: {} }, config({ main: { operations: ["openai.chat"], models: ["house"] } }));
+    for (let index = 0; index < 5; index += 1) expect(changes.routing("main")).toBe(false);
+    expect(reads).toBe(1);
   });
 
   it("judges everything on create", () => {
