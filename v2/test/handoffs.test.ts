@@ -72,6 +72,20 @@ function proofOf(url: string): string {
 const apiKeyConfig = { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: {} } };
 
 describe("adding a provider connection through a person", () => {
+  it("names the account the key goes into, and where a custom address sends it", async () => {
+    const { caller, accountId } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", {
+      type: "openai",
+      name: "Own host",
+      slug: "own-host",
+      baseUrl: "https://llm.example.net/",
+    });
+    const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof: proofOf(opened.body.url) });
+    expect(shown.body.account.id).toBe(accountId);
+    expect(typeof shown.body.account.name).toBe("string");
+    expect(shown.body.review.destination).toBe(shown.body.review.baseUrl);
+  });
+
   it("opens a step, lets the link's holder enter the key, and never answers the key", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "openai-person" });
@@ -85,7 +99,7 @@ describe("adding a provider connection through a person", () => {
     const proof = proofOf(opened.body.url);
     const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof });
     expect(shown.status).toBe(200);
-    expect(shown.body.review).toEqual({ type: "openai", name: "OpenAI", slug: "openai-person", baseUrl: null });
+    expect(shown.body.review).toEqual({ type: "openai", name: "OpenAI", slug: "openai-person", baseUrl: null, destination: "https://api.openai.com/" });
 
     const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret: KEY });
     expect(approved.status).toBe(200);
@@ -263,6 +277,40 @@ describe("creating an app once", () => {
     expect(revealed.text).not.toMatch(/"key":"agw_/u);
   });
 
+  it("repeats a create's answer after the account changed, without checking it again", async () => {
+    const { caller } = await person();
+    const provider = (await send(caller, "POST", "/v2/admin/providers", { type: "openai", name: "OpenAI", slug: "routed", secret: "sk-old-key-000000001111" })).body.provider;
+    const document = {
+      name: "Routed",
+      config: { ...apiKeyConfig, routing: { providers: { routed: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } } },
+    };
+    const reserved = await send(caller, "POST", "/v2/admin/reserved/apps", document);
+    const created = await send(caller, "POST", "/v2/admin/reserved/apps", { ...document, handle: reserved.body.handle });
+    expect(created.body.state).toBe("created");
+    // The connection the app names is gone: a fresh create would be refused, a repeat is not.
+    await send(caller, "DELETE", `/v2/admin/providers/${provider.id}`);
+    const repeated = await send(caller, "POST", "/v2/admin/reserved/apps", { ...document, handle: reserved.body.handle });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body).toMatchObject({ replayed: true, app: { id: created.body.app.id } });
+  });
+
+  it("refuses to reserve or create a key no page could reveal", async () => {
+    const { caller } = await person();
+    const reserved = await send(caller, "POST", "/v2/admin/reserved/apps", { name: "No console", config: apiKeyConfig });
+    const noConsole = { ...env, CONSOLE_ORIGIN: "", DEPLOYMENT_ID: "test-deployment" } as unknown as Env;
+    const refused = await send(caller, "POST", "/v2/admin/reserved/apps", { name: "No console", config: apiKeyConfig }, { environment: noConsole });
+    expect(refused.status).toBe(503);
+    const executed = await send(
+      caller,
+      "POST",
+      "/v2/admin/reserved/apps",
+      { name: "No console", config: apiKeyConfig, handle: reserved.body.handle },
+      { environment: noConsole },
+    );
+    expect(executed.status).toBe(503);
+    expect((await send(caller, "GET", "/v2/admin/apps")).body.apps).toEqual([]);
+  });
+
   it("creates an App Attest app with nothing to reveal", async () => {
     const { caller } = await person();
     const config = { authentication: attestAuthentication(), routing: { providers: {} } };
@@ -271,6 +319,9 @@ describe("creating an app once", () => {
     const created = await send(caller, "POST", "/v2/admin/reserved/apps", { name: "Attest", config, handle: reserved.body.handle });
     expect(created.body).toMatchObject({ state: "created", api_key: null });
     expect(created.body.reveal_url).toBeUndefined();
+    // Nothing to reveal is refused, not answered with an empty key.
+    const revealed = await send(caller, "POST", `/v2/admin/operations/${created.body.id}/reveal`, undefined, { base: CONSOLE, origin: CONSOLE });
+    expect(revealed.status).toBe(410);
   });
 
   it("refuses the creation when the plan's ceiling filled after the reservation", async () => {
@@ -318,6 +369,10 @@ describe("the tools", () => {
     expect(created.body.result.api_key).toMatchObject({ name: "Initial key" });
     expect(created.body.result.api_key.key).toBeUndefined();
     expect(created.body.summary).toContain("reveal");
+
+    const status = await send({ key }, "POST", "/v2/cli/tools/get_operation", { id: created.body.result.id });
+    expect(status.body.result.result.api_key).toMatchObject({ name: "Initial key" });
+    expect(status.body.result.result.api_key.key).toBeUndefined();
   });
 
   it("answers an approval link from add_provider, and refuses a key as an argument", async () => {

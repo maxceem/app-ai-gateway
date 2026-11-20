@@ -18,7 +18,8 @@ function details(overrides: Record<string, unknown> = {}) {
       kind: "provider.add",
       state: "pending",
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      review: { type: "openai", name: "OpenAI production", slug: "openai-prod", baseUrl: null },
+      account: { id: "acc_1234", name: "Acme" },
+      review: { type: "openai", name: "OpenAI production", slug: "openai-prod", baseUrl: null, destination: "https://api.openai.com/" },
       ...overrides,
     },
   };
@@ -57,6 +58,29 @@ describe("ApprovePage", () => {
     expect(screen.queryByDisplayValue(KEY)).toBeNull();
   });
 
+  it("names the account the key goes into and where it is sent", async () => {
+    stubApi({ [DETAILS_URL]: details() });
+    renderApprove();
+
+    expect(await screen.findByText("Acme")).toBeTruthy();
+    expect(screen.getByText("acc_1234")).toBeTruthy();
+    expect(screen.getByText("https://api.openai.com/")).toBeTruthy();
+    expect(screen.getByText(/sends it only to the provider/i)).toBeTruthy();
+  });
+
+  it("warns that a custom address receives the key, and promises nothing", async () => {
+    stubApi({
+      [DETAILS_URL]: details({
+        review: { type: "openai", name: "Self-hosted", slug: "own", baseUrl: "https://llm.example.net/", destination: "https://llm.example.net/" },
+      }),
+    });
+    renderApprove();
+
+    expect(await screen.findByText(/names its own address/i)).toBeTruthy();
+    expect(screen.getByText(/whoever controls that address receives the key/i)).toBeTruthy();
+    expect(screen.queryByText(/sends it only to the provider/i)).toBeNull();
+  });
+
   it("locks the key field while the approval is sent", async () => {
     let answer!: (response: Response) => void;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -87,7 +111,7 @@ describe("ApprovePage", () => {
   });
 
   it("shows the key it replaces for a key replacement", async () => {
-    stubApi({ [DETAILS_URL]: details({ kind: "provider.rotate-key", review: { type: "openai", name: "Prod", slug: "openai", baseUrl: null, secretHint: "wxyz" } }) });
+    stubApi({ [DETAILS_URL]: details({ kind: "provider.rotate-key", review: { type: "openai", name: "Prod", slug: "openai", baseUrl: null, destination: "https://api.openai.com/", secretHint: "wxyz" } }) });
     renderApprove();
 
     expect(await screen.findByText(/replace a provider key/i)).toBeTruthy();

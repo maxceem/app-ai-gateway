@@ -49,8 +49,8 @@ import { invalidateConnection } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
-import { appRow, checkAppConfig, newAppId, parseBody, requireApiKeyApp } from "./apps.ts";
-import { capCondition, planCap, planCeiling } from "./plan-caps.ts";
+import { appRow, checkAppConfig, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkedBaseUrl,
   connectionRow,
@@ -274,17 +274,22 @@ async function verifiedStep(c: PageContext, proof: string) {
 
 export async function getHandoff(c: PageContext): Promise<Response> {
   const { proof } = await parseBody(c, HandoffProofSchema);
-  const { details, kind, review } = await verifiedStep(c, proof);
+  const { details, kind, review, accountId } = await verifiedStep(c, proof);
+  const baseUrl = typeof review.baseUrl === "string" ? review.baseUrl : null;
+  const host = builtInProvider(String(review.type))?.hosts.main;
   return c.json({
     id: details.id,
     kind,
     state: details.state,
     expiresAt: details.expiresAt,
+    // Which account gets the key, from the operation the proof addresses.
+    account: { id: accountId, name: details.organization?.name ?? accountId },
     review: {
       type: String(review.type),
       name: String(review.name),
       slug: String(review.slug),
-      baseUrl: typeof review.baseUrl === "string" ? review.baseUrl : null,
+      baseUrl,
+      destination: baseUrl ?? (host === undefined ? "" : `https://${host}/`),
       ...(kind === "provider.rotate-key" ? { secretHint: typeof review.secretHint === "string" ? review.secretHint : null } : {}),
     },
   } satisfies OperationResponse<"getHandoff">);
@@ -574,35 +579,42 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const { handle, ...request } = await parseBody(c, ReservedAppRequestSchema);
-  // Judged now as `createApp` judges it, so a document it would refuse is
-  // refused before anything is reserved.
-  const config = await checkAppConfig(c.env.DB, actor.accountId, request.config);
-  const apiKeyApp = config.authentication.type === "api_key";
-  const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
-  // The first key is not counted against the key ceiling, as v1, except when
-  // the plan allows no keys at all.
-  if (apiKeyApp && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {
-    throw new GatewayError(409, "billing_plan_limit_reached", "This plan allows at most 0 active keys per app", undefined, {
-      data: { limit: 0, used: 0 },
-    });
-  }
-  const payload = { name: request.name, config, status: request.status ?? "active" };
+  // The request as the reservation was made for it, read without the
+  // account's current state, so a repeat matches whatever has changed since.
+  const payload = { name: request.name, config: parseAppConfig(request.config), status: request.status ?? "active" };
+  const apiKeyApp = payload.config.authentication.type === "api_key";
+  // Before anything is reserved or written: a key needs a page to be revealed on.
+  if (apiKeyApp) consoleAt(c.env);
   const digest = await requestDigest("app.add", payload);
+
+  /** What `createApp` checks against the account as it stands: when reserving, and before a fresh write. */
+  const liveChecks = async () => {
+    await checkAppConfig(c.env.DB, actor.accountId, request.config);
+    // The first key is not counted against the key ceiling, as v1, except
+    // when the plan allows no keys at all.
+    if (apiKeyApp && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {
+      throw new GatewayError(409, "billing_plan_limit_reached", "This plan allows at most 0 active keys per app", undefined, {
+        data: { limit: 0, used: 0 },
+      });
+    }
+    return planCap(c.env, c.env.DB, actor.accountId, "app");
+  };
+
   if (handle === undefined) {
-    // Only when reserving: a repeat of a create that filled the ceiling must
-    // still answer what it created.
-    await cap.assertNotReached();
+    await (await liveChecks()).assertNotReached();
     return reserve(c, "app.add", digest);
   }
 
   const { guardedInsert } = await cfAuth();
   const db = database(c.env.DB);
+  let cap: PlanCap | undefined;
   const executed = await execute(
     c,
     "app.add",
     handle,
     digest,
     async (guard) => {
+      cap = await liveChecks();
       const now = Date.now();
       const id = newAppId(payload.name);
       const app = {
@@ -626,13 +638,14 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
       if (apiKeyApp) {
         const generated = await generateApiKey();
         key = { id: generated.id, name: "Initial key", key: generated.key, key_prefix: generated.keyPrefix, created_at: iso(now) };
-        // Written only if the app was: the engine completes only when this last statement wrote.
+        // Written only if the app insert just before it wrote: the engine
+        // completes only when this last statement wrote.
         statements.push(
           guardedInsert(
             db as never,
             appKeyTable,
             { id: generated.id, appId: id, name: key.name, keyHash: generated.keyHash, keyPrefix: generated.keyPrefix, status: "active", createdAt: now },
-            and(guard, sql`exists (select 1 from app where id = ${id})`)!,
+            and(guard, sql`changes() = 1`)!,
           ),
         );
       }
@@ -643,7 +656,7 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
       };
     },
     async (error) => {
-      if (engineRefused(error, "conflict")) await cap.assertNotReached();
+      if (engineRefused(error, "conflict") && cap !== undefined) await cap.assertNotReached();
     },
   );
   return c.json({
@@ -661,22 +674,29 @@ export async function createReservedAppKey(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const appId = c.req.param("app")!;
   const { handle, name } = await parseBody(c, ReservedAppKeyRequestSchema);
-  requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
-  const cap = await planCap(c.env, c.env.DB, actor.accountId, "appKey", appId);
+  consoleAt(c.env);
   const digest = await requestDigest("app.key.add", { app: appId, name });
+
+  const liveChecks = async () => {
+    requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
+    return planCap(c.env, c.env.DB, actor.accountId, "appKey", appId);
+  };
+
   if (handle === undefined) {
-    await cap.assertNotReached();
+    await (await liveChecks()).assertNotReached();
     return reserve(c, "app.key.add", digest);
   }
 
   const { guardedInsert } = await cfAuth();
   const db = database(c.env.DB);
+  let cap: PlanCap | undefined;
   const executed = await execute(
     c,
     "app.key.add",
     handle,
     digest,
     async (guard) => {
+      cap = await liveChecks();
       const now = Date.now();
       const generated = await generateApiKey();
       const key = { id: generated.id, name, key: generated.key, key_prefix: generated.keyPrefix, created_at: iso(now) };
@@ -693,7 +713,7 @@ export async function createReservedAppKey(c: AdminContext): Promise<Response> {
       return { statements: [statement], outcome: { app_id: appId, api_key: key }, record: { app_id: appId, api_key: KEY_METADATA(key) } };
     },
     async (error) => {
-      if (engineRefused(error, "conflict")) await cap.assertNotReached();
+      if (engineRefused(error, "conflict") && cap !== undefined) await cap.assertNotReached();
     },
   );
   return c.json({

@@ -3226,6 +3226,21 @@
           "expiresAt": {
             "type": "string"
           },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
           "review": {
             "type": "object",
             "properties": {
@@ -3244,6 +3259,9 @@
                   "null"
                 ]
               },
+              "destination": {
+                "type": "string"
+              },
               "secretHint": {
                 "type": [
                   "string",
@@ -3255,7 +3273,8 @@
               "type",
               "name",
               "slug",
-              "baseUrl"
+              "baseUrl",
+              "destination"
             ]
           }
         },
@@ -3264,6 +3283,7 @@
           "kind",
           "state",
           "expiresAt",
+          "account",
           "review"
         ]
       },

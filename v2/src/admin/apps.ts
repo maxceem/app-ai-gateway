@@ -81,19 +81,24 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
  * `provider_not_configured` until it is back. An added or changed entry for
  * that slug needs the connection, because nothing could check it.
  */
-export async function checkAppConfig(
-  db: D1Database,
-  accountId: string,
-  raw: unknown,
-  storedRouting: Readonly<Record<string, unknown>> = {},
-): Promise<AppConfig> {
+/** An app document's config, read by its schema alone, without the account's current state. */
+export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue === undefined ? "config" : ["config", ...issue.path.map(String)].join(".");
     throw invalid(`${where}: ${issue?.message ?? "is invalid"}`);
   }
-  const config = parsed.data;
+  return parsed.data;
+}
+
+export async function checkAppConfig(
+  db: D1Database,
+  accountId: string,
+  raw: unknown,
+  storedRouting: Readonly<Record<string, unknown>> = {},
+): Promise<AppConfig> {
+  const config = parseAppConfig(raw);
   for (const [slug, routing] of Object.entries(config.routing.providers)) {
     const connection = await db
       .prepare("SELECT type, rates_json FROM provider_connection WHERE account_id = ? AND slug = ?")

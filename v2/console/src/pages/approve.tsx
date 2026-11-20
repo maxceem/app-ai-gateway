@@ -172,27 +172,38 @@ export function ApprovePage() {
     submit.mutate();
   };
   const { review } = data;
+  const custom = review.baseUrl !== null;
 
   return (
     <ApproveShell id={id} title={title}>
       <p className="text-sm text-muted-foreground">
         {data.kind === "provider.add"
-          ? "An agent or the CLI asked to add this provider connection. Enter its key to approve. The key goes to the gateway only, never to whoever asked."
-          : "An agent or the CLI asked to replace this connection's key. Enter the new key to approve. It goes to the gateway only, never to whoever asked."}
+          ? "An agent or the CLI asked to add this provider connection. Enter its key to approve."
+          : "An agent or the CLI asked to replace this connection's key. Enter the new key to approve."}
+        {custom ? null : " The gateway keeps the key and sends it only to the provider, never to whoever asked."}
       </p>
+      {custom ? (
+        <Alert role="note">
+          <AlertTitle>This request names its own address</AlertTitle>
+          <AlertDescription>
+            The gateway will send the key to {review.destination}. Whoever controls that address receives the key. Approve only
+            if you trust it.
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Account</dt>
+        <dd className="break-all">
+          {data.account.name} <span className="font-mono text-xs text-muted-foreground">{data.account.id}</span>
+        </dd>
         <dt className="text-muted-foreground">Name</dt>
         <dd className="break-all">{review.name}</dd>
         <dt className="text-muted-foreground">Provider</dt>
         <dd className="break-all">{review.type}</dd>
         <dt className="text-muted-foreground">Slug</dt>
         <dd className="font-mono break-all">{review.slug}</dd>
-        {review.baseUrl ? (
-          <>
-            <dt className="text-muted-foreground">Base URL</dt>
-            <dd className="font-mono break-all">{review.baseUrl}</dd>
-          </>
-        ) : null}
+        <dt className="text-muted-foreground">Key sent to</dt>
+        <dd className="font-mono break-all">{review.destination}</dd>
         {review.secretHint ? (
           <>
             <dt className="text-muted-foreground">Current key</dt>

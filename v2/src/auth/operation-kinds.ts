@@ -61,13 +61,12 @@ export const OPERATION_LIMITS = { pendingPerOrganization: 10, pendingPerOpener: 
 /**
  * What an operation stores as its payload. `requestHash` binds a repeat to the
  * same request, since the request itself may not be stored. A browser step
- * also stores what its approver reviews, never its key, and who sent it: the
- * write runs as its sender.
+ * also stores what its approver reviews, never its key. The write runs as the
+ * operation's opener, which the engine records itself.
  */
 export interface OperationEnvelope {
   requestHash: string;
   review?: Record<string, unknown>;
-  sender?: { userId: string };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,16 +80,9 @@ export function parseEnvelope(value: unknown): OperationEnvelope {
   if (!isRecord(value) || typeof value.requestHash !== "string" || !HEX_DIGEST.test(value.requestHash)) {
     throw new Error("An operation's payload must carry its request digest");
   }
-  const { requestHash, review, sender } = value;
+  const { requestHash, review } = value;
   if (review !== undefined && !isRecord(review)) throw new Error("A reviewed payload must be an object");
-  if (sender !== undefined && (!isRecord(sender) || typeof sender.userId !== "string")) {
-    throw new Error("A browser step names the user who sent it");
-  }
-  return {
-    requestHash,
-    ...(review === undefined ? {} : { review }),
-    ...(sender === undefined ? {} : { sender: { userId: sender.userId as string } }),
-  };
+  return { requestHash, ...(review === undefined ? {} : { review }) };
 }
 
 /** The longest key a person may enter on the page, as `createProvider` takes it. */
@@ -154,13 +146,12 @@ export function gatewayOperationKinds(identity: () => CfAuth): OperationKind[] {
     // agent that executed it, and not whoever holds the handle.
     deliver: "reveal",
     recordTtlMs: OPERATION_RECORD_TTL_MS,
-    // A key revoked before anyone revealed it is not revealed: it would be a
-    // key that no longer works, shown as though it did.
+    // Only a key is ever revealed, and only one still active: a key revoked
+    // before anyone revealed it would be shown as though it worked, and an
+    // outcome with no key (an App Attest app) has nothing to reveal.
     deliverable: ({ record }) => {
       const keyId = (record as { api_key?: { id?: unknown } | null } | null)?.api_key?.id;
-      return typeof keyId === "string"
-        ? sql`exists (select 1 from app_key where id = ${keyId} and status = 'active')`
-        : undefined;
+      return typeof keyId === "string" ? sql`exists (select 1 from app_key where id = ${keyId} and status = 'active')` : sql`0`;
     },
   }));
   return [...browser, ...reserved];

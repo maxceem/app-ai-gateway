@@ -190,6 +190,7 @@ function tool<K extends ToolOperation>(definition: {
   cli: CliToolHint;
   check?: (input: Record<string, unknown>) => void;
   next?: Partial<Record<ErrorCode, string>>;
+  keyMetadataAt?: readonly ResultPath[];
   summary: (result: OperationResponse<K>) => string;
 }): McpTool {
   const { operation } = definition;
@@ -202,6 +203,7 @@ function tool<K extends ToolOperation>(definition: {
     annotations: definition.effect ? writes(definition.effect) : READS,
     cli: definition.cli,
     ...(definition.next ? { next: definition.next } : {}),
+    ...(definition.keyMetadataAt ? { keyMetadataAt: definition.keyMetadataAt } : {}),
     ...(definition.check ? { check: definition.check } : {}),
     request: (input) => plainRequest(operation, input),
     summary: (result) => definition.summary(result as OperationResponse<K>),
@@ -539,6 +541,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
     description:
       "Returns where an operation a change tool opened stands: pending with when it lapses, completed with what it created or changed, or expired (with denied when a person declined it). Use it after giving a person a URL to see when they have finished, and to inspect an operation a notice names before creating another. It never returns a key: when a key the operation created can still be revealed, reveal_url is the page a person opens to see it once.",
     operation: "getOperation",
+    // Where a completed create reports the key it made, without its value.
+    keyMetadataAt: [["result", "api_key"]],
     input: z.object({
       id: z.string().min(1).meta({ description: "The operation's id: the id the tool that opened it answered, never a reservation's handle." }),
     }),

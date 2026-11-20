@@ -178,12 +178,16 @@ export const HandoffDetailsResponseSchema = z
     kind: z.enum(["provider.add", "provider.rotate-key"]),
     state: z.enum(["pending", "completed", "denied", "expired", "retired"]),
     expiresAt: z.string(),
+    /** The account the key goes into. */
+    account: z.object({ id: z.string(), name: z.string() }),
     /** What the person approves: the connection to add, or the one whose key is replaced. */
     review: z.object({
       type: z.string(),
       name: z.string(),
       slug: z.string(),
       baseUrl: z.string().nullable(),
+      /** Where the gateway sends the key: the custom base URL, or the provider's own host. */
+      destination: z.string(),
       /** For a key replacement: the last characters of the key it replaces. */
       secretHint: z.string().nullable().optional(),
     }),
