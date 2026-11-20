@@ -91,9 +91,10 @@ function withEstimate(usage: UsageObservation, estimate: Unit | undefined): Usag
  *   answers in one of them (a reported unit is billed before tokens). Each keeps the
  *   request's measure beside it when the meter declares one, and an answer
  *   that reports nothing bills that measure alone (OpenAI's plain speech).
- * - A response header: one way with two usages, the header present (beside
- *   the request's estimate) and the header missing (the estimate alone), since
- *   the same model's answers can come either way.
+ * - A response header: one way, since the same model's answers can come any
+ *   of its ways: the header present (beside the request's estimate and the
+ *   body's measures), the header alone and the body alone where the meter
+ *   reads the body, and the header missing (the estimate alone).
  * - A request measure: its unit, worked out from the request.
  * - A request count: one request, exact.
  * - Connection time: session seconds.
@@ -116,11 +117,19 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
     }
     case "response_header": {
       const estimate = meter.estimate?.unit;
-      // What the body reports comes with the header, as the provider sends both.
       const body = Object.fromEntries((meter.body?.units ?? []).map((unit) => [unit, sample(unit)]));
-      const present = withEstimate({ ...NO_TOKENS, units: { [meter.unit]: sample(meter.unit), ...body } }, estimate);
-      if (estimate === undefined) return [[present]];
-      return [[present, { ...withEstimate(NO_TOKENS, estimate), reportMissing: true }]];
+      const header = { [meter.unit]: sample(meter.unit) };
+      // One way, since the same model's answers can come any of these ways:
+      // the header, beside the body's measures where the meter reads them;
+      // the header alone; the body alone; and, with an estimate, neither,
+      // where the request's estimate bills.
+      const way: UsageObservation[] = [withEstimate({ ...NO_TOKENS, units: { ...header, ...body } }, estimate)];
+      if (meter.body !== undefined) {
+        way.push(withEstimate({ ...NO_TOKENS, units: header }, estimate));
+        way.push(withEstimate({ ...NO_TOKENS, units: body }, estimate));
+      }
+      if (estimate !== undefined) way.push({ ...withEstimate(NO_TOKENS, estimate), reportMissing: true });
+      return [way];
     }
     case "request_measure":
       return [[withEstimate(NO_TOKENS, meter.unit)]];

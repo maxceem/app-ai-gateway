@@ -321,10 +321,19 @@ function reportedCostUsd(operation: OperationDescription, reading: ResponseReadi
   const { header, currency } = meter.providerCost;
   if (currency !== undefined && headers.get(currency.header)?.trim().toLowerCase() !== currency.value.toLowerCase()) return null;
   const value = headerNumber(headers.get(header));
-  // $0 beside a positive billed amount is no report (ElevenLabs before overages
-  // on a plan's included credits): the amount bills instead, never as free.
-  if (value === 0 && (headerNumber(headers.get(meter.header)) ?? 0) > 0) return null;
+  // $0 beside any positive reported measure, the header's amount or the
+  // body's (ElevenLabs before overages, on a plan's included credits), is no
+  // report: the measure bills instead, never as free.
+  if (value === 0 && ((headerNumber(headers.get(meter.header)) ?? 0) > 0 || measuresSomething(reading?.usage ?? null))) return null;
   return value;
+}
+
+/** Whether a usage the body reported counts anything above 0. */
+function measuresSomething(usage: UsageObservation | null): boolean {
+  if (usage === null) return false;
+  if ((usage.audioSeconds ?? 0) > 0 || (usage.images ?? 0) > 0) return true;
+  if (Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0)) return true;
+  return usage.noTokens !== true && usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens > 0;
 }
 
 /** A header's usage with the body's beside it: both are the provider's reports. Either alone stands for both. */

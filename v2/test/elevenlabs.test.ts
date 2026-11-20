@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import worker from "../src/index.ts";
 import { billing, listedModelProblem, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
+import { meterCases } from "../src/pricing/units.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
@@ -194,6 +195,25 @@ describe("ElevenLabs operations", () => {
     // Speech to text charges it fully, and a model list that leaves it out is judged by its own models.
     await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(["elevenlabs.stt"]))).resolves.toBeDefined();
     await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(["elevenlabs.tts"], ["eleven_multilingual_v2"]))).resolves.toBeDefined();
+  });
+
+  it("judges speech to text on every way its answers come: credits and duration, credits only, duration only (4b F8)", () => {
+    const stt = elevenlabs.operations.find((op) => op.name === "elevenlabs.stt")!;
+    const [way, ...others] = meterCases(stt);
+    expect(others).toEqual([]);
+    expect(way!.map((usage) => Object.keys(usage.units ?? {}).sort())).toEqual([["audio_seconds", "credits"], ["credits"], ["audio_seconds"]]);
+    // An hourly rate alone cannot bill an answer with credits and no duration, nor credits alone one with a duration and no header.
+    expect(savedPriceProblem({ scribe_v2: { per_hour: 200_000_000 } }, "scribe_v2", "elevenlabs", [stt])).toMatchObject({ kind: "bills_nothing", operation: "elevenlabs.stt" });
+    expect(savedPriceProblem({ m: { per_credit: 100_000 } }, "m", "elevenlabs", [stt])).toMatchObject({ kind: "bills_nothing" });
+    expect(savedPriceProblem({ m: { per_credit: 100_000, per_hour: 200_000_000 } }, "m", "elevenlabs", [stt])).toBeNull();
+  });
+
+  it("reads a dollar figure of $0 beside a positive body duration as no report, even with no credits header (4b F10)", () => {
+    const stt = elevenlabs.operations.find((op) => op.name === "elevenlabs.stt")!;
+    const zero = new Headers({ "fiat-cost-before-overages": "0", "fiat-currency": "usd" });
+    const reading = { usage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true as const, audioSeconds: 4.7 }, providerCostUsd: null, closed: null };
+    expect(attemptCostUsd(stt, reading, zero)).toBeNull();
+    expect(attemptCostUsd(stt, { ...reading, usage: { ...reading.usage, audioSeconds: 0 } }, zero)).toBe(0);
   });
 
   it("reads a JSON cost report too large to store as no report, in the same one place (4b F7)", () => {

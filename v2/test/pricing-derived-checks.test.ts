@@ -39,8 +39,11 @@ describe("Fable's cases: save, eligibility and the charge agree", () => {
     // Saving the rates on a connection that can only speak refuses it too, for the same reason.
     const speaking = elevenlabs.operations.filter((op) => op.name.startsWith("elevenlabs.tts"));
     expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", speaking)).toMatchObject({ kind: "bills_nothing" });
-    // A connection save does not know which operations apps enable: credits alone bill speech to text, so it saves (4b S6).
-    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
+    // A connection save does not know which operations apps enable, but credits alone charge no operation fully:
+    // speech to text's answers can come with its audio's length and no header (4b S6, F8).
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "bills_nothing" });
+    // Credits and an hourly rate charge speech to text fully: the connection saves it.
+    expect(savedPriceProblem({ m: { per_credit: 50_000_000, per_hour: 200_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
     // An app enabling text to speech for it is refused: an answer without its header cannot be charged.
     const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
     expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toEqual({ operation: "elevenlabs.tts" });
