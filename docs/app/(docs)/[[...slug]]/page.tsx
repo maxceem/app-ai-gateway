@@ -6,7 +6,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { OpenAPIPageClient } from "@/components/api-page";
 import { openapi } from "@/lib/openapi";
-import { homeTitle, pageUrl, shareMetadata, siteName } from "@/lib/site";
+import { homeTitle, organizationJsonLd, pageUrl, shareMetadata, siteName } from "@/lib/site";
 import { source } from "@/lib/source";
 
 export default async function Page(props: { params: Promise<{ slug?: string[] }> }) {
@@ -21,6 +21,12 @@ export default async function Page(props: { params: Promise<{ slug?: string[] }>
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
+      {page.slugs.length === 0 ? (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd()).replace(/</g, "\\u003c") }}
+        />
+      ) : null}
       <DocsTitle>{page.data.title}</DocsTitle>
       {/* An endpoint page's description is written for search results and
           repeats the method and path the page shows right below; its own
