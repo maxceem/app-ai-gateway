@@ -214,9 +214,9 @@ export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation)
  *
  * `doubt` is any reason the gateway is not sure what it is pricing: a mode
  * value it does not know, a served model it cannot tell, or any later one.
- * The one rule for all of them lives here: an estimate is never billed below
- * standard (`AGENTS.md`), so a cheaper tier is raised to standard, and the
- * price is marked as an estimate.
+ * The one rule for every estimate, whatever made it one, is applied once, at
+ * the end, after every path: an estimate is never billed below what the same
+ * usage costs at the model's standard price (`AGENTS.md`).
  */
 export function priceInServedMode(
   price: ModelPrice,
@@ -224,10 +224,14 @@ export function priceInServedMode(
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
 ): (Pricing & { readonly estimated: boolean }) | null {
-  const mode: ServiceMode =
-    doubt && SERVICE_TIERS[served.tier].rank < SERVICE_TIERS.standard.rank ? { tier: "standard", region: served.region } : served;
-  const exact = priceIn(price, usage, mode);
-  return exact === null ? null : { ...exact, estimated: exact.estimated || doubt };
+  const priced = priceIn(price, usage, served);
+  if (priced === null) return null;
+  const estimated = priced.estimated || doubt;
+  if (!estimated) return { ...priced, estimated: false };
+  // The one floor, after every path: an estimate costs at least what the same
+  // usage costs at the model's standard price, whichever axis lacked a price.
+  const standard = priceUsage(priceInMode(price, STANDARD_MODE) ?? price, usage);
+  return standard !== null && standard.cost > priced.cost ? { ...standard, estimated: true } : { ...priced, estimated: true };
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Pricing & { readonly estimated: boolean }) | null {

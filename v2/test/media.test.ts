@@ -464,6 +464,13 @@ describe("usage in other units", () => {
     expect([...values.backwards()][0]).toMatchObject({ model: "gpt-4o-transcribe", duration: 42, usage: { input_tokens: 40 } });
   });
 
+  it("takes the root duration, never one nested in the content (3c S10)", () => {
+    const head = `{"duration":42,"text":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}","segments":[{"id":0,"duration":2}]}`;
+    const values = responseValues({ head, tail, truncated: true }, "application/json");
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42 });
+  });
+
   it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
     const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
     const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");

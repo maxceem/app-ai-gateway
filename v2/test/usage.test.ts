@@ -401,6 +401,23 @@ describe("service modes", () => {
     expect(priority.estimated).toBe(true);
   });
 
+  it("floors an estimate from any path: a tier priced but a region not (3c S4)", () => {
+    const price = listPrice("openai", "gpt-6-sol")!;
+    const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    const standard = priceInServedMode(price, tokens, STANDARD_MODE)!;
+    // Flex is priced, the EU region is not: an estimate, never below standard.
+    expect(priceInServedMode(price, tokens, { tier: "flex", region: "eu" })).toMatchObject({ estimated: true });
+    expect(priceInServedMode(price, tokens, { tier: "flex", region: "eu" })!.cost).toBeGreaterThanOrEqual(standard.cost);
+  });
+
+  it("reads a large answer's root fields raw: a numeric tier is present but unknown (3c S10)", () => {
+    const head = `{"model":"gpt-5.6-luna","service_tier":99,"choices":[{"message":{"content":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`;
+    const usage = readUsage(responseValues({ head, tail, truncated: true }, "application/json"), "openai-chat")!;
+    const flex = { tier: "flex", region: "global" } as const;
+    expect(servedServiceMode(openai, flex, usage, new Headers()).unknown).toBeDefined();
+  });
+
   it("believes the mode the response says served the request, but a scanned one only when it is dearer", () => {
     const fast = { tier: "fast", region: "global" } as const;
     // OpenAI sheds fast traffic to `default`, and bills it as standard.

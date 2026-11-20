@@ -434,7 +434,7 @@ function sseEvents(text: string): { forwards(): Iterable<unknown>; backwards(): 
       // Every block is parsed by now, so `broken` is complete.
       for (let index = 0; index < blocks.length; index += 1) valueAt(index);
       for (const data of broken) {
-        const document = tailUsageDocument(data);
+        const document = rootFields(data, data);
         if (document) yield document;
       }
     },
@@ -497,76 +497,46 @@ function jsonObjectAt(text: string, start: number): string | null {
 const TAIL_USAGE_KEYS = ["usage", "usageMetadata"] as const;
 
 /**
- * The root fields a reader or the meter needs from a document too large to
- * keep whole: its usage objects, and the strings naming what served it (the
- * model, and the tier). Read only at the root, through one lookup over the
- * kept tail, then the kept head (`rootFields`).
+ * The root fields a reader or the meter needs from a document it cannot parse
+ * whole: its usage objects, and the values naming what served it and how much
+ * (the model, the tier, a transcription's duration). This lookup is the only
+ * way any reader gets a root field of such a document (`rootFields`). Each
+ * value is returned raw, whatever its type: the reader judges it, so a tier
+ * that is a number or empty is present but unusable, which means unknown.
  */
-const ROOT_OBJECT_KEYS: readonly string[] = TAIL_USAGE_KEYS;
-const ROOT_STRING_KEYS: readonly string[] = ["model", "service_tier"];
+const ROOT_KEYS: readonly string[] = [...TAIL_USAGE_KEYS, "model", "service_tier", "duration"];
+
+/** A JSON scalar at the start of a value: a string, a number, true, false or null. */
+const JSON_SCALAR = /^\s*:\s*("(?:[^"\\]|\\.){0,400}"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/u;
 
 /**
  * The root field `key` whose value starts right after `end` (the key's closing
- * quote), if it is one of the root fields and whole: an object for a usage key,
- * a string for a string key. Undefined otherwise.
+ * quote), if it is one of the root fields and its value is whole: an object,
+ * or a scalar. Undefined otherwise.
  */
 function rootFieldValue(text: string, key: string, end: number): { value: unknown; length: number } | undefined {
-  if (ROOT_OBJECT_KEYS.includes(key)) {
-    const separator = /^\s*:\s*\{/u.exec(text.slice(end + 1));
-    if (!separator) return undefined;
-    const object = jsonObjectAt(text, end + 1 + separator[0].length - 1);
-    if (!object) return undefined;
+  if (!ROOT_KEYS.includes(key)) return undefined;
+  const object = /^\s*:\s*\{/u.exec(text.slice(end + 1));
+  if (object) {
+    const whole = jsonObjectAt(text, end + 1 + object[0].length - 1);
+    if (!whole) return undefined;
     try {
-      return { value: JSON.parse(object) as unknown, length: separator[0].length + object.length - 1 };
+      return { value: JSON.parse(whole) as unknown, length: object[0].length + whole.length - 1 };
     } catch {
       return undefined;
     }
   }
-  if (ROOT_STRING_KEYS.includes(key)) {
-    const string = /^\s*:\s*("(?:[^"\\]|\\.){0,400}")/u.exec(text.slice(end + 1));
-    if (!string) return undefined;
-    try {
-      const value = JSON.parse(string[1]!) as unknown;
-      return typeof value === "string" ? { value, length: string[0].length } : undefined;
-    } catch {
-      return undefined;
-    }
+  const scalar = JSON_SCALAR.exec(text.slice(end + 1));
+  if (!scalar) return undefined;
+  try {
+    return { value: JSON.parse(scalar[1]!) as unknown, length: scalar[0].length };
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
 /**
- * A document holding whatever usage objects the text still has whole: the
- * last `usage` and `usageMetadata` objects, which is where every shape here
- * reports. Null when it holds none.
- */
-function tailUsageDocument(tail: string): Record<string, unknown> | null {
-  const document: Record<string, unknown> = {};
-  for (const key of TAIL_USAGE_KEYS) {
-    const marker = `"${key}"`;
-    // The step stops at the first character rather than searching from -1,
-    // which `lastIndexOf` would clamp back to 0 forever.
-    for (let at = tail.lastIndexOf(marker); at !== -1; at = at > 0 ? tail.lastIndexOf(marker, at - 1) : -1) {
-      const separator = /^\s*:\s*\{/u.exec(tail.slice(at + marker.length));
-      if (!separator) continue;
-      const object = jsonObjectAt(tail, at + marker.length + separator[0].length - 1);
-      if (!object) continue;
-      try {
-        document[key] = JSON.parse(object) as unknown;
-        break;
-      } catch {
-        // Not the object it looked like; an earlier one may be.
-      }
-    }
-  }
-  if (Object.keys(document).length === 0) return null;
-  SCANNED.add(document);
-  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
-  return document;
-}
-
-/**
- * The root fields (`ROOT_OBJECT_KEYS`, `ROOT_STRING_KEYS`) of a document's kept
+ * The root fields (`ROOT_KEYS`) of a document's kept
  * head: the top-level `usage` or `usageMetadata` objects, the `model`, the tier,
  * for an answer that reports its usage first and then a large payload, such
  * as an image API's base64 (`gpt-image-1`). Only keys of the root object
@@ -612,7 +582,7 @@ function escapedQuote(text: string, at: number): boolean {
 }
 
 /**
- * The root fields (`ROOT_OBJECT_KEYS`, `ROOT_STRING_KEYS`) found in a
+ * The root fields (`ROOT_KEYS`) found in a
  * document's kept tail, read backwards from where the root object ends, so only keys of the
  * root count: a `usage` nested in the answer's content (a Gemini function
  * call's arguments, say) never does. The tail's start may be cut, but every
@@ -649,27 +619,25 @@ function rootTailUsageDocument(tail: string): Record<string, unknown> | null {
   return document;
 }
 
-/** A transcription's duration is a number, not an object, so it is matched as one. */
-const TAIL_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/gu;
 /**
- * A `verbose_json` transcription states its top-level `duration` before its
- * segments, so the head's first one is the whole audio's. Quotes inside the
- * transcript are escaped, so text that says "duration" never matches.
+ * The root fields of a document that could not be parsed whole, each found on
+ * its own: in `tail`, read backwards from where the root ends, else in `head`,
+ * read forwards from where it starts. A field found in either is in the one
+ * document returned, whichever window it was in. For a single cut piece of
+ * text, pass it as both. Null when no root field is whole in either.
  */
-const HEAD_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/u;
-
-/**
- * A truncated document with the duration the text still shows: the tail's
- * last, else the head's first (v1). Only the transcription reader reads it,
- * so a token-priced answer that mentions a duration is still priced from its
- * tokens.
- */
-function withDuration(document: Record<string, unknown> | null, tail: string, head: string): Record<string, unknown> | null {
-  const found = [...tail.matchAll(TAIL_DURATION)].at(-1)?.[1] ?? HEAD_DURATION.exec(head)?.[1];
-  if (found === undefined) return document;
-  const withIt = document ?? {};
-  withIt.duration = Number(found);
-  return withIt;
+function rootFields(head: string, tail: string): Record<string, unknown> | null {
+  const fromTail = rootTailUsageDocument(tail);
+  const fromHead = headUsageDocument(head);
+  const root: Record<string, unknown> = {};
+  for (const key of ROOT_KEYS) {
+    const value = fromTail !== null && Object.hasOwn(fromTail, key) ? fromTail[key] : fromHead?.[key];
+    if (value !== undefined) root[key] = value;
+  }
+  if (Object.keys(root).length === 0) return null;
+  SCANNED.add(root);
+  for (const value of Object.values(root)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return root;
 }
 
 /** The values of one response, parsed where a reader reaches one and nowhere else. */
@@ -707,7 +675,7 @@ export function responseValues(body: ObservedText, contentType: string): Respons
         if (tail) yield* tail.backwards();
         if (split) {
           // The duration a transcription's cut event still shows counts too, as v1.
-          cutDocument ??= withDuration(tailUsageDocument(split.cut), split.cut, "");
+          cutDocument ??= rootFields(split.cut, split.cut);
           if (cutDocument) yield cutDocument;
         }
         yield* head.backwards();
@@ -719,23 +687,10 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    // One root, read field by field: each root field the reader or the meter
-    // needs is taken from the kept tail, where most answers report, else from
-    // the top of the kept head, for an answer that reports it before a large
-    // payload. So every root field that is anywhere in view is in the one
-    // document, whichever window it was in.
-    const head = headUsageDocument(body.head);
-    const tail = rootTailUsageDocument(body.tail);
-    const root: Record<string, unknown> = {};
-    for (const key of [...ROOT_OBJECT_KEYS, ...ROOT_STRING_KEYS]) {
-      const value = tail?.[key] ?? head?.[key];
-      if (value !== undefined) root[key] = value;
-    }
-    const document = withDuration(Object.keys(root).length === 0 ? null : root, body.tail, body.head);
-    if (document !== null) {
-      SCANNED.add(document);
-      for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
-    }
+    // One root, read field by field: each root field is taken from the kept
+    // tail, where most answers report, else from the top of the kept head,
+    // for an answer that reports it before a large payload.
+    const document = rootFields(body.head, body.tail);
     return documentValues(document === null ? [] : [document]);
   }
   let parsed: unknown;
@@ -743,7 +698,7 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     parsed = JSON.parse(body.head) as unknown;
   } catch {
     // A body whose JSON never closed (a cut answer) may still end with its usage.
-    const document = withDuration(tailUsageDocument(body.head), body.head, body.head);
+    const document = rootFields(body.head, body.head);
     return documentValues(document === null ? [] : [document]);
   }
   return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
