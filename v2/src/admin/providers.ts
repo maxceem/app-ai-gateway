@@ -342,6 +342,19 @@ function passthroughJson(
     if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
       const problem = customStyleProblem(listed.style, subject.baseUrl);
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
+      // On a known provider's host, a path its declared operation serves speaks that operation's style:
+      // another style's reader would miss what its answers report.
+      const declared = ownerMatcher === null || ownerRoute === null ? null : ownerMatcher.overlappingOperation(compiled, ownerRoute);
+      const declaredStyle = declared === null ? undefined : owner!.operations.find((operation) => operation.name === declared)?.style;
+      if (declared !== null && declaredStyle !== listed.style) {
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          declaredStyle !== undefined && isCustomStyle(declaredStyle)
+            ? `${where}.style: ${key} is ${owner!.label}'s ${declared} operation, which speaks ${declaredStyle}; list it with the style ${declaredStyle}`
+            : `${where}.style: ${key} is ${owner!.label}'s ${declared} operation, which a custom path cannot meter; use a ${owner!.label} connection for it`,
+        );
+      }
     }
     // As on a built-in connection (5a): a plain path newly listed on a known provider's host may not take
     // one of that provider's declared operations, which would pass it through unmetered.

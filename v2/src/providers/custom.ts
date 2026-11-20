@@ -26,7 +26,8 @@
  *   own provider where it declares the style, else the style's home provider.
  */
 import type { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
-import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
+import { GATEWAY_IDENTITY_HEADERS, isCommonRequestHeader } from "../contracts/app-config.ts";
+import { isForwardedClientHeader } from "../proxy/headers.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
 import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
@@ -252,7 +253,12 @@ export function declaredHostNames(description: ProviderDescription): readonly st
 export function knownHostOwner(baseUrl: string): ProviderDescription | null {
   const host = hostOf(baseUrl);
   if (host === null) return null;
-  return Object.values(BUILT_IN_PROVIDERS).find((description) => declaredHostNames(description).includes(host)) ?? null;
+  return Object.values(BUILT_IN_PROVIDERS).find((description) => declaredHostNames(description).some((name) => hostMatches(name, host))) ?? null;
+}
+
+/** Whether `host` is the declared `name`, or under it for a `*.` name. */
+function hostMatches(name: string, host: string): boolean {
+  return name.startsWith("*.") ? host.endsWith(name.slice(1)) : host === name;
 }
 
 /** What a custom provider connection stores, as its description is built from. */
@@ -291,31 +297,6 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
   };
 }
 
-/**
- * Header names a custom provider's key may not be sent in: ones the request
- * itself, its body or its connection depend on, the gateway's own, and
- * Cloudflare's. Compared lower-cased.
- */
-const RESERVED_KEY_HEADERS: ReadonlySet<string> = new Set([
-  "host",
-  "content-type",
-  "content-length",
-  "content-encoding",
-  "transfer-encoding",
-  "connection",
-  "keep-alive",
-  "upgrade",
-  "te",
-  "trailer",
-  "expect",
-  "cookie",
-  "accept",
-  "accept-encoding",
-  "user-agent",
-  "origin",
-  "referer",
-]);
-
 /** An HTTP header name: RFC 9110 `token`. */
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]+$/u;
 
@@ -327,8 +308,9 @@ const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]+$/u;
 export function customAuthProblem(auth: ProviderAuth): string | null {
   const header = auth.header;
   if (!HEADER_NAME.test(header)) return "auth.header: must be a header name in lowercase letters, digits and - _ .";
-  if (RESERVED_KEY_HEADERS.has(header) || header.startsWith("cf-") || header.startsWith("x-agw-") || header.startsWith("sec-")) {
-    return `auth.header: ${header} cannot carry the key`;
+  // A header clients send or providers echo back could carry the key to the app, or a client's value to another host.
+  if (isCommonRequestHeader(header) || isForwardedClientHeader(header)) {
+    return `auth.header: ${header} cannot carry the key: clients send it, or providers send it back`;
   }
   // A header the gateway reads who is calling from would carry the key and a user id at once.
   if (GATEWAY_IDENTITY_HEADERS.has(header)) return `auth.header: ${header} cannot carry the key: the gateway reads who is calling from it`;

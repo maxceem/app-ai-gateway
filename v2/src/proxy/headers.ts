@@ -100,8 +100,10 @@ const STRIPPED_RESPONSE_HEADERS: readonly string[] = [
 ];
 
 /** The provider's headers an app may see. */
-export function clientResponseHeaders(upstream: Headers): Headers {
+export function clientResponseHeaders(upstream: Headers, keyHeader: string): Headers {
   const headers = new Headers(upstream);
   for (const name of STRIPPED_RESPONSE_HEADERS) headers.delete(name);
+  // The header the connection's key is sent in, never echoed back to the app, whatever the answer.
+  headers.delete(keyHeader);
   return headers;
 }

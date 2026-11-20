@@ -17,6 +17,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel } from "@/lib/providers";
+import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
@@ -636,22 +637,34 @@ export function parsePathLines(text: string, custom: boolean): { paths: ListedPa
 function PathsDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const custom = provider?.type === "custom";
-  const listed = provider?.passthrough ?? [];
-  const [text, setText] = useState(listed.map(pathLine).join("\n"));
+  // The version the draft was made from: it is saved at that revision, never at a newer one the list
+  // loaded since, so another admin's change is never quietly overwritten.
+  const [base, setBase] = useState({ revision: provider?.revision ?? 0, listed: provider?.passthrough ?? [] });
+  const [text, setText] = useState(base.listed.map(pathLine).join("\n"));
   const [trusted, setTrusted] = useState(false);
+  const [conflict, setConflict] = useState(false);
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
-  const choosing = !custom && listed.length === 0;
+  const choosing = !custom && base.listed.length === 0;
   const paths = "paths" in parsed ? parsed.paths : null;
+
+  /** Starts again from the provider as it is now, dropping the draft. */
+  const reload = () => {
+    const listed = provider?.passthrough ?? [];
+    setBase({ revision: provider?.revision ?? 0, listed });
+    setText(listed.map(pathLine).join("\n"));
+    setConflict(false);
+  };
 
   const save = async () => {
     if (!provider || paths === null) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, passthrough: paths.length === 0 ? null : paths } });
+      await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : paths } });
       toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save the paths");
+      if (error instanceof ApiError && error.status === 409) setConflict(true);
+      else toast.error(error instanceof Error ? error.message : "Could not save the paths");
     } finally {
       update.reset();
     }
@@ -671,9 +684,21 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       }
       submitLabel="Save paths"
       pending={update.isPending}
-      disabled={paths === null || (choosing && paths.length > 0 && !trusted)}
+      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted)}
       onSubmit={() => void save()}
     >
+      {conflict ? (
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>These paths changed since you opened them</AlertTitle>
+          <AlertDescription>
+            <p>Someone else saved this provider. Reload to see their paths, then make your change again.</p>
+            <Button type="button" variant="outline" size="sm" onClick={reload}>
+              Reload paths
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <Field
         label="One path per line"
         htmlFor="listed-paths"

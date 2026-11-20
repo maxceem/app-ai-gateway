@@ -29,6 +29,7 @@ import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
+import { strippedHeaders } from "../src/proxy/serve.ts";
 import { ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
@@ -100,6 +101,21 @@ describe("a custom provider's description", () => {
     }
     expect(knownHostOwner("https://eu.api.openai.com/v1/")?.type).toBe("openai");
     expect(knownHostOwner("https://api.eu.residency.elevenlabs.io/")?.type).toBe("elevenlabs");
+  });
+
+  it("gives every host a provider declares, and every host under a `*.` one, that provider's refused paths", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const name of description.otherHosts ?? []) {
+        const host = name.startsWith("*.") ? `jp${name.slice(1)}` : name;
+        expect(knownHostOwner(`https://${host}/`)?.type, host).toBe(description.type);
+        expect(customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] }).refused, host).toBe(description.refused);
+      }
+    }
+    for (const host of ["us.api.openai.com", "gb.api.openai.com", "eu.api.openai.com", "jp.api.openai.com"]) {
+      expect(knownHostOwner(`https://${host}/v1/`)?.type, host).toBe("openai");
+    }
+    // Only under it: a look-alike name is not OpenAI's.
+    expect(knownHostOwner("https://api.openai.com.example.net/")).toBeNull();
   });
 
   it("builds an API-style path from a built-in definition, with that provider's rules for reading it", () => {
@@ -204,6 +220,14 @@ describe("a custom provider's description", () => {
     [{ header: "cf-aig-authorization", format: "{key}" }, "cannot carry the key"],
     [{ header: "x api key", format: "{key}" }, "header name"],
     [{ header: "x-end-user-id", format: "{key}" }, "reads who is calling from it"],
+    [{ header: "x-request-id", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "idempotency-key", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "traceparent", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "x-correlation-id", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "content-md5", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "accept-language", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "openai-beta", format: "{key}" }, "clients send it, or providers send it back"],
+    [{ header: "x-stainless-lang", format: "{key}" }, "clients send it, or providers send it back"],
     [{ header: "x-api-key", format: "Bearer key" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "{key}{key}" }, "{key} exactly once"],
     [{ header: "x-api-key", format: "Bearer\n{key}" }, "printable ASCII"],
@@ -608,6 +632,23 @@ describe("saving a custom provider", () => {
     expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, auth: { header: "x-appattest-proof", format: "{key}" } })).status).toBe(400);
   });
 
+  it("refuses a known host's declared path listed with another style, and names its own", async () => {
+    const key = await seedManagementKey();
+    const wrong = await createCustom(key, {
+      baseUrl: "https://api.anthropic.com/",
+      passthrough: [{ method: "POST", path: "v1/messages", style: "openai-chat" }],
+      pricing: PRICING,
+    });
+    expect(wrong.status).toBe(400);
+    expect(JSON.stringify(wrong.body)).toContain("list it with the style anthropic-messages");
+    const right = await createCustom(key, {
+      baseUrl: "https://api.anthropic.com/",
+      passthrough: [{ method: "POST", path: "v1/messages", style: "anthropic-messages" }],
+      pricing: PRICING,
+    });
+    expect(right.status, JSON.stringify(right.body)).toBe(201);
+  });
+
   it("refuses a plain path that would take a known host's declared operation, and suggests its style", async () => {
     const key = await seedManagementKey();
     const refused = await createCustom(key, { baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
@@ -848,6 +889,27 @@ describe("serving a custom provider", () => {
     expect(String(url)).toBe("https://llm.example.com/v1/v1/images/edits");
     expect(init!.body).toBeInstanceOf(FormData);
     expect((init!.body as FormData).get("model")).toBe("local-img");
+  });
+
+  it("never passes the key header back to the app, in an answer or an error", async () => {
+    const { appId, slug, key } = await setup(paths, ["passthrough", "custom.openai-chat"]);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "local-llm" }, { headers: { "x-api-key": `Key ${SECRET}` } }));
+    const ok = await send("GET", `/v2/apps/${appId}/proxy/${slug}/models/x`, key);
+    expect(ok.response.status).toBe(200);
+    expect(ok.response.headers.get("x-api-key")).toBeNull();
+    fetchSpy.mockResolvedValueOnce(Response.json({ error: { message: "bad" } }, { status: 400, headers: { "x-api-key": `Key ${SECRET}` } }));
+    const failed = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "local-llm", messages: [] }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(failed.response.status).toBe(400);
+    expect(failed.response.headers.get("x-api-key")).toBeNull();
+  });
+
+  it("strips every header a request could authenticate with, not only the one it did", () => {
+    const app = { authentication: { type: "api_key", end_user: { source: "none" } } } as never;
+    const stripped = strippedHeaders(app, { credentialHeader: "authorization" } as never, "Idempotency-Key");
+    expect(stripped).toEqual(expect.arrayContaining(["authorization", "idempotency-key"]));
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

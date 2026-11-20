@@ -384,7 +384,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         refuse: refusal,
       });
-      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest]);
+      return await sendAttempts(c, strippedHeaders(app, caller, firstDescription?.auth.header), [head, ...rest]);
     },
   );
 }

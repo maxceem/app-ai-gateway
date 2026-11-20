@@ -318,6 +318,42 @@ describe("testResultText", () => {
   });
 });
 
+describe("PathsDialog after a conflict", () => {
+  it("keeps the revision it was opened at, shows the conflict, and saves only after a reload", async () => {
+    const opened = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
+    const changed = { ...PROVIDER, revision: 4, passthrough: [{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/batches" }] };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? opened : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const puts_ = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    await userEvent.click(box);
+    await userEvent.paste("\nPOST v1/moderations");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    expect(await screen.findByText(/these paths changed since you opened them/i)).toBeTruthy();
+    expect(puts_()[0]).toMatchObject({ revision: 3 });
+    // The list has reloaded at revision 4 by now; the draft is still from 3, so saving it is held back.
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    expect((screen.getByRole("button", { name: /save paths/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /reload paths/i }));
+    expect(((await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement).value).toBe("GET v1/files\nGET v1/batches");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    await waitFor(() => expect(puts_()[1]).toMatchObject({ revision: 4, passthrough: [{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/batches" }] }));
+  });
+});
+
 describe("listed path lines", () => {
   it("read a method, a path, a price and, on a custom provider, an API style", () => {
     expect(parsePathLines("get v1/files/{id} $0.5\n\n  POST  chat/completions  openai-chat ", true)).toEqual({

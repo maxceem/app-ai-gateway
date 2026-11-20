@@ -558,7 +558,8 @@ export interface ProviderDescription {
    * data-residency or older names. With `hosts`, the one declared list of
    * the provider's hosts, apart from what any of them costs
    * (`regionalOrigins`). A base URL on any of them is this provider's, and
-   * gets its refused paths (`./custom.ts`).
+   * gets its refused paths (`./custom.ts`). `*.` names every host under
+   * one, as `*.api.openai.com` does OpenAI's data residency hosts.
    */
   readonly otherHosts?: readonly string[];
   readonly auth: ProviderAuth;

@@ -405,7 +405,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
-      return await sendAttempts(c, strippedHeaders(app, caller), [
+      return await sendAttempts(c, strippedHeaders(app, caller, description.auth.header), [
         {
           connection,
           description,
@@ -483,7 +483,7 @@ async function servePassthrough(
     clientTraceId: caller.clientTraceId,
     ...facts,
   };
-  return await sendAttempts(c, strippedHeaders(app, caller), [
+  return await sendAttempts(c, strippedHeaders(app, caller, description.auth.header), [
     {
       connection,
       description,
@@ -748,8 +748,20 @@ export function sanitizedQuery(url: URL): string {
 }
 
 /** Client headers that never reach a provider, even if allowlisted: the gateway's own credentials and end-user ids. */
-export function strippedHeaders(app: AppRecord, caller: Caller): readonly string[] {
-  return [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER];
+/**
+ * The client headers no attempt is sent with: every header the request could
+ * authenticate with (`Authorization`, the first provider's key header, the
+ * app's token header), not only the one it did, and the ones the gateway
+ * read. A fallback on another host never gets a client's credential.
+ */
+export function strippedHeaders(app: AppRecord, caller: Caller, providerAuthHeader?: string): readonly string[] {
+  return [
+    "authorization",
+    caller.credentialHeader,
+    ...(providerAuthHeader === undefined ? [] : [providerAuthHeader.toLowerCase()]),
+    ...clientAuth(app).consumedHeaders,
+    DEFAULT_END_USER_HEADER,
+  ];
 }
 
 /** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
@@ -1038,7 +1050,7 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number): Response {
   const { description, operation, attempt } = prepared;
-  const responseHeaders = clientResponseHeaders(upstream.headers);
+  const responseHeaders = clientResponseHeaders(upstream.headers, description.auth.header);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 
