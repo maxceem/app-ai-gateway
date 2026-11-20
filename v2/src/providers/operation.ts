@@ -65,6 +65,8 @@ export type Transport =
  *   (`generated_images`) for a model priced per image.
  * - `openai-embeddings`: embeddings, billed on their input tokens.
  * - `gemini-embed`: Gemini's own `embedContent`, usage in `usageMetadata`.
+ * - `elevenlabs-transcription`: ElevenLabs' speech to text, whose answer
+ *   names the audio's length in `audio_duration_secs`.
  * - `openai-speech`: text to speech. Usage in the OpenAI shape when the answer
  *   is a stream of events. A plain audio answer reports none, so its cost is
  *   unknown, as in v1, until step 4 measures the request.
@@ -80,6 +82,7 @@ export const API_STYLES = [
   "openai-embeddings",
   "gemini-embed",
   "openai-speech",
+  "elevenlabs-transcription",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
 
@@ -91,6 +94,16 @@ export type ApiStyle = (typeof API_STYLES)[number];
  */
 export const PROVIDER_COST_REPORTS = ["openrouter", "xai"] as const;
 export type ProviderCostReport = (typeof PROVIDER_COST_REPORTS)[number];
+
+/**
+ * A provider's own cost in dollars, sent as a response header (read in
+ * `src/proxy/meter.ts`). `currency`, when given, is a header that must name
+ * US dollars: a figure in another currency is no report.
+ */
+export interface HeaderCostReport {
+  readonly header: string;
+  readonly currency?: { readonly header: string; readonly value: string };
+}
 
 /** Billed units. Fractional units are stored at a fixed scale (plan section 4.2, Money). */
 export const UNITS = [
@@ -146,13 +159,23 @@ export type Meter =
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
-   * before the answer and when the header is missing.
+   * before the answer and when the header is missing. `providerCost` names a
+   * header with the provider's own cost in dollars (ElevenLabs' speech to text
+   * sends `fiat-cost-before-overages`), which wins over our price as a JSON
+   * report does.
    */
   | {
       readonly kind: "response_header";
       readonly header: string;
       readonly unit: Unit;
       readonly estimate?: RequestMeasure & { readonly unit: Unit };
+      readonly providerCost?: HeaderCostReport;
+      /**
+       * A reader of the answer's body, whose measures are kept beside the
+       * header's: ElevenLabs' speech to text reports its audio's length. `units`
+       * are the units the reader reports.
+       */
+      readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
     }
   /** For providers that report no usage: measured from the request. */
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)
@@ -221,6 +244,12 @@ export interface OutboundFields {
   readonly fetches?: readonly FieldRef[];
   /** Fetch fields the operation needs: kept. Listed so a reader sees they were judged. */
   readonly fetchKept?: readonly FieldRef[];
+  /**
+   * Fields a provider would take as a credential instead of the key, such as
+   * ElevenLabs' single-use `token`: removed, so a request reaches the
+   * provider with the gateway's key alone.
+   */
+  readonly credentials?: readonly FieldRef[];
 }
 
 /** A request option that turns a call into background work. */
@@ -311,6 +340,13 @@ export interface OperationDescription {
   readonly background?: readonly BackgroundOption[];
   readonly meter: Meter;
   readonly priceKeys?: readonly PriceKey[];
+  /**
+   * The price list's kinds of model it serves, such as `speech`. A model the
+   * list names with another kind (a transcription model beside it on the same
+   * connection) is not one it is saved against. A model with no kind is judged
+   * by its price alone.
+   */
+  readonly modelKinds?: readonly string[];
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }
@@ -484,6 +520,36 @@ export type OperationInput<P extends string, U extends string> = Omit<
  * operation, so a mistake in a template is a compile error. The run-time
  * parser (`./path.ts`) checks the same rules again, for paths a customer lists.
  */
+/**
+ * The model a request is sent and billed as: the app's rewrite of the model
+ * it named, if any (v1). A fixed model is never rewritten. The one rule, for
+ * serving and for the app save's checks alike.
+ */
+export function rewrittenModel(
+  operation: Pick<OperationDescription, "model">,
+  model: string,
+  rewrites: Readonly<Record<string, string>> | undefined,
+): string {
+  if (operation.model.in === "fixed" || rewrites === undefined) return model;
+  return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
+}
+
+/**
+ * Whether a request can reach an operation's provider as this model, after
+ * the app's rewrites (`rewrittenModel`): a rewrite is applied once, so a
+ * model is out of reach only when it is a rewrite's source and no rewrite's
+ * target (`alias` → `scribe_v1` reaches `scribe_v1`, even beside
+ * `scribe_v1` → `scribe_v2`).
+ */
+export function modelReachable(
+  operation: Pick<OperationDescription, "model">,
+  model: string,
+  rewrites: Readonly<Record<string, string>> | undefined,
+): boolean {
+  if (rewrittenModel(operation, model, rewrites) === model) return true;
+  return Object.values(rewrites ?? {}).includes(model);
+}
+
 export function defineOperation<const P extends string, const U extends string = P>(
   operation: OperationInput<P, U>,
 ): OperationDescription {

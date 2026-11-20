@@ -19,7 +19,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
-import { billing, listedModelProblem, priceSources, rewriteTargetBillable } from "../pricing/billability.ts";
+import { billing, listedModelProblem, partialCustomerModel, priceSources, rewriteTargetBillable } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -122,6 +122,8 @@ interface ConnectionRow {
 export interface Changes {
   readonly routing: (slug: string) => boolean;
   readonly rewrite: (source: string) => boolean;
+  /** Any rewrite is new, changed or removed: which models a route reaches may have changed. */
+  readonly anyRewrite: boolean;
   readonly preset: (slug: string) => boolean;
 }
 
@@ -142,9 +144,11 @@ export function changesAgainst(stored: StoredEntries, config: AppConfig): Change
       return answers.get(key)!;
     };
   };
+  const rewrite = once((source) => differs(stored.rewrites, rewrites, source));
   return {
     routing: once((slug) => differs(stored.providers, config.routing.providers, slug)),
-    rewrite: once((source) => differs(stored.rewrites, rewrites, source)),
+    rewrite,
+    anyRewrite: [...Object.keys(stored.rewrites), ...Object.keys(rewrites)].some(rewrite),
     preset: once((slug) => differs(stored.presets, config.presets ?? {}, slug)),
   };
 }
@@ -224,6 +228,25 @@ export async function checkAppConfig(
           { data: { slug, model, ...(problem.operation !== undefined ? { operation: problem.operation } : {}) } },
         );
       }
+    }
+  }
+  for (const [slug, routing] of Object.entries(config.routing.providers)) {
+    // A route with no model list allows any model, the connection's own included: none may be charged only partly.
+    // Judged whenever which models it reaches may change: the route (its model list included) or any rewrite.
+    if (routing.models !== undefined || (!changed.routing(slug) && !changed.anyRewrite)) continue;
+    const connection = await connectionRow(slug);
+    const description = connection === null ? null : builtInProvider(connection.type);
+    if (connection === null || description === null) continue;
+    const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
+    const partial = partialCustomerModel(enabled, priceSources(connection), rewrites);
+    if (partial !== null) {
+      throw new GatewayError(
+        400,
+        "pricing_not_configured",
+        `config.routing.providers.${slug}: ${partial.model} has a price that ${partial.operation} can bill only partly; give it a rate for every way it answers, or list the route's models`,
+        undefined,
+        { data: { slug, model: partial.model, operation: partial.operation } },
+      );
     }
   }
   for (const [slug, preset] of Object.entries(config.presets ?? {})) {

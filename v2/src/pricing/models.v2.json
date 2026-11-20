@@ -12,5 +12,71 @@
       "author": "OpenAI",
       "release_date": "2023-11-06"
     }
+  },
+  "elevenlabs": {
+    "eleven_multilingual_v2": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 80.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_v3": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 80.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_v4": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 80.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_flash_v2_5": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_flash_v2": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_turbo_v2_5": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_turbo_v2": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_v4_turbo": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "eleven_v3_conversational": {
+      "kind": "speech",
+      "per_credit": 0.00008,
+      "per_million_characters": 40.0,
+      "author": "ElevenLabs"
+    },
+    "scribe_v2": {
+      "kind": "transcription",
+      "per_hour": 0.2,
+      "author": "ElevenLabs"
+    },
+    "scribe_v3": {
+      "kind": "transcription",
+      "per_hour": 0.2,
+      "author": "ElevenLabs"
+    }
   }
 }

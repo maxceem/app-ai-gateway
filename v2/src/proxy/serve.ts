@@ -52,13 +52,13 @@ import {
 } from "../providers/connections.ts";
 import { ProviderMatcher } from "../providers/matcher.ts";
 import { upstreamRequest } from "../providers/route.ts";
-import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
-import { attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
+import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { priceKeyValues, removeOutbound, requestFormFields, requestUsage } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
@@ -78,13 +78,12 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
   return matcher;
 }
 
-/** Whether this build can serve an operation: a call measured from its response body. */
+/** Whether this build can serve an operation: a call measured from its response or its request. */
 export function servedNow(operation: OperationDescription): boolean {
   const { kind } = operation.meter;
   return (
     operation.lifecycle === "call" &&
-    // A response header meter (ElevenLabs) is served from step 4b, with its tests.
-    (kind === "response_json" || kind === "request_measure" || kind === "request_count")
+    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
   );
 }
 
@@ -210,13 +209,6 @@ export async function serveCaller(
   }
 }
 
-/** The model a request is sent and billed as: the app's rewrite of it, if any (v1). A fixed model is never rewritten. */
-export function rewrittenModel(app: AppRecord, operation: OperationDescription, model: string): string {
-  if (operation.model.in === "fixed") return model;
-  const rewrites = app.routing.model_rewrites ?? {};
-  return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
-}
-
 export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const startedAt = Date.now();
   const appId = c.req.param("app");
@@ -274,7 +266,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       }
       // The app's model list judges the model the request names; everything
       // after it, the price included, the model it is sent as.
-      const model = rewrittenModel(app, operation, requested);
+      const model = rewrittenModel(operation, requested, app.routing.model_rewrites);
       const bill = billing(operation, priceSources(connection), model);
       const price = bill.price;
       // Never served: a model with no price is refused, unless the app lists it
@@ -932,6 +924,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
       httpStatus: upstream.status,
       errorCode: null,
       usage: ok ? attemptUsage(operation, attempt, null, upstream.headers) : null,
+      providerCostUsd: ok ? attemptCostUsd(operation, null, upstream.headers) : null,
       cut: false,
       latencyMs,
     });
@@ -968,7 +961,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
               httpStatus: upstream.status,
               errorCode: null,
               usage,
-              providerCostUsd: reading?.providerCostUsd ?? null,
+              providerCostUsd: attemptCostUsd(operation, reading, upstream.headers),
               servedMode: served.mode,
               ...(served.unknown !== undefined ? { servedModeUnknown: served.unknown } : {}),
               cut,
@@ -998,7 +991,8 @@ function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome):
 /**
  * The attempt's charge. If pricing throws (a cost too large to store, say),
  * the charge is still written, unpriced, and the failure is logged: a charge
- * is never lost or silently miscounted.
+ * is never lost or silently miscounted. The retry carries neither the price
+ * nor the provider's own figure, so it never meets the same throwing report.
  */
 function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
   try {
@@ -1010,7 +1004,7 @@ function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
       model: attempt.model,
       error: errorFacts(error),
     });
-    return callCharge({ ...attempt, price: null }, outcome);
+    return callCharge({ ...attempt, price: null }, { ...outcome, providerCostUsd: null });
   }
 }
 

@@ -221,8 +221,44 @@ const speech: Answer = ({ body, bytes }) => {
   );
 };
 
+/**
+ * ElevenLabs text to speech: audio (or JSON with timestamps), with the credits
+ * charged in `character-cost`: the text's characters, halved for the flash
+ * and turbo models (T2). `mock_no_cost_header` leaves the header out.
+ */
+const elevenTts: Answer = ({ body, path }) => {
+  const text = typeof body.text === "string" ? body.text : "";
+  const model = typeof body.model_id === "string" ? body.model_id : "eleven_multilingual_v2";
+  const half = /flash|turbo|conversational/u.test(model);
+  const credits = half ? Math.round([...text].length / 2) : [...text].length;
+  const headers: Record<string, string> = { "request-id": "req_mock" };
+  if (body.mock_no_cost_header !== true) headers["character-cost"] = String(credits);
+  if (path.endsWith("/with-timestamps")) return Response.json({ audio_base64: "VVVV", alignment: { characters: [] } }, { headers });
+  return new Response(new Uint8Array(1024).fill(0x55), { headers: { ...headers, "content-type": "audio/mpeg" } });
+};
+
+/**
+ * ElevenLabs speech to text: a transcript, the credits in `character-cost`,
+ * and its own dollar figure (T2). The answer says whether a webhook field
+ * reached it, for the smoke checks to see.
+ */
+const elevenStt: Answer = ({ body }) =>
+  Response.json(
+    { text: "Hello.", language_code: "en", audio_duration_secs: 4.7090625 },
+    {
+      headers: {
+        "character-cost": "5",
+        "fiat-cost-before-overages": "0.0005",
+        "fiat-currency": typeof body.mock_fiat_currency === "string" ? body.mock_fiat_currency : "usd",
+        "x-mock-webhook-received": String(body.webhook !== undefined || body.webhook_id !== undefined),
+      },
+    },
+  );
+
 /** Which answer a path gets. */
 function answerFor(path: string): Answer | null {
+  if (/^\/v1\/text-to-speech\/[^/]+(?:\/stream)?(?:\/with-timestamps)?$/u.test(path)) return elevenTts;
+  if (path === "/v1/speech-to-text") return elevenStt;
   if (path === "/v1/chat/completions") return chat;
   if (path === "/v1/responses") return responses;
   if (path === "/v1/messages") return messages;
@@ -239,7 +275,7 @@ function answerFor(path: string): Answer | null {
 function keyOf(request: Request): string | null {
   const bearer = request.headers.get("authorization");
   if (bearer !== null && bearer.startsWith("Bearer ")) return bearer.slice("Bearer ".length);
-  return request.headers.get("x-api-key") ?? request.headers.get("x-goog-api-key");
+  return request.headers.get("x-api-key") ?? request.headers.get("x-goog-api-key") ?? request.headers.get("xi-api-key");
 }
 
 /**

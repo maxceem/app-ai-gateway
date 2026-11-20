@@ -15,10 +15,9 @@ import { billing, priceSources } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
-import { requestBody, servedNow } from "../src/proxy/serve.ts";
+import { requestBody } from "../src/proxy/serve.ts";
 import { PRICE_LIST, listPrice } from "../src/pricing/prices.ts";
 import { V1_PRICE_FILE, V2_PRICE_OVERLAY } from "../src/pricing/price-file.ts";
-import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import type { ProviderDescription } from "../src/providers/operation.ts";
 import { meterCases, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
@@ -294,6 +293,27 @@ describe("request measures and headers", () => {
     const usage = { ...counted({ characters: 9 }), estimatedUnits: ["characters" as const], reportMissing: true as const, priceKeys: { size: "1024x1024" } };
     expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject(usage);
   });
+
+  it("keeps which units are usage measures beside the billing unit, so the sweep ranks them as the request did (4b A1)", () => {
+    const usage = { ...counted({ credits: 5_000 }), audioSeconds: 4.709, secondaryUnits: ["audio_seconds" as const] };
+    expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject({ secondaryUnits: ["audio_seconds"] });
+  });
+
+  it("bills by measure rank first, then the dearest: billing unit, then a usage measure beside it, then the estimate (4b A1)", () => {
+    const price = priced({ per_credit: 50_000, per_hour: 200_000_000, per_million_characters: 80_000_000_000 });
+    const both = { ...counted({ credits: 5_000, characters: 9_000 }), audioSeconds: 4.7090625, secondaryUnits: ["audio_seconds" as const], estimatedUnits: ["characters" as const] };
+    expect(priceInServedMode(price, both)).toMatchObject({ unit: "credits", cost: 250_000 });
+    const noCredits = { ...counted({ characters: 9_000 }), audioSeconds: 4.7090625, secondaryUnits: ["audio_seconds" as const], estimatedUnits: ["characters" as const] };
+    expect(priceInServedMode(price, noCredits)).toMatchObject({ unit: "audio_seconds", cost: 261_667 });
+    expect(priceInServedMode(price, { ...counted({ characters: 9_000 }), estimatedUnits: ["characters" as const] })).toMatchObject({ unit: "characters" });
+  });
+
+  it("prices rank by rank, the floor too: a usage measure too large to store never voids the credits that win (4b A1)", () => {
+    const price = priced({ per_credit: 50_000, per_second: 3e12 });
+    const usage = { ...counted({ credits: 5_000 }), audioSeconds: 3_600, secondaryUnits: ["audio_seconds" as const] };
+    expect(priceInServedMode(price, usage, STANDARD_MODE, true)).toMatchObject({ unit: "credits", cost: 250_000, estimated: true });
+    expect(priceInServedMode(price, usage)).toMatchObject({ unit: "credits", cost: 250_000 });
+  });
 });
 
 describe("outbound fields", () => {
@@ -487,9 +507,6 @@ describe("review fixes", () => {
     expect(parsed.kind === "form" && parsed.fields.get("size")).toEqual(["large"]);
   });
 
-  it("keeps response-header operations unserved until their own step", () => {
-    for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(false);
-  });
 });
 
 it("publishes the console's price list from the same merge the gateway prices with", async () => {

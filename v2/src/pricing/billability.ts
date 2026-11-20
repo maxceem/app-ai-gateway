@@ -30,7 +30,7 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import type { OperationDescription } from "../providers/operation.ts";
+import { modelReachable, type OperationDescription } from "../providers/operation.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
@@ -149,31 +149,78 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
   return Object.fromEntries(Object.entries(values).filter(([name]) => names.includes(name)));
 }
 
-/** Whether one of an operation's ways prices every usage in it, at the key values it reads (`keysRead`), if any. */
-function someWayPrices(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys?: Readonly<Record<string, string>>): boolean {
-  return meterCases(operation).some((way) => way.every((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode)));
+/**
+ * How far an operation can charge a price, at the key values it reads
+ * (`keysRead`), if any:
+ *
+ * - `full`: one of its ways (`meterCases`) prices every usage in it, or, where
+ *   `costCounts`, the operation reports its own cost;
+ * - `partial`: some usage is priced, but no way fully, as a price in credits
+ *   alone on text to speech, whose answer can come without its header;
+ * - `none`: no usage at all, as `whisper-1` on chat, or a model the price list
+ *   names as a kind the operation does not serve (`modelKinds`).
+ */
+type Reach = "full" | "partial" | "none";
+
+/**
+ * The one kind rule: whether an operation serves a model of its price's kind
+ * (`modelKinds`). A model the price list names as another kind is
+ * `wrong_unit` for the operation everywhere, at save, serve and charge. A
+ * price with no kind is judged by its rates alone.
+ */
+function kindServed(operation: OperationDescription, price: ModelPrice): boolean {
+  return operation.modelKinds === undefined || price.kind === undefined || operation.modelKinds.includes(price.kind);
+}
+
+function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined, costCounts: boolean): Reach {
+  if (!kindServed(operation, price)) return "none";
+  if (costCounts && reportsCost(operation)) return "full";
+  let some = false;
+  for (const way of meterCases(operation)) {
+    const priced = way.map((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode));
+    if (priced.every(Boolean)) return "full";
+    if (priced.some(Boolean)) some = true;
+  }
+  return some ? "partial" : "none";
 }
 
 /**
- * The first price-key values and mode at which none of `operations` can price
- * a way fully, or null when every one can: the `save` check.
+ * The first price-key values and mode at which `operations` cannot be saved
+ * with a price, or null when they can: the `save` check. At every key value
+ * and mode, some operation charges the price fully, and none partly: an
+ * operation the model can reach must charge every way its answers come out.
+ * An operation it cannot reach at all is fine, as `whisper-1` listed beside
+ * chat models for transcriptions. With `costCounts`, an operation that
+ * reports its own cost charges fully whatever the price, as a listed model is
+ * served there (`billingAt`); a connection's rates are judged on what they
+ * price themselves.
+ *
+ * `partialBlocks` says whether partial reach refuses. An app save knows the
+ * operations it enables, so it always does. A connection save does not, so
+ * for a model the price list gives no kind it does not: the app that enables
+ * an operation is refused there instead.
  */
-function firstGap(operations: readonly OperationDescription[], price: ModelPrice): { readonly values: Readonly<Record<string, string>>; readonly mode: string } | null {
+function firstGap(
+  operations: readonly OperationDescription[],
+  price: ModelPrice,
+  { costCounts = false, partialBlocks = true, needsFull = true }: { costCounts?: boolean; partialBlocks?: boolean; needsFull?: boolean } = {},
+): { readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string } | null {
   const modes = servedModes(price);
   // An operation sees only the keys it reads, so many combinations are the same check: each is run once.
-  const known = new Map<string, boolean>();
-  const prices = (operation: OperationDescription, mode: ServiceMode, values: Readonly<Record<string, string>>): boolean => {
+  const known = new Map<string, Reach>();
+  const reachOf = (operation: OperationDescription, mode: ServiceMode, values: Readonly<Record<string, string>>): Reach => {
     const keys = keysRead(operation, values);
     const id = `${operation.name}\u0000${serviceModeName(mode)}\u0000${keys === undefined ? "" : JSON.stringify(Object.entries(keys).sort())}`;
     let answer = known.get(id);
-    if (answer === undefined) known.set(id, (answer = someWayPrices(operation, price, mode, keys)));
+    if (answer === undefined) known.set(id, (answer = reach(operation, price, mode, keys, costCounts)));
     return answer;
   };
   for (const candidate of keyCandidates(price).candidates) {
     for (const mode of modes) {
-      if (!operations.some((operation) => prices(operation, mode, candidate.values))) {
-        return { values: candidate.values, mode: serviceModeName(mode) };
-      }
+      const reaches = operations.map((operation) => reachOf(operation, mode, candidate.values));
+      const partly = partialBlocks ? reaches.indexOf("partial") : -1;
+      if (partly !== -1) return { values: candidate.values, mode: serviceModeName(mode), operation: operations[partly]!.name };
+      if (needsFull && !reaches.includes("full")) return { values: candidate.values, mode: serviceModeName(mode) };
     }
   }
   return null;
@@ -210,6 +257,8 @@ export function billing(operation: OperationDescription, connection: PriceSource
 
 /** `billing`, given the model's resolved price: the one place the rule is written. */
 function billingAt(operation: OperationDescription, resolved: ResolvedPrice | null, mode?: ServiceMode, check: BillingCheck = "serve"): Billing {
+  // A model of another kind is not this operation's, whatever it reports.
+  if (resolved !== null && !kindServed(operation, resolved.price)) return { price: null, reportsCost: false, problem: "wrong_unit" };
   const cost = reportsCost(operation);
   const price = resolved !== null && operationBillable(operation, resolved.price, check) ? resolved : null;
   if (price === null) {
@@ -244,7 +293,36 @@ export function listedModelProblem(
     const refused = operations.find((operation) => billingAt(operation, null, undefined, "save").problem !== null);
     return refused === undefined ? null : { operation: refused.name };
   }
-  return operations.some((operation) => billingAt(operation, resolved, undefined, "save").problem === null) ? null : {};
+  // One rule with saving a connection's rates: some operation charges it fully, and none only partly.
+  const gap = firstGap(operations, resolved.price, { costCounts: true });
+  return gap === null ? null : gap.operation !== undefined ? { operation: gap.operation } : {};
+}
+
+/**
+ * For a route with no model list, which allows any model: the first model
+ * with the connection's own rate that an enabled operation charges only
+ * partly, or null. Serving stays lenient (a call whose fallback cannot be
+ * priced was served in v1), so the app save closes the hole: no operation it
+ * enables may reach such a model in some ways and not others. A model none of
+ * them reaches is fine; its calls are refused when made. Nor is one the
+ * app's rewrites put out of reach on an operation (`modelReachable`, the
+ * rule serving uses): that operation never charges it.
+ */
+export function partialCustomerModel(
+  operations: readonly OperationDescription[],
+  connection: PriceSources,
+  rewrites?: Readonly<Record<string, string>>,
+): { readonly model: string; readonly operation: string } | null {
+  if (operations.length === 0) return null;
+  for (const model of Object.keys(connection.rates() ?? {})) {
+    const reaching = operations.filter((operation) => modelReachable(operation, model, rewrites));
+    if (reaching.length === 0) continue;
+    const resolved = resolve(connection, model);
+    if (resolved === null) continue;
+    const gap = firstGap(reaching, resolved.price, { costCounts: true, needsFull: false });
+    if (gap?.operation !== undefined) return { model, operation: gap.operation };
+  }
+  return null;
 }
 
 /**
@@ -304,7 +382,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string }
+  | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string }
   | null {
   const resolved = resolve(priceSources({ type: providerType, rates: stored }), model);
   if (resolved === null) return null;
@@ -323,6 +401,8 @@ export function savedPriceProblem(
     const empty = effectivePrices(price).find((one) => Object.keys(one.price.rates).length === 0);
     return empty === undefined ? null : { kind: "bills_nothing", values: empty.values, mode: empty.mode };
   }
-  const gap = firstGap(operations, price);
-  return gap === null ? null : { kind: "bills_nothing", values: gap.values, mode: gap.mode };
+  // The connection does not know which operations an app will enable: a model with no listed kind
+  // needs only one it charges fully; the app save refuses the ones it charges partly.
+  const gap = firstGap(operations, price, { partialBlocks: price.kind !== undefined });
+  return gap === null ? null : { kind: "bills_nothing", ...gap };
 }

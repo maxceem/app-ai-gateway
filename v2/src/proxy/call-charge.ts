@@ -33,11 +33,11 @@ import { log } from "../core/log.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
-import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
-import type { UsageObservation } from "../usage/observation.ts";
+import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
 import type { Alternatives } from "./alternatives.ts";
 
@@ -97,6 +97,16 @@ export interface AttemptOutcome {
   readonly latencyMs: number | null;
 }
 
+/** `priceInServedMode`, with a figure too large to price read as no price, so the caller can fall back. */
+function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceMode, doubt: boolean): ReturnType<typeof priceInServedMode> {
+  try {
+    return priceInServedMode(price, usage, mode, doubt);
+  } catch (error) {
+    if (error instanceof MoneyError) return null;
+    throw error;
+  }
+}
+
 export function chargeId(requestId: string, seq: number): string {
   return `${requestId}:${seq}`;
 }
@@ -110,7 +120,7 @@ interface Costed {
 
 export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = Date.now()): LedgerEntry {
   const id = chargeId(attempt.requestId, attempt.seq);
-  const { usage } = outcome;
+  let { usage } = outcome;
   const servedMode = outcome.servedMode ?? attempt.requestedMode;
   const succeeded = outcome.status === "ok" || outcome.status === "client_aborted";
   // The provider said yes (2xx), so an answer cut short may have been billed.
@@ -128,7 +138,19 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     usage?.finalEventUnread === true;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.reportMissing === true) log("warn", "usage_report_missing", facts);
-  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
+  let priced = usage === null || attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, servedMode, modeUnknown);
+  if (priced === null && attempt.price !== null && usage !== null && reported === null && usage.reportMissing !== true) {
+    // A report whose charge cannot be stored (a figure far too large) is no
+    // report: the request's estimate prices the call instead, as when a
+    // header is missing.
+    const fallback = withoutReport(usage);
+    const repriced = fallback === null ? null : pricedOrNull(attempt.price.price, fallback, servedMode, modeUnknown);
+    if (repriced !== null) {
+      log("warn", "usage_report_unpriceable", facts);
+      usage = fallback;
+      priced = repriced;
+    }
+  }
 
   let costed: Costed;
   let measured: Measured;
@@ -140,13 +162,31 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   } else if (usage !== null) {
     // Set below, from the measure the pricing result billed.
     measured = "complete";
+    // An unresolved charge with a measure is always retried: the sweep prices
+    // it once a price for that measure exists (the customer adds a rate).
+    const retried = (): void => {
+      openWork.push({
+        id: `unresolved:${id}`,
+        kind: "unresolved",
+        accountId: attempt.accountId,
+        appId: attempt.appId,
+        ownerType: "call",
+        ownerId: attempt.requestId,
+        chargeId: id,
+        detail: { providerType: attempt.providerType, model: attempt.model },
+        dueAt: now + UNRESOLVED_FIRST_TRY_MS,
+        createdAt: now,
+      });
+    };
     if (attempt.price !== null && priced === null) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
-      // Its price would multiply counters that were never sent, and no later
-      // price can fix that, so the sweep is not asked (v1).
+      // Like every unresolved charge with a measure, it is retried: a rate for
+      // that measure (tokens included) may be added later.
       costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
-      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure" });
+      const measured = hasMeasure(usage);
+      if (measured) retried();
+      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure", retried: measured });
     } else if (priced !== null) {
       costed = {
         costNano: priced.cost,
@@ -157,23 +197,15 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       logModes(attempt, servedMode, outcome.servedModeUnknown, priced.estimated, facts);
     } else {
       costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
-      if (attempt.reportsCost && attempt.price === null) {
-        // The provider's answer was meant to carry its cost, and did not.
-        log("error", "usage_unresolved_cost", { ...facts, reason: "no_cost_reported" });
+      if (attempt.reportsCost) {
+        // The provider's answer was meant to carry its cost, and did not. With
+        // a measure beside it, a rate added later still prices it.
+        const measured = hasMeasure(usage);
+        if (measured) retried();
+        log("error", "usage_unresolved_cost", { ...facts, reason: "no_cost_reported", retried: measured });
       } else {
         // A price will be ours or the customer's: the sweep tries again later.
-        openWork.push({
-          id: `unresolved:${id}`,
-          kind: "unresolved",
-          accountId: attempt.accountId,
-          appId: attempt.appId,
-          ownerType: "call",
-          ownerId: attempt.requestId,
-          chargeId: id,
-          detail: { providerType: attempt.providerType, model: attempt.model },
-          dueAt: now + UNRESOLVED_FIRST_TRY_MS,
-          createdAt: now,
-        });
+        retried();
         log("error", "usage_unpriced_model", facts);
       }
     }

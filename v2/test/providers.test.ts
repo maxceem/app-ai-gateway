@@ -241,7 +241,7 @@ describe("text APIs through the proxy", () => {
     ]);
   });
 
-  it("leaves an OpenRouter answer that reports no cost unresolved, with nothing for the sweep to price", async () => {
+  it("leaves an OpenRouter answer that reports no cost unresolved, and asks the sweep to price its tokens once a rate exists (4b F3)", async () => {
     const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
@@ -250,7 +250,8 @@ describe("text APIs through the proxy", () => {
     await waitOnExecutionContext(ctx);
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, input_tokens: 10 });
-    expect(await env.DB.prepare("SELECT 1 FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toBeNull();
+    // Unresolved with a measure is always retried: a customer rate added later prices it.
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 

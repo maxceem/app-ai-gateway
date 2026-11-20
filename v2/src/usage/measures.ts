@@ -54,6 +54,7 @@ export function usageMeasures(usage: UsageObservation, mode: ServiceMode, modeUn
     if (counted !== undefined) measures[`units_${unit}`] = counted;
   }
   if (usage.estimatedUnits !== undefined && usage.estimatedUnits.length > 0) measures.estimated_units = usage.estimatedUnits.join(",");
+  if (usage.secondaryUnits !== undefined && usage.secondaryUnits.length > 0) measures.secondary_units = usage.secondaryUnits.join(",");
   if (usage.reportMissing === true) measures.report_missing = 1;
   for (const [key, value] of Object.entries(usage.priceKeys ?? {})) measures[`key_${key}`] = value;
   if (!isStandardMode(mode)) measures.service_mode = serviceModeName(mode);
@@ -115,6 +116,9 @@ export function usageFromMeasures(
     ...(Object.keys(units).length > 0 ? { units } : {}),
     ...(typeof measures.estimated_units === "string"
       ? { estimatedUnits: measures.estimated_units.split(",").filter((unit): unit is Unit => (UNITS as readonly string[]).includes(unit)) }
+      : {}),
+    ...(typeof measures.secondary_units === "string"
+      ? { secondaryUnits: measures.secondary_units.split(",").filter((unit): unit is Unit => (UNITS as readonly string[]).includes(unit)) }
       : {}),
     ...(count(measures, "report_missing") !== undefined ? { reportMissing: true as const } : {}),
     ...(Object.keys(priceKeys).length > 0 ? { priceKeys } : {}),
