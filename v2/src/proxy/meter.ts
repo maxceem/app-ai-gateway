@@ -18,6 +18,7 @@ import {
   readServiceMode,
   SERVICE_TIERS,
   type ServiceMode,
+  type ServiceModeField,
   type ServiceModeValue,
   type ServiceRegion,
 } from "../usage/service-modes.ts";
@@ -63,7 +64,8 @@ export function servedServiceMode(
   const fields = description.servedModes ?? description.serviceModes;
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
-  const { named, unknown } = readServiceMode(fields, (name) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined));
+  const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
+  const { named, unknown } = readServiceMode(fields, read);
   let tier = named.tier ?? requested.tier;
   // A tier found by scanning text the client can have a hand in (its own
   // metadata, echoed back) may say a dearer tier served the request, never a
@@ -75,14 +77,39 @@ export function servedServiceMode(
   ) {
     tier = requested.tier;
   }
-  // A tier value the table does not know says nothing the gateway can price:
-  // it may be dearer than asked. It is billed at least at standard, never at
-  // a cheaper tier the request asked for, and marked as an estimate.
-  const unknownTier = unknown !== undefined && fields.some((field) => field.axis === "tier" && field.names.includes(unknown.field));
-  if (unknownTier && named.tier === undefined && SERVICE_TIERS[tier].rank < SERVICE_TIERS.standard.rank) tier = "standard";
+  // A tier the response names in a value the table does not know, or in two
+  // sources that disagree, says nothing the gateway can price: it may be
+  // dearer than asked. It is billed at least at standard, never at a cheaper
+  // tier, and marked as an estimate.
+  const doubt = doubtfulTier(fields, read);
+  if (doubt !== undefined && SERVICE_TIERS[tier].rank < SERVICE_TIERS.standard.rank) tier = "standard";
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
-  return unknown ? { mode, unknown } : { mode };
+  const flagged = unknown ?? doubt;
+  return flagged ? { mode, unknown: flagged } : { mode };
+}
+
+/**
+ * The first tier value a response gives that the gateway cannot price
+ * exactly: one its table does not know, or one that disagrees with another
+ * source of the same answer (a header and the body, say).
+ */
+function doubtfulTier(fields: readonly ServiceModeField[], read: (name: string) => unknown): ServiceModeValue | undefined {
+  const known = new Set<string>();
+  for (const field of fields) {
+    if (field.axis !== "tier") continue;
+    for (const name of field.names) {
+      const value = read(name);
+      if (value === undefined || value === null) continue;
+      const key = typeof value === "string" ? value.toLowerCase() : undefined;
+      const meaning = key !== undefined && Object.hasOwn(field.values, key) ? field.values[key] : undefined;
+      const described: ServiceModeValue = { field: name, value: typeof value === "string" && /^[A-Za-z0-9_.-]{1,40}$/u.test(value) ? value : "(other)" };
+      if (meaning === undefined) return described;
+      known.add(meaning);
+      if (known.size > 1) return described;
+    }
+  }
+  return undefined;
 }
 
 /** What a response says about itself: its usage, and the provider's own cost in dollars. */

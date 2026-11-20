@@ -96,10 +96,13 @@ interface SseFrame {
  * with a blank line, so text after the last blank line is a frame still
  * arriving, and is not one.
  */
-function lastFrame(text: string): SseFrame | null {
+function lastFrame(text: string, startsAtBoundary: boolean): SseFrame | null {
   const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
-  // The last block is whatever follows the last blank line: an unfinished frame, or nothing.
-  for (let index = blocks.length - 2; index >= 0; index -= 1) {
+  // The last block is whatever follows the last blank line: an unfinished
+  // frame, or nothing. The first is the rest of a frame cut by the kept
+  // window, unless the text starts where the stream does.
+  const first = startsAtBoundary ? 0 : 1;
+  for (let index = blocks.length - 2; index >= first; index -= 1) {
     let event: string | null = null;
     const data: string[] = [];
     for (const line of blocks[index]!.split("\n")) {
@@ -161,7 +164,8 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
 export function streamClosed(body: ObservedText, style: ApiStyle): boolean | null {
   const closing = CLOSING[style];
   if (closing === null) return null;
-  const frame = lastFrame(body.truncated ? body.tail : body.head);
+  // A kept tail starts wherever the window cut the stream, maybe mid-frame.
+  const frame = body.truncated ? lastFrame(body.tail, false) : lastFrame(body.head, true);
   return frame !== null && closing(frame);
 }
 

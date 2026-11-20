@@ -242,6 +242,9 @@ describe("the end of a stream", () => {
     expect(streamClosed(body('event: message_stop\ndata: {"type":"message_stop"}\n\n'), "anthropic-messages")).toBe(true);
     // A frame still arriving is not one.
     expect(streamClosed(body("data: [DONE]"), "openai-chat")).toBe(false);
+    // A kept tail starts mid-frame: a clipped comment that reads like [DONE] is not a closing frame.
+    expect(streamClosed({ head: "", tail: "data: [DONE]\n\n", truncated: true }, "openai-chat")).toBe(false);
+    expect(streamClosed({ head: "", tail: 'x"}\n\ndata: [DONE]\n\n', truncated: true }, "openai-chat")).toBe(true);
     // Gemini's stream has no closing event.
     expect(streamClosed(body("data: {}\n\n"), "gemini-generate")).toBeNull();
   });
@@ -358,6 +361,14 @@ describe("service modes", () => {
     // OpenAI sheds fast traffic to `default`, and bills it as standard.
     expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
     expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" }, modesScanned: true }, new Headers()).mode).toEqual(fast);
+    // Sources that disagree, or one the table does not know, get the standard floor and an estimate.
+    const flex = { tier: "flex", region: "global" } as const;
+    const unknownHeader = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "turbo" }));
+    expect(unknownHeader.mode).toEqual(STANDARD_MODE);
+    expect(unknownHeader.unknown).toBeDefined();
+    const disagree = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "priority" }));
+    expect(disagree.mode.tier).toBe("priority");
+    expect(disagree.unknown).toBeDefined();
     // Gemini says it in a header too.
     const priority = { tier: "priority", region: "global" } as const;
     expect(servedServiceMode(gemini, priority, usage, new Headers({ "x-gemini-service-tier": "standard" })).mode).toEqual(STANDARD_MODE);
