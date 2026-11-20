@@ -25,6 +25,8 @@ import {
   signedProof,
   slowFakes,
   tokenForInstall,
+  useFakeClock,
+  watch,
 } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
@@ -46,8 +48,25 @@ const slow = slowFakes();
 
 afterEach(() => {
   slow.release();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+/**
+ * Runs `call` under fake time once a slow fake holds it, and checks the
+ * deadline: still waiting 1 ms before `deadlineMs`, settled at it.
+ */
+async function settlesAtDeadline<T>(call: () => Promise<T>, deadlineMs: number): Promise<T> {
+  useFakeClock();
+  const pending = call();
+  const done = watch(pending);
+  await slow.reached();
+  await vi.advanceTimersByTimeAsync(deadlineMs - 1);
+  expect(done.settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(done.settled).toBe(true);
+  return pending;
+}
 
 /** The events logged at a level, by name. */
 function logged(spy: MockInstance<(...args: unknown[]) => void>): string[] {
@@ -191,7 +210,7 @@ describe("admission order and timeout rules", () => {
       END_USER_LIMITER: limiter("user", calls, allowed, SLOW),
       APP_LIMITER: { getByName: () => ({ checkRequest: async () => { throw new Error("object gone"); } }) },
     } as unknown as Env;
-    await expect(admitRequest(input({ env: stubbed, limitsDeadlineMs: 30 }))).resolves.toBeUndefined();
+    await expect(settlesAtDeadline(() => admitRequest(input({ env: stubbed, limitsDeadlineMs: 30 })), 30)).resolves.toBeUndefined();
     expect(logged(warn).filter((name) => name === "app_limits_unchecked")).toHaveLength(2);
   });
 
@@ -205,9 +224,8 @@ describe("admission order and timeout rules", () => {
       ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 100 }), SLOW),
       BILLING: billing({ maxRequestsPerMonth: 100 }),
     } as unknown as Env;
-    const started = Date.now();
-    await admitRequest(input({ env: stubbed, app: { ...input({ env }).app, accountId: ACCOUNT_ID }, limitsDeadlineMs: 60 }));
-    expect(Date.now() - started).toBeLessThan(250);
+    // One deadline in all: the call answers at 60 ms, not after three of them.
+    await settlesAtDeadline(() => admitRequest(input({ env: stubbed, app: { ...input({ env }).app, accountId: ACCOUNT_ID }, limitsDeadlineMs: 60 })), 60);
     // The first ran out the deadline; the app's and the account's turns came after it, so they were skipped.
     expect(calls).toEqual(["user"]);
     expect(logged(warn)).toEqual(expect.arrayContaining(["app_limits_unchecked", "allowance_uncounted"]));
@@ -232,8 +250,12 @@ describe("the plan allowance", () => {
     const calls: string[] = [];
     const base = { ...env, ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 1 })) };
     const plain = { ...input({ env }).app, accountId: ACCOUNT_ID, limits: app().limits };
-    await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, SLOW) } as unknown as Env, app: plain, billingDeadlineMs: 20 }));
+    await settlesAtDeadline(
+      () => admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, SLOW) } as unknown as Env, app: plain, billingDeadlineMs: 20 })),
+      20,
+    );
     expect(logged(warn)).toContain("billing_access_slow");
+    vi.useRealTimers();
     clearCaches();
     await admitRequest(input({ env: { ...base, BILLING: billing({ maxRequestsPerMonth: 1 }, false, true) } as unknown as Env, app: plain }));
     expect(logged(warn)).toContain("billing_unavailable_admitted");
@@ -248,7 +270,7 @@ describe("the plan allowance", () => {
     await admitRequest(input({ env: answering, app: plain }));
     const slowCounter = { ...answering, ACCOUNT_LIMITER: limiter("account", [], () => ({ allowed: true, used: 1, limit: 1 }), SLOW) } as unknown as Env;
     // The counter's last answer said 1 of 1 is used, so the plan is known to be used up.
-    await expect(admitRequest(input({ env: slowCounter, app: plain, limitsDeadlineMs: 30 }))).rejects.toMatchObject({
+    await expect(settlesAtDeadline(() => admitRequest(input({ env: slowCounter, app: plain, limitsDeadlineMs: 30 })), 30)).rejects.toMatchObject({
       status: 429,
       code: "billing_request_quota_exceeded",
     });
@@ -267,9 +289,7 @@ describe("the plan allowance", () => {
       BILLING: billing({ maxRequestsPerMonth: 10 }),
       ACCOUNT_LIMITER: limiter("account", calls, () => ({ allowed: true, used: 1, limit: 10 })),
     } as unknown as Env;
-    const started = Date.now();
-    await admitRequest(input({ env: stubbed, app: plain, limitsDeadlineMs: 40 }));
-    expect(Date.now() - started).toBeLessThan(250);
+    await settlesAtDeadline(() => admitRequest(input({ env: stubbed, app: plain, limitsDeadlineMs: 40 })), 40);
     expect(calls).toEqual([]);
     expect(logged(warn)).toContain("allowance_uncounted");
   });
