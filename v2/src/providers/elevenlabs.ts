@@ -47,9 +47,6 @@ const ttsMeter = {
 
 const ttsModel = { in: "body", field: "model_id", default: DEFAULT_TTS_MODEL } as const;
 
-/** Methods that create, change or delete. */
-const MUTATING = ["POST", "PUT", "PATCH", "DELETE"] as const;
-
 export const elevenlabs = defineProvider({
   type: "elevenlabs",
   label: "ElevenLabs",
@@ -57,48 +54,41 @@ export const elevenlabs = defineProvider({
   auth: { header: "xi-api-key", format: "{key}" },
   // ElevenLabs has no service modes on these APIs.
   serviceModes: [],
-  // The account, its workspace, keys and history, and every account
-  // resource a key could create, change or delete: voices (cloning, voice
-  // design, the voice library), agents and their tools, knowledge base,
-  // phone numbers and settings, pronunciation dictionaries, Studio and Audio
-  // Native projects, and dubbing resources (the provider research's "never
-  // expose" list, and ElevenLabs' API reference). Reading them, and making
-  // speech or previews that are not saved, stays allowed. Tokens and signed
-  // URLs for live sessions are refused until a customer can opt in to them
-  // path by path (plan D4).
+  // A closed set, not every resource a key could change (plan section 4.5:
+  // admin and key-creation paths; the provider research's "never expose"
+  // list). Anything else a customer lists is their own trust choice.
+  // `test/elevenlabs-refused.test.ts` checks every operation of ElevenLabs'
+  // API against this set, both ways.
   refused: [
+    // The account and its admin: user, workspaces, service accounts and
+    // their API keys, usage, and billing actions.
     "v1/user/*",
     "v1/workspace/*",
+    "v1/workspaces/*",
     "v1/service-accounts/*",
-    "v1/api-keys/*",
-    "v1/history/*",
     "v1/usage/*",
-    "v1/voices/add/*",
-    "v1/voices/{voice_id}/edit",
-    { path: "v1/voices/*", methods: MUTATING },
-    { path: "v1/voice-collections/*", methods: MUTATING },
-    "v1/text-to-voice/create-voice-from-preview",
-    { path: "v1/text-to-voice", methods: MUTATING },
-    // The legacy voice generation saves a voice only here; `generate-voice` makes an unsaved preview.
-    "v1/voice-generation/create-voice",
-    { path: "v1/convai/agents/*", methods: MUTATING },
-    { path: "v1/convai/tools/*", methods: MUTATING },
-    { path: "v1/convai/knowledge-base/*", methods: MUTATING },
-    { path: "v1/convai/phone-numbers/*", methods: MUTATING },
-    { path: "v1/convai/mcp-servers/*", methods: MUTATING },
-    { path: "v1/convai/settings/*", methods: MUTATING },
-    { path: "v1/convai/dashboard/*", methods: MUTATING },
-    { path: "v1/pronunciation-dictionaries/*", methods: MUTATING },
-    { path: "v1/studio/*", methods: MUTATING },
-    { path: "v1/projects/*", methods: MUTATING },
-    { path: "v1/audio-native/*", methods: MUTATING },
-    { path: "v1/dubbing/resource/*", methods: MUTATING },
-    { path: "v1/dubbing/{dubbing_id}", methods: ["DELETE"] },
+    "v1/reception/reseller/workspaces/*",
+    "v1/reception/reseller/billing/*",
+    { path: "v1/productions/orders/{order_id}/submit", methods: ["POST"] },
+    // Account-wide history, which holds every app's generations.
+    "v1/history/*",
+    "v1/audio-isolation/history/*",
+    // Stored credentials.
     "v1/convai/secrets/*",
+    { path: "v1/convai/environment-variables/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
+    // Tokens and signed URLs for live sessions, until a customer can opt in
+    // to them path by path (plan D4).
     "v1/convai/conversation/token/*",
     "v1/convai/conversation/get-signed-url/*",
     "v1/convai/conversation/get_signed_url/*",
+    "v1/convai/realtime/client_secrets/*",
     "v1/single-use-token/*",
+    // From the research: deleting voices, and creating, changing or deleting
+    // the agent records themselves (not queries under an agent).
+    { path: "v1/voices/*", methods: ["DELETE"] },
+    "v1/convai/agents/create",
+    { path: "v1/convai/agents/{agent_id}/duplicate", methods: ["POST"] },
+    { path: "v1/convai/agents/{agent_id}", methods: ["PUT", "PATCH", "DELETE"] },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },
