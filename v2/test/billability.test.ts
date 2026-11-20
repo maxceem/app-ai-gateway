@@ -137,6 +137,13 @@ describe("changesAgainst", () => {
     expect(reads).toBe(1);
   });
 
+  it("calls a new entry changed without comparing it, however deep it is", () => {
+    let deep: unknown = [];
+    for (let level = 0; level < 4_000; level += 1) deep = [deep];
+    const changes = changesAgainst({ providers: {}, rewrites: {}, presets: {} }, config({}, undefined, { fresh: { params: { nested: deep } } }));
+    expect(changes.preset("fresh")).toBe(true);
+  });
+
   it("judges everything on create", () => {
     const changes = changesAgainst({ providers: {}, rewrites: {}, presets: {} }, config({ main: { operations: [] } }, { a: "b" }, { p: {} }));
     expect(changes.routing("main")).toBe(true);

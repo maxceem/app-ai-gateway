@@ -126,7 +126,12 @@ export interface Changes {
 }
 
 export function changesAgainst(stored: StoredEntries, config: AppConfig): Changes {
-  const own = (entries: Readonly<Record<string, unknown>>, key: string) => (Object.hasOwn(entries, key) ? entries[key] : undefined);
+  // Present on one side only is a change, decided before anything is compared.
+  const differs = (before: Readonly<Record<string, unknown>>, after: Readonly<Record<string, unknown>>, key: string) => {
+    const was = Object.hasOwn(before, key);
+    const is = Object.hasOwn(after, key);
+    return was !== is || (was && !sameJson(before[key], after[key]));
+  };
   const rewrites = config.routing.model_rewrites ?? {};
   // Each answer is worked out once: a route with thousands of models is
   // compared once, not once per model.
@@ -138,9 +143,9 @@ export function changesAgainst(stored: StoredEntries, config: AppConfig): Change
     };
   };
   return {
-    routing: once((slug) => !sameJson(own(stored.providers, slug), config.routing.providers[slug])),
-    rewrite: once((source) => !sameJson(own(stored.rewrites, source), own(rewrites, source))),
-    preset: once((slug) => !sameJson(own(stored.presets, slug), own(config.presets ?? {}, slug))),
+    routing: once((slug) => differs(stored.providers, config.routing.providers, slug)),
+    rewrite: once((source) => differs(stored.rewrites, rewrites, source)),
+    preset: once((slug) => differs(stored.presets, config.presets ?? {}, slug)),
   };
 }
 
