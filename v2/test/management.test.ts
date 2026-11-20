@@ -311,6 +311,31 @@ describe("validate and check", () => {
     expect((await request(key, "PUT", path, { revision: 1, pricing: { house: { input: 1, output: 2 } } })).status).toBe(200);
   });
 
+  it("judges `pricing: null` as every rate deleted: refused when a working fallback needs one, saved when none does (PR #199 round 4 S1)", async () => {
+    const key = await seedManagementKey();
+    const { body: first } = await createProvider(key);
+    const { body: needed } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const { body: spare } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const config = {
+      ...apiKeyConfig(),
+      presets: {
+        support: {
+          provider: first.provider.slug,
+          operation: "openai.chat",
+          model: "gpt-4o-mini",
+          fallback: [{ provider: needed.provider.slug, model: "house" }],
+        },
+      },
+    };
+    expect((await createApp(key, config)).status).toBe(201);
+    expect(await request(key, "PUT", `/v2/admin/providers/${needed.provider.id}`, { revision: 1, pricing: null })).toMatchObject({
+      status: 400,
+      body: { error: { code: "pricing_not_configured" } },
+    });
+    // No call reaches the spare connection: clearing its rates saves.
+    expect((await request(key, "PUT", `/v2/admin/providers/${spare.provider.id}`, { revision: 1, pricing: null })).status).toBe(200);
+  });
+
   it("reports each named connection's status, and ready only with an active one", async () => {
     const key = await seedManagementKey();
     const { body: first } = await createProvider(key);

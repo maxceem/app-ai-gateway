@@ -419,8 +419,9 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         ? null
         : servingProvidersJson(description, body.servingProviders);
   const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
-  if (newRates !== null) {
-    // The apps that route to this connection are judged on the calls the new rates change.
+  if (body.pricing !== undefined) {
+    // Every change of rates, whatever its shape (a replacement, a deletion inside it, or `null`, every
+    // model's rate deleted), is judged against the apps that route to this connection.
     const before = (() => {
       try {
         return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
