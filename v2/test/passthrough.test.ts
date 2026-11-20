@@ -273,6 +273,8 @@ describe("judging a listing where the provider reads it", () => {
     ["GET", "v1/voices"],
     ["GET", "v1/voices/voice-1"],
     ["POST", "v1/text-to-voice/design"],
+    ["POST", "v1/voice-generation/generate-voice"],
+    ["GET", "v1/voice-generation/generate-voice/parameters"],
     ["GET", "v1/convai/agents/a1"],
     ["GET", "v1/dubbing/d1"],
     ["GET", "v1/pronunciation-dictionaries"],

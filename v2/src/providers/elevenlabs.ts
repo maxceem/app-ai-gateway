@@ -79,7 +79,8 @@ export const elevenlabs = defineProvider({
     { path: "v1/voice-collections/*", methods: MUTATING },
     "v1/text-to-voice/create-voice-from-preview",
     { path: "v1/text-to-voice", methods: MUTATING },
-    { path: "v1/voice-generation/*", methods: MUTATING },
+    // The legacy voice generation saves a voice only here; `generate-voice` makes an unsaved preview.
+    "v1/voice-generation/create-voice",
     { path: "v1/convai/agents/*", methods: MUTATING },
     { path: "v1/convai/tools/*", methods: MUTATING },
     { path: "v1/convai/knowledge-base/*", methods: MUTATING },
