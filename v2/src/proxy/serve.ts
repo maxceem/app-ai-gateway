@@ -344,15 +344,21 @@ function isMultipart(contentType: string): boolean {
  * A transcription to a provider that judges its format must be a form, since
  * only a form names the format where it can be read.
  */
-async function requestBody(
+export async function requestBody(
   bytes: Uint8Array,
   contentType: string,
   operation: OperationDescription,
   description: ProviderDescription,
 ): Promise<ParsedBody> {
   if (isMultipart(contentType)) {
-    const boundary = multipartBoundary(contentType);
     const location = operation.model;
+    // The path names the model and no format is judged: as v1, the form is
+    // not read at all, so it is never refused for its shape. A service mode
+    // it names is not read either, as in v1: the response says which served.
+    if (location.in === "path" && operation.style !== "openai-transcription") {
+      return { kind: "form", fields: new Map() };
+    }
+    const boundary = multipartBoundary(contentType);
     const modelField = location.in === "body" || location.in === "form" ? location.field : null;
     const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names)]);
     if (modelField !== null) wanted.add(modelField);

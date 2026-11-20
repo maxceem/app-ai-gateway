@@ -230,8 +230,9 @@ export function audioUsage(value: unknown, countedInput: readonly Modality[] = N
   const root = asRecord(value);
   if (!root) return null;
   const usage = asRecord(root.usage);
-  const seconds =
-    nonNegativeNumber(usage?.seconds) ?? nonNegativeNumber(usage?.prompt_audio_seconds) ?? nonNegativeNumber(root.duration);
+  // The first positive one: a `seconds: 0` beside a real duration must not bill the audio as nothing.
+  const candidates = [usage?.seconds, usage?.prompt_audio_seconds, root.duration].map(nonNegativeNumber);
+  const seconds = candidates.find((value) => value !== null && value > 0) ?? candidates.find((value) => value !== null) ?? null;
   const tokens = openAiUsage(root, countedInput);
   if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
   return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
@@ -586,7 +587,8 @@ export function responseValues(body: ObservedText, contentType: string): Respons
       *backwards() {
         if (tail) yield* tail.backwards();
         if (split) {
-          cutDocument ??= tailUsageDocument(split.cut);
+          // The duration a transcription's cut event still shows counts too, as v1.
+          cutDocument ??= withDuration(tailUsageDocument(split.cut), split.cut, "");
           if (cutDocument) yield cutDocument;
         }
         yield* head.backwards();

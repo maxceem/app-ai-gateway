@@ -84,10 +84,13 @@ export function correctionOf(
     readonly now: number;
     /** A pricing correction billed at an estimate, such as a service mode with no price. */
     readonly estimate?: boolean;
+    /** The unit the correction's cost is in, where the price bills another than the charge recorded. */
+    readonly unit?: string;
   },
 ): ChargeRow {
   return {
     ...original,
+    ...(input.unit !== undefined ? { unit: input.unit } : {}),
     id: input.id,
     kind: "correction",
     seq: null,
@@ -315,6 +318,8 @@ export async function priceUnresolvedCharge(
     priceSource: resolved.source,
     rates: priced.rates,
     measures: { [billed.unit]: billed.units },
+    // Its cost lands in the rollup of the unit the price bills.
+    unit: billed.unit,
     now: input.now,
     estimate: priced.estimated || stored.modeUnknown,
   });

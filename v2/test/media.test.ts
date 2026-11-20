@@ -12,7 +12,8 @@ import { listPrice } from "../src/pricing/prices.ts";
 import { priceTokens, priceUsage } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
-import { audioUsage, imagesUsage } from "../src/usage/readers.ts";
+import { audioUsage, imagesUsage, readUsage, responseValues } from "../src/usage/readers.ts";
+import { requestBody } from "../src/proxy/serve.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
@@ -413,6 +414,8 @@ describe("usage in other units", () => {
     expect(audioUsage({ duration: 9 })).toMatchObject({ audioSeconds: 9, inputTokens: 0 });
     expect(audioUsage({ usage: { prompt_tokens: 5, completion_tokens: 1, prompt_audio_seconds: 2.5 } })).toMatchObject({ audioSeconds: 2.5, inputTokens: 5 });
     expect(audioUsage({ text: "no measure" })).toBeNull();
+    // A zero beside a real duration is not the measure: the first positive one is.
+    expect(audioUsage({ usage: { type: "duration", seconds: 0 }, duration: 30 })).toMatchObject({ audioSeconds: 30 });
     expect(imagesUsage({ usage: { generated_images: 3 } })).toMatchObject({ images: 3, inputTokens: 0, noTokens: true });
     expect(imagesUsage({ usage: { generated_images: 2, output_tokens: 10 } })).toEqual(expect.not.objectContaining({ noTokens: true }));
     // A count is a whole number: 0.5 images is no count at all.
@@ -429,6 +432,18 @@ describe("usage in other units", () => {
     expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, noTokens: true })).toBeNull();
   });
 
+  it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
+    const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
+    const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42.5, noTokens: true });
+  });
+
+  it("does not read a form whose model is in the path, as v1, so its shape is never refused", async () => {
+    const operation = BUILT_IN_PROVIDERS.gemini!.operations.find((declared) => declared.name === "gemini.embed.v1beta")!;
+    const parsed = await requestBody(new TextEncoder().encode("not a form at all"), "multipart/form-data; boundary=x", operation, BUILT_IN_PROVIDERS.gemini!);
+    expect(parsed).toEqual({ kind: "form", fields: new Map() });
+  });
+
   it("keeps the seconds and images in the charge's measures, so the sweep prices them exactly", () => {
     const usage = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 12.345, images: 2, noTokens: true as const };
     const back = usageFromMeasures(usageMeasures(usage, STANDARD_MODE))!;
@@ -441,9 +456,10 @@ describe("usage in other units", () => {
     fetchSpy.mockResolvedValue(Response.json({ text: "hi", usage: { type: "duration", seconds: 60 } }));
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, { model: "whisper-1", file: AUDIO });
     const [charge] = await chargesOf(appId);
-    // As if the price had been missing when the call was made.
-    await env.DB.prepare("UPDATE charge SET price_source = 'unresolved', cost_nano = NULL WHERE id = ?").bind(charge!.id).run();
+    // As if the price had been missing when the call was made, and the charge recorded in tokens.
+    await env.DB.prepare("UPDATE charge SET price_source = 'unresolved', cost_nano = NULL, unit = 'tokens' WHERE id = ?").bind(charge!.id).run();
     const result = await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() });
-    expect(result).toMatchObject({ status: "priced", correction: { costNano: 6_000_000 } });
+    // Its cost lands in the rollup of the unit the price bills.
+    expect(result).toMatchObject({ status: "priced", correction: { costNano: 6_000_000, unit: "audio_seconds" } });
   });
 });
