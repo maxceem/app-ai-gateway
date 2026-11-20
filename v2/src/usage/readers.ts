@@ -385,11 +385,23 @@ export function geminiUsage(value: unknown): UsageObservation | null {
 const NO_VALUE = Symbol("no SSE value");
 
 /** One SSE block's `data:` payload, or null when it carries nothing. */
-function sseData(block: string): string | null {
+/**
+ * An SSE event's data: its `data:` lines only, each without the field name and
+ * one space after it, joined with line breaks as SSE does. Comments and other
+ * fields are dropped. The one place an event's data is taken, for whole events
+ * and cut ones alike. `cutAtStart` is for an event a window cut at its start:
+ * its first line is the rest of a line whose field name was cut off, taken as
+ * data. Reading a root then fails on its own if it was not.
+ */
+function sseData(block: string, cutAtStart = false): string | null {
   const data = block
     .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
+    .flatMap((line, index) => {
+      if (index === 0 && cutAtStart) return [line];
+      if (!line.startsWith("data:")) return [];
+      const value = line.slice(5);
+      return [value.startsWith(" ") ? value.slice(1) : value];
+    })
     .join("\n");
   return data === "" || data === "[DONE]" ? null : data;
 }
@@ -542,7 +554,10 @@ export function responseValues(body: ObservedText, contentType: string): Respons
         if (split) {
           // The duration a transcription's cut event still shows counts too, as v1.
           // Cut at its start, so only its end anchors it, when it did end.
-          cutDocument ??= split.ended ? rootFields({ tail: split.cut }) : null;
+          if (cutDocument === undefined) {
+            const data = split.ended ? sseData(split.cut, true) : null;
+            cutDocument = data === null ? null : rootFields({ tail: data });
+          }
           if (cutDocument) yield cutDocument;
         }
         yield* head.backwards();

@@ -15,6 +15,9 @@ describe("anchored root fields", () => {
     expect(anchoredRootFields({ head: '{"duration":4' }, KEYS)).toBeNull();
     expect(anchoredRootFields({ head: '{"duration":42,"text":"…' }, KEYS)).toEqual({ duration: 42 });
     expect(anchoredRootFields({ head: '{"service_tier":nul' }, KEYS)).toBeNull();
+    // Followed by something, but not a JSON delimiter: it may still be part of a longer number (round 6 S11).
+    expect(anchoredRootFields({ head: '{"duration":42e' }, KEYS)).toBeNull();
+    expect(anchoredRootFields({ head: '{"duration":42 ,"x":' }, KEYS)).toEqual({ duration: 42 });
   });
 
   it("returns any whole value raw, an empty array included (S12)", () => {
@@ -54,6 +57,15 @@ describe("anchors in responses", () => {
     expect(readUsage(responseValues(whole, "application/json"), "openai-chat")).toBeNull();
     const rooted = { head, tail: `${"a".repeat(32)}","usage":{"prompt_tokens":10,"completion_tokens":2}}`, truncated: true };
     expect(readUsage(responseValues(rooted, "application/json"), "openai-chat")).toMatchObject({ inputTokens: 10, outputTokens: 2 });
+  });
+
+  it("reads a cut SSE event's data lines only, never a comment holding JSON (S13)", () => {
+    const usage = { prompt_tokens: 7, completion_tokens: 3 };
+    // The tail window starts inside the event's data line; a comment with JSON follows it.
+    const event = `,"usage":${JSON.stringify(usage)}}\n: {"usage":{"prompt_tokens":999,"completion_tokens":999}}`;
+    const tail = `${event}\n\ndata: [DONE]\n\n`;
+    const values = responseValues({ head: 'data: {"choices":[]', tail, truncated: true }, "text/event-stream");
+    expect(readUsage(values, "openai-chat")).toMatchObject({ inputTokens: 7, outputTokens: 3 });
   });
 
   it("reads an SSE event cut at its end by its start alone", () => {

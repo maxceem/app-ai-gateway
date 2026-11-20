@@ -69,9 +69,10 @@ function valueEnd(text: string, at: number): number {
   const number = NUMBER.exec(rest);
   const length = number?.[0].length ?? LITERALS.find((literal) => rest.startsWith(literal))?.length;
   if (length === undefined) return -1;
-  // A scalar must be followed by something inside the text: one that runs to
-  // the end may be the start of a longer one.
-  return at + length < text.length ? at + length : -1;
+  // A scalar must be followed by a JSON delimiter inside the text: one that
+  // runs to the end, or into anything else (`42e`), may be part of a longer one.
+  const next = text[at + length];
+  return next === "," || next === "}" || next === "]" || isSpace(next) ? at + length : -1;
 }
 
 function skipSpace(text: string, at: number): number {
