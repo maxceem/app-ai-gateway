@@ -42,7 +42,7 @@ import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { priceSources, resolveCall, type CallResolution } from "../pricing/billability.ts";
+import { priceSources, resolveCall, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionCredentials,
@@ -78,20 +78,12 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
   return matcher;
 }
 
-/** Whether this build can serve an operation: a call measured from its response or its request. */
-export function servedNow(operation: OperationDescription): boolean {
-  const { kind } = operation.meter;
-  return (
-    operation.lifecycle === "call" &&
-    (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")
-  );
-}
-
-
-/** The parts of the URL after `/v2/apps/{app}/proxy/`, still encoded. */
 /** The answer to a call serving refuses (`resolveCall`). */
-function callRefusal(call: Extract<CallResolution, { kind: "refused" }>, operation: OperationDescription): GatewayError {
+function callRefusal(call: CallRefusal, operation: OperationDescription): GatewayError {
   const { model } = call;
+  if (call.reason === "not_served") return new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
+  // A path naming a model outside its closed list was never declared.
+  if (call.reason === "unpriced_path") return new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   if (call.reason === "model_not_allowed") {
     return new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
   }
@@ -103,6 +95,7 @@ function callRefusal(call: Extract<CallResolution, { kind: "refused" }>, operati
   return new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
 }
 
+/** The parts of the URL after `/v2/apps/{app}/proxy/`, still encoded. */
 function proxyTarget(url: URL): { slug: string; path: string } {
   const segments = url.pathname.split("/");
   // ["", "v2", "apps", app, "proxy", slug, ...rest]
@@ -264,9 +257,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (!routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
-      if (!servedNow(operation)) {
-        throw new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
-      }
+      // `resolveCall` refuses an operation not served yet; refused here too, with its answer, before the body is read.
+      if (!servedNow(operation)) throw callRefusal({ kind: "refused", reason: "not_served", model: "" }, operation);
 
       const bytes = await caller.readBody();
       const contentType = c.req.header("content-type") ?? "";

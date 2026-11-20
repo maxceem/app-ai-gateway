@@ -36,7 +36,7 @@ import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { admitRequest } from "../limits/admission.ts";
-import { billing, priceSources } from "../pricing/billability.ts";
+import { priceSources, resolvePresetTarget } from "../pricing/billability.ts";
 import {
   connectionCredentials,
   connectionDescription,
@@ -45,7 +45,7 @@ import {
   type UpstreamCredentials,
 } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetUpstream } from "../providers/presets.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -159,26 +159,25 @@ interface TargetInput {
 /** One target of the chain as an attempt ready to send, or a `TargetProblem`. */
 function targetAttempt(input: TargetInput): PreparedAttempt {
   const { connection, description, target, preset, style } = input;
-  const chosen = presetOperation(description, style, target.operation);
-  if (chosen === null) {
+  // Resolved by the one rule saving runs too (`resolvePresetTarget`): the
+  // operation, its streaming sibling, and whether the target can be billed.
+  // A first target whose price has gone since is still served, and priced
+  // later (`unresolved`), as a listed model on the proxy is.
+  const call = resolvePresetTarget(description, style, target, priceSources(connection), { primary: input.primary, streaming: input.streaming });
+  if (call.kind === "refused" && call.reason === "no_operation") {
     throw new TargetProblem(
       new GatewayError(502, "provider_unavailable", `Provider connection ${connection.slug} cannot serve this preset's ${style} requests`),
     );
   }
-  const operation: OperationDescription = (input.streaming && streamingSibling(description, chosen)) || chosen;
-  const model = target.model;
-  const bill = billing(operation, priceSources(connection), model);
-  const price = bill.price;
-  // Saving checked every target's price. A first target whose price has gone
-  // since is still served, and priced later (`unresolved`), as a listed model
-  // on the proxy is. A fallback with none is left out.
-  if (bill.problem !== null && !input.primary) {
+  if (call.kind === "refused") {
     throw new TargetProblem(
-      new GatewayError(400, "pricing_not_configured", `Model ${model} has no price that ${operation.name} can bill`, undefined, {
-        data: { model, operation: operation.name },
+      new GatewayError(400, "pricing_not_configured", `Model ${call.model} has no price that ${call.operation.name} can bill`, undefined, {
+        data: { model: call.model, operation: call.operation.name },
       }),
     );
   }
+  const { operation, model, bill } = call;
+  const price = bill.price;
   const upstream = presetUpstream(description, operation, model);
   if (upstream === null) {
     throw new TargetProblem(new GatewayError(400, "invalid_request", `Model ${model} cannot be sent in ${operation.name}'s path`));

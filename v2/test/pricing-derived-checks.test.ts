@@ -5,8 +5,9 @@
  * step 4a). These tests hold the three side by side.
  */
 import { describe, expect, it } from "vitest";
+import { listedJudgement } from "./listed-model.ts";
 import { priceUnits, priceUnitsMixed, priceUnitsPer, priceUnitsSum, rate } from "../src/money.ts";
-import { billing, CHECK_PROBES, listedModelProblem, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { billing, CHECK_PROBES, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, servedModes, type CustomerRates } from "../src/pricing/prices.ts";
 import { costAtRate, costOfRates, priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
@@ -46,10 +47,10 @@ describe("Fable's cases: save, eligibility and the charge agree", () => {
     expect(savedPriceProblem({ m: { per_credit: 50_000_000, per_hour: 200_000_000 } }, "m", "elevenlabs", elevenlabs.operations)).toBeNull();
     // An app enabling text to speech for it is refused: an answer without its header cannot be charged.
     const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
-    expect(listedModelProblem(enabled, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toEqual({ operation: "elevenlabs.tts" });
+    expect(listedJudgement(enabled, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toEqual({ operation: "elevenlabs.tts" });
     // An app enabling only speech to text lists it.
     const stt = elevenlabs.operations.filter((op) => op.name === "elevenlabs.stt");
-    expect(listedModelProblem(stt, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toBeNull();
+    expect(listedJudgement(stt, priceSources({ type: "elevenlabs", rates: { m: { per_credit: 50_000_000 } } }), "m")).toBeNull();
   });
 
   it("both rates, plus a key value stating only credits: every case is charged, so all three accept", () => {

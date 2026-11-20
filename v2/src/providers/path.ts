@@ -133,8 +133,12 @@ export function parseTemplate(source: string, options: ParseOptions = {}): Templ
   return { source, segments };
 }
 
-/** Values for `{name...}` parts. A value outside its list never matches. */
-export type ClosedLists = Readonly<Record<string, ReadonlySet<string>>>;
+/**
+ * Values for `{name...}` parts. A value outside its list never matches.
+ * `any` matches every value: its list is judged after routing, as the priced
+ * models are (`resolveCall`, `../pricing/billability.ts`).
+ */
+export type ClosedLists = Readonly<Record<string, ReadonlySet<string> | "any">>;
 
 export interface MatchOptions {
   readonly closedLists?: ClosedLists;
@@ -197,7 +201,8 @@ export function matchTemplate(
   if (!after.every((segment, index) => one(segment, segments[tail + index]!))) return null;
   const multi = pattern[multiAt] as Extract<TemplateSegment, { kind: "multi" }>;
   const value = segments.slice(before.length, tail).join("/");
-  if (!options.closedLists?.[multi.name]?.has(value)) return null;
+  const list = options.closedLists?.[multi.name];
+  if (list === undefined || (list !== "any" && !list.has(value))) return null;
   parts[multi.name] = value;
   return parts;
 }

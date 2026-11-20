@@ -68,9 +68,12 @@ interface CompiledOperation {
   readonly template: Template;
   readonly upstream: Template | null;
   readonly host: string;
-  /** Fixed `{name...}` lists. `priced_models` lists come from the caller. */
-  readonly fixedLists: Readonly<Record<string, ReadonlySet<string>>>;
-  readonly pricedParts: readonly string[];
+  /**
+   * Each `{name...}` part's list: a fixed one, or `any` for the priced
+   * models, which are judged after routing, where the request is admitted
+   * (`resolveCall`, `../pricing/billability.ts`).
+   */
+  readonly closedLists: ClosedLists;
 }
 
 export interface CompiledPassthrough {
@@ -101,11 +104,7 @@ export function compilePassthrough(paths: readonly PassthroughPath[]): readonly 
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
   readonly passthrough?: readonly CompiledPassthrough[];
-  /** The models priced for an operation, for its `priced_models` list. */
-  readonly pricedModels?: (operation: string) => ReadonlySet<string>;
 }
-
-const NOTHING: ReadonlySet<string> = new Set();
 
 export class ProviderMatcher {
   readonly provider: ProviderDescription;
@@ -157,8 +156,7 @@ export class ProviderMatcher {
           `operation "${operation.name}" reads its model from {${operation.model.part}}, which its path does not have`,
         );
       }
-      const fixedLists: Record<string, ReadonlySet<string>> = {};
-      const pricedParts: string[] = [];
+      const closedLists: Record<string, ReadonlySet<string> | "any"> = {};
       for (const segment of template.segments) {
         if (segment.kind !== "multi") continue;
         const list = operation.multiSegment?.[segment.name];
@@ -168,10 +166,9 @@ export class ProviderMatcher {
             `operation "${operation.name}" has no closed list for {${segment.name}...}`,
           );
         }
-        if (list === "priced_models") pricedParts.push(segment.name);
-        else fixedLists[segment.name] = new Set(list);
+        closedLists[segment.name] = list === "priced_models" ? "any" : new Set(list);
       }
-      return { operation, template, upstream, host: hostKey, fixedLists, pricedParts };
+      return { operation, template, upstream, host: hostKey, closedLists };
     });
   }
 
@@ -195,7 +192,7 @@ export class ProviderMatcher {
 
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== method) continue;
-      const parts = matchTemplate(compiled.template, segments, { closedLists: this.closedLists(compiled, context) });
+      const parts = matchTemplate(compiled.template, segments, { closedLists: compiled.closedLists });
       if (parts === null) continue;
       const path = compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts);
       if (path === null) return { kind: "refused", reason: "bad_path", detail: "dot_segment" };
@@ -229,13 +226,5 @@ export class ProviderMatcher {
     const compiled = this.operations.find((candidate) => candidate.operation.name === operationName);
     if (compiled === undefined) return null;
     return compiled.template.segments.flatMap((segment) => (segment.kind === "part" || segment.kind === "multi" ? [segment.name] : []));
-  }
-
-  private closedLists(compiled: CompiledOperation, context: MatchContext): ClosedLists {
-    if (compiled.pricedParts.length === 0) return compiled.fixedLists;
-    const priced = context.pricedModels?.(compiled.operation.name) ?? NOTHING;
-    const lists: Record<string, ReadonlySet<string>> = { ...compiled.fixedLists };
-    for (const name of compiled.pricedParts) lists[name] = priced;
-    return lists;
   }
 }

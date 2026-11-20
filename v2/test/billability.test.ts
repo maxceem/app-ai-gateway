@@ -4,9 +4,10 @@
  * 3a-2 S1, 3b F2, A1, A2, A3).
  */
 import { describe, expect, it } from "vitest";
+import { listedJudgement } from "./listed-model.ts";
 import { changesAgainst, type StoredEntries } from "../src/admin/apps.ts";
 import type { AppConfig } from "../src/contracts/app-config.ts";
-import { billing, listedModelProblem, priceSources, rewriteTargetBillable, type PriceSources } from "../src/pricing/billability.ts";
+import { billing, priceSources, rewriteTargetBillable, type PriceSources } from "../src/pricing/billability.ts";
 import type { CustomerRates } from "../src/pricing/prices.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../src/providers/index.ts";
 import type { OperationDescription } from "../src/providers/operation.ts";
@@ -55,20 +56,20 @@ describe("billing", () => {
   });
 });
 
-describe("listedModelProblem", () => {
+describe("the listed-model rule", () => {
   it("lets a priced model be listed when one enabled operation can bill it (3a-2 S1)", () => {
-    expect(listedModelProblem([chat, transcription], openai, "whisper-1")).toBeNull();
-    expect(listedModelProblem([chat, transcription], openai, "gpt-4o-mini")).toBeNull();
-    expect(listedModelProblem([chat], openai, "whisper-1")).toEqual({});
+    expect(listedJudgement([chat, transcription], openai, "whisper-1")).toBeNull();
+    expect(listedJudgement([chat, transcription], openai, "gpt-4o-mini")).toBeNull();
+    expect(listedJudgement([chat], openai, "whisper-1")).toEqual({});
   });
 
   it("needs an unpriced model to be billable on every enabled operation (3a-1 S7)", () => {
-    expect(listedModelProblem([xaiChat], xai, "no-such-model")).toBeNull();
-    expect(listedModelProblem([xaiChat, xaiMessages], xai, "no-such-model")).toEqual({ operation: "xai.messages" });
+    expect(listedJudgement([xaiChat], xai, "no-such-model")).toBeNull();
+    expect(listedJudgement([xaiChat, xaiMessages], xai, "no-such-model")).toEqual({ operation: "xai.messages" });
   });
 
   it("allows anything when no operation is enabled", () => {
-    expect(listedModelProblem([], openai, "no-such-model")).toBeNull();
+    expect(listedJudgement([], openai, "no-such-model")).toBeNull();
   });
 });
 

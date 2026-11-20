@@ -17,6 +17,8 @@ const KNOWN_CLASSES = new Set([
   "TypeError",
   "RangeError",
   "SyntaxError",
+  // A connection's stored rates cannot be read (`../pricing/billability.ts`).
+  "UnreadableRates",
   "ReferenceError",
   "AggregateError",
   "DOMException",

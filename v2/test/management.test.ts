@@ -336,6 +336,49 @@ describe("validate and check", () => {
     expect((await request(key, "PUT", `/v2/admin/providers/${spare.provider.id}`, { revision: 1, pricing: null })).status).toBe(200);
   });
 
+  it("judges every call the apps reach on a new connection's slug, not only its own rates (PR #199 round 5 F1)", async () => {
+    const key = await seedManagementKey();
+    const slug = `openai-${crypto.randomUUID().slice(0, 6)}`;
+    const { body: provider } = await createProvider(key, { slug, pricing: { house: { input: 1, output: 2 } } });
+    expect((await createApp(key, apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["house"] } }))).status).toBe(201);
+    await request(key, "DELETE", `/v2/admin/providers/${provider.provider.id}`);
+    // Made again with no rates, the app's listed `house` would be served with no price at all: refused.
+    expect(await createProvider(key, { slug })).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+    expect((await createProvider(key, { slug, pricing: { house: { input: 1, output: 2 } } })).status).toBe(201);
+  });
+
+  it("lets a rate save through when serving refuses the calls it drops openly: a proxy call, a listed model (PR #199 round 5 F2)", async () => {
+    const key = await seedManagementKey();
+    const rate = { input: 1, output: 2 };
+    const { body: provider } = await createProvider(key, { pricing: { house: rate, kept: rate } });
+    const slug = provider.provider.slug as string;
+    // No model list: `house` is served while it has a price, and refused with `pricing_not_configured` once it has none.
+    expect((await createApp(key, apiKeyConfig({ [slug]: { operations: ["openai.chat"] } }))).status).toBe(201);
+    expect((await createApp(key, apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["kept"] } }))).status).toBe(201);
+    const path = `/v2/admin/providers/${provider.provider.id}`;
+    // Renaming `house`'s rate, and deleting it, save.
+    expect((await request(key, "PUT", path, { revision: 1, pricing: { home: rate, kept: rate } })).status).toBe(200);
+    expect((await request(key, "PUT", path, { revision: 2, pricing: { kept: rate } })).status).toBe(200);
+    // Priced per minute, chat refuses the listed `kept` openly (`wrong_unit`): the save goes through.
+    expect((await request(key, "PUT", path, { revision: 3, pricing: { kept: { per_minute: 1 } } })).status).toBe(200);
+  });
+
+  it("keeps an unchanged entry's allowances when a disabled app is turned on (PR #199 round 5 F3)", async () => {
+    const key = await seedManagementKey();
+    const { body: gone } = await createProvider(key);
+    const { body: kept } = await createProvider(key);
+    const config = apiKeyConfig({
+      [gone.provider.slug]: { operations: ["openai.chat"] },
+      [kept.provider.slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] },
+    });
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}`;
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "disabled", revision: 1 })).status).toBe(200);
+    // Unchanged, the entry may keep a connection deleted since, as on any save.
+    await request(key, "DELETE", `/v2/admin/providers/${gone.provider.id}`);
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "active", revision: 2 })).status).toBe(200);
+  });
+
   it("reports each named connection's status, and ready only with an active one", async () => {
     const key = await seedManagementKey();
     const { body: first } = await createProvider(key);

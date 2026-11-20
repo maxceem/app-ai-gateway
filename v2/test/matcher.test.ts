@@ -6,8 +6,6 @@ import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { fal } from "../src/providers/fal.ts";
 import { openai } from "../src/providers/openai.ts";
 
-const pricedModels = () => new Set(["fal-ai/flux/dev", "fal-ai/kling-video/v2.1/master/text-to-video"]);
-
 describe("built-in provider descriptions", () => {
   it.each(Object.keys(BUILT_IN_PROVIDERS))("%s compiles", (type) => {
     expect(() => new ProviderMatcher(BUILT_IN_PROVIDERS[type]!)).not.toThrow();
@@ -45,7 +43,7 @@ describe("fal", () => {
   const matcher = new ProviderMatcher(fal);
 
   it("runs a priced model with slashes in its id, on the main host", () => {
-    expect(matcher.match("POST", "run/fal-ai/flux/dev", { pricedModels })).toMatchObject({
+    expect(matcher.match("POST", "run/fal-ai/flux/dev")).toMatchObject({
       kind: "operation",
       operation: { name: "fal.run" },
       parts: { model: "fal-ai/flux/dev" },
@@ -54,18 +52,15 @@ describe("fal", () => {
   });
 
   it("submits a job to the queue host", () => {
-    expect(matcher.match("POST", "queue/fal-ai/kling-video/v2.1/master/text-to-video", { pricedModels })).toMatchObject({
+    expect(matcher.match("POST", "queue/fal-ai/kling-video/v2.1/master/text-to-video")).toMatchObject({
       operation: { name: "fal.queue", lifecycle: "job" },
       upstream: { host: "queue", path: "/fal-ai/kling-video/v2.1/master/text-to-video" },
     });
   });
 
-  it("refuses a model that is not priced, and works with no price list at all", () => {
-    expect(matcher.match("POST", "run/fal-ai/flux/pro", { pricedModels })).toEqual({
-      kind: "refused",
-      reason: "not_declared",
-    });
-    expect(matcher.match("POST", "run/fal-ai/flux/dev")).toEqual({ kind: "refused", reason: "not_declared" });
+  it("routes any model in the priced-models part: whether it is priced is judged where the call is admitted (`resolveCall`)", () => {
+    expect(matcher.match("POST", "run/fal-ai/flux/pro")).toMatchObject({ kind: "operation", operation: { name: "fal.run" }, parts: { model: "fal-ai/flux/pro" } });
+    expect(matcher.match("POST", "run")).toEqual({ kind: "refused", reason: "not_declared" });
   });
 });
 

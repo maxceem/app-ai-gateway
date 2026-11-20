@@ -49,7 +49,7 @@ import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../provi
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
-import { appRow, checkAppConfig, checkConnectionRates, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { appRow, checkAppConfig, checkNewConnection, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkedBaseUrl,
@@ -399,7 +399,7 @@ async function providerAddWrite(
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
-  await checkConnectionRates(env.DB, accountId, { slug: review.slug, type: review.type }, null, rates);
+  await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type }, rates);
   const statement = guardedInsert(
     database(env.DB) as never,
     providerConnection,

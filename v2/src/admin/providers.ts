@@ -39,7 +39,7 @@ import type { ProviderDescription } from "../providers/operation.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
-import { checkConnectionRates, parseBody } from "./apps.ts";
+import { checkConnectionRates, checkNewConnection, parseBody } from "./apps.ts";
 import { planCap } from "./plan-caps.ts";
 import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
@@ -290,7 +290,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const servingJson = servingProvidersJson(description, body.servingProviders);
   const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
-  await checkConnectionRates(c.env.DB, actor.accountId, { slug, type: body.type }, null, newRates);
+  await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type }, newRates);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;

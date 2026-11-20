@@ -23,8 +23,10 @@ import {
   billing,
   callGap,
   callKey,
+  listedModelRefusal,
   priceSources,
   reachableCalls,
+  resolvePresetTarget,
   rewriteTargetBillable,
   type AppCall,
   type AppCallConfig,
@@ -33,7 +35,7 @@ import {
 } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { attemptCopy, declaredOperation, presetOperation, presetOperationProblem } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { serviceModeName } from "../usage/service-modes.ts";
@@ -165,13 +167,16 @@ export function changesAgainst(stored: StoredEntries, config: AppConfig): Change
  * Checks a configuration against the account: the shape, then each provider
  * connection it names, each operation, and whether each listed model can be
  * billed (`../pricing/billability.ts` decides). Only what is new or changed
- * against `stored` is judged (`changesAgainst`).
+ * against `stored` is judged (`changesAgainst`), and only the calls new
+ * against `priced` are priced (`judgeApp`): turning a disabled app on prices
+ * every call, while its unchanged entries keep what they were allowed.
  */
 export async function checkAppConfig(
   db: D1Database,
   accountId: string,
   raw: unknown,
   stored: StoredEntries = NOTHING_STORED,
+  priced: StoredEntries = stored,
 ): Promise<AppConfig> {
   const config = parseAppConfig(raw);
   const changed = changesAgainst(stored, config);
@@ -232,7 +237,7 @@ export async function checkAppConfig(
     // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
     views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description });
   }
-  judgeApp(config, stored, (slug) => views.get(slug) ?? null);
+  judgeApp(config, priced, (slug) => views.get(slug) ?? null);
   return config;
 }
 
@@ -289,16 +294,18 @@ function judgeApp(config: AppConfig, stored: StoredEntries, view: (slug: string)
   const servedNow = servedName(now.calls);
   const servedBefore = servedName(was.calls);
   for (const [slug, route] of Object.entries(config.routing.providers)) {
-    if (skipped.has(slug) || view(slug) === null) continue;
+    const connection = view(slug);
+    if (skipped.has(slug) || connection === null) continue;
     const listedBefore = new Set(before.routing.providers[slug]?.models ?? []);
+    const operations = connection.description.operations.filter((operation) => route.operations.includes(operation.name));
     for (const listed of route.models ?? []) {
       const name = `${slug}\u0000${listed}`;
       if (servedNow.has(name)) continue;
       // Listed before and not served then either: this save did not change it.
       if (listedBefore.has(listed) && !servedBefore.has(name)) continue;
-      const rewrites = config.routing.model_rewrites ?? {};
-      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-      const operations = view(slug)!.description.operations.filter((operation) => route.operations.includes(operation.name));
+      const refusal = listedModelRefusal(route, config.routing.model_rewrites, connection.sources, operations, listed);
+      if (refusal === null) continue;
+      const model = refusal.model;
       throw new GatewayError(
         400,
         "pricing_not_configured",
@@ -360,12 +367,14 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
  * it is judged on the calls the change can affect, at every entry point
  * (`reachableCalls`), by the same rule as an app save (`callGap`), so a rate
  * added after an app was saved cannot leave its calls charged only partly.
- * The calls judged are those reachable under the old rates and under the
- * new, all priced with the new: a preset fallback the new rates would drop
- * is judged too, and refused, as its first target would be. Only models
- * whose rates are new, changed or deleted are judged, so deleting a rate no
- * call needs still saves. A disabled app is judged in full when it is turned
- * on again.
+ * Only models whose rates are new, changed or deleted are judged, so deleting
+ * a rate no call needs still saves. A disabled app is judged in full when it
+ * is turned on again.
+ *
+ * A call the new rates no longer let through is judged only when serving
+ * would drop it without a word: a preset fallback, left out of its chain. A
+ * proxy call or a fallback model serving refuses openly instead, so deleting
+ * or renaming a rate it needed still saves.
  */
 export async function checkConnectionRates(
   db: D1Database,
@@ -374,21 +383,47 @@ export async function checkConnectionRates(
   before: CustomerRates | null,
   after: CustomerRates | null,
 ): Promise<void> {
-  const description = builtInProvider(connection.type);
-  if (description === null) return;
   // New, changed and deleted rates alike: a deleted rate can drop a call that worked.
   const was = before ?? {};
   const now = after ?? {};
-  const changedModels = new Set(
+  const models = new Set(
     [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
   );
-  if (changedModels.size === 0) return;
+  if (models.size === 0) return;
+  await judgeConnectionApps(db, accountId, connection, after, { before, models });
+}
+
+/**
+ * A connection is about to be created, by the API or a hand-off: apps may
+ * already route to its slug (one deleted and made again). Every call they
+ * reach on it is judged with its rates, as no call there was judged before.
+ */
+export async function checkNewConnection(
+  db: D1Database,
+  accountId: string,
+  connection: { readonly slug: string; readonly type: string },
+  rates: CustomerRates | null,
+): Promise<void> {
+  await judgeConnectionApps(db, accountId, connection, rates, null);
+}
+
+/** Judges each active app's calls on one connection with `after` rates: all of them, or, with `change`, those on the models it changes. */
+async function judgeConnectionApps(
+  db: D1Database,
+  accountId: string,
+  connection: { readonly slug: string; readonly type: string },
+  after: CustomerRates | null,
+  change: { readonly before: CustomerRates | null; readonly models: ReadonlySet<string> } | null,
+): Promise<void> {
+  const description = builtInProvider(connection.type);
+  if (description === null) return;
   const { results } = await db
     .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
     .bind(accountId)
     .all<{ name: string; status: string; config_json: string }>();
   const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description };
-  const previous: ConnectionView = { sources: priceSources({ type: connection.type, rates: before }), description };
+  const previous: ConnectionView | null = change === null ? null : { sources: priceSources({ type: connection.type, rates: change.before }), description };
+  const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
   for (const app of results) {
     if (app.status !== "active") continue;
     let config: AppCallConfig | null;
@@ -398,37 +433,33 @@ export async function checkConnectionRates(
       continue;
     }
     if (config === null) continue;
-    const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
     const { calls } = reachableCalls(config, only(next));
     const nowKeys = new Set(calls.map(callKey));
-    // A call the old rates let through and the new do not is judged on the new rates: it would be dropped, or served unpriced.
-    const dropped = reachableCalls(config, only(previous)).calls.filter((call) => !nowKeys.has(callKey(call)));
+    // A preset fallback the old rates let through and the new do not is judged on the new rates: serving would leave it out silently.
+    const dropped =
+      previous === null
+        ? []
+        : reachableCalls(config, only(previous)).calls.filter((call) => call.entry.startsWith("preset:") && !nowKeys.has(callKey(call)));
     const judged = [...calls, ...dropped.map((call) => ({ ...call, bill: billing(call.operation, next.sources, call.model) }))];
     for (const call of judged) {
-      if (!changedModels.has(call.model)) continue;
+      if (change !== null && !change.models.has(call.model)) continue;
       const gap = callGap(call);
-      if (gap !== null) throw ratesRefused(call.model, app.name, connection.slug, gap.operation ?? call.operation.name);
-    }
-    const route = config.routing.providers[connection.slug];
-    const rewrites = config.routing.model_rewrites ?? {};
-    const served = new Set(calls.filter((call) => call.entry === "proxy").map((call) => call.requested));
-    for (const listed of route?.models ?? []) {
-      const model = Object.hasOwn(rewrites, listed) ? rewrites[listed]! : listed;
-      if (!changedModels.has(model) || served.has(listed)) continue;
-      throw ratesRefused(model, app.name, connection.slug, undefined);
+      if (gap !== null) throw ratesRefused(call, app.name, connection.slug, gap);
     }
   }
 }
 
-function ratesRefused(model: string, app: string, slug: string, operation: string | undefined): GatewayError {
+function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): GatewayError {
+  const operation = gap.operation ?? call.operation.name;
+  const model = call.model;
   return new GatewayError(
     400,
     "pricing_not_configured",
-    `pricing.${model}: the app ${app} routes ${model} to ${slug}${
-      operation === undefined ? ", and no operation it enables could bill this price" : `, and ${operation} could bill this price only partly`
+    `pricing.${model}: the app ${app} routes ${model} to ${slug}, and ${operation} could bill ${
+      call.bill.price === null ? "no price of it" : "this price only partly"
     }; give it a rate for every way it answers`,
     undefined,
-    { data: { model, slug, app, ...(operation !== undefined ? { operation } : {}) } },
+    { data: { model, slug, app, operation } },
   );
 }
 
@@ -489,8 +520,10 @@ async function checkPreset(
     if (description === null) {
       throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
     }
-    const operation = presetOperation(description, style, target.operation);
-    if (operation === null) {
+    const sources = priceSources(connection);
+    // Resolved as serving resolves the first target (`resolvePresetTarget`), so every target is judged as it would be served.
+    const call = resolvePresetTarget(description, style, target, sources, { primary: true, streaming: false });
+    if (call.kind === "refused" && call.reason === "no_operation") {
       const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
       throw invalid(
         target.operation === undefined
@@ -503,11 +536,11 @@ async function checkPreset(
         { slug },
       );
     }
+    const operation = call.operation;
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
     }
-    const sources = priceSources(connection);
-    if (billing(operation, sources, target.model, undefined, "save").problem !== null) {
+    if (call.kind === "refused" || callGap(call) !== null) {
       throw new GatewayError(
         400,
         "pricing_not_configured",
@@ -654,12 +687,14 @@ function storedRouting(row: AppRow): StoredEntries {
 }
 
 /**
- * What a save of `current` is judged against: its stored routing, unless the
- * save turns a disabled app on. A disabled app serves nothing, so turning it
- * on judges everything, as creating it would.
+ * What a save of `current` is judged against: its stored routing, for what
+ * changed (`stored`) and for which calls are priced (`priced`). A disabled
+ * app serves nothing, so turning it on prices every call, as creating it
+ * would; its unchanged entries keep what they were allowed, as any save's do.
  */
-function judgedAgainst(current: AppRow, status: "active" | "disabled" | undefined): StoredEntries {
-  return current.status !== "active" && (status ?? current.status) === "active" ? NOTHING_STORED : storedRouting(current);
+function judgedAgainst(current: AppRow, status: "active" | "disabled" | undefined): { readonly stored: StoredEntries; readonly priced: StoredEntries } {
+  const stored = storedRouting(current);
+  return { stored, priced: current.status !== "active" && (status ?? current.status) === "active" ? NOTHING_STORED : stored };
 }
 
 /** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */
@@ -693,7 +728,8 @@ async function saveApp(
   if (revision === undefined) {
     throw new GatewayError(400, "app_revision_required", "Send the revision the app was read at");
   }
-  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
+  const against = judgedAgainst(current, body.status);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
@@ -749,7 +785,8 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const body = await parseBody(c, AppValidateRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config, judgedAgainst(current, body.status));
+  const against = judgedAgainst(current, body.status);
+  await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 

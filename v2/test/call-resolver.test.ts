@@ -6,7 +6,18 @@
  * keep the work a save does bounded (Fable's design review of step 4b).
  */
 import { describe, expect, it } from "vitest";
-import { CHECK_PROBES, RESOLVED_CALLS, callGap, priceSources, reachableCalls, resolveCall } from "../src/pricing/billability.ts";
+import { errorFacts } from "../src/core/error-facts.ts";
+import {
+  CHECK_PROBES,
+  RESOLVED_CALLS,
+  UnreadableRates,
+  callGap,
+  priceSources,
+  reachableCalls,
+  resolveAlternative,
+  resolveCall,
+  resolvePresetTarget,
+} from "../src/pricing/billability.ts";
 import { keyCandidates, PRICE_LIST, reportsCost, servedModes, type CustomerRates, type ModelPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
@@ -104,6 +115,81 @@ describe("resolveCall and callGap", () => {
     expect(resolveCall({ models: ["no-such-model"] }, undefined, sources, chat, "no-such-model")).toMatchObject({ kind: "admitted" });
     // The model list judges the name the request carries; the price, the model it is sent as.
     expect(resolveCall({ models: ["house"] }, { house: "gpt-4o-mini" }, sources, chat, "house")).toMatchObject({ kind: "admitted", model: "gpt-4o-mini" });
+  });
+});
+
+describe("what serving reaches, and only that (PR #199 round 5)", () => {
+  const fal = BUILT_IN_PROVIDERS.fal!;
+  const falRates = priceSources({ type: "fal", rates: { "fal-ai/flux/dev": { per_unit: 50_000_000 } } as unknown as CustomerRates });
+  const op = (type: string, name: string) => BUILT_IN_PROVIDERS[type]!.operations.find((one) => one.name === name)!;
+
+  it("refuses an operation not served yet, and a priced-models path naming a model with no price, in resolveCall (F6)", () => {
+    expect(resolveCall({}, undefined, falRates, op("fal", "fal.queue"), "fal-ai/flux/dev")).toMatchObject({ kind: "refused", reason: "not_served" });
+    expect(resolveCall({}, undefined, priceSources({ type: "openai", rates: null }), op("openai", "openai.realtime"), "gpt-4o-mini")).toMatchObject({
+      kind: "refused",
+      reason: "not_served",
+    });
+    expect(resolveCall({}, undefined, falRates, op("fal", "fal.run"), "fal-ai/flux/pro")).toMatchObject({ kind: "refused", reason: "unpriced_path" });
+    // Even listed: the path's closed list is the priced models, whatever the app lists.
+    expect(resolveCall({ models: ["fal-ai/flux/pro"] }, undefined, falRates, op("fal", "fal.run"), "fal-ai/flux/pro")).toMatchObject({ reason: "unpriced_path" });
+    expect(resolveCall({}, undefined, falRates, op("fal", "fal.run"), "fal-ai/flux/dev")).toMatchObject({ kind: "admitted" });
+  });
+
+  it("enumerates each operation's own model names: no call on an operation not served, a default model, a fixed one (F6)", () => {
+    const falApp = { routing: { providers: { main: { operations: ["fal.run", "fal.queue"] } } } };
+    const falCalls = reachableCalls(falApp, () => ({ sources: falRates, description: fal })).calls;
+    expect(falCalls.map((call) => `${call.operation.name} ${call.requested}`)).toEqual(["fal.run fal-ai/flux/dev"]);
+    // Text to speech with no model list: a request naming no model is sent with the default one.
+    const elevenlabs = BUILT_IN_PROVIDERS.elevenlabs!;
+    const ttsApp = { routing: { providers: { main: { operations: ["elevenlabs.tts"] } } } };
+    const ttsCalls = reachableCalls(ttsApp, () => ({ sources: priceSources({ type: "elevenlabs", rates: null }), description: elevenlabs })).calls;
+    expect(ttsCalls.map((call) => call.requested)).toEqual(["eleven_multilingual_v2"]);
+    // An operation with one fixed model reaches that model alone, whatever the route lists.
+    const openai = BUILT_IN_PROVIDERS.openai!;
+    const fixed = { ...op("openai", "openai.chat"), name: "test.fixed", model: { in: "fixed", model: "gpt-4o-mini" } } as const;
+    const description = { ...openai, operations: [fixed] };
+    const fixedApp = { routing: { providers: { main: { operations: ["test.fixed"], models: ["gpt-4o", "gpt-4o-mini"] } } } };
+    const fixedCalls = reachableCalls(fixedApp, () => ({ sources: priceSources({ type: "openai", rates: null }), description })).calls;
+    expect(fixedCalls.map((call) => call.requested)).toEqual(["gpt-4o-mini"]);
+  });
+
+  it("resolves a preset target as serving does: its operation, the streaming sibling, a fallback left out (F4)", () => {
+    const gemini = BUILT_IN_PROVIDERS.gemini!;
+    const sources = priceSources({ type: "gemini", rates: null });
+    const target = { operation: "gemini.generate.v1beta", model: "gemini-2.5-flash" };
+    expect(resolvePresetTarget(gemini, "gemini-generate", target, sources, { primary: true, streaming: false })).toMatchObject({
+      kind: "admitted",
+      operation: { name: "gemini.generate.v1beta" },
+    });
+    expect(resolvePresetTarget(gemini, "gemini-generate", target, sources, { primary: true, streaming: true })).toMatchObject({
+      kind: "admitted",
+      operation: { name: "gemini.stream.v1beta" },
+    });
+    const unpriced = { operation: "gemini.generate.v1beta", model: "no-such-model" };
+    expect(resolvePresetTarget(gemini, "gemini-generate", unpriced, sources, { primary: true, streaming: false })).toMatchObject({ kind: "admitted" });
+    expect(resolvePresetTarget(gemini, "gemini-generate", unpriced, sources, { primary: false, streaming: false })).toMatchObject({
+      kind: "refused",
+      reason: "unbillable",
+    });
+    expect(resolvePresetTarget(gemini, "openai-chat", target, sources, { primary: true, streaming: false })).toEqual({ kind: "refused", reason: "no_operation" });
+    // Saving reaches both of a Gemini target's operations.
+    const app = { routing: { providers: {} }, presets: { p: { provider: "main", ...target } } };
+    const calls = reachableCalls(app, () => ({ sources, description: gemini })).calls;
+    expect(calls.map((call) => call.operation.name)).toEqual(["gemini.generate.v1beta", "gemini.stream.v1beta"]);
+  });
+
+  it("resolves a model a request names besides its own under its own name, against the same list (F4)", () => {
+    const chat = op("vercel", "vercel.chat");
+    const sources = priceSources({ type: "vercel", rates: null });
+    expect(resolveAlternative(chat, sources, "openai/gpt-4o-mini", null)).toMatchObject({ kind: "admitted", model: "openai/gpt-4o-mini" });
+    expect(resolveAlternative(chat, sources, "openai/gpt-4o-mini", new Set(["house"]))).toMatchObject({ kind: "refused", reason: "model_not_allowed" });
+    // A rewrite never applies: `house` is judged as `house`, which has no price, and is admitted only because it is listed.
+    expect(resolveAlternative(chat, sources, "house", new Set(["house"]))).toMatchObject({ kind: "admitted", model: "house", bill: { price: null } });
+    expect(resolveAlternative(chat, sources, "house", null)).toMatchObject({ kind: "refused", reason: "no_price" });
+  });
+
+  it("logs unreadable rates by their own class (F7)", () => {
+    expect(errorFacts(new UnreadableRates("openai")).class).toBe("UnreadableRates");
   });
 });
 
