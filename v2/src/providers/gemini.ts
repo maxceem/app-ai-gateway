@@ -56,6 +56,7 @@ export const gemini = defineProvider({
   // Tuned models and stored files belong to the key's project, not to a call.
   refused: ["v1beta/tunedModels/*", "v1/tunedModels/*"],
   probe: { path: "v1beta/models" },
+  cloudflareGateway: { slug: "google-ai-studio" },
   // Gemini's REST surface accepts both spellings of a field.
   serviceModes: [
     { names: ["service_tier", "serviceTier"], axis: "tier", values: { standard: "standard", flex: "flex", priority: "priority" } },

@@ -37,12 +37,19 @@ import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { billing, priceSources } from "../pricing/billability.ts";
-import { connectionDescription, connectionSecret, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
+import {
+  connectionCredentials,
+  connectionDescription,
+  loadConnection,
+  type ConnectionRecord,
+  type UpstreamCredentials,
+} from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
 import type { CallAttempt } from "./call-charge.ts";
+import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
-import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
+import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import {
   jsonBody,
   meteredTranscriptionFormat,
@@ -139,7 +146,7 @@ interface TargetInput {
   readonly streaming: boolean;
   readonly connection: ConnectionRecord;
   readonly description: ProviderDescription;
-  readonly secret: () => Promise<string>;
+  readonly credentials: () => Promise<UpstreamCredentials>;
   readonly target: Pick<PresetFallback, "operation" | "model">;
   /** The chain's first target, which is served even when its price has gone since the preset was saved. */
   readonly primary: boolean;
@@ -191,11 +198,15 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     const judged = shaped();
     refuseBackground(operation, judged);
     applyOutputCap(operation, judged, preset.max_output_tokens);
+    // A preset fixes its model: another the provider could serve instead is
+    // allowed only when it is that same model.
+    judgedAlternatives(description, operation, judged, { allowed: [model], sources: priceSources(connection), baseUrl: connection.baseUrl });
     fields = judged;
     build = () => {
       const body = shaped();
       applyOutputCap(operation, body, preset.max_output_tokens);
       requestStreamUsage(operation, body);
+      pinServingProviders(description, connection.servingProviders, body);
       return { bytes: new TextEncoder().encode(JSON.stringify(body)), contentType: "application/json" };
     };
   } else {
@@ -213,7 +224,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
       return { form, contentType: null };
     };
   }
-  const mode = requestedServiceMode(description, connection.baseUrl, fields);
+  const mode = requestedServiceMode(description, connection.baseUrl, fields, model);
   const attempt: CallAttempt = {
     requestId: input.requestId,
     seq: input.seq,
@@ -243,7 +254,7 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     path: upstream.path,
     // Gemini's streaming method takes `alt=sse`, whenever the caller asked for it.
     query: input.streaming && operation.match.path.endsWith(":streamGenerateContent") ? "?alt=sse" : "",
-    secret: input.secret,
+    credentials: input.credentials,
     body: build,
     attempt,
     ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
@@ -313,9 +324,9 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
           // The first target's key is opened before admission, so one that
           // cannot be opened is refused before anything is spent, as v1. A
           // fallback's is opened only when the chain reaches it.
-          const opened = primary ? await connectionSecret(c.env, connection) : null;
+          const opened = primary ? await connectionCredentials(c.env, connection) : null;
           const open = connection;
-          const secret = opened !== null ? () => Promise.resolve(opened) : () => connectionSecret(c.env, open);
+          const credentials = opened !== null ? () => Promise.resolve(opened) : () => connectionCredentials(c.env, open);
           attempts.push(
             targetAttempt({
               slug,
@@ -326,7 +337,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
               streaming,
               connection,
               description,
-              secret,
+              credentials,
               target,
               primary,
               requestId,

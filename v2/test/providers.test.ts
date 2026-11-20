@@ -357,8 +357,8 @@ describe("service modes through the proxy", () => {
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_is_estimate: 1, cost_nano: listedCost("openai", "gpt-5.6-luna", tokens) });
     const measures = JSON.parse(String(charge!.measures_json)) as Record<string, unknown>;
+    // The mode as the answer gave it is kept with the doubt, so the sweep prices it by the same floor.
     expect(measures).toMatchObject({ service_mode_unknown: 1 });
-    expect(measures).not.toHaveProperty("service_mode");
   });
 
   it("estimates a mode the model has no price in, never under standard", async () => {

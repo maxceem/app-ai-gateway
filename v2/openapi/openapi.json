@@ -1760,6 +1760,40 @@
               "null"
             ]
           },
+          "cloudflareGateway": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "accountId": {
+                "type": "string"
+              },
+              "gatewayId": {
+                "type": "string"
+              },
+              "tokenHint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "tokenHint"
+            ]
+          },
+          "servingProviders": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "pricing": {
             "type": [
               "object",
@@ -1872,6 +1906,41 @@
           "baseUrl": {
             "type": "string"
           },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
+          },
+          "servingProviders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "maxItems": 50
+          },
           "pricing": {
             "type": "object",
             "additionalProperties": {
@@ -1924,8 +1993,7 @@
         },
         "required": [
           "type",
-          "name",
-          "secret"
+          "name"
         ],
         "additionalProperties": false
       },
@@ -1968,11 +2036,36 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "type",
-          "secret"
+          "type"
         ],
         "additionalProperties": false
       },
@@ -1989,7 +2082,10 @@
             "maxLength": 100
           },
           "secret": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 4096
           },
@@ -1998,6 +2094,46 @@
               "string",
               "null"
             ]
+          },
+          "cloudflareGateway": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId"
+            ],
+            "additionalProperties": false
+          },
+          "servingProviders": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "maxItems": 50
           },
           "pricing": {
             "type": [

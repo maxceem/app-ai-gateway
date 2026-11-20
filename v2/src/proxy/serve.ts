@@ -45,17 +45,19 @@ import { recordLedgerEntry } from "../ledger/write.ts";
 import { billing, priceSources } from "../pricing/billability.ts";
 import {
   connectionDescription,
-  connectionSecret,
+  connectionCredentials,
   loadConnection,
-  upstreamOrigin,
   type ConnectionRecord,
+  type UpstreamCredentials,
 } from "../providers/connections.ts";
 import { ProviderMatcher } from "../providers/matcher.ts";
+import { upstreamRequest } from "../providers/route.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { clientResponseHeaders, upstreamHeaders } from "./headers.ts";
+import { chargedAs, judgedAlternatives } from "./alternatives.ts";
+import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
+import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
 import { observeBody, streamClosed } from "./observe.ts";
 
@@ -282,6 +284,12 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (bill.problem === "no_price" && routing.models === undefined) {
         throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
       }
+      // Models the provider may serve the request with instead pass the same policy.
+      const alternatives = judgedAlternatives(description, operation, body, {
+        allowed: routing.models,
+        sources: priceSources(connection),
+        baseUrl: connection.baseUrl,
+      });
       // A rewritten model is written where the request named it: the path,
       // or the body or form field.
       let upstream = match.upstream;
@@ -298,13 +306,14 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         }
       }
       // Read, never judged: a service mode is never refused (`./meter.ts`).
-      const mode = requestedServiceMode(description, connection.baseUrl, body);
+      const mode = requestedServiceMode(description, connection.baseUrl, body, model);
 
       // The output cap refuses on its own, so it runs before admission: a request
       // it refuses must not spend a request limit or the plan allowance. Only a
       // JSON body has one; a form is an upload with no output to cap.
       const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
       const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
+      const pinned = parsed.kind === "json" && pinServingProviders(description, connection.servingProviders, body);
       // A transcription is only sent in a format whose answer can be priced.
       const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
       const location = operation.model;
@@ -321,15 +330,15 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const sent: OutgoingBody =
         parsed.kind === "json"
           ? {
-              bytes: capped || metered || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
+              bytes: capped || metered || pinned || bodyModelChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
               contentType: "application/json",
             }
           : Object.keys(formChanges).length > 0
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges), contentType: null }
             : { bytes, contentType };
 
-      // The key is opened before admission: a request that cannot be sent must not spend anything.
-      const secret = await connectionSecret(c.env, connection);
+      // The credentials are opened before admission: a request that cannot be sent must not spend anything.
+      const credentials = await connectionCredentials(c.env, connection);
 
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
@@ -359,6 +368,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         startedAt,
         appVersion: caller.appVersion,
         clientTraceId: caller.clientTraceId,
+        ...(alternatives.size > 0 ? { alternatives } : {}),
       };
       return await sendAttempts(c, strippedHeaders(app, caller), [
         {
@@ -368,7 +378,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           hostKey: upstream.host,
           path: upstream.path,
           query: sanitizedQuery(url),
-          secret: () => Promise.resolve(secret),
+          credentials: () => Promise.resolve(credentials),
           body: () => sent,
           attempt,
         },
@@ -616,11 +626,11 @@ export interface PreparedAttempt {
   readonly path: string;
   readonly query: string;
   /**
-   * Opens the connection's key. The first attempt's is opened before
+   * Opens the connection's credentials. The first attempt's are opened before
    * admission, so a request whose key cannot be opened is refused before it
    * spends anything; a fallback's only when the chain reaches it.
    */
-  readonly secret: () => Promise<string>;
+  readonly credentials: () => Promise<UpstreamCredentials>;
   /** Built only when this attempt is sent, so a long chain never holds every target's body at once. */
   readonly body: () => OutgoingBody;
   readonly attempt: CallAttempt;
@@ -734,9 +744,9 @@ export async function sendAttempts(
       }
       throw budgetExhausted(index);
     }
-    let secret: string;
+    let credentials: UpstreamCredentials;
     try {
-      secret = await withinMs(prepared.secret(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -755,8 +765,10 @@ export async function sendAttempts(
     let providerStart: number;
     try {
       const body = prepared.body();
-      const headers = upstreamHeaders(c.req.raw.headers);
-      for (const name of stripped) headers.delete(name);
+      // The app's headers without the gateway's own credentials and end-user ids:
+      // the only client headers anything below may forward, the provider's or Cloudflare's.
+      const client = withoutHeaders(c.req.raw.headers, stripped);
+      const headers = upstreamHeaders(client);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
         if (!headers.has(name)) headers.set(name, value);
       }
@@ -765,10 +777,19 @@ export async function sendAttempts(
       // the type fetch writes for it.
       if (body.contentType === null) headers.delete("content-type");
       else headers.set("content-type", body.contentType);
-      // A callback, so a key containing `$&` or `$1` is sent as it is.
-      headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
-      const origin = upstreamOrigin(connection, description, prepared.hostKey);
-      const url = `${origin}${prepared.path.replace(/^\//u, "")}${prepared.query}`;
+      // Where it goes and what it carries: set last, so nothing a client sent can override it.
+      const target = upstreamRequest(connection, description, {
+        hostKey: prepared.hostKey,
+        path: prepared.path.replace(/^\//u, ""),
+        query: prepared.query,
+        ...(prepared.operation.style !== undefined ? { style: prepared.operation.style } : {}),
+        credentials,
+        client,
+        appId: attempt.appId,
+        userId: attempt.identity.userId,
+      });
+      for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
+      const url = target.url;
 
       // Checked just before each fetch: nothing is sent for an app that went
       // away. The app's own signal is never passed to the provider, so an
@@ -910,7 +931,10 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
             ? streamClosed(body, operation.style)
             : null;
         const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
-        const served = servedServiceMode(description, attempt.requestedMode, usage, upstream.headers);
+        // Charged as the model that served it, when the request named another it could be served with:
+        // its price, and the mode the request asked of its provider, which the served mode starts from.
+        const charged = ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt;
+        const served = servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
         const outcome: AttemptOutcome = ok
           ? {
               // A stream the provider broke, or ended early, is a failed attempt, not one the app left.
@@ -932,7 +956,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
               cut,
               latencyMs,
             };
-        return recordLedgerEntry(c.env, safeCharge(attempt, outcome));
+        return recordLedgerEntry(c.env, safeCharge(charged, outcome));
       },
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),

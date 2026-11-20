@@ -123,17 +123,20 @@ export type PriceSourceKind = "customer_rate" | "list_rate";
 
 /**
  * The price a model is billed at: the customer's own rate first, then ours.
- * Null when neither exists.
+ * Null when neither exists. A customer's rate is keyed by the model as the
+ * connection names it; ours is looked up as `listed` names it, which differs
+ * only for a gateway serving other providers' models (`src/providers/listing.ts`).
  */
 export function resolvePrice(
   providerType: string,
   model: string,
   customer: CustomerRates | null | undefined,
+  listed: { readonly type: string; readonly model: string } = { type: providerType, model },
 ): { readonly price: ModelPrice; readonly source: PriceSourceKind } | null {
-  const listed = listPrice(providerType, model);
-  const own = customerPrice(customer, model, listed);
+  const ours = listPrice(listed.type, listed.model);
+  const own = customerPrice(customer, model, ours);
   if (own !== null) return { price: own, source: "customer_rate" };
-  return listed === null ? null : { price: listed, source: "list_rate" };
+  return ours === null ? null : { price: ours, source: "list_rate" };
 }
 
 /** Whether a price bills tokens: it has input and output rates. */

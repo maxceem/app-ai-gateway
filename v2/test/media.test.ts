@@ -109,13 +109,14 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("paths v1 served", () => {
-  it("declares transcription at v1's three paths on every provider but OpenRouter", () => {
+  it("declares transcription at v1's three paths on every provider but OpenRouter and Vercel", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       if (description.type === "elevenlabs" || description.type === "fal") continue;
       const matcher = new ProviderMatcher(description);
       for (const path of ["v1/audio/transcriptions", "openai/v1/audio/transcriptions", "v1/stt"]) {
         const match = matcher.match("POST", path);
-        if (description.type === "openrouter") expect(match, path).toMatchObject({ kind: "refused" });
+        // OpenRouter served Chat Completions only, and Vercel publishes no transcription API (v1).
+        if (description.type === "openrouter" || description.type === "vercel") expect(match, path).toMatchObject({ kind: "refused" });
         else expect(match, `${description.type} ${path}`).toMatchObject({ kind: "operation", operation: { style: "openai-transcription" } });
       }
     }
@@ -455,7 +456,24 @@ describe("usage in other units", () => {
     expect(priceUsage(listPrice("openai", "gpt-4o-transcribe")!, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, audioSeconds: 3, noTokens: true })).toBeNull();
   });
 
+  it("reads each root field of a large answer wherever it was kept: usage in the head, the model and duration in the tail (3c S10)", () => {
+    const head = `{"usage":{"type":"tokens","input_tokens":40,"output_tokens":10,"total_tokens":50},"text":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}","model":"gpt-4o-transcribe","duration":42}`;
+    const values = responseValues({ head, tail, truncated: true }, "application/json");
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ inputTokens: 40, outputTokens: 10 });
+    expect([...values.backwards()][0]).toMatchObject({ model: "gpt-4o-transcribe", duration: 42, usage: { input_tokens: 40 } });
+  });
+
+  it("takes the root duration, never one nested in the content (3c S10)", () => {
+    const head = `{"duration":42,"text":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}","segments":[{"id":0,"duration":2}]}`;
+    const values = responseValues({ head, tail, truncated: true }, "application/json");
+    expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42 });
+  });
+
   it("reads a duration from a cut event at the start of a stream's kept tail, as v1", () => {
+    // The event's last line, cut at its start, with no whole data line after
+    // it: the end of its data, read as a tail from the event's end.
     const tail = `0,"duration":42.5,"text":"..."}\n\ndata: ${JSON.stringify({ type: "transcript.text.delta", delta: "x" })}\n\n`;
     const values = responseValues({ head: "data: {\"type\":\"transcript.text.delta\"}\n\n", tail, truncated: true }, "text/event-stream");
     expect(readUsage(values, "openai-transcription")).toMatchObject({ audioSeconds: 42.5, noTokens: true });

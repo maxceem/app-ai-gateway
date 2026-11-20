@@ -9,6 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { deepMerge } from "../src/proxy/presets.ts";
+import type { UpstreamCredentials } from "../src/providers/connections.ts";
 import { sendAttempts, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
@@ -106,17 +107,17 @@ const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), co
 /** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */
 function unitAttempt(
   seq: number,
-  overrides: Partial<{ secret: () => Promise<string>; body: () => ReturnType<typeof jsonBody>; requestId: string }> = {},
+  overrides: Partial<{ credentials: () => Promise<UpstreamCredentials>; body: () => ReturnType<typeof jsonBody>; requestId: string }> = {},
 ) {
   const description = BUILT_IN_PROVIDERS.openai!;
   return {
-    connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null },
+    connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null, cloudflareGateway: null, servingProviders: null },
     description,
     operation: description.operations.find((operation) => operation.name === "openai.chat")!,
     hostKey: "main",
     path: "/v1/chat/completions",
     query: "",
-    secret: overrides.secret ?? vi.fn(async () => SECRET),
+    credentials: overrides.credentials ?? vi.fn(async (): Promise<UpstreamCredentials> => ({ providerKey: SECRET, cloudflareToken: null })),
     body: overrides.body ?? vi.fn(jsonBody),
     attempt: {
       requestId: overrides.requestId ?? "req_unit",
@@ -412,7 +413,7 @@ describe("presets", () => {
       await done();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fallback.body).not.toHaveBeenCalled();
-      expect(fallback.secret).not.toHaveBeenCalled();
+      expect(fallback.credentials).not.toHaveBeenCalled();
       expect((await chargesOfCall(requestId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
     } finally {
       vi.useRealTimers();
@@ -424,7 +425,7 @@ describe("presets", () => {
     try {
       const { c, done } = fakeContext();
       const requestId = `req_${crypto.randomUUID()}`;
-      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)), requestId });
+      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
       const after = unitAttempt(3, { requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
       const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging, after]);
@@ -434,7 +435,7 @@ describe("presets", () => {
       expect(await response.json()).toEqual({ error: { code: "busy" } });
       await done();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
-      expect(after.secret).not.toHaveBeenCalled();
+      expect(after.credentials).not.toHaveBeenCalled();
       expect(after.body).not.toHaveBeenCalled();
       expect((await chargesOfCall(requestId)).map((row) => row.seq)).toEqual([1]);
     } finally {
@@ -469,13 +470,13 @@ describe("presets", () => {
 
   it("answers from the first attempt at once, never opening a fallback's key it does not need", async () => {
     const { c, done } = fakeContext();
-    const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)) });
+    const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)) });
     fetchSpy.mockImplementation(async () => CHAT_OK());
     const response = await sendAttempts(c, [], [unitAttempt(1), hanging]);
     expect(response.status).toBe(200);
     await response.text();
     await done();
-    expect(hanging.secret).not.toHaveBeenCalled();
+    expect(hanging.credentials).not.toHaveBeenCalled();
   });
 
   it("passes the 503 on as it is when the last fallback's key cannot be opened in the time left", async () => {
@@ -483,7 +484,7 @@ describe("presets", () => {
     try {
       const { c, done } = fakeContext();
       const requestId = `req_${crypto.randomUUID()}`;
-      const hanging = unitAttempt(2, { secret: vi.fn(() => new Promise<string>(() => undefined)), requestId });
+      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
       const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging]);
       await vi.advanceTimersByTimeAsync(120_001);
@@ -491,7 +492,7 @@ describe("presets", () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: { code: "busy" } });
       await done();
-      expect(hanging.secret).toHaveBeenCalledTimes(1);
+      expect(hanging.credentials).toHaveBeenCalledTimes(1);
       expect(hanging.body).not.toHaveBeenCalled();
       expect((await chargesOfCall(requestId)).map((row) => row.seq)).toEqual([1]);
     } finally {

@@ -117,6 +117,17 @@ export const ProviderSchema = z
     /** The last characters of the key. The key itself is never returned. */
     secretHint: z.string().nullable(),
     baseUrl: z.string().nullable(),
+    /**
+     * Sending this connection's traffic through Cloudflare AI Gateway (D13). The
+     * token itself is never returned. Optional, as every field added to an answer
+     * is, so a client reading an older gateway's answer still accepts it.
+     */
+    cloudflareGateway: z
+      .object({ accountId: z.string(), gatewayId: z.string(), tokenHint: z.string().nullable() })
+      .nullable()
+      .optional(),
+    /** For Vercel AI Gateway: the serving providers pinned on every request (`providerOptions.gateway.only`). */
+    servingProviders: z.array(z.string()).nullable().optional(),
     pricing: ProviderPricingSchema.nullable(),
     revision: z.number().int().positive(),
     createdAt: z.string(),
@@ -131,13 +142,37 @@ export const ProviderListResponseSchema = z
 
 export const SecretSchema = z.string().min(1).max(4096);
 
+const CloudflareIdSchema = z.string().trim().min(1).max(100);
+
+/**
+ * For Vercel AI Gateway: the serving providers a connection may use, pinned
+ * by the gateway on every request over the app's own value (v1's
+ * `providerOnly`). Vercel judges the names: its list of providers changes.
+ */
+const ServingProvidersSchema = z
+  .array(z.string().trim().min(1).max(100))
+  .max(50)
+  .refine((values) => new Set(values).size === values.length, { error: "servingProviders cannot repeat a value" });
+
+/**
+ * Sending a connection's traffic through Cloudflare AI Gateway (D13): the
+ * Cloudflare account and gateway, and a Cloudflare token for it. With it, the
+ * provider key is optional: Cloudflare can use the keys in its own key store.
+ */
+const CloudflareGatewayInputSchema = z
+  .object({ accountId: CloudflareIdSchema, gatewayId: CloudflareIdSchema, token: SecretSchema })
+  .strict();
+
 export const ProviderCreateRequestSchema = z
   .object({
     type: z.string().trim().min(1),
     name: z.string().trim().min(1).max(100),
     slug: z.string().regex(PROVIDER_SLUG_PATTERN, { error: "slug must be lowercase letters, digits and dashes" }).optional(),
-    secret: SecretSchema,
+    /** The provider's key. Optional only through Cloudflare AI Gateway, which can use the keys it stores. */
+    secret: SecretSchema.optional(),
     baseUrl: z.string().optional(),
+    cloudflareGateway: CloudflareGatewayInputSchema.optional(),
+    servingProviders: ServingProvidersSchema.optional(),
     pricing: ProviderPricingSchema.optional(),
   })
   .strict()
@@ -147,8 +182,16 @@ export const ProviderUpdateRequestSchema = z
   .object({
     revision: z.number().int().positive(),
     name: z.string().trim().min(1).max(100).optional(),
-    secret: SecretSchema.optional(),
+    /** A new key, or null to remove the stored one, which only a connection through Cloudflare AI Gateway may. */
+    secret: SecretSchema.nullable().optional(),
     baseUrl: z.string().nullable().optional(),
+    /**
+     * A new Cloudflare AI Gateway setting, or null to stop using it. The token
+     * may be left out to keep the stored one, for the same account and gateway.
+     */
+    cloudflareGateway: CloudflareGatewayInputSchema.partial({ token: true }).nullable().optional(),
+    /** The serving providers to pin, or null to stop pinning. */
+    servingProviders: ServingProvidersSchema.nullable().optional(),
     pricing: ProviderPricingSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })
@@ -314,8 +357,9 @@ export const PriceListResponseSchema = z
 export const ProviderTestRequestSchema = z
   .object({
     type: z.string().trim().min(1),
-    secret: SecretSchema,
+    secret: SecretSchema.optional(),
     baseUrl: z.string().optional(),
+    cloudflareGateway: CloudflareGatewayInputSchema.optional(),
   })
   .strict()
   .meta({ id: "ProviderTestRequest" });

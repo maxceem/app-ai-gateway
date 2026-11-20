@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
-import { PROVIDER_TYPES } from "@/lib/providers";
+import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
 
 const PROVIDER = {
   id: "prov-1",
@@ -157,6 +157,68 @@ describe("ProvidersPage", () => {
     await waitFor(() => expect(locked(screen.getByLabelText(/new api key/i))).toBe(true));
     expect(locked(screen.getByRole("button", { name: /test key/i }))).toBe(true);
     answer(new Response(JSON.stringify({ provider: PROVIDER })));
+  });
+
+  it("adds a connection through Cloudflare AI Gateway with no provider key", async () => {
+    const fetchMock = stub([]);
+    const type = PROVIDER_TYPES[0]!.type;
+    expect(cloudflareCapable(type)).toBe(true);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Via Cloudflare");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-1234");
+    await userEvent.click(screen.getByRole("button", { name: /^add provider$/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({
+        type,
+        name: "Via Cloudflare",
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-1234" },
+      }),
+    );
+  });
+
+  it("shows a connection that goes through Cloudflare, and offers no key test it could not run", async () => {
+    stub([{ ...PROVIDER, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "1234" } }]);
+    renderAuthenticated(<ProvidersPage />);
+    const row = (await screen.findByText("OpenAI main")).closest("tr")!;
+    expect(within(row).getByText(/via cloudflare ai gateway/i)).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /replace key/i }));
+    await screen.findByLabelText(/new api key/i);
+    expect(screen.queryByRole("button", { name: /test key/i })).toBeNull();
+  });
+
+  it("sends no key when Cloudflare's stored keys are chosen, whatever was typed (S8)", async () => {
+    const fetchMock = stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-1234");
+    // Moving to a gateway says what key goes with it: Save waits for one.
+    expect(screen.getByRole("button", { name: /^save$/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByLabelText(/^api key$/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("checkbox", { name: /use the keys stored in cloudflare/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-1234" },
+        secret: null,
+      }),
+    );
   });
 
   it("stops a read-only member adding a provider", async () => {

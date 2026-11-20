@@ -1,0 +1,1 @@
+ALTER TABLE `provider_connection` ADD `serving_providers_json` text;

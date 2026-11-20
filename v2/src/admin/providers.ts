@@ -9,6 +9,11 @@
  *   back to the provider's own origin re-seals the stored key.
  * - Customer prices are taken in dollars per million units, as v1, and stored
  *   once as whole nano-dollars per million units.
+ * - Cloudflare AI Gateway is a setting on a connection (D13): the Cloudflare
+ *   account and gateway, and a Cloudflare token, sealed on its own and
+ *   write-only as the key is. Through it, the provider key is optional:
+ *   Cloudflare can use the keys in its own key store. The key's origin is the
+ *   gateway, so turning it on or off moves the key, by the rule above.
  */
 import type { Context } from "hono";
 import {
@@ -22,8 +27,15 @@ import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import type { CustomerRates, RateField } from "../pricing/prices.ts";
-import { invalidateConnection, upstreamOrigin } from "../providers/connections.ts";
+import {
+  keyOrigin,
+  readCloudflareGateway,
+  invalidateConnection,
+  type CloudflareGatewaySetting,
+} from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
+import type { ProviderDescription } from "../providers/operation.ts";
+import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -44,6 +56,8 @@ export interface ConnectionRow {
   secret_blob: string | null;
   secret_hint: string | null;
   base_url: string | null;
+  cloudflare_gateway_json: string | null;
+  serving_providers_json: string | null;
   rates_json: string | null;
   revision: number;
   created_by: string;
@@ -107,11 +121,66 @@ export function providerView(row: ConnectionRow) {
     status: row.status,
     secretHint: row.secret_hint,
     baseUrl: row.base_url,
+    cloudflareGateway: cloudflareView(readCloudflareGateway(row.cloudflare_gateway_json)),
+    servingProviders: row.serving_providers_json === null ? null : (JSON.parse(row.serving_providers_json) as string[]),
     pricing: row.rates_json === null ? null : pricingFromRates(JSON.parse(row.rates_json) as CustomerRates),
     revision: row.revision,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
+}
+
+function cloudflareView(setting: CloudflareGatewaySetting | null) {
+  return setting === null ? null : { accountId: setting.accountId, gatewayId: setting.gatewayId, tokenHint: setting.tokenHint };
+}
+
+/** A Cloudflare AI Gateway setting as stored: ids, and its token sealed to this connection. */
+async function storedCloudflare(
+  env: Env,
+  accountId: string,
+  connectionId: string,
+  setting: { readonly accountId: string; readonly gatewayId: string; readonly token: string },
+): Promise<string> {
+  const blob = await sealSecret(env, "cloudflareGatewayToken", [accountId, connectionId], setting.token);
+  return JSON.stringify({
+    account_id: setting.accountId,
+    gateway_id: setting.gatewayId,
+    token_blob: blob,
+    token_hint: secretHint(setting.token),
+  });
+}
+
+/**
+ * Where a connection's requests may go, checked when it is saved: Cloudflare
+ * AI Gateway only for a provider it serves, and never beside a base URL,
+ * which would leave two places a request could go.
+ */
+function checkRoute(
+  description: ProviderDescription,
+  baseUrl: string | null,
+  cloudflare: { readonly accountId: string; readonly gatewayId: string } | null,
+): void {
+  if (cloudflare === null) return;
+  if (description.cloudflareGateway === undefined) {
+    throw new GatewayError(400, "invalid_request", `cloudflareGateway: ${description.label} cannot be reached through Cloudflare AI Gateway`);
+  }
+  if (baseUrl !== null) {
+    throw new GatewayError(400, "invalid_request", "cloudflareGateway: a connection goes through a base URL or Cloudflare AI Gateway, not both");
+  }
+}
+
+/** Pinned serving providers, for a provider type that has the field (`servingProvidersField`) only. */
+function servingProvidersJson(description: ProviderDescription, list: readonly string[] | null | undefined): string | null {
+  if (list === undefined || list === null) return null;
+  if (description.servingProvidersField === undefined) {
+    throw new GatewayError(400, "invalid_request", `servingProviders: ${description.label} takes no serving providers`);
+  }
+  return list.length === 0 ? null : JSON.stringify(list);
+}
+
+/** A connection with no key reaches its provider only through Cloudflare AI Gateway, with Cloudflare's stored keys. */
+function keyNeeded(): GatewayError {
+  return new GatewayError(400, "invalid_request", "secret: a connection needs the provider's key, unless it goes through Cloudflare AI Gateway");
 }
 
 export function checkedBaseUrl(raw: string): string {
@@ -149,21 +218,28 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, ProviderCreateRequestSchema);
-  if (builtInProvider(body.type) === null) {
+  const description = builtInProvider(body.type);
+  if (description === null) {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
   }
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
+  const cloudflare = body.cloudflareGateway ?? null;
+  checkRoute(description, baseUrl, cloudflare);
+  if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   const id = newConnectionId();
-  const blob = await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, baseUrl ?? ""], body.secret);
+  const origin = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
+  const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
+  const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
+  const servingJson = servingProvidersJson(description, body.servingProviders);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
   try {
     written = await c.env.DB.prepare(
       `INSERT INTO provider_connection
-        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
+        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, cloudflare_gateway_json, serving_providers_json, rates_json, revision, created_by, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
     )
       .bind(
         id,
@@ -172,8 +248,10 @@ export async function createProvider(c: AdminContext): Promise<Response> {
         slug,
         body.name,
         blob,
-        secretHint(body.secret),
+        body.secret === undefined ? null : secretHint(body.secret),
         baseUrl,
+        cloudflareJson,
+        servingJson,
         body.pricing === undefined ? null : JSON.stringify(ratesFromPricing(body.pricing)),
         actor.userId,
         now,
@@ -201,26 +279,86 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, ProviderUpdateRequestSchema);
   const current = await connectionRow(c.env.DB, actor.accountId, c.req.param("id")!);
+  const description = builtInProvider(current.type);
   const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl);
-  const moved = baseUrl !== current.base_url;
-  if (moved && baseUrl !== null && body.secret === undefined) {
+
+  // Cloudflare AI Gateway: kept, removed, or set. A new account or gateway needs a token for it.
+  const storedCloudflareSetting = readCloudflareGateway(current.cloudflare_gateway_json);
+  const asked = body.cloudflareGateway;
+  if (asked !== undefined && asked !== null && asked.token === undefined) {
+    const same = storedCloudflareSetting?.accountId === asked.accountId && storedCloudflareSetting?.gatewayId === asked.gatewayId;
+    if (!same) {
+      throw new GatewayError(400, "invalid_request", "cloudflareGateway.token: a new Cloudflare account or gateway needs its token");
+    }
+  }
+  const cloudflare =
+    asked === undefined
+      ? storedCloudflareSetting
+      : asked === null
+        ? null
+        : { accountId: asked.accountId, gatewayId: asked.gatewayId };
+  if (description !== null) checkRoute(description, baseUrl, cloudflare);
+  const cloudflareJson =
+    asked === undefined
+      ? current.cloudflare_gateway_json
+      : asked === null
+        ? null
+        : asked.token === undefined
+          ? current.cloudflare_gateway_json
+          : await storedCloudflare(c.env, actor.accountId, current.id, { ...asked, token: asked.token });
+
+  // A change of Cloudflare route (on, off, or another gateway) always says what
+  // key goes with it: a key that was sent to one gateway is never quietly
+  // re-sealed for another destination, and a keyless connection never
+  // quietly stays keyless on a new one.
+  const cloudflareMoved =
+    (storedCloudflareSetting === null) !== (cloudflare === null) ||
+    (storedCloudflareSetting !== null &&
+      cloudflare !== null &&
+      (storedCloudflareSetting.accountId !== cloudflare.accountId || storedCloudflareSetting.gatewayId !== cloudflare.gatewayId));
+  if (cloudflareMoved && cloudflare === null && typeof body.secret !== "string") {
+    throw new GatewayError(400, "invalid_request", "secret: going direct again needs the provider's key in the same request");
+  }
+  if (cloudflareMoved && cloudflare !== null && body.secret === undefined) {
     throw new GatewayError(
       400,
       "invalid_request",
-      "secret: a new baseUrl needs the key in the same request; a stored key is never sent to a new origin",
+      "secret: a new Cloudflare AI Gateway needs the provider's key in the same request, or null to use the keys stored in Cloudflare",
     );
   }
+
+  // The key follows its origin: a new origin needs the key again, and going back to the provider's own re-seals it.
+  const from = keyOrigin({ baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting });
+  const to = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
+  const identity = (origin: string): [string, string, string, string] => [actor.accountId, current.id, current.type, origin];
   let blob = current.secret_blob;
   let hint = current.secret_hint;
-  const identity = (url: string | null): [string, string, string, string] => [actor.accountId, current.id, current.type, url ?? ""];
-  if (body.secret !== undefined) {
-    blob = await sealSecret(c.env, "providerKey", identity(baseUrl), body.secret);
+  if (body.secret === null) {
+    if (cloudflare === null) throw keyNeeded();
+    blob = null;
+    hint = null;
+  } else if (body.secret !== undefined) {
+    blob = await sealSecret(c.env, "providerKey", identity(to), body.secret);
     hint = secretHint(body.secret);
-  } else if (moved && current.secret_blob !== null) {
+  } else if (to !== from && current.secret_blob !== null) {
+    if (to !== "") {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "secret: a new baseUrl or Cloudflare AI Gateway needs the key in the same request; a stored key is never sent to a new origin",
+      );
+    }
     // Back to the provider's own origin: the stored key is re-sealed for it.
-    const secret = await openSecret(c.env, "providerKey", identity(current.base_url), current.secret_blob);
-    blob = await sealSecret(c.env, "providerKey", identity(baseUrl), secret);
+    const secret = await openSecret(c.env, "providerKey", identity(from), current.secret_blob);
+    blob = await sealSecret(c.env, "providerKey", identity(to), secret);
   }
+  if (blob === null && cloudflare === null) throw keyNeeded();
+  const servingJson =
+    body.servingProviders === undefined
+      ? current.serving_providers_json
+      : description === null
+        ? null
+        : servingProvidersJson(description, body.servingProviders);
   const rates =
     body.pricing === undefined
       ? current.rates_json
@@ -228,8 +366,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         ? null
         : JSON.stringify(ratesFromPricing(body.pricing));
   const result = await c.env.DB.prepare(
-    `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, rates_json = ?,
-       revision = revision + 1, updated_at = ?
+    `UPDATE provider_connection SET name = ?, status = ?, secret_blob = ?, secret_hint = ?, base_url = ?, cloudflare_gateway_json = ?,
+       serving_providers_json = ?, rates_json = ?, revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
   )
     .bind(
@@ -238,6 +376,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       blob,
       hint,
       baseUrl,
+      cloudflareJson,
+      servingJson,
       rates,
       Date.now(),
       current.id,
@@ -274,10 +414,36 @@ export async function testProvider(c: AdminContext): Promise<Response> {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
   }
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
-  const origin = upstreamOrigin(
-    { id: "", accountId: "", type: body.type, slug: "", status: "active", baseUrl, secretBlob: null, rates: null },
-    description,
-    "main",
-  );
-  return c.json((await probeProviderKey(description, origin, body.secret)) satisfies OperationResponse<"testProvider">);
+  const cloudflare = body.cloudflareGateway ?? null;
+  checkRoute(description, baseUrl, cloudflare);
+  if (body.secret === undefined && cloudflare === null) throw keyNeeded();
+  // The probe is built as a live request would be: same host, same credentials.
+  const probe =
+    description.probe === undefined
+      ? null
+      : upstreamRequest(
+          {
+            id: "",
+            accountId: "",
+            type: body.type,
+            slug: "",
+            status: "active",
+            baseUrl,
+            secretBlob: null,
+            rates: null,
+            servingProviders: null,
+            cloudflareGateway:
+              cloudflare === null ? null : { accountId: cloudflare.accountId, gatewayId: cloudflare.gatewayId, tokenBlob: "", tokenHint: null },
+          },
+          description,
+          {
+            hostKey: "main",
+            path: description.probe.path,
+            query: "",
+            credentials: { providerKey: body.secret ?? null, cloudflareToken: cloudflare?.token ?? null },
+            appId: "",
+            userId: null,
+          },
+        );
+  return c.json((await probeProviderKey(description, probe)) satisfies OperationResponse<"testProvider">);
 }

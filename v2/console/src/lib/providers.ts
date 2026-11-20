@@ -5,6 +5,11 @@ export function providerLabel(type: string): string {
   return Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]!.label : type;
 }
 
+/** Whether a provider type can be reached through Cloudflare AI Gateway (D13). */
+export function cloudflareCapable(type: string): boolean {
+  return Object.hasOwn(BUILT_IN_PROVIDERS, type) && BUILT_IN_PROVIDERS[type]!.cloudflareGateway !== undefined;
+}
+
 /** Every provider type a connection can be added for, by label. */
 export const PROVIDER_TYPES: { type: string; label: string }[] = Object.keys(BUILT_IN_PROVIDERS)
   .map((type) => ({ type, label: providerLabel(type) }))

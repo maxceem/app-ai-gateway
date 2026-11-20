@@ -20,6 +20,14 @@ import { openSecret } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { ProviderDescription } from "./operation.ts";
 
+/** A connection's Cloudflare AI Gateway setting, as stored (D13). The token is sealed. */
+export interface CloudflareGatewaySetting {
+  readonly accountId: string;
+  readonly gatewayId: string;
+  readonly tokenBlob: string;
+  readonly tokenHint: string | null;
+}
+
 export interface ConnectionRecord {
   readonly id: string;
   readonly accountId: string;
@@ -29,6 +37,33 @@ export interface ConnectionRecord {
   readonly baseUrl: string | null;
   readonly secretBlob: string | null;
   readonly rates: CustomerRates | null;
+  /** Sending this connection's traffic through Cloudflare AI Gateway, or null. */
+  readonly cloudflareGateway: CloudflareGatewaySetting | null;
+  /** The serving providers pinned on every request, for a gateway that has them (`servingProvidersField`), or null. */
+  readonly servingProviders: readonly string[] | null;
+}
+
+/**
+ * A stored `cloudflare_gateway_json`, read. Null when unset; a value that
+ * does not read is null too, and logged: the connection then goes direct only
+ * if it has a key of its own, and refuses otherwise.
+ */
+export function readCloudflareGateway(stored: unknown): CloudflareGatewaySetting | null {
+  if (stored === null || stored === undefined) return null;
+  let value: unknown = stored;
+  if (typeof stored === "string") {
+    try {
+      value = JSON.parse(stored) as unknown;
+    } catch (error) {
+      log("error", "cloudflare_gateway_unreadable", { error: errorFacts(error) });
+      return null;
+    }
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const { account_id: accountId, gateway_id: gatewayId, token_blob: tokenBlob, token_hint: tokenHint } = record;
+  if (typeof accountId !== "string" || typeof gatewayId !== "string" || typeof tokenBlob !== "string") return null;
+  return { accountId, gatewayId, tokenBlob, tokenHint: typeof tokenHint === "string" ? tokenHint : null };
 }
 
 const CONNECTION_CACHE_TTL_MS = 60_000;
@@ -67,6 +102,8 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
             baseUrl: row.baseUrl,
             secretBlob: row.secretBlob,
             rates: (row.rates as CustomerRates | null) ?? null,
+            cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
+            servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
           };
     connectionCache.set(key, value, { storedAt: startedAt });
     return value;
@@ -83,21 +120,43 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
   return builtInProvider(connection.type);
 }
 
-/** Opens a connection's key. A failure is a 502: the request cannot be sent without it. */
-export async function connectionSecret(env: Env, connection: ConnectionRecord): Promise<string> {
-  if (connection.secretBlob === null) {
-    throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
-  }
-  const key = `${connection.id}\u0000${connection.secretBlob}`;
+/** Where Cloudflare AI Gateway lives. Only a test deployment's own build moves it (`./route.ts`). */
+export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
+
+/**
+ * The origin a connection's provider key is given for, which seals it: the
+ * connection's base URL, its Cloudflare AI Gateway, or "" for the provider's
+ * own host. A key is never sent anywhere else: moving a connection to a new
+ * origin needs the key again (`src/admin/providers.ts`).
+ */
+export function keyOrigin(connection: {
+  readonly baseUrl: string | null;
+  readonly cloudflareGateway: { readonly accountId: string; readonly gatewayId: string } | null;
+}): string {
+  if (connection.baseUrl !== null) return connection.baseUrl;
+  const gateway = connection.cloudflareGateway;
+  if (gateway === null) return "";
+  return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
+}
+
+/**
+ * What a connection's requests authenticate with: the provider's key, and
+ * the Cloudflare AI Gateway token when its traffic goes through Cloudflare.
+ * Either may be absent where the other is enough: a connection through
+ * Cloudflare may keep its provider keys in Cloudflare's own key store (v1).
+ */
+export interface UpstreamCredentials {
+  readonly providerKey: string | null;
+  readonly cloudflareToken: string | null;
+}
+
+/** One sealed credential, opened once and cached by the blob it came from, so a rotated one is never served from the cache. */
+async function opened(connection: ConnectionRecord, what: string, open: () => Promise<string>, blob: string): Promise<string> {
+  const key = `${connection.id}\u0000${what}\u0000${blob}`;
   const cached = secretCache.get(key);
   if (cached !== undefined) return cached;
   try {
-    const secret = await openSecret(
-      env,
-      "providerKey",
-      [connection.accountId, connection.id, connection.type, connection.baseUrl ?? ""],
-      connection.secretBlob,
-    );
+    const secret = await open();
     secretCache.set(key, secret);
     return secret;
   } catch (error) {
@@ -105,10 +164,43 @@ export async function connectionSecret(env: Env, connection: ConnectionRecord): 
       account: connection.accountId,
       connection: connection.id,
       providerType: connection.type,
+      credential: what,
       error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "The provider credential could not be opened");
   }
+}
+
+/**
+ * Opens a connection's credentials. A failure is a 502: the request cannot be
+ * sent without them. A connection with neither a key nor a Cloudflare token
+ * has nothing to send.
+ */
+export async function connectionCredentials(env: Env, connection: ConnectionRecord): Promise<UpstreamCredentials> {
+  const gateway = connection.cloudflareGateway;
+  if (connection.secretBlob === null && gateway === null) {
+    throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
+  }
+  const providerKey =
+    connection.secretBlob === null
+      ? null
+      : await opened(
+          connection,
+          "providerKey",
+          () =>
+            openSecret(env, "providerKey", [connection.accountId, connection.id, connection.type, keyOrigin(connection)], connection.secretBlob!),
+          connection.secretBlob,
+        );
+  const cloudflareToken =
+    gateway === null
+      ? null
+      : await opened(
+          connection,
+          "cloudflareGatewayToken",
+          () => openSecret(env, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob),
+          gateway.tokenBlob,
+        );
+  return { providerKey, cloudflareToken };
 }
 
 /** The origin a request is sent to, ending in `/`: the connection's own base URL, or the provider's host. */

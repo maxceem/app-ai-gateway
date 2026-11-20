@@ -27,6 +27,7 @@
  * file reads the price list or a connection's rates to decide this (a test
  * guards it).
  */
+import { listedAs, type ListedModel } from "../providers/listing.ts";
 import type { OperationDescription } from "../providers/operation.ts";
 import { isStandardMode, type ServiceMode } from "../usage/service-modes.ts";
 import {
@@ -61,12 +62,15 @@ export interface Billing {
 }
 
 /**
- * One provider connection's price sources: its type, and its own rates, read
- * only when a decision needs them. Built by `priceSources` alone.
+ * One provider connection's price sources: its type, its own rates, read only
+ * when a decision needs them, and where a model of it is in our price list.
+ * Built by `priceSources` alone.
  */
 export interface PriceSources {
   readonly type: string;
   readonly rates: () => CustomerRates | null;
+  /** The provider type and id a model is priced under in our list (a gateway's `openai/gpt-4o` is OpenAI's `gpt-4o`). */
+  readonly listedAs: (model: string) => ListedModel;
 }
 
 /**
@@ -78,8 +82,10 @@ export function priceSources(
   connection: { readonly type: string } & ({ readonly rates_json: string | null } | { readonly rates: CustomerRates | null }),
 ): PriceSources {
   let read: { readonly value: CustomerRates | null } | undefined;
+  const type = connection.type;
   return {
-    type: connection.type,
+    type,
+    listedAs: (model) => listedAs(type, model),
     rates: () => {
       if (read === undefined) {
         const text = "rates_json" in connection ? connection.rates_json : undefined;
@@ -94,7 +100,7 @@ export function priceSources(
 
 /** A model's price on a connection: its own rate, else ours. The one place a price is looked up. */
 function resolve(connection: PriceSources, model: string): ResolvedPrice | null {
-  return resolvePrice(connection.type, model, connection.rates());
+  return resolvePrice(connection.type, model, connection.rates(), connection.listedAs(model));
 }
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about. */

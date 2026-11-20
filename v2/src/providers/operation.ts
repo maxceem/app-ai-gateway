@@ -356,6 +356,52 @@ export interface ProviderDescription {
    * including nothing, so `v1/organization/*` also refuses `v1/organization`.
    */
   readonly refused: readonly string[];
+  /**
+   * This provider can be reached through Cloudflare AI Gateway (D13): the
+   * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's
+   * name already implies, which is taken off the request's path. Cloudflare
+   * returns the provider's own response, so metering and prices are the
+   * provider's. Without this, a connection of this type cannot use it.
+   */
+  readonly cloudflareGateway?: {
+    readonly slug: string;
+    readonly stripPathPrefix?: string;
+    /**
+     * How the provider's key is sent through Cloudflare for an API style whose
+     * endpoint takes it differently from `auth`, as Cloudflare documents it:
+     * Anthropic's Messages takes `x-api-key`, its Chat Completions a bearer token.
+     */
+    readonly authByStyle?: Partial<Readonly<Record<ApiStyle, ProviderAuth>>>;
+  };
+  /**
+   * For a gateway that serves other providers' models (Vercel AI Gateway):
+   * its model ids are `<namespace>/<model>`, and each namespace names the
+   * provider type whose entries in our price list, and whose service-mode
+   * tables, the model is read with. `openai/gpt-4o` is priced as OpenAI's
+   * `gpt-4o`. A namespace not listed has no price of ours.
+   */
+  readonly modelNamespaces?: Readonly<Record<string, string>>;
+  /**
+   * A request field listing more models the provider may serve the request
+   * with when the first cannot (Vercel's `providerOptions.gateway.models`).
+   * Each one is judged as the request's own model is: the app's model list,
+   * and a price (`src/proxy/alternatives.ts`). The charge is priced at the
+   * model the answer says served it.
+   */
+  readonly alternativeModels?: { readonly field: string };
+  /**
+   * A request field that limits which providers serve the request (Vercel's
+   * `providerOptions.gateway.only`). A connection may pin it
+   * (`servingProviders`): the gateway then sets it on every request, over the
+   * app's own value (v1's `providerOnly`).
+   */
+  readonly servingProvidersField?: string;
+  /**
+   * Headers the gateway sets on every request to this provider for its own
+   * reporting, such as Vercel's spend attribution. A client can never send
+   * them: client headers are an allowlist (`src/proxy/headers.ts`).
+   */
+  readonly attributionHeaders?: (context: { readonly appId: string; readonly userId: string | null }) => Readonly<Record<string, string>>;
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
   /**

@@ -10,6 +10,8 @@
  *   provider's own cost report, where the operation has one, from the same
  *   values.
  */
+import { builtInProvider } from "../providers/index.ts";
+import { listedAs } from "../providers/listing.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { readProviderCost } from "../usage/cost-reports.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -33,16 +35,55 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
 }
 
 /**
+ * A provider's service-mode fields as they read for one model. For a gateway
+ * serving other providers' models (Vercel), the model's provider is the one
+ * it is listed under (`src/providers/listing.ts`), and, as v1:
+ * - a gateway's field that it hands on as the provider's own (`as`) is read
+ *   with that provider's table only, so a value means what it means there:
+ *   Vercel's `priority` is fast on OpenAI's models and priority on Gemini's;
+ * - a field that is one provider's own option (`forProvider`) is read only for
+ *   that provider's models, never carried to another's;
+ * - with `native`, the request's own fields in that provider's spelling are
+ *   read too (a top-level `service_tier`), since the gateway passes them on.
+ * Any other field reads as declared.
+ */
+function fieldsFor(
+  description: ProviderDescription,
+  fields: readonly ServiceModeField[],
+  model: string | undefined,
+  native: boolean,
+): readonly ServiceModeField[] {
+  if (description.modelNamespaces === undefined) return fields;
+  const listed = model === undefined ? null : listedAs(description.type, model);
+  // A provider's own options are read for that provider's models only.
+  const own = fields.filter((field) => field.forProvider === undefined || field.forProvider === listed?.type);
+  const target = listed === null || listed.type === description.type ? null : builtInProvider(listed.type);
+  if (target === null) return own;
+  const mapped = own.map((field) => {
+    if (field.as === undefined) return field;
+    const table = target.serviceModes.find((candidate) => candidate.axis === field.axis && candidate.names.includes(field.as!));
+    // Only the provider's own table, as v1: a value it does not list is unknown
+    // there, and billed at the standard floor, whatever the gateway calls it.
+    return table === undefined ? field : ({ ...field, values: table.values } as ServiceModeField);
+  });
+  return native ? [...mapped, ...target.serviceModes] : mapped;
+}
+
+/**
  * The service mode a request asks for: its body read with the provider's
  * table, and the region its connection's base URL serves. `unknown` is the
  * first value the table does not know, which leaves its axis at the default.
+ * `model` picks the table of a gateway's field handed on as the provider's.
  */
 export function requestedServiceMode(
   description: ProviderDescription,
   baseUrl: string | null,
   body: Record<string, unknown>,
+  model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const reading = readServiceMode(description.serviceModes, (name) => (Object.hasOwn(body, name) ? body[name] : undefined));
+  const reading = readServiceMode(fieldsFor(description, description.serviceModes, model, true), (name) =>
+    Object.hasOwn(body, name) ? body[name] : undefined,
+  );
   const region = baseUrlRegion(description, baseUrl);
   const mode: ServiceMode =
     reading.mode.region === "global" && region !== "global" ? { tier: reading.mode.tier, region } : reading.mode;
@@ -60,8 +101,9 @@ export function servedServiceMode(
   requested: ServiceMode,
   usage: UsageObservation | null,
   headers: Headers,
+  model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const fields = description.servedModes ?? description.serviceModes;
+  const fields = fieldsFor(description, description.servedModes ?? description.serviceModes, model, false);
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
@@ -79,10 +121,9 @@ export function servedServiceMode(
   }
   // A tier the response names in a value the table does not know, or in two
   // sources that disagree, says nothing the gateway can price: it may be
-  // dearer than asked. It is billed at least at standard, never at a cheaper
-  // tier, and marked as an estimate.
+  // dearer than asked. It is flagged; pricing bills any doubt at least at
+  // standard, as an estimate (`priceInServedMode`).
   const doubt = doubtfulTier(fields, read);
-  if (doubt !== undefined && SERVICE_TIERS[tier].rank < SERVICE_TIERS.standard.rank) tier = "standard";
   const region = named.region ?? requested.region;
   const mode = tier === requested.tier && region === requested.region ? requested : { tier, region };
   const flagged = unknown ?? doubt;
@@ -119,6 +160,28 @@ function doubtfulTier(fields: readonly ServiceModeField[], read: (name: string) 
 export interface ResponseReading {
   readonly usage: UsageObservation | null;
   readonly providerCostUsd: number | null;
+  /**
+   * The model the answer says served the request, read only for a provider
+   * that may serve it with another model the request names (`alternativeModels`).
+   */
+  readonly servedModel?: string | null;
+}
+
+/**
+ * The model an answer names: its root `model`, or a stream event's
+ * `response.model` (Responses) or `message.model` (Messages), latest first.
+ */
+function answeredModel(documents: Iterable<unknown>): string | null {
+  for (const document of documents) {
+    if (typeof document !== "object" || document === null || Array.isArray(document)) continue;
+    const root = document as Record<string, unknown>;
+    for (const holder of [root, root.response, root.message]) {
+      if (typeof holder !== "object" || holder === null || Array.isArray(holder)) continue;
+      const model = (holder as Record<string, unknown>).model;
+      if (typeof model === "string" && model.length > 0) return model;
+    }
+  }
+  return null;
 }
 
 /** Reads a response with the operation's meter. A body no reader can make sense of reads as nothing. */
@@ -136,5 +199,6 @@ export function readResponse(
   const read = readUsage(values, style, description.countedInputModalities);
   const usage = read === null ? null : withHeaderVariants(read, headers, contentType, description.type, style);
   const providerCostUsd = meter.providerCost === undefined ? null : readProviderCost(values.backwards(), meter.providerCost);
-  return { usage, providerCostUsd };
+  if (description.alternativeModels === undefined) return { usage, providerCostUsd };
+  return { usage, providerCostUsd, servedModel: answeredModel(values.backwards()) };
 }

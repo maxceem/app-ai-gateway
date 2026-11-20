@@ -62,7 +62,11 @@ describe("usage readers", () => {
       "openai-chat",
     );
     expect(mixed.reportedModes).toEqual({ service_tier: "(other)" });
-    expect(servedServiceMode(openai, { tier: "flex", region: "global" }, mixed, new Headers())).toMatchObject({ mode: STANDARD_MODE, unknown: { field: "service_tier" } });
+    // Flagged here; pricing bills any doubt at standard at least (`priceInServedMode`).
+    expect(servedServiceMode(openai, { tier: "flex", region: "global" }, mixed, new Headers())).toMatchObject({
+      mode: { tier: "flex" },
+      unknown: { field: "service_tier" },
+    });
   });
 
   it("normalizes OpenAI cached and cache-write tokens as subsets of input", () => {
@@ -383,20 +387,51 @@ describe("service modes", () => {
     });
   });
 
+  it("never bills an estimate below standard, whatever the reason for it (one rule, in pricing)", () => {
+    const price = listPrice("gemini", "gemini-4-neon")!;
+    const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    const flex = { tier: "flex", region: "global" } as const;
+    const sure = priceInServedMode(price, tokens, flex)!;
+    const standard = priceInServedMode(price, tokens, STANDARD_MODE)!;
+    expect(sure.cost).toBeLessThan(standard.cost);
+    // Any doubt (a tier it does not know, a served model it cannot tell) bills at standard at least, as an estimate.
+    expect(priceInServedMode(price, tokens, flex, true)).toMatchObject({ cost: standard.cost, estimated: true });
+    const priority = priceInServedMode(price, tokens, { tier: "priority", region: "global" }, true)!;
+    expect(priority.cost).toBeGreaterThan(standard.cost);
+    expect(priority.estimated).toBe(true);
+  });
+
+  it("floors an estimate from any path: a tier priced but a region not (3c S4)", () => {
+    const price = listPrice("openai", "gpt-6-sol")!;
+    const tokens = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 };
+    const standard = priceInServedMode(price, tokens, STANDARD_MODE)!;
+    // Flex is priced, the EU region is not: an estimate, never below standard.
+    expect(priceInServedMode(price, tokens, { tier: "flex", region: "eu" })).toMatchObject({ estimated: true });
+    expect(priceInServedMode(price, tokens, { tier: "flex", region: "eu" })!.cost).toBeGreaterThanOrEqual(standard.cost);
+  });
+
+  it("reads a large answer's root fields raw: a numeric tier is present but unknown (3c S10)", () => {
+    const head = `{"model":"gpt-5.6-luna","service_tier":99,"choices":[{"message":{"content":"${"a".repeat(64)}`;
+    const tail = `${"a".repeat(64)}"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`;
+    const usage = readUsage(responseValues({ head, tail, truncated: true }, "application/json"), "openai-chat")!;
+    const flex = { tier: "flex", region: "global" } as const;
+    expect(servedServiceMode(openai, flex, usage, new Headers()).unknown).toBeDefined();
+  });
+
   it("believes the mode the response says served the request, but a scanned one only when it is dearer", () => {
     const fast = { tier: "fast", region: "global" } as const;
     // OpenAI sheds fast traffic to `default`, and bills it as standard.
     expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
     expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" }, modesScanned: true }, new Headers()).mode).toEqual(fast);
-    // Sources that disagree, or one the table does not know, get the standard floor and an estimate.
+    // Sources that disagree, or one the table does not know, are flagged; pricing gives them the standard floor.
     const flex = { tier: "flex", region: "global" } as const;
     const unknownHeader = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "turbo" }));
-    expect(unknownHeader.mode).toEqual(STANDARD_MODE);
+    expect(unknownHeader.mode).toEqual(flex);
     expect(unknownHeader.unknown).toBeDefined();
     // A tier value that is not a usable string counts as one the table does not know.
     const numeric = read(JSON.stringify({ usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, serviceTier: 99 } }), "application/json", "gemini-generate");
     const odd = servedServiceMode(gemini, flex, numeric, new Headers({ "x-gemini-service-tier": "flex" }));
-    expect(odd.mode).toEqual(STANDARD_MODE);
+    expect(odd.mode).toEqual(flex);
     expect(odd.unknown).toBeDefined();
     const disagree = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "priority" }));
     expect(disagree.mode.tier).toBe("priority");

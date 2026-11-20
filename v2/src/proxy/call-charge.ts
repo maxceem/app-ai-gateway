@@ -39,6 +39,7 @@ import { billedUnits, priceInServedMode, reportsPricedMeasure } from "../pricing
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
+import type { Alternatives } from "./alternatives.ts";
 
 /** When the sweep first tries to price an `unresolved` charge. */
 export const UNRESOLVED_FIRST_TRY_MS = 60 * 60 * 1000;
@@ -66,6 +67,10 @@ export interface CallAttempt {
   readonly startedAt: number;
   readonly appVersion: string | null;
   readonly clientTraceId: string | null;
+  /** The request's other models the provider may serve it with, each judged and priced (`./alternatives.ts`). */
+  readonly alternatives?: Alternatives;
+  /** The answer did not say which of the request's models served it: the price is an estimate. */
+  readonly servedModelUnknown?: true;
 }
 
 export interface AttemptOutcome {
@@ -106,8 +111,15 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
 
   const reported = outcome.providerCostUsd ?? null;
   // A mode value the gateway does not know, in the request or the response, is billed as an estimate.
-  const modeUnknown = attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined;
-  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode);
+  // So is a call whose answer did not say which of the request's models served it.
+  // So is one whose stream's final event was cut, its usage read from an earlier event.
+  const modeUnknown =
+    attempt.requestedModeUnknown !== undefined ||
+    outcome.servedModeUnknown !== undefined ||
+    attempt.servedModelUnknown === true ||
+    usage?.finalEventUnread === true;
+  if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
+  const priced = usage === null || attempt.price === null ? null : priceInServedMode(attempt.price.price, usage, servedMode, modeUnknown);
 
   let costed: Costed;
   let measured: Measured;
@@ -129,7 +141,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       costed = {
         costNano: priced.cost,
         priceSource: attempt.price!.source,
-        estimate: priced.estimated || modeUnknown,
+        estimate: priced.estimated,
         rates: priced.rates,
       };
       logModes(attempt, servedMode, outcome.servedModeUnknown, priced.estimated, facts);

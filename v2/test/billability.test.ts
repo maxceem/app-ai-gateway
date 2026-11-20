@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { changesAgainst, type StoredEntries } from "../src/admin/apps.ts";
 import type { AppConfig } from "../src/contracts/app-config.ts";
-import { billing, listedModelProblem, priceSources, rewriteTargetBillable } from "../src/pricing/billability.ts";
+import { billing, listedModelProblem, priceSources, rewriteTargetBillable, type PriceSources } from "../src/pricing/billability.ts";
+import type { CustomerRates } from "../src/pricing/prices.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../src/providers/index.ts";
 import type { OperationDescription } from "../src/providers/operation.ts";
 
@@ -71,30 +72,35 @@ describe("listedModelProblem", () => {
   });
 });
 
+/** A connection's price sources with rates read by `rates`, listed as its own type. */
+function sources(type: string, rates: () => CustomerRates | null): PriceSources {
+  return { type, rates, listedAs: (model) => ({ type, model }) };
+}
+
 describe("rewriteTargetBillable", () => {
   const types = Object.keys(BUILT_IN_PROVIDERS);
   const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
 
   it("accepts a target with any price source on the account", () => {
     expect(rewriteTargetBillable("gpt-4o-mini", [], types, operationsOf)).toBe(true);
-    expect(rewriteTargetBillable("house-model", [{ type: "openai", rates: () => ({ "house-model": { input: 1, output: 1 } }) }], types, operationsOf)).toBe(true);
-    expect(rewriteTargetBillable("no-such-model", [{ type: "openai", rates: () => null }], types, operationsOf)).toBe(false);
+    expect(rewriteTargetBillable("house-model", [sources("openai", () => ({ "house-model": { input: 1, output: 1 } }))], types, operationsOf)).toBe(true);
+    expect(rewriteTargetBillable("no-such-model", [sources("openai", () => null)], types, operationsOf)).toBe(false);
   });
 
   it("never reads a connection's rates when the catalog alone allows the target", () => {
-    const unreadable = { type: "openai", rates: () => { throw new SyntaxError("bad rates"); } };
+    const unreadable = sources("openai", () => { throw new SyntaxError("bad rates"); });
     expect(rewriteTargetBillable("gpt-4o-mini", [unreadable], types, operationsOf)).toBe(true);
   });
 
   it("never reads a cost-reporting connection's rates: its provider bills the target itself", () => {
     let called = 0;
-    const unreadable = { type: "openrouter", rates: () => { called += 1; throw new SyntaxError("bad rates"); } };
+    const unreadable = sources("openrouter", () => { called += 1; throw new SyntaxError("bad rates"); });
     expect(rewriteTargetBillable("not-in-any-catalog", [unreadable], types, operationsOf)).toBe(true);
     expect(called).toBe(0);
   });
 
   it("accepts a target a cost-reporting connection could serve (3b A2)", () => {
-    expect(rewriteTargetBillable("openrouter/auto", [{ type: "openrouter", rates: () => null }], types, operationsOf)).toBe(true);
+    expect(rewriteTargetBillable("openrouter/auto", [sources("openrouter", () => null)], types, operationsOf)).toBe(true);
   });
 });
 

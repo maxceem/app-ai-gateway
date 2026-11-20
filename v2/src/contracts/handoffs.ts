@@ -24,8 +24,12 @@ import {
   SecretSchema,
 } from "./admin.ts";
 
-/** Adding a provider connection: everything `createProvider` takes but the key. */
-export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true })
+/**
+ * Adding a provider connection: everything `createProvider` takes but the key,
+ * and but a Cloudflare AI Gateway setting, whose token is a secret this flow
+ * does not carry. A person sets that in the console.
+ */
+export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true })
   .strict()
   .meta({ id: "ProviderHandoffRequest" });
 

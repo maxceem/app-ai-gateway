@@ -30,6 +30,13 @@ export function isForwardedClientHeader(name: string): boolean {
   return FORWARDED_EXACT.has(lower) || FORWARDED_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
+/** A copy of `client` without `names`: the gateway's own credentials, taken out before anything is forwarded. */
+export function withoutHeaders(client: Headers, names: readonly string[]): Headers {
+  const headers = new Headers(client);
+  for (const name of names) headers.delete(name);
+  return headers;
+}
+
 /** The client's headers a provider may see. */
 export function upstreamHeaders(client: Headers): Headers {
   const headers = new Headers();

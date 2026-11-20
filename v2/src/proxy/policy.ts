@@ -15,7 +15,7 @@
  * The last two change the body in place and say whether they changed it.
  */
 import { GatewayError } from "../core/errors.ts";
-import type { OperationDescription, OutputCap } from "../providers/operation.ts";
+import type { OperationDescription, OutputCap, ProviderDescription } from "../providers/operation.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -79,6 +79,29 @@ const OUTPUT_CAPS: Readonly<Record<OutputCap, (body: Record<string, unknown>, ca
     return changed;
   },
 };
+
+/**
+ * Sets the serving providers a connection pins (`servingProvidersField`) on a
+ * JSON body, over the app's own value. Returns whether the body changed.
+ */
+export function pinServingProviders(
+  description: ProviderDescription,
+  pinned: readonly string[] | null,
+  body: Record<string, unknown>,
+): boolean {
+  const field = description.servingProvidersField;
+  if (field === undefined || pinned === null || pinned.length === 0) return false;
+  const path = field.split(".");
+  let level = body;
+  for (const key of path.slice(0, -1)) {
+    const next = Object.hasOwn(level, key) ? level[key] : undefined;
+    const object = typeof next === "object" && next !== null && !Array.isArray(next) ? (next as Record<string, unknown>) : {};
+    level[key] = object;
+    level = object;
+  }
+  level[path.at(-1)!] = [...pinned];
+  return true;
+}
 
 /** Applies the app's output cap where the operation's API reads it. */
 export function applyOutputCap(operation: OperationDescription, body: Record<string, unknown>, cap: number | undefined): boolean {

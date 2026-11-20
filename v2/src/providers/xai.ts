@@ -16,6 +16,8 @@ export const xai = defineProvider({
   // Key management lives on a separate host the gateway never calls.
   refused: ["v1/api-key/*"],
   probe: { path: "v1/models" },
+  // Cloudflare names xAI `grok`.
+  cloudflareGateway: { slug: "grok" },
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } }],
   // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
   regionalOrigins: { "https://us.api.x.ai/": "us" },

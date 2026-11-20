@@ -57,7 +57,8 @@ Inside `v2/`:
 - `V2_BASE_URL=<origin> pnpm run smoke`: the smoke checks. The first-call checks also need
   `V2_MANAGEMENT_KEY` and `V2_MOCK_URL` (the deployed mock), and the sign-in and MCP checks
   `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only. The console
-  checks need `V2_CONSOLE_URL` alone.
+  checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
+  `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
 
@@ -69,6 +70,13 @@ Inside `v2/`:
 - `BETTER_AUTH_SECRET` signs console sessions and seals OAuth codes: at least 32 bytes. Every
   deployment needs it: without it, the whole management API answers 503, management keys included.
   Changing it signs everyone out.
+
+## Test deployment settings
+
+- `define: { "__TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__": "\"<mock URL>\"" }` in the test deployment's own
+  Wrangler config: where connections set to go through Cloudflare AI Gateway send their requests,
+  instead of `https://gateway.ai.cloudflare.com/`, so no request reaches Cloudflare. It is compiled
+  in at build time; no Worker variable can set it. Never add it to any other config.
 
 ## Sign-in settings
 
