@@ -414,6 +414,15 @@ describe("Deepgram through the proxy", () => {
     expect(warnings.mock.calls.some((call) => String(call[0]).includes("served_model_unexpected"))).toBe(true);
   });
 
+  it("accepts a reported model name equal to the billed model, as a customer's own model", async () => {
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] }, { "nova-2": { per_minute: 5_800_000 } });
+    fetchSpy.mockResolvedValue(
+      Response.json({ metadata: { duration: 60, channels: 1, model_info: { m: { arch: "nova-2", name: "2-general-nova" } } }, results: { channels: [{ detected_language: "fr" }] } }),
+    );
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-2&detect_language=true`, key, new Uint8Array([1]), { "content-type": "audio/wav" });
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "customer_rate", price_is_estimate: 0, cost_nano: 5_800_000 }]);
+  });
+
   it("keeps the estimate's reason apart from the service mode's marker", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] });
     fetchSpy.mockResolvedValue(transcript(60));

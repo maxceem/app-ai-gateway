@@ -8,7 +8,14 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { deepMerge } from "../src/proxy/presets.ts";
+import { deepMerge, targetAttempt } from "../src/proxy/presets.ts";
+import { requestFacts } from "../src/proxy/request-fields.ts";
+import { listPrice } from "../src/pricing/prices.ts";
+import { openai } from "../src/providers/openai.ts";
+import type { ConnectionRecord } from "../src/providers/connections.ts";
+import type { OperationDescription, ProviderDescription } from "../src/providers/operation.ts";
+import type { Preset } from "../src/contracts/app-config.ts";
+import type { Caller } from "../src/proxy/serve.ts";
 import type { UpstreamCredentials } from "../src/providers/connections.ts";
 import { sendAttempts, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
@@ -199,6 +206,55 @@ describe("model rewrites on the proxy", () => {
 });
 
 describe("presets", () => {
+  it("bills a target with the same request facts as a direct call: options billed on top, answered keys, switch keys", () => {
+    // No built-in preset reaches an operation with these yet, so a test operation stands in.
+    const chatOperation = openai.operations.find((one) => one.name === "openai.chat")!;
+    const operation: OperationDescription = {
+      ...chatOperation,
+      unpricedOptions: [{ in: "body", field: "web_search", kind: "flag" }],
+      priceKeys: [
+        { name: "language", from: { in: "body", field: "language" }, default: "en", answeredWhen: { in: "body", field: "detect_language" } },
+        { name: "boost", from: { in: "body", field: "boost" }, kind: "text" },
+      ],
+    };
+    // A type of its own: matchers are kept by provider type, and OpenAI's must stay whole for the other tests.
+    const description: ProviderDescription = { ...openai, type: "preset-facts-test", operations: [operation] };
+    const connection: ConnectionRecord = {
+      id: "conn-1",
+      accountId: "acct-1",
+      type: "openai",
+      slug: "oa",
+      status: "active",
+      baseUrl: null,
+      secretBlob: null,
+      rates: null,
+      cloudflareGateway: null,
+      servingProviders: null,
+    };
+    const body = { messages: [{ role: "user", content: "hi" }], web_search: true, detect_language: true, boost: "false" };
+    const caller = { identity: { appId: "app-1" }, credentialHeader: "authorization", appVersion: null, clientTraceId: null, facts: { operation: null, model: null } };
+    const prepared = targetAttempt({
+      slug: "p1",
+      caller: caller as unknown as Caller,
+      preset: { provider: "oa", model: "gpt-4o-mini" } as Preset,
+      style: "openai-chat",
+      body: { kind: "json", body },
+      streaming: false,
+      connection,
+      description,
+      credentials: () => Promise.reject(new Error("not opened in this test")),
+      target: { model: "gpt-4o-mini" },
+      primary: true,
+      requestId: "req-1",
+      seq: 1,
+      startedAt: 0,
+    });
+    const direct = requestFacts(operation, { body: { ...body, model: "gpt-4o-mini" }, query: new URLSearchParams() }, listPrice("openai", "gpt-4o-mini"), {});
+    const want = { unpricedOptions: ["web_search"], answeredKeys: ["language"], priceKeys: { boost: "true" } };
+    expect(direct).toMatchObject(want);
+    expect(prepared.attempt).toMatchObject(direct);
+  });
+
   it("merges the preset's params over the body, with nested objects merged and the preset winning", () => {
     expect(deepMerge({ a: 1, nested: { x: 1, y: 2 }, keep: true }, { a: 2, nested: { y: 3 } })).toEqual({ a: 2, nested: { x: 1, y: 3 }, keep: true });
     expect(Object.hasOwn(deepMerge({}, JSON.parse('{"__proto__": {"polluted": true}}')), "polluted")).toBe(false);

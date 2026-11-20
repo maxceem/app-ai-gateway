@@ -137,7 +137,7 @@ class TargetProblem extends Error {
   }
 }
 
-interface TargetInput {
+export interface TargetInput {
   readonly slug: string;
   readonly caller: Caller;
   readonly preset: Preset;
@@ -156,8 +156,8 @@ interface TargetInput {
   readonly startedAt: number;
 }
 
-/** One target of the chain as an attempt ready to send, or a `TargetProblem`. */
-function targetAttempt(input: TargetInput): PreparedAttempt {
+/** One target of the chain as an attempt ready to send, or a `TargetProblem`. Exported for the tests of its billing facts. */
+export function targetAttempt(input: TargetInput): PreparedAttempt {
   const { connection, description, target, preset, style } = input;
   // Resolved by the one rule saving runs too (`resolvePresetTarget`): the
   // operation, its streaming sibling, and whether the target can be billed.
