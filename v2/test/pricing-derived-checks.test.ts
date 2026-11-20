@@ -286,3 +286,36 @@ describe("Fable's review of the derived checks", () => {
     expect(savedPriceProblem({ m: { input: 1, output: 1 } }, "m", "custom", [])).toBeNull();
   });
 });
+
+describe("Fable's second round on the derived checks", () => {
+  // 1 credit reported by the provider, and a billion characters worked out from the request.
+  const usage: UsageObservation = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    noTokens: true,
+    units: { credits: 1_000, characters: 1_000_000_000 },
+    estimatedUnits: ["characters"],
+  };
+
+  it("never prices an estimate that cannot win, so its oversized rate cannot void the reported measure", () => {
+    const price = customerPrice({ m: { per_credit: 5, per_million_characters: 9_000_000_000_000_000 } }, "m")!;
+    expect(priceInServedMode(price, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", cost: 5, estimated: false });
+  });
+
+  it("keeps a key candidate that bills a reported measure, however large its estimate's rate", () => {
+    // An unknown voice: a bills the reported credit at 5, b at 1; a's character rate could never be stored, but is never billed.
+    const price = customerPrice({ m: { by: { voice: { a: { per_credit: 5, per_million_characters: 9_000_000_000_000_000 }, b: { per_credit: 1 } } } } }, "m")!;
+    expect(priceInServedMode(price, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", rates: { per_credit: 5 }, cost: 5 });
+  });
+
+  it("never bills an estimate below the standard price on the unit it billed, even where the standard price's own choice is cheaper", () => {
+    // An unknown voice a bills the estimated characters cheaply; the standard price prefers the reported credit at 1 nano,
+    // but its own character rate, on the unit a billed, is a dollar per million.
+    const price = customerPrice({ m: { per_credit: 1, per_million_characters: 1_000_000_000, by: { voice: { a: { per_million_characters: 10 } } } } }, "m")!;
+    const estimateOnly: UsageObservation = { ...usage, units: { credits: 1_000, characters: 1_000_000 } };
+    // a has no credit rate, so it bills characters (10 nano); base on characters is 1,000,000,000 nano, its own choice 1 nano.
+    expect(priceInServedMode(price, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 1_000_000_000, estimated: true });
+  });
+});

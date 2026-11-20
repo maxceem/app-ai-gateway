@@ -240,33 +240,56 @@ function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: nu
 }
 
 /**
- * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
- * per million characters, ...), or undefined when the price states none.
- * Every stated rate is priced on each unit it bills that the usage reports,
- * and the one rule (`preferred`) picks: a unit the provider reported before
- * one worked out from the request (a header's credits before the request's
- * characters). Reported tokens the price bills come before a unit worked out
- * from the request. A price with unit rates but none the usage reports prices
- * as null: the counter was never sent, and pricing it would claim a confident
- * $0. A price that also bills tokens falls back to them.
+ * The unit-rate options a price has for a usage, in the order they can win:
+ * units the provider reported first; only when there are none, units worked
+ * out from the request. `reportedOnly` asks for the first group alone. An
+ * option is priced only when it can win, so a rate whose cost cannot be
+ * stored voids its candidate only if it would have been billed. Pricing one
+ * throws `MoneyError` when its cost cannot be stored (not isolated per
+ * option: the whole candidate is refused, `isolated` in `priceInServedMode`,
+ * so a charge never falls to a cheaper measure as if exact).
  */
-function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | null | undefined {
-  const stated = UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
-  if (stated.length === 0) return undefined;
-  const billsTokens = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
+function unitOptions(price: ModelPrice, usage: UsageObservation, units: (unit: Unit) => boolean, estimated: boolean): Candidate[] {
   const options: Candidate[] = [];
-  for (const unitRate of stated) {
+  for (const unitRate of UNIT_RATES) {
+    if (price.rates[unitRate.field] === undefined) continue;
     for (const unit of unitRate.units) {
+      if (!units(unit) || (usage.estimatedUnits?.includes(unit) === true) !== estimated) continue;
       const count = unitCount(usage, unit);
-      // Not isolated per option: a rate whose cost cannot be stored refuses the whole candidate (`isolated` in
-      // `priceInServedMode`), so the charge never falls to a cheaper measure as if exact.
       if (count !== undefined) options.push(atUnitRate(price, unitRate, unit, count, usage));
     }
   }
-  const chosen = preferred(options);
-  // Reported tokens the price bills come before a unit worked out from the request.
-  if (chosen === null || (chosen.fromEstimate && billsTokens)) return billsTokens ? undefined : null;
-  return chosen;
+  return options;
+}
+
+/**
+ * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
+ * per million characters, ...), or undefined when the price states none.
+ * The order a measure can win in: a unit the provider reported (the dearest
+ * of those, `preferred`), then reported tokens the price bills, then a unit
+ * worked out from the request (a header's credits before the request's
+ * characters). A price with unit rates but none the usage reports prices as
+ * null: the counter was never sent, and pricing it would claim a confident
+ * $0. A price that also bills tokens falls back to them.
+ */
+function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | null | undefined {
+  if (!UNIT_RATES.some((unitRate) => price.rates[unitRate.field] !== undefined)) return undefined;
+  const billsTokens = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
+  const reported = preferred(unitOptions(price, usage, () => true, false));
+  if (reported !== null) return reported;
+  if (billsTokens) return undefined;
+  return preferred(unitOptions(price, usage, () => true, true));
+}
+
+/**
+ * A usage priced on one given unit only, or null when the price has no rate
+ * for it or the usage does not report it: the floor on the unit a candidate
+ * billed. Throws `MoneyError` when its cost cannot be stored.
+ */
+function onUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Candidate | null {
+  if (unit === "tokens") return usage.noTokens === true ? null : tokenCandidate(price, usage);
+  const estimated = usage.estimatedUnits?.includes(unit) === true;
+  return preferred(unitOptions(price, usage, (one) => one === unit, estimated));
 }
 
 /**
@@ -299,6 +322,13 @@ function preferred<P extends Candidate>(prices: readonly P[]): P | null {
   const pool = reported.length > 0 ? reported : prices;
   let dearest: P | null = null;
   for (const one of pool) if (dearest === null || compareExact(one.exact, dearest.exact) > 0) dearest = one;
+  return dearest;
+}
+
+/** The dearest of several prices, whatever their measure: the floor takes the higher, never the cheaper. */
+function preferredAny(prices: readonly (Candidate | null)[]): Candidate | null {
+  let dearest: Candidate | null = null;
+  for (const one of prices) if (one !== null && (dearest === null || compareExact(one.exact, dearest.exact) > 0)) dearest = one;
   return dearest;
 }
 
@@ -339,8 +369,10 @@ export type ChargePricing = Pricing & {
  * 3. An estimate (a mode or key value with no price, a missing report, or
  *    `doubt`: a mode value the gateway does not know, a served model it
  *    cannot tell, ...) is floored at the model's own standard price, before
- *    any key value or mode: that price's own charge for the same usage,
- *    chosen by the same selection, whatever unit wins (`AGENTS.md`).
+ *    any key value or mode: the dearer of that price on the unit the estimate
+ *    billed and its own charge for the same usage, chosen by the same
+ *    selection, whatever unit wins (`AGENTS.md`). An estimate never bills less
+ *    than either.
  *
  * A candidate whose cost cannot be stored is skipped and logged; a floor that
  * cannot be stored leaves the usage unpriced, never billed below it.
@@ -371,11 +403,13 @@ export function priceInServedMode(
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
   if (!estimated) return withCost({ ...chosen, estimated: false, measured });
-  // The one floor: at least the model's own standard price for the same usage, by the same selection.
-  // A floor that cannot be stored is never dropped for the lower estimate: the charge is left unresolved.
+  // The one floor: at least the model's own standard price, the dearer of its charge on the unit the
+  // candidate billed and its own charge for the usage (by the same selection), so an estimate never
+  // bills less than base. A floor that cannot be stored is never dropped for the lower estimate: the
+  // charge is left unresolved.
   let floor: Candidate | null;
   try {
-    floor = usageCandidate(standardPrice, usage);
+    floor = preferredAny([onUnit(standardPrice, usage, chosen.unit), usageCandidate(standardPrice, usage)]);
   } catch (error) {
     if (!(error instanceof MoneyError)) throw error;
     log("error", "price_floor_too_large", { error: error.message });
