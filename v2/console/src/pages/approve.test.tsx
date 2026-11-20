@@ -49,7 +49,9 @@ describe("ApprovePage", () => {
     const [, init] = calls(fetchMock, DETAILS_URL)[0]!;
     expect(JSON.parse(String(init!.body))).toEqual({ proof: PROOF });
 
-    await userEvent.type(screen.getByLabelText(/provider key/i), KEY);
+    // Pasted, as a person enters a key, and much faster than typing it.
+    await userEvent.click(screen.getByLabelText(/provider key/i));
+    await userEvent.paste(KEY);
     await userEvent.click(screen.getByRole("button", { name: /approve/i }));
 
     expect(await screen.findByText(/provider connection added/i)).toBeTruthy();
@@ -92,7 +94,8 @@ describe("ApprovePage", () => {
     renderApprove();
 
     const field = await screen.findByLabelText(/provider key/i);
-    await userEvent.type(field, KEY);
+    await userEvent.click(field);
+    await userEvent.paste(KEY);
     await userEvent.click(screen.getByRole("button", { name: /approve/i }));
     await waitFor(() => expect(field.closest("fieldset")!.disabled).toBe(true));
     answer(new Response(JSON.stringify({ state: "completed" }), { status: 200 }));
