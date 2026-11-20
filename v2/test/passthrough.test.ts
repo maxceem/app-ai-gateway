@@ -14,7 +14,7 @@ import { matchTemplate, parseTemplate } from "../src/providers/path.ts";
 import { upstreamRequest } from "../src/providers/route.ts";
 import { openai } from "../src/providers/openai.ts";
 import { readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
-import { isExtraClientHeader } from "../src/proxy/headers.ts";
+import { isExtraClientHeader, mayCarryCredential } from "../src/proxy/headers.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
@@ -244,6 +244,43 @@ describe("judging a listing where the provider reads it", () => {
     expect(matcher.match("delete".toUpperCase(), "V1/VOICES/v1", { passthrough: listed })).toMatchObject({ reason: "refused_path" });
   });
 
+  it.each([
+    ["POST", "v1/text-to-voice/create-voice-from-preview"],
+    ["POST", "v1/text-to-voice"],
+    ["POST", "v1/voices/add"],
+    ["POST", "v1/voices/add/public-user/voice-1"],
+    ["POST", "v1/voices/pvc"],
+    ["POST", "v1/voices/pvc/voice-1/train"],
+    ["POST", "v1/voices/voice-1/settings/edit"],
+    ["DELETE", "v1/voices/voice-1/samples/s1"],
+    ["POST", "v1/voice-generation/create-voice"],
+    ["POST", "v1/convai/agents/create"],
+    ["PATCH", "v1/convai/agents/a1"],
+    ["POST", "v1/convai/agents/a1/branches"],
+    ["POST", "v1/convai/tools"],
+    ["DELETE", "v1/convai/knowledge-base/doc-1"],
+    ["POST", "v1/convai/phone-numbers"],
+    ["POST", "v1/pronunciation-dictionaries/add-from-rules"],
+    ["POST", "v1/studio/projects"],
+    ["DELETE", "v1/dubbing/d1"],
+    ["POST", "v1/api-keys/k1/disable"],
+  ] as const)("refuses ElevenLabs %s %s, even when listed", (method, path) => {
+    const matcher = new ProviderMatcher(BUILT_IN_PROVIDERS.elevenlabs!);
+    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ reason: "refused_path" });
+  });
+
+  it.each([
+    ["GET", "v1/voices"],
+    ["GET", "v1/voices/voice-1"],
+    ["POST", "v1/text-to-voice/design"],
+    ["GET", "v1/convai/agents/a1"],
+    ["GET", "v1/dubbing/d1"],
+    ["GET", "v1/pronunciation-dictionaries"],
+  ] as const)("still serves ElevenLabs %s %s once listed", (method, path) => {
+    const matcher = new ProviderMatcher(BUILT_IN_PROVIDERS.elevenlabs!);
+    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ kind: "passthrough" });
+  });
+
   it("refuses on fal a listing its priced-models path would also take upstream", () => {
     const fal = new ProviderMatcher(BUILT_IN_PROVIDERS.fal!);
     expect(fal.overlappingOperation(compiled("POST", "fal-ai/{a}/{b}"))).toBe("fal.run");
@@ -377,16 +414,31 @@ describe("passthrough headers", () => {
     expect(isExtraClientHeader("X-Goog-Upload-Protocol", extra)).toBe(true);
     expect(isExtraClientHeader("x-exact", extra)).toBe(true);
     expect(isExtraClientHeader("x-exactly", extra)).toBe(false);
-    for (const name of ["x-goog-upload-api-key", "x-goog-upload-token", "x-goog-upload-authorization", "x-goog-upload-cookie", "x-goog-upload-secret"]) {
-      expect(isExtraClientHeader(name, extra), name).toBe(false);
+    for (const name of ["x-goog-upload-api-key", "x-goog-upload-token", "x-goog-upload-authorization", "x-goog-upload-cookie", "x-stainless-session-token", "X-Stainless-Secret"]) {
+      expect(mayCarryCredential(name), name).toBe(true);
     }
+    for (const name of ["idempotency-key", "x-stainless-lang", "x-goog-upload-protocol", "x-goog-upload-header-content-length", "anthropic-dangerous-direct-browser-access"]) {
+      expect(mayCarryCredential(name), name).toBe(false);
+    }
+  });
+
+  it("drop a credential-like name even from the allowlist, on every call", async () => {
+    const { appId, slug, key } = await setup([{ method: "GET", path: "v1/files/{file_id}" }]);
+    fetchSpy.mockResolvedValueOnce(Response.json({}));
+    await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/files/f`, key, {
+      headers: { "x-stainless-session-token": "leak", "x-stainless-lang": "js", "idempotency-key": "retry-1" },
+    });
+    const headers = new Headers(fetchSpy.mock.calls[0]![1]!.headers);
+    expect(headers.get("x-stainless-session-token")).toBeNull();
+    expect(headers.get("x-stainless-lang")).toBe("js");
+    expect(headers.get("idempotency-key")).toBe("retry-1");
   });
 
   it("are declared by no provider with a name that may carry a credential", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       for (const name of description.passthroughHeaders ?? []) {
         expect(name, description.type).toBe(name.toLowerCase());
-        expect(isExtraClientHeader(name.endsWith("-") ? `${name}x` : name, [name]), `${description.type} ${name}`).toBe(true);
+        expect(mayCarryCredential(name.endsWith("-") ? `${name}x` : name), `${description.type} ${name}`).toBe(false);
         expect(name.startsWith(description.auth.header), description.type).toBe(false);
       }
     }
