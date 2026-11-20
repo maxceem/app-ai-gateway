@@ -177,6 +177,18 @@ describe("corrections", () => {
     expect(await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { input: 9 } }, now: T0 })).toEqual({ status: "already" });
   });
 
+  it("settles units at a unit rate with the cost formula the live charge uses", async () => {
+    const appId = unique("app_fal");
+    const id = unique("req");
+    // fal at $0.05 per billable unit, estimated at 0 units; it reports 2.5 units.
+    const original = charge({ id, appId, costNano: nano(0), rates: { per_unit: 50_000_000 }, units: 0, unit: "model_units" });
+    await writeToLedger(env.DB, [{ charge: original, openWork: [] }]);
+    const result = await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { per_unit: 2_500 }, units: 2_500 }, now: T0 });
+    // 2.5 × $0.05 = $0.125, as a live charge on the same count costs (test/pricing-derived-checks.test.ts).
+    expect(result).toMatchObject({ status: "settled", correction: { costNano: 125_000_000 } });
+    expect(await appCost(appId)).toBe(125_000_000);
+  });
+
   it("refuses a units figure for a bucket the charge has no stored rate for", async () => {
     const appId = unique("app_norate");
     const id = unique("req");

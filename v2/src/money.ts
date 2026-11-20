@@ -119,6 +119,37 @@ export function priceUnitsPer(units: number, ratePerUnit: RateNanoPerMillion, pe
   return Number(cost) as NanoDollars;
 }
 
+/**
+ * The cost of several counts, each at its own rate and its own divisor
+ * (`units × rate ÷ per`), rounded up once over the whole: tokens at a rate per
+ * million beside seconds at a rate per minute, say. In BigInt, over the least
+ * common multiple of the divisors, so no part is rounded on its own (D20).
+ */
+export function priceUnitsMixed(parts: readonly (readonly [units: number, rate: RateNanoPerMillion, per: number])[]): NanoDollars {
+  let common = 1n;
+  for (const [units, , per] of parts) {
+    assertSafeInteger(units, "A count of units");
+    assertSafeInteger(per, "A unit divisor");
+    if (units < 0) throw new MoneyError(`A count of units cannot be negative, got ${units}`);
+    if (per <= 0) throw new MoneyError(`A unit divisor must be positive, got ${per}`);
+    common = lcm(common, BigInt(per));
+  }
+  let product = 0n;
+  for (const [units, value, per] of parts) product += BigInt(units) * BigInt(value) * (common / BigInt(per));
+  const cost = (product + common - 1n) / common;
+  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
+  return Number(cost) as NanoDollars;
+}
+
+function gcd(a: bigint, b: bigint): bigint {
+  while (b !== 0n) [a, b] = [b, a % b];
+  return a;
+}
+
+function lcm(a: bigint, b: bigint): bigint {
+  return (a / gcd(a, b)) * b;
+}
+
 /** Exact integer sum of a list of amounts. */
 export function sumMoney(amounts: Iterable<NanoDollars>): NanoDollars {
   let total = 0;

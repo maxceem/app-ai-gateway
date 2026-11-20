@@ -309,7 +309,7 @@ async function checkPreset(
       throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
     }
     const sources = priceSources(connection);
-    if (billing(operation, sources, target.model).problem !== null) {
+    if (billing(operation, sources, target.model, undefined, "save").problem !== null) {
       throw new GatewayError(
         400,
         "pricing_not_configured",

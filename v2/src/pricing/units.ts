@@ -14,6 +14,7 @@
  */
 import { MILLI_SCALE } from "../money.ts";
 import type { OperationDescription, Unit } from "../providers/operation.ts";
+import type { UsageObservation } from "../usage/observation.ts";
 
 /** Units stored at `MILLI_SCALE`; every other unit is a plain count. */
 const MILLI_UNITS: ReadonlySet<Unit> = new Set<Unit>(["audio_seconds", "session_seconds", "video_seconds", "model_units", "credits", "megapixels"]);
@@ -54,40 +55,67 @@ export const UNIT_RATES: readonly UnitRate[] = [
   { field: "per_credit", units: ["credits"], per: MILLI_SCALE },
   { field: "per_unit", units: ["model_units"], per: MILLI_SCALE },
   { field: "per_request", units: ["requests"], per: 1 },
+  { field: "per_text_message", units: ["text_messages"], per: 1 },
 ];
 
 /** The names of every unit rate. */
 export const UNIT_RATE_FIELDS: readonly string[] = UNIT_RATES.map((rate) => rate.field);
 
+/** A sample count: any whole number above zero works, since a case only asks whether a price can bill it. */
+const SAMPLE = 1000;
+const NO_TOKENS = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true } as const;
+const SOME_TOKENS = { inputTokens: SAMPLE, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: SAMPLE } as const;
+
+/** `usage` with the request's own measure beside it, as every meter keeps it (`src/proxy/meter.ts`). */
+function withEstimate(usage: UsageObservation, estimate: Unit | undefined): UsageObservation {
+  if (estimate === undefined || usage.units?.[estimate] !== undefined) return usage;
+  return { ...usage, units: { ...usage.units, [estimate]: SAMPLE }, estimatedUnits: [estimate] };
+}
+
 /**
- * The units an operation can measure, so the price of a model it serves must
- * be in one of them (or bill tokens, where `tokens` is listed).
+ * The usages a meter can produce, as sample observations, grouped into the
+ * ways one model's answers can come out. A model's price can bill an
+ * operation in a way when every usage in it gets a price from the one charge
+ * function (`priceInServedMode`). Saving and eligibility are worked out by
+ * running that function over these cases (`src/pricing/billability.ts`), so
+ * they can never disagree with the charge.
  *
- * - Usage in the response: tokens, plus the units its meter declares its
- *   reader reports (a transcription's duration, an image API's images), plus the request
- *   measure that bills an answer that reports no usage.
- * - A response header: its unit, and its request estimate's.
- * - A request measure: its unit.
- * - A request count: requests.
+ * - Usage in the response: tokens, or one of the units the meter declares its
+ *   reader reports (a transcription's duration, an image API's images), each
+ *   a way of its own, since a model answers in one of them. Each keeps the
+ *   request's measure beside it when the meter declares one, and an answer
+ *   that reports nothing bills that measure alone (OpenAI's plain speech).
+ * - A response header: one way with two usages, the header present (beside
+ *   the request's estimate) and the header missing (the estimate alone), since
+ *   the same model's answers can come either way.
+ * - A request measure: its unit, worked out from the request.
+ * - A request count: one request, exact.
+ * - Connection time: session seconds.
+ * - A session's provider events: tokens, or session seconds.
  */
-export function operationUnits(operation: OperationDescription): readonly (Unit | "tokens")[] {
+export function meterCases(operation: OperationDescription): readonly (readonly UsageObservation[])[] {
   const { meter } = operation;
+  const reported = (unit: Unit): UsageObservation => ({ ...NO_TOKENS, units: { [unit]: SAMPLE } });
   switch (meter.kind) {
     case "response_json": {
-      // The units its reader reports are declared on the meter, never inferred from the style.
-      const units: (Unit | "tokens")[] = ["tokens", ...(meter.units ?? [])];
-      if (meter.requestMeasure !== undefined) units.push(meter.requestMeasure.unit);
-      return units;
+      const estimate = meter.requestMeasure?.unit;
+      const ways: UsageObservation[][] = [[withEstimate(SOME_TOKENS, estimate)], ...(meter.units ?? []).map((unit) => [withEstimate(reported(unit), estimate)])];
+      if (estimate !== undefined) ways.push([withEstimate(NO_TOKENS, estimate)]);
+      return ways;
     }
-    case "response_header":
-      return meter.estimate === undefined ? [meter.unit] : [meter.unit, meter.estimate.unit];
+    case "response_header": {
+      const estimate = meter.estimate?.unit;
+      const present = withEstimate(reported(meter.unit), estimate);
+      if (estimate === undefined) return [[present]];
+      return [[present, { ...withEstimate(NO_TOKENS, estimate), reportMissing: true }]];
+    }
     case "request_measure":
-      return [meter.unit];
+      return [[withEstimate(NO_TOKENS, meter.unit)]];
     case "request_count":
-      return ["requests"];
+      return [[{ ...NO_TOKENS, units: { requests: 1 } }]];
     case "wall_clock":
-      return ["session_seconds"];
+      return [[reported("session_seconds")]];
     case "provider_event":
-      return [];
+      return [[SOME_TOKENS], [reported("session_seconds")]];
   }
 }

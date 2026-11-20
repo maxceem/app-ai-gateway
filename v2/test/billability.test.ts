@@ -163,7 +163,7 @@ describe("one place decides", () => {
   const sources = (import.meta as ImportMeta & {
     glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
   }).glob<string>("../src/**/*.ts", { query: "?raw", import: "default", eager: true });
-  const DECIDERS = ["resolvePrice", "pricesOperation", "reportsCost", "listPrice", "priceInMode", "customerPrice", "PRICE_LIST"];
+  const DECIDERS = ["resolvePrice", "reportsCost", "listPrice", "priceInMode", "customerPrice", "PRICE_LIST"];
   const ALLOWED = new Set(["../src/pricing/billability.ts", "../src/pricing/tokens.ts", "../src/pricing/prices.ts"]);
 
   it("no file but billability.ts reads the price list or a connection's rates to decide billing", () => {
