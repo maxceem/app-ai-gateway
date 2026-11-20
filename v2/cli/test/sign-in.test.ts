@@ -342,6 +342,21 @@ test("a 401 on a token another command just renewed is tried once more with the 
   await assert.rejects(new Context(alone, started, refusing, {}, { env: {}, stderr: sinks().stderr }).call("getAdminSession"), hasCode("auth_required"));
 });
 
+test("a 401 retry that finds another sign-in stored in its place answers login_changed and never uses its token", async () => {
+  const started = signedInState(URL_, "agw_oat_old");
+  const store = memoryStore(started);
+  store.held = { ...started, active: { ...started.active!, login: { ...started.active!.login!, id: "login_2", accessToken: "agw_oat_other" } } };
+  const keys: (string | undefined)[] = [];
+  const transport = fakeTransport((_path, options) => {
+    keys.push(options.key);
+    throw new CliError("auth_required", "no", "", 3, { status: 401 });
+  });
+  const ctx = new Context(store, started, transport, {}, { env: {}, stderr: sinks().stderr });
+  await assert.rejects(ctx.call("getAdminSession"), hasCode("login_changed"));
+  assert.deepEqual(keys, ["agw_oat_old"]);
+  assert.equal(ctx.active?.login?.id, "login_1");
+});
+
 test("connecting with AGW_MANAGEMENT_KEY to a v1 gateway gets the agw 1.x message", async () => {
   const store = memoryStore();
   const transport = fakeTransport((path) => {

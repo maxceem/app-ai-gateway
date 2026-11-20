@@ -81,9 +81,7 @@ async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   const base: DeploymentStatusResult = { url: ctx.url, connected: true, credential, signedIn: false };
   if (!credential) return base;
   try {
-    const { data } = await ctx.call("getAdminSession");
-    const { user, account, role, grant } = data.session;
-    return { ...base, signedIn: true, user: { id: user.id, email: user.email, name: user.name }, account, role, grant };
+    return { ...base, signedIn: true, ...(await ctx.session()) };
   } catch (error) {
     if (error instanceof CliError && (error.code === "login_required" || error.details?.status === 401)) return base;
     throw error;

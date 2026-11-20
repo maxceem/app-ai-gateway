@@ -246,3 +246,21 @@ test("a v1 gateway's commands are refused with the agw 1.x message", async () =>
   assert.equal(error.code, "gateway_v1");
   assert.match(error.nextAction, /agw 1\.x/);
 });
+
+test("deployment status at a v1 gateway with AGW_MANAGEMENT_KEY gets the agw 1.x message", async () => {
+  const out = sinks();
+  const transport = fakeTransport(async (path) => {
+    if (path === "/v1/cli/capabilities") return { data: { serverVersion: "0.22.1" } };
+    throw new CliError("not_found", "no", "", 3, { status: 404 });
+  });
+  const code = await main(["deployment", "status", "--json"], {
+    store: memoryStore({ schemaVersion: 1, active: { url: URL_ } }),
+    transport,
+    stdout: out.stdout,
+    stderr: out.stderr,
+    io: { env: { AGW_MANAGEMENT_KEY: "agw_mgmt_env" } },
+    catalogCache: new MemoryCatalogCache(),
+  });
+  assert.equal(code, 3);
+  assert.equal(JSON.parse(out.out.text).error.code, "gateway_v1");
+});

@@ -196,7 +196,13 @@ export class Context {
    * renewed this same sign-in to meanwhile, or undefined when there is none.
    */
   private async newerToken(used: OAuthLogin): Promise<string | undefined> {
-    const { state, result } = await this.store.update((disk) => this.ownLogin(disk, used));
+    const { state, result } = await this.store.update((disk) => {
+      const stored = disk.active?.url === this.url ? disk.active.login : undefined;
+      // Another sign-in took this one's place: its token is never used here.
+      if (stored && stored.id !== used.id) return "replaced" as const;
+      return stored;
+    });
+    if (result === "replaced") this.replaced();
     this.state = state;
     if (!result || result.accessToken === used.accessToken) return undefined;
     return result.accessToken;
@@ -270,12 +276,21 @@ export class Context {
 
   /** Who the credential is, as the gateway says. */
   private async whoAmI(url: string, key: string): Promise<Omit<LoginResult, "connected" | "url" | "credential">> {
+    return this.session({ url, key });
+  }
+
+  /**
+   * Who a credential is, as the gateway's session endpoint says: the given
+   * key at the given gateway, or this command's own credential. A gateway with
+   * no v2 management API may be a v1 one, which agw 2 cannot manage, so a 404
+   * there gets the v1 check first.
+   */
+  async session(target: { url: string; key: string } | null = null): Promise<Omit<LoginResult, "connected" | "url" | "credential">> {
     let data;
     try {
-      ({ data } = await this.publicCall("getAdminSession", { url, key }));
+      ({ data } = target === null ? await this.call("getAdminSession") : await this.publicCall("getAdminSession", target));
     } catch (error) {
-      // A gateway with no v2 management API may be a v1 one, which agw 2 cannot manage.
-      if (error instanceof CliError && error.details?.status === 404) await refuseOlderGateway(this.transport, url);
+      if (error instanceof CliError && error.details?.status === 404) await refuseOlderGateway(this.transport, target?.url ?? this.url);
       throw error;
     }
     const { user, account, role, grant } = data.session;
