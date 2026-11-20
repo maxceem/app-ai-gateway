@@ -259,6 +259,20 @@ function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "t
   };
 }
 
+/**
+ * The one rule for picking among prices of the same usage, wherever several
+ * are tried (key candidates, the modes an estimate searches): one billing a
+ * measure the provider reported before any billing the request's estimate;
+ * among those, the dearest. Null when there are none.
+ */
+function preferred<P extends Pricing>(prices: readonly P[]): P | null {
+  const reported = prices.filter((one) => !one.fromEstimate);
+  const pool = reported.length > 0 ? reported : prices;
+  let dearest: P | null = null;
+  for (const one of pool) if (dearest === null || one.cost > dearest.cost) dearest = one;
+  return dearest;
+}
+
 /** A charge's price, as one result: what both a live charge and the sweep write. */
 export type ChargePricing = Pricing & {
   /** Billed at an estimate: a mode or key value with no price, a missing report, or any other doubt. */
@@ -292,17 +306,13 @@ export function priceInServedMode(
   doubt = false,
 ): ChargePricing | null {
   const keyed = keyCandidates(price, usage.priceKeys);
-  let reported: (Pricing & { readonly estimated: boolean }) | null = null;
-  let estimate: (Pricing & { readonly estimated: boolean }) | null = null;
+  const priced: (Pricing & { readonly estimated: boolean })[] = [];
   for (const candidate of keyed.candidates) {
     const one = priceIn(candidate.price, usage, served);
-    if (one === null) continue;
-    if (!one.fromEstimate) {
-      if (reported === null || one.cost > reported.cost) reported = one;
-    } else if (estimate === null || one.cost > estimate.cost) estimate = one;
+    if (one !== null) priced.push(one);
   }
   const standardPrice = priceInMode(price, STANDARD_MODE) ?? price;
-  const chosen = reported ?? estimate;
+  const chosen = preferred(priced);
   if (chosen === null) {
     const standard = priceUsage(standardPrice, usage);
     return standard === null ? null : { ...standard, estimated: true, measured: standard.fromEstimate ? "estimated" : "complete" };
@@ -334,15 +344,15 @@ function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode):
   const cheaper = SERVICE_TIERS[mode.tier].rank < SERVICE_TIERS.standard.rank;
   const tryTiers: ServiceTier[] = tierPriced ? [mode.tier] : cheaper ? ["standard"] : ["standard", ...tiers];
   const tryRegions: ServiceRegion[] = regionPriced ? [mode.region] : ["global", ...regions];
-  let dearest: Pricing | null = null;
+  const tried: Pricing[] = [];
   for (const tier of tryTiers) {
     for (const region of tryRegions) {
       const candidate = priceInMode(price, { tier, region });
       const priced = candidate === undefined ? null : priceUsage(candidate, usage);
-      if (priced !== null && (dearest === null || priced.cost > dearest.cost)) dearest = priced;
+      if (priced !== null) tried.push(priced);
     }
   }
-  const fallback = dearest ?? priceUsage(price, usage);
+  const fallback = preferred(tried) ?? priceUsage(price, usage);
   return fallback === null ? null : { ...fallback, estimated: true };
 }
 

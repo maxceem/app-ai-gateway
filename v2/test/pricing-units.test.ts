@@ -28,6 +28,9 @@ import { STANDARD_MODE, parseServiceModeName } from "../src/usage/service-modes.
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
 
+/** Saves a price on an OpenAI connection, as the management API does. */
+const save = (pricing: Parameters<typeof ratesFromPricing>[0], type = "openai") => ratesFromPricing(pricing, type);
+
 const NONE = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true as const };
 const counted = (units: UsageObservation["units"]): UsageObservation => ({ ...NONE, units });
 const priced = (rates: Record<string, number>, extra: Partial<ModelPrice> = {}): ModelPrice => ({
@@ -117,6 +120,14 @@ describe("price keys", () => {
     expect(priceInServedMode(keyed, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
   });
 
+  it("searches an unpriced mode with the same rule: a reported measure before any estimate, however cheap", () => {
+    // Standard bills only the estimated characters, dearly; priority's own rate bills the reported credits.
+    const price = priced({ per_million_characters: 1_000_000_000_000 }, { modes: { priority: { per_credit: 0.000001 } } });
+    const usage = { ...counted({ credits: 5_000, characters: 100 }), estimatedUnits: ["characters" as const] };
+    const fast = parseServiceModeName("fast")!;
+    expect(priceInServedMode(price, usage, fast)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
+  });
+
   it("falls back to the model's own standard price when no candidate can bill the measure", () => {
     const keyed = priced({ per_image: 40_000_000 }, { keyed: { size: { big: { per_megapixel: rate(1) } } } });
     expect(priceInServedMode(keyed, { ...counted(undefined), images: 2, priceKeys: { size: "huge" } }, STANDARD_MODE)).toMatchObject({
@@ -157,38 +168,50 @@ describe("customer rates in any unit", () => {
     expect(ModelPricingSchema.safeParse({ input: 1, output: 2, modes: { standard: { factor: 1 } } }).success).toBe(false);
   });
 
+  it("checks a gateway's model on save with the modes live pricing inherits for it", () => {
+    // Vercel's openai/gpt-4o is priced as OpenAI's gpt-4o, whose list has fast at 1.7×: $6M per million tokens no longer fits.
+    expect(() => save({ "openai/gpt-4o": ModelPricingSchema.parse({ input: 6_000_000, output: 1 }) }, "vercel")).toThrow(/too large/u);
+    expect(() => save({ "openai/gpt-4o": ModelPricingSchema.parse({ input: 2, output: 8 }) }, "vercel")).not.toThrow();
+  });
+
+  it("refuses a price whose key values combine in more ways than pricing tries", () => {
+    const values = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`v${i}`, { per_image: 1 }]));
+    expect(() => save({ m: ModelPricingSchema.parse({ per_image: 1, by: { a: values(20), b: values(20) } }) })).toThrow(/400 ways; at most 256/u);
+    expect(() => save({ m: ModelPricingSchema.parse({ per_image: 1, by: { a: values(16), b: values(16) } }) })).not.toThrow();
+  });
+
   it("refuses on save any key value whose effective price bills nothing, as run time resolves it", () => {
-    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/q x/u);
-    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }) })).not.toThrow();
+    expect(() => save({ m: ModelPricingSchema.parse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }) })).toThrow(/q x/u);
+    expect(() => save({ m: ModelPricingSchema.parse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }) })).not.toThrow();
     // A price that bills nothing at all.
-    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ cached_input: 1 }) })).toThrow(/no rate that bills/u);
+    expect(() => save({ m: ModelPricingSchema.parse({ cached_input: 1 }) })).toThrow(/no rate that bills/u);
   });
 
   it("refuses rates that no longer fit once a mode's factor scales them, tier and region together", () => {
-    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 5_000_000, output: 1, modes: { priority: { factor: 2 } } }) })).toThrow(/too large/u);
+    expect(() => save({ m: ModelPricingSchema.parse({ input: 5_000_000, output: 1, modes: { priority: { factor: 2 } } }) })).toThrow(/too large/u);
     // Each fits alone; a tier in a region multiplies both factors.
     expect(() =>
-      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 } } }) }),
+      save({ m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 } } }) }),
     ).toThrow(/too large/u);
-    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } } }) })).not.toThrow();
+    expect(() => save({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } } }) })).not.toThrow();
     // A key value's rate is scaled by the modes too.
     expect(() =>
-      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } }, by: { q: { x: { input: 5_000_000, output: 1 } } } }) }),
+      save({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } }, by: { q: { x: { input: 5_000_000, output: 1 } } } }) }),
     ).toThrow(/too large/u);
     // A tier's own rate in a region is scaled by the region's factor.
     expect(() =>
-      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { input: 5_000_000 }, eu: { factor: 2 } } }) }),
+      save({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { input: 5_000_000 }, eu: { factor: 2 } } }) }),
     ).toThrow(/too large/u);
     // An explicit pair is used as it is: the tier times the region is never priced, so it cannot overflow.
     expect(() =>
-      ratesFromPricing({
+      save({
         m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 }, "priority+eu": { factor: 2 } } }),
       }),
     ).not.toThrow();
   });
 
   it("stores each rate in nano-dollars, its modes and price keys too, and bills with them", () => {
-    const stored = ratesFromPricing({
+    const stored = save({
       m: ModelPricingSchema.parse({ input: 1, output: 2, cache_write_1h: 3, modes: { flex: { factor: 0.5 }, priority: { output: 4 } } }),
       c: ModelPricingSchema.parse({ per_million_characters: 0.3, by: { voice: { premium: { per_million_characters: 0.6 } } } }),
     });

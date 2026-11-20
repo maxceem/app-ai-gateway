@@ -26,7 +26,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { savedPriceProblem } from "../pricing/billability.ts";
+import { MAX_PRICE_KEY_COMBINATIONS, savedPriceProblem } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import {
   keyOrigin,
@@ -112,16 +112,23 @@ function mapTables(
  * or holds a rate too large to store. The run-time functions decide; saving
  * composes nothing of its own.
  */
-function assertEffectivePrices(stored: CustomerRates, model: string, providerType: string | undefined, where: string): void {
+function assertEffectivePrices(stored: CustomerRates, model: string, providerType: string, where: string): void {
   const problem = savedPriceProblem(stored, model, providerType);
   if (problem === null) return;
+  if (problem.kind === "too_many_combinations") {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `${where}: its price keys combine in ${problem.combinations} ways; at most ${MAX_PRICE_KEY_COMBINATIONS} are allowed`,
+    );
+  }
   if (problem.kind === "too_large") throw new GatewayError(400, "invalid_request", `${where}: a rate is too large once a service mode's factor applies`);
   const named = Object.entries(problem.values).map(([key, value]) => `${key} ${value}`).join(", ");
   throw new GatewayError(400, "invalid_request", `${where}: the price${named === "" ? "" : ` for ${named}`} in ${problem.mode} has no rate that bills`);
 }
 
 /** Dollars to stored rates: each rate to whole nano-dollars per its amount, modes and price keys too. */
-export function ratesFromPricing(pricing: DollarPricing, providerType?: string): CustomerRates {
+export function ratesFromPricing(pricing: DollarPricing, providerType: string): CustomerRates {
   const rates: Record<string, Record<string, unknown>> = {};
   for (const [model, price] of Object.entries(pricing)) {
     const where = `pricing.${model}`;

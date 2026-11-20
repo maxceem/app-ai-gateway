@@ -32,7 +32,6 @@ import type { OperationDescription } from "../providers/operation.ts";
 import { isStandardMode, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError } from "../money.ts";
 import {
-  customerPrice,
   effectivePrices,
   listPrice,
   priceInMode,
@@ -186,20 +185,34 @@ export function billingForCharge(connection: PriceSources, model: string): Resol
   return resolve(connection, model);
 }
 
+/** The most price-key combinations a price may have: a stored price never has more, so pricing never tries more. */
+export const MAX_PRICE_KEY_COMBINATIONS = 256;
+
 /**
- * Whether a customer's stored price for a model can be saved: every effective
- * price run time could produce from it (each key value, each service mode,
- * `effectivePrices`) has a rate that bills, and none holds a rate too large
- * to store. Returns null, or what is wrong. The run-time functions decide;
- * saving composes nothing of its own.
+ * Whether a customer's stored price for a model can be saved on a connection
+ * of `providerType`: the model is looked up exactly as live pricing looks it
+ * up (`priceSources`, `listedAs`, so a gateway's `openai/gpt-4o` inherits
+ * OpenAI's modes), and every effective price run time could produce from it
+ * (each key value, each service mode, `effectivePrices`) has a rate that
+ * bills, none holds a rate too large to store, and its key values combine in
+ * at most `MAX_PRICE_KEY_COMBINATIONS` ways. Returns null, or what is wrong.
+ * The run-time functions decide; saving composes nothing of its own.
  */
 export function savedPriceProblem(
   stored: CustomerRates,
   model: string,
-  providerType: string | undefined,
-): { readonly kind: "too_large" } | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string } | null {
-  const price = customerPrice(stored, model, providerType === undefined ? null : listPrice(providerType, model));
-  if (price === null) return null;
+  providerType: string,
+):
+  | { readonly kind: "too_large" }
+  | { readonly kind: "too_many_combinations"; readonly combinations: number }
+  | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string }
+  | null {
+  const resolved = resolve(priceSources({ type: providerType, rates: stored }), model);
+  if (resolved === null) return null;
+  const price = resolved.price;
+  let combinations = 1;
+  for (const table of Object.values(price.keyed ?? {})) combinations *= Math.max(1, Object.keys(table).length);
+  if (combinations > MAX_PRICE_KEY_COMBINATIONS) return { kind: "too_many_combinations", combinations };
   let effective;
   try {
     effective = effectivePrices(price);
