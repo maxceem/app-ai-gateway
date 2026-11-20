@@ -10,7 +10,7 @@
 export const MCP_INSTRUCTIONS = [
   "This server manages an App AI Gateway account: its AI provider connections, the apps that call providers through it, and their end users.",
   "Read before you write: call get_account first, and list or get a resource before proposing a change to it.",
-  "Secrets never pass through a tool: a person adds provider keys and app keys in the console or with agw.",
+  "Secrets never pass through a tool: a person enters a provider key, or sees a new app key, on a console page a tool answers.",
   "Read agw://guide for the full rules.",
 ].join(" ");
 
@@ -42,6 +42,7 @@ the account, the person, their role and the grant.
 - \`check_app\`: whether an app can serve requests, without sending one.
 - \`list_app_keys\`: an app-key app's keys, as metadata.
 - \`list_app_users\`, \`get_app_user\`: an app's end users and their usage.
+- \`get_operation\`: where something a creating tool started stands.
 
 ## Changing
 
@@ -59,13 +60,25 @@ the account, the person, their role and the grant.
 - \`revoke_app_key\` revokes an app key for good.
 - \`block_app_user\` and \`unblock_app_user\` block or lift a block on one end user.
 
+## Creating
+
+- \`add_provider\` and \`rotate_provider_key\` answer a console link. Give it
+  to the person: they open it, enter the provider key there and approve. Then
+  call \`get_operation\` with the answer's \`id\` until it completes. Never open
+  the link yourself.
+- \`add_app\` and \`add_app_key\` take two calls. The first, without
+  \`handle\`, checks the request and reserves it: nothing is created. The
+  second, with the same arguments and the answer's \`handle\`, creates it
+  once. If you lose an answer, send the same call again: it repeats the answer
+  instead of creating another. A new key is never in the answer: give the
+  person \`reveal_url\`, where they see it once, signed in to the console.
+
 ## Secrets
 
 No tool takes or returns a secret. A field named like a credential in your
-arguments is refused, and one in a result is shown as \`[redacted]\`. Creating
-an app, a provider connection or an app key needs a key entered or shown once,
-so the person does it in the console or with agw. Never ask the person to
-paste a key to you.
+arguments is refused, and one in a result is shown as \`[redacted]\`, except the
+metadata of a key a create made. A key is entered or seen by the person, on a
+console page. Never ask the person to paste a key to you.
 
 ## When a call is refused
 

@@ -41,8 +41,12 @@
       "description": "Who is calling, your accounts, management keys, and CLI and MCP sign-ins."
     },
     {
+      "name": "Admin operations",
+      "description": "Writes an agent hands to a person: where each stands, and revealing a key one created."
+    },
+    {
       "name": "Console",
-      "description": "The console's own pages: OAuth consent and entering a CLI sign-in code. Called only from the console's origin."
+      "description": "The console's own pages: OAuth consent, entering a CLI sign-in code, and approving a key an agent asked for. Called only from the console's origin."
     }
   ],
   "components": {
@@ -2007,6 +2011,399 @@
           "provider_id"
         ]
       },
+      "OpenedHandoffResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "provider.add",
+              "provider.rotate-key"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "notice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "url",
+          "expiresAt"
+        ]
+      },
+      "ProviderHandoffRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "pricing": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cached_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cached_input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_cache_write": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_context_threshold": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "input",
+                "output"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderKeyHandoffRequest": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReservedAppResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Reservation"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "created"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "replayed": {
+                "type": "boolean"
+              },
+              "app": {
+                "$ref": "#/components/schemas/App"
+              },
+              "api_key": {
+                "$ref": "#/components/schemas/AppKeyMetadata"
+              },
+              "reveal_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "id",
+              "replayed",
+              "app",
+              "api_key"
+            ]
+          }
+        ]
+      },
+      "Reservation": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "reserved"
+            ]
+          },
+          "handle": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "notice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "handle",
+          "id",
+          "expiresAt"
+        ]
+      },
+      "AppKeyMetadata": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "key_prefix": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "key_prefix",
+          "created_at"
+        ]
+      },
+      "ReservedAppRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {},
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ReservedAppKeyResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Reservation"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "created"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "replayed": {
+                "type": "boolean"
+              },
+              "app_id": {
+                "type": "string"
+              },
+              "api_key": {
+                "$ref": "#/components/schemas/AppKeyMetadata"
+              },
+              "reveal_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "id",
+              "replayed",
+              "app_id",
+              "api_key"
+            ]
+          }
+        ]
+      },
+      "ReservedAppKeyRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "OperationStatusResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "expired"
+            ]
+          },
+          "denied": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/OperationResult"
+          },
+          "reveal_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "createdAt",
+          "expiresAt"
+        ]
+      },
+      "OperationResult": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "$ref": "#/components/schemas/App"
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "api_key": {
+            "$ref": "#/components/schemas/AppKeyMetadata"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/Provider"
+          }
+        }
+      },
+      "RevealedOperationResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "$ref": "#/components/schemas/App"
+              },
+              "app_id": {
+                "type": "string"
+              },
+              "api_key": {
+                "$ref": "#/components/schemas/CreatedAppKey"
+              }
+            },
+            "required": [
+              "api_key"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "result"
+        ]
+      },
       "CliToolCatalogResponse": {
         "type": "object",
         "properties": {
@@ -2802,6 +3199,111 @@
           "grant"
         ],
         "additionalProperties": false
+      },
+      "HandoffDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "provider.add",
+              "provider.rotate-key"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "denied",
+              "expired",
+              "retired"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "review": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "destinations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "secretHint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "slug",
+              "baseUrl",
+              "destinations"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "expiresAt",
+          "account",
+          "review"
+        ]
+      },
+      "HandoffAnswerResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "denied"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
       }
     },
     "parameters": {}
@@ -5433,6 +5935,671 @@
         }
       }
     },
+    "/v2/admin/provider-handoffs": {
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "openProviderHandoff",
+        "summary": "Open adding a provider connection whose key a person enters",
+        "description": "For an agent, which must never hold a provider key. Send everything `createProvider` takes but `secret`. It is checked now, as `createProvider` would check it, and nothing is created: the answer's `url` is a console page where a person enters the key and approves, within 15 minutes. Give the URL to the person, and read the operation with `getOperation` until it completes. Answers a `notice` when an identical request was made in the last hour.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderHandoffRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The operation and the link a person approves it on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenedHandoffResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A connection with that slug exists, or the plan's ceiling is reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many operations started by this account. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/providers/{id}/key-handoffs": {
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "openProviderKeyHandoff",
+        "summary": "Open replacing a provider connection's key, which a person enters",
+        "description": "For an agent, which must never hold a provider key. Send the revision the connection was read at. The answer's `url` is a console page where a person enters the new key and approves, within 15 minutes. A connection changed in between is refused rather than overwritten.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The provider connection id."
+            },
+            "required": true,
+            "description": "The provider connection id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeyHandoffRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The operation and the link a person approves it on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenedHandoffResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The connection changed since it was read; read it again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many operations started by this account. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/reserved/apps": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "createReservedApp",
+        "summary": "Create an app once, in two calls",
+        "description": "For an agent, which may retry but must create once, and must never see a key. Without `handle`, the document is checked as `createApp` checks it and the creation is reserved: nothing is created. With the same document and the answer's `handle`, the app is created, once; repeating that call answers the same app again, with `replayed: true`. An app-key app's first key is never in the answer: `reveal_url` names the console page where a person signed in as an owner or admin sees it once, within 15 minutes.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReservedAppRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The reservation, or the app it created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservedAppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`operation_not_found`: this server never gave out that handle. Otherwise the app does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`operation_mismatch`: the handle was reserved for other arguments or another account. `already_completed`: it was executed too long ago to repeat its answer. `conflict`: another call is executing it; nothing was written. `billing_plan_limit_reached`: the plan's ceiling is reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`operation_expired`: the reservation lapsed, 15 minutes after it was made, before it was executed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/reserved/apps/{app}/keys": {
+      "post": {
+        "tags": [
+          "Admin app keys"
+        ],
+        "operationId": "createReservedAppKey",
+        "summary": "Create an app key once, in two calls",
+        "description": "As `createReservedApp`, for another key of an app-key app. The key's value is never in the answer: `reveal_url` names the page where a person sees it once.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReservedAppKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The reservation, or the key it created, without its value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservedAppKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "No plan is available for this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`operation_not_found`: this server never gave out that handle. Otherwise the app does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`operation_mismatch`: the handle was reserved for other arguments or another account. `already_completed`: it was executed too long ago to repeat its answer. `conflict`: another call is executing it; nothing was written. `billing_plan_limit_reached`: the plan's ceiling is reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`operation_expired`: the reservation lapsed, 15 minutes after it was made, before it was executed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing could not be reached, so nothing was saved. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/operations/{id}": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "getOperation",
+        "summary": "Get where an operation stands",
+        "description": "Any credential of the account that opened the operation may read it; any other is answered `404 operation_not_found`. A pending one reports when it lapses, a completed one what it created, and one a person declined `expired` with `denied: true`. It never returns a secret: a key the operation created is revealed only on the page `reveal_url` names.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The operation's id, as the call that opened or reserved it answered."
+            },
+            "required": true,
+            "description": "The operation's id, as the call that opened or reserved it answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where the operation stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`operation_not_found`: no operation of your account has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/operations/{id}/reveal": {
+      "post": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "revealOperation",
+        "summary": "Reveal the key an operation created, once",
+        "description": "Console sign-in only, from the console's own page, by an owner or admin of the operation's account. Answers the key a reserved create made, once, within 15 minutes of its creation: a second reveal is `409 already_revealed`, and one after the window, or for a key revoked since, is `410 operation_expired`.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The operation's id, as the call that opened or reserved it answered."
+            },
+            "required": true,
+            "description": "The operation's id, as the call that opened or reserved it answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The key, shown this once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevealedOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`operation_not_found`: no operation of your account has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_revealed`: it was revealed already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`operation_expired`: it can no longer be revealed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/cli/tools": {
       "get": {
         "tags": [
@@ -6658,6 +7825,357 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceAnswerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/handoffs/{id}": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "getHandoff",
+        "summary": "What a browser step asks a person to approve",
+        "description": "For the console's approval page. The proof comes from the approval link's fragment, and is the whole authority: whoever holds the link may answer it.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The operation's id, as the call that opened or reserved it answered."
+            },
+            "required": true,
+            "description": "The operation's id, as the call that opened or reserved it answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "proof": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "proof"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The step and what it would change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else already answered it, or it was denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/handoffs/{id}/submit": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "submitHandoff",
+        "summary": "Enter the key a browser step asks for, and approve it",
+        "description": "The write runs as the credential that opened the step, and the key is never answered. Approving one already approved answers `completed` again.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The operation's id, as the call that opened or reserved it answered."
+            },
+            "required": true,
+            "description": "The operation's id, as the call that opened or reserved it answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "proof": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 512
+                  },
+                  "secret": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "proof",
+                  "secret"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approved: the connection is added, or its key replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffAnswerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page, or the proof or code is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin, with OAuth set up), or nothing pending has this id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It was declined, the connection changed, a connection with that slug exists, or the plan's ceiling is reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "It expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many answers to this step. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/handoffs/{id}/deny": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "denyHandoff",
+        "summary": "Decline a browser step",
+        "description": "Anyone holding the link may decline it. The agent that opened it is told on its next read.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The operation's id, as the call that opened or reserved it answered."
+            },
+            "required": true,
+            "description": "The operation's id, as the call that opened or reserved it answered.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "proof": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "proof"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Declined.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffAnswerResponse"
                 }
               }
             }

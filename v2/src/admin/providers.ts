@@ -34,7 +34,7 @@ import type { z } from "zod";
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 type DollarPricing = Record<string, z.output<typeof ModelPricingSchema>>;
 
-interface ConnectionRow {
+export interface ConnectionRow {
   id: string;
   account_id: string;
   type: string;
@@ -98,7 +98,7 @@ function pricingFromRates(rates: CustomerRates): DollarPricing {
   return pricing as DollarPricing;
 }
 
-function providerView(row: ConnectionRow) {
+export function providerView(row: ConnectionRow) {
   return {
     id: row.id,
     type: row.type,
@@ -114,13 +114,13 @@ function providerView(row: ConnectionRow) {
   };
 }
 
-function checkedBaseUrl(raw: string): string {
+export function checkedBaseUrl(raw: string): string {
   const checked = checkOperatorBaseUrl(raw);
   if (!checked.ok) throw new GatewayError(400, "invalid_request", `baseUrl: ${checked.message}`);
   return checked.baseUrl;
 }
 
-async function connectionRow(db: D1Database, accountId: string, id: string): Promise<ConnectionRow> {
+export async function connectionRow(db: D1Database, accountId: string, id: string): Promise<ConnectionRow> {
   const row = await db
     .prepare("SELECT * FROM provider_connection WHERE id = ? AND account_id = ?")
     .bind(id, accountId)
@@ -129,7 +129,7 @@ async function connectionRow(db: D1Database, accountId: string, id: string): Pro
   return row;
 }
 
-function newConnectionId(): string {
+export function newConnectionId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

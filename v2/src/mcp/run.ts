@@ -35,7 +35,7 @@ export async function runTool(
   tool.check?.(input);
   const body = await callOperation(tool.request(input), caller);
   const hidden: string[] = [];
-  const result = redactSecrets(tool.result ? tool.result(body, input) : body, [], hidden);
+  const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt ?? [], [], hidden);
   const summary = tool.summary(result, input);
   return { result, summary: hidden.length === 0 ? summary : `${summary} ${hiddenNote(hidden)}` };
 }

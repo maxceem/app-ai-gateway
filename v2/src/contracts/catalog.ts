@@ -64,6 +64,21 @@ import {
   ManagementKeyCreateRequestSchema,
 } from "./access.ts";
 import { CLIENT_CATALOG } from "./client-catalog.ts";
+import {
+  HandoffAnswerResponseSchema,
+  HandoffDetailsResponseSchema,
+  HandoffProofSchema,
+  HandoffSubmitRequestSchema,
+  OpenedHandoffResponseSchema,
+  OperationStatusResponseSchema,
+  ProviderHandoffRequestSchema,
+  ProviderKeyHandoffRequestSchema,
+  ReservedAppKeyRequestSchema,
+  ReservedAppKeyResponseSchema,
+  ReservedAppRequestSchema,
+  ReservedAppResponseSchema,
+  RevealedOperationResponseSchema,
+} from "./handoffs.ts";
 import { CliToolCallRequestSchema, CliToolCallResponseSchema, CliToolCatalogResponseSchema } from "./cli.ts";
 import type { OperationSpec } from "./operation.ts";
 
@@ -109,6 +124,14 @@ const CONSOLE_PAGE_ERRORS = {
 } as const;
 
 const CONSENT_PARAM = { id: { description: "The authorization id from the consent link." } } as const;
+const OPERATION_PARAM = { id: { description: "The operation's id, as the call that opened or reserved it answered." } } as const;
+
+/** Errors a reserved create can answer with, beside the create's own. */
+const RESERVATION_ERRORS = {
+  404: "`operation_not_found`: this server never gave out that handle. Otherwise the app does not exist in this account.",
+  409: "`operation_mismatch`: the handle was reserved for other arguments or another account. `already_completed`: it was executed too long ago to repeat its answer. `conflict`: another call is executing it; nothing was written. `billing_plan_limit_reached`: the plan's ceiling is reached.",
+  410: "`operation_expired`: the reservation lapsed, 15 minutes after it was made, before it was executed.",
+} as const;
 const DEVICE_PARAM = { id: { description: "The id the code lookup answered." } } as const;
 
 export const CATALOG = {
@@ -425,6 +448,99 @@ export const CATALOG = {
     responseDescription: "The provider connection was deleted.",
     errors: ADMIN_ERRORS,
   },
+  openProviderHandoff: {
+    method: "POST",
+    path: "/v2/admin/provider-handoffs",
+    tags: ["Admin providers"],
+    summary: "Open adding a provider connection whose key a person enters",
+    description:
+      "For an agent, which must never hold a provider key. Send everything `createProvider` takes but `secret`. It is checked now, as `createProvider` would check it, and nothing is created: the answer's `url` is a console page where a person enters the key and approves, within 15 minutes. Give the URL to the person, and read the operation with `getOperation` until it completes. Answers a `notice` when an identical request was made in the last hour.",
+    security: "management",
+    request: ProviderHandoffRequestSchema,
+    status: 201,
+    response: OpenedHandoffResponseSchema,
+    responseDescription: "The operation and the link a person approves it on.",
+    errors: { ...ADMIN_ERRORS, ...PLAN_CAP_ERRORS, 409: "A connection with that slug exists, or the plan's ceiling is reached.", 429: "Too many operations started by this account. Carries Retry-After." },
+  },
+
+  openProviderKeyHandoff: {
+    method: "POST",
+    path: "/v2/admin/providers/{id}/key-handoffs",
+    params: PROVIDER_PARAM,
+    tags: ["Admin providers"],
+    summary: "Open replacing a provider connection's key, which a person enters",
+    description:
+      "For an agent, which must never hold a provider key. Send the revision the connection was read at. The answer's `url` is a console page where a person enters the new key and approves, within 15 minutes. A connection changed in between is refused rather than overwritten.",
+    security: "management",
+    request: ProviderKeyHandoffRequestSchema,
+    status: 201,
+    response: OpenedHandoffResponseSchema,
+    responseDescription: "The operation and the link a person approves it on.",
+    errors: { ...ADMIN_ERRORS, 409: "The connection changed since it was read; read it again.", 429: "Too many operations started by this account. Carries Retry-After." },
+  },
+
+  createReservedApp: {
+    method: "POST",
+    path: "/v2/admin/reserved/apps",
+    tags: ["Admin applications"],
+    summary: "Create an app once, in two calls",
+    description:
+      "For an agent, which may retry but must create once, and must never see a key. Without `handle`, the document is checked as `createApp` checks it and the creation is reserved: nothing is created. With the same document and the answer's `handle`, the app is created, once; repeating that call answers the same app again, with `replayed: true`. An app-key app's first key is never in the answer: `reveal_url` names the console page where a person signed in as an owner or admin sees it once, within 15 minutes.",
+    security: "management",
+    request: ReservedAppRequestSchema,
+    response: ReservedAppResponseSchema,
+    responseDescription: "The reservation, or the app it created.",
+    errors: { ...ADMIN_ERRORS, ...PLAN_CAP_ERRORS, ...RESERVATION_ERRORS },
+  },
+
+  createReservedAppKey: {
+    method: "POST",
+    path: "/v2/admin/reserved/apps/{app}/keys",
+    params: APP_PARAM,
+    tags: ["Admin app keys"],
+    summary: "Create an app key once, in two calls",
+    description:
+      "As `createReservedApp`, for another key of an app-key app. The key's value is never in the answer: `reveal_url` names the page where a person sees it once.",
+    security: "management",
+    request: ReservedAppKeyRequestSchema,
+    response: ReservedAppKeyResponseSchema,
+    responseDescription: "The reservation, or the key it created, without its value.",
+    errors: { ...ADMIN_ERRORS, ...PLAN_CAP_ERRORS, ...RESERVATION_ERRORS },
+  },
+
+  getOperation: {
+    method: "GET",
+    path: "/v2/admin/operations/{id}",
+    params: OPERATION_PARAM,
+    tags: ["Admin operations"],
+    summary: "Get where an operation stands",
+    description:
+      "Any credential of the account that opened the operation may read it; any other is answered `404 operation_not_found`. A pending one reports when it lapses, a completed one what it created, and one a person declined `expired` with `denied: true`. It never returns a secret: a key the operation created is revealed only on the page `reveal_url` names.",
+    security: "management",
+    response: OperationStatusResponseSchema,
+    responseDescription: "Where the operation stands.",
+    errors: { ...ADMIN_ERRORS, 404: "`operation_not_found`: no operation of your account has this id." },
+  },
+
+  revealOperation: {
+    method: "POST",
+    path: "/v2/admin/operations/{id}/reveal",
+    params: OPERATION_PARAM,
+    tags: ["Admin operations"],
+    summary: "Reveal the key an operation created, once",
+    description:
+      "Console sign-in only, from the console's own page, by an owner or admin of the operation's account. Answers the key a reserved create made, once, within 15 minutes of its creation: a second reveal is `409 already_revealed`, and one after the window, or for a key revoked since, is `410 operation_expired`.",
+    security: "session",
+    response: RevealedOperationResponseSchema,
+    responseDescription: "The key, shown this once.",
+    errors: {
+      ...SESSION_ONLY_ERRORS,
+      404: "`operation_not_found`: no operation of your account has this id.",
+      409: "`already_revealed`: it was revealed already.",
+      410: "`operation_expired`: it can no longer be revealed.",
+    },
+  },
+
   listCliTools: {
     method: "GET",
     path: "/v2/cli/tools",
@@ -630,6 +746,48 @@ export const CATALOG = {
     request: DeviceCodeRequestSchema,
     response: DeviceAnswerResponseSchema,
     responseDescription: "Declined. The CLI's next poll is told access_denied.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  getHandoff: {
+    method: "POST",
+    path: "/v2/console/handoffs/{id}",
+    params: OPERATION_PARAM,
+    tags: ["Console"],
+    summary: "What a browser step asks a person to approve",
+    description: "For the console's approval page. The proof comes from the approval link's fragment, and is the whole authority: whoever holds the link may answer it.",
+    security: "public",
+    request: HandoffProofSchema,
+    response: HandoffDetailsResponseSchema,
+    responseDescription: "The step and what it would change.",
+    errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  submitHandoff: {
+    method: "POST",
+    path: "/v2/console/handoffs/{id}/submit",
+    params: OPERATION_PARAM,
+    tags: ["Console"],
+    summary: "Enter the key a browser step asks for, and approve it",
+    description: "The write runs as the credential that opened the step, and the key is never answered. Approving one already approved answers `completed` again.",
+    security: "public",
+    request: HandoffSubmitRequestSchema,
+    response: HandoffAnswerResponseSchema,
+    responseDescription: "Approved: the connection is added, or its key replaced.",
+    errors: { ...CONSOLE_PAGE_ERRORS, 409: "It was declined, the connection changed, a connection with that slug exists, or the plan's ceiling is reached.", 429: "Too many answers to this step. Carries Retry-After." },
+  },
+
+  denyHandoff: {
+    method: "POST",
+    path: "/v2/console/handoffs/{id}/deny",
+    params: OPERATION_PARAM,
+    tags: ["Console"],
+    summary: "Decline a browser step",
+    description: "Anyone holding the link may decline it. The agent that opened it is told on its next read.",
+    security: "public",
+    request: HandoffProofSchema,
+    response: HandoffAnswerResponseSchema,
+    responseDescription: "Declined.",
     errors: CONSOLE_PAGE_ERRORS,
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
