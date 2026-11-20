@@ -206,16 +206,18 @@ export class ProviderMatcher {
    * Where a declared operation is sent when the gateway builds the request
    * itself (a preset, or a rewritten model in the path), with `parts` filling
    * its template's parts. Null for an operation this provider does not
-   * declare, a template with a `{name...}` part, a part `parts` leaves out, or
-   * a path that comes out with a dot segment.
+   * declare, a part `parts` leaves out, a `{name...}` value with an empty
+   * segment, or a path that comes out with a dot segment.
    */
   upstreamFor(operationName: string, parts: Parts): UpstreamTarget | null {
     const compiled = this.operations.find((candidate) => candidate.operation.name === operationName);
     if (compiled === undefined) return null;
     const template = compiled.upstream ?? compiled.template;
     for (const segment of template.segments) {
-      if (segment.kind === "multi" || segment.kind === "rest") return null;
-      if (segment.kind === "part" && !Object.hasOwn(parts, segment.name)) return null;
+      if (segment.kind === "rest") return null;
+      if ((segment.kind === "part" || segment.kind === "multi") && !Object.hasOwn(parts, segment.name)) return null;
+      // A `{name...}` value keeps its `/`s, but never an empty segment.
+      if (segment.kind === "multi" && parts[segment.name]!.split("/").includes("")) return null;
     }
     const path = fillTemplate(template, parts);
     return path === null ? null : { host: compiled.host, path };

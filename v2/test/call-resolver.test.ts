@@ -22,6 +22,7 @@ import { keyCandidates, PRICE_LIST, reportsCost, servedModes, type CustomerRates
 import { priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
+import { ProviderMatcher } from "../src/providers/matcher.ts";
 import type { OperationDescription } from "../src/providers/operation.ts";
 import { MoneyError } from "../src/money.ts";
 
@@ -135,10 +136,12 @@ describe("what serving reaches, and only that (PR #199 round 5)", () => {
     expect(resolveCall({}, undefined, falRates, op("fal", "fal.run"), "fal-ai/flux/dev")).toMatchObject({ kind: "admitted" });
   });
 
-  it("enumerates each operation's own model names: no call on an operation not served, a default model, a fixed one (F6)", () => {
+  it("enumerates each operation's own model names, judging one not served yet as if it were: a default model, a fixed one (F6, round 6 F9)", () => {
     const falApp = { routing: { providers: { main: { operations: ["fal.run", "fal.queue"] } } } };
     const falCalls = reachableCalls(falApp, () => ({ sources: falRates, description: fal })).calls;
-    expect(falCalls.map((call) => `${call.operation.name} ${call.requested}`)).toEqual(["fal.run fal-ai/flux/dev"]);
+    expect(falCalls.map((call) => `${call.operation.name} ${call.requested}`)).toEqual(["fal.run fal-ai/flux/dev", "fal.queue fal-ai/flux/dev"]);
+    // Serving refuses the queue; saving judges it as if it were served.
+    expect(resolveCall({}, undefined, falRates, op("fal", "fal.queue"), "fal-ai/flux/dev", null, { asIfServed: true })).toMatchObject({ kind: "admitted" });
     // Text to speech with no model list: a request naming no model is sent with the default one.
     const elevenlabs = BUILT_IN_PROVIDERS.elevenlabs!;
     const ttsApp = { routing: { providers: { main: { operations: ["elevenlabs.tts"] } } } };
@@ -151,6 +154,18 @@ describe("what serving reaches, and only that (PR #199 round 5)", () => {
     const fixedApp = { routing: { providers: { main: { operations: ["test.fixed"], models: ["gpt-4o", "gpt-4o-mini"] } } } };
     const fixedCalls = reachableCalls(fixedApp, () => ({ sources: priceSources({ type: "openai", rates: null }), description })).calls;
     expect(fixedCalls.map((call) => call.requested)).toEqual(["gpt-4o-mini"]);
+  });
+
+  it("judges a priced-models path by the model it is sent as, after the rewrite, and sends that model (round 6 F11)", () => {
+    const run = op("fal", "fal.run");
+    expect(resolveCall({}, undefined, falRates, run, "flux")).toMatchObject({ kind: "refused", reason: "unpriced_path" });
+    expect(resolveCall({}, { flux: "fal-ai/flux/dev" }, falRates, run, "flux")).toMatchObject({ kind: "admitted", requested: "flux", model: "fal-ai/flux/dev" });
+    expect(resolveCall({}, { "fal-ai/flux/dev": "fal-ai/flux/pro" }, falRates, run, "fal-ai/flux/dev")).toMatchObject({ kind: "refused", reason: "unpriced_path", model: "fal-ai/flux/pro" });
+    const matcher = new ProviderMatcher(fal);
+    const match = matcher.match("POST", "run/flux");
+    expect(match).toMatchObject({ kind: "operation", parts: { model: "flux" } });
+    expect(matcher.upstreamFor("fal.run", { model: "fal-ai/flux/dev" })).toEqual({ host: "main", path: "/fal-ai/flux/dev" });
+    expect(matcher.upstreamFor("fal.run", { model: "fal-ai//dev" })).toBeNull();
   });
 
   it("resolves a preset target as serving does: its operation, the streaming sibling, a fallback left out (F4)", () => {

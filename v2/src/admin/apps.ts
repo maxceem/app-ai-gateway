@@ -237,7 +237,7 @@ export async function checkAppConfig(
     // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
     views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description });
   }
-  judgeApp(config, priced, (slug) => views.get(slug) ?? null);
+  judgeApp(config, stored, priced, (slug) => views.get(slug) ?? null);
   return config;
 }
 
@@ -276,14 +276,20 @@ function storedCallConfig(stored: StoredEntries): AppCallConfig | null {
  * did not let through. Calls on a connection whose rates cannot be read are
  * left out on both sides. Each model a proxy route lists must also be served
  * by some operation it enables, when the save could have changed that.
+ *
+ * Calls are priced against `priced`; the model lists are compared with
+ * `stored`, the app as it is stored. Turning a disabled app on prices every
+ * call (`priced` is empty), but refuses only a model this save newly lists.
  */
-function judgeApp(config: AppConfig, stored: StoredEntries, view: (slug: string) => ConnectionView | null): void {
+function judgeApp(config: AppConfig, stored: StoredEntries, priced: StoredEntries, view: (slug: string) => ConnectionView | null): void {
+  const pricedBefore = storedCallConfig(priced);
   const before = storedCallConfig(stored);
   // A stored app that cannot be read judges nothing, so a rename never fails on it.
-  if (before === null) return;
-  const was = reachableCalls(before, view);
+  if (pricedBefore === null || before === null) return;
+  const was = reachableCalls(pricedBefore, view);
+  const stays = priced === stored ? was : reachableCalls(before, view);
   const now = reachableCalls(config, view);
-  const skipped = new Set([...was.unreadable, ...now.unreadable]);
+  const skipped = new Set([...was.unreadable, ...stays.unreadable, ...now.unreadable]);
   const wasKeys = new Set(was.calls.map(callKey));
   for (const call of now.calls) {
     if (skipped.has(call.slug) || wasKeys.has(callKey(call))) continue;
@@ -292,7 +298,7 @@ function judgeApp(config: AppConfig, stored: StoredEntries, view: (slug: string)
   }
   const servedName = (calls: readonly AppCall[]) => new Set(calls.filter((call) => call.entry === "proxy").map((call) => `${call.slug}\u0000${call.requested}`));
   const servedNow = servedName(now.calls);
-  const servedBefore = servedName(was.calls);
+  const servedBefore = servedName(stays.calls);
   for (const [slug, route] of Object.entries(config.routing.providers)) {
     const connection = view(slug);
     if (skipped.has(slug) || connection === null) continue;

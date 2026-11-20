@@ -363,6 +363,30 @@ describe("validate and check", () => {
     expect((await request(key, "PUT", path, { revision: 3, pricing: { kept: { per_minute: 1 } } })).status).toBe(200);
   });
 
+  it("judges an operation not served yet as if it were (PR #199 round 6 F9)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key);
+    const slug = provider.provider.slug as string;
+    // Chat cannot bill it, but realtime, served in a later release, can: the list saves.
+    const both = apiKeyConfig({ [slug]: { operations: ["openai.chat", "openai.realtime"], models: ["gpt-realtime-whisper"] } });
+    expect((await createApp(key, both)).status).toBe(201);
+    const unpriced = apiKeyConfig({ [slug]: { operations: ["openai.realtime"], models: ["no-such-model"] } });
+    expect(await createApp(key, unpriced)).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+  });
+
+  it("refuses on activation only a model the save newly lists, while pricing every call (PR #199 round 6 F10)", async () => {
+    const key = await seedManagementKey();
+    const { body: provider } = await createProvider(key, { pricing: { house: { input: 1, output: 2 } } });
+    const slug = provider.provider.slug as string;
+    const config = apiKeyConfig({ [slug]: { operations: ["openai.chat"], models: ["house"] } });
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}`;
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "disabled", revision: 1 })).status).toBe(200);
+    // Priced per minute, chat refuses `house` openly when it is asked for: the list stays as it was.
+    expect((await request(key, "PUT", `/v2/admin/providers/${provider.provider.id}`, { revision: 1, pricing: { house: { per_minute: 1 } } })).status).toBe(200);
+    expect((await request(key, "PUT", path, { name: "Mgmt", config, status: "active", revision: 2 })).status).toBe(200);
+  });
+
   it("keeps an unchanged entry's allowances when a disabled app is turned on (PR #199 round 5 F3)", async () => {
     const key = await seedManagementKey();
     const { body: gone } = await createProvider(key);

@@ -297,12 +297,16 @@ function billingAt(operation: OperationDescription, resolved: ResolvedPrice | nu
  * every call a route allows (`reachableCalls`), so the two cannot disagree.
  *
  * - An operation this build does not serve yet is refused (`servedNow`).
- * - A model in a path part whose closed list is the priced models
- *   (`priced_models`, fal's `run/{model...}`) needs a price: a path naming
- *   any other is refused, as if the path were not declared.
+ *   Saving asks `asIfServed`: it judges such an operation as if it were
+ *   served, so it stays strict, and a release that serves it finds its calls
+ *   already judged.
  * - The app's model list judges the model the request names.
- * - Everything after it, the price included, uses the model it is sent as
- *   (`rewrittenModel`: a rewrite is applied once, never to a fixed model).
+ * - Everything after it uses the model it is sent as (`rewrittenModel`: a
+ *   rewrite is applied once, never to a fixed model): the price, and, for a
+ *   model in a path part whose closed list is the priced models
+ *   (`priced_models`, fal's `run/{model...}`), that list. A path whose model
+ *   is sent as one with no price is refused, as if it were not declared,
+ *   exactly as a body's model is judged after its rewrite.
  * - A model priced only in a unit the operation cannot bill was never served
  *   on it, so it is refused even when listed. A model with no price at all is
  *   refused unless the app lists it by name: its price may have gone since,
@@ -365,6 +369,11 @@ function admissionProblem(bill: Billing, listed: boolean): "wrong_unit" | "no_pr
   return null;
 }
 
+/** How a caller resolves a call. `asIfServed`: judge an operation this build does not serve yet as if it did, as saving does. */
+export interface ResolveOptions {
+  readonly asIfServed?: boolean;
+}
+
 export function resolveCall(
   route: RouteModels,
   rewrites: Readonly<Record<string, string>> | undefined,
@@ -372,11 +381,12 @@ export function resolveCall(
   operation: OperationDescription,
   requested: string,
   listed: ReadonlySet<string> | null = listOf(route),
+  options: ResolveOptions = {},
 ): CallResolution {
-  if (!servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
-  if (pricedModelsPath(operation) && resolve(sources, requested) === null) return { kind: "refused", reason: "unpriced_path", model: requested };
+  if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
   if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
+  if (pricedModelsPath(operation) && resolve(sources, model) === null) return { kind: "refused", reason: "unpriced_path", model };
   const bill = billing(operation, sources, model);
   const problem = admissionProblem(bill, listed !== null);
   if (problem !== null) return { kind: "refused", reason: problem, model };
@@ -395,8 +405,9 @@ export function resolveAlternative(
   sources: PriceSources,
   named: string,
   allowed: ReadonlySet<string> | null,
+  options: ResolveOptions = {},
 ): CallResolution {
-  if (!servedNow(operation)) return { kind: "refused", reason: "not_served", model: named };
+  if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: named };
   if (allowed !== null && !allowed.has(named)) return { kind: "refused", reason: "model_not_allowed", model: named };
   const bill = billing(operation, sources, named);
   const problem = admissionProblem(bill, allowed !== null);
@@ -501,6 +512,9 @@ export interface AppCallConfig {
     | undefined;
 }
 
+/** Saving judges every operation, served yet or not (`ResolveOptions`). */
+const SAVING: ResolveOptions = { asIfServed: true };
+
 /** Counts the calls resolved while enumerating, beside `CHECK_PROBES`: tests read it to count work, never time. */
 export const RESOLVED_CALLS = { count: 0 };
 
@@ -514,6 +528,8 @@ export const RESOLVED_CALLS = { count: 0 };
  *   Vercel's fallback models);
  * - each preset target (`resolvePresetTarget`), on the operation it picks and
  *   its streaming sibling.
+ *
+ * Operations this build does not serve yet are judged as if they were.
  *
  * A connection whose rates cannot be read is named in `unreadable`, and its
  * calls are left out: no decision about them can be made. A route with no
@@ -547,13 +563,13 @@ export function reachableCalls(
         const names = candidateModels(operation, named, listed !== null);
         for (const requested of names) {
           RESOLVED_CALLS.count += 1;
-          const call = resolveCall(route, rewrites, view.sources, operation, requested, listed);
+          const call = resolveCall(route, rewrites, view.sources, operation, requested, listed, SAVING);
           if (call.kind === "admitted") found.push({ ...call, slug, entry: "proxy" });
         }
         if (view.description.alternativeModels === undefined) continue;
         for (const other of names) {
           RESOLVED_CALLS.count += 1;
-          const call = resolveAlternative(operation, view.sources, other, listed);
+          const call = resolveAlternative(operation, view.sources, other, listed, SAVING);
           if (call.kind === "admitted") found.push({ ...call, slug, entry: "alternative" });
         }
       }
@@ -607,8 +623,8 @@ export function callGap(call: ReachableCall): Gap | null {
  * refused when made. Each call it admits is judged as any other (`callGap`).
  * Returns null when it may be listed, or the refusal that stands for all:
  * the first refusal over its price (`wrong_unit`, `no_price`,
- * `unpriced_path`). An operation this build does not serve yet judges
- * nothing, so a route enabling only those lists anything.
+ * `unpriced_path`). An operation this build does not serve yet is judged as
+ * if it were, as every save judges it.
  */
 export function listedModelRefusal(
   route: RouteModels,
@@ -619,9 +635,9 @@ export function listedModelRefusal(
 ): CallRefusal | null {
   let refusal: CallRefusal | null = null;
   for (const operation of operations) {
-    const call = resolveCall(route, rewrites, sources, operation, listed);
+    const call = resolveCall(route, rewrites, sources, operation, listed, undefined, SAVING);
     if (call.kind === "admitted") return null;
-    if (refusal === null && call.reason !== "not_served" && call.reason !== "model_not_allowed") refusal = call;
+    if (refusal === null && call.reason !== "model_not_allowed") refusal = call;
   }
   return refusal;
 }
