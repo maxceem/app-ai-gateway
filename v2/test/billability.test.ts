@@ -86,6 +86,13 @@ describe("rewriteTargetBillable", () => {
     expect(rewriteTargetBillable("gpt-4o-mini", [unreadable], types, operationsOf)).toBe(true);
   });
 
+  it("never reads a cost-reporting connection's rates: its provider bills the target itself", () => {
+    let called = 0;
+    const unreadable = { type: "openrouter", rates: () => { called += 1; throw new SyntaxError("bad rates"); } };
+    expect(rewriteTargetBillable("not-in-any-catalog", [unreadable], types, operationsOf)).toBe(true);
+    expect(called).toBe(0);
+  });
+
   it("accepts a target a cost-reporting connection could serve (3b A2)", () => {
     expect(rewriteTargetBillable("openrouter/auto", [{ type: "openrouter", rates: () => null }], types, operationsOf)).toBe(true);
   });
