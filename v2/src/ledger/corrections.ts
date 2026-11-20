@@ -25,7 +25,9 @@
  */
 import { priceUnitsSum, rate, nano, type NanoDollars } from "../money.ts";
 import { resolvePrice, type CustomerRates } from "../pricing/prices.ts";
-import { priceTokens, totalTokens } from "../pricing/tokens.ts";
+import { priceInServedMode, totalTokens } from "../pricing/tokens.ts";
+import { usageFromMeasures } from "../usage/measures.ts";
+import { STANDARD_MODE } from "../usage/service-modes.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
 import { chargeFromRow, insertChargeWithCostStatement, readCharge, type ChargeRow } from "./write.ts";
 
@@ -78,8 +80,10 @@ export function correctionOf(
     readonly unitsDelta: number | null;
     readonly priceSource: PriceSource;
     readonly rates: Readonly<Record<string, number>> | null;
-    readonly measures: Readonly<Record<string, number>>;
+    readonly measures: Readonly<Record<string, number | string>>;
     readonly now: number;
+    /** A pricing correction billed at an estimate, such as a service mode with no price. */
+    readonly estimate?: boolean;
   },
 ): ChargeRow {
   return {
@@ -92,7 +96,7 @@ export function correctionOf(
     costNano: input.costNano,
     measured: "complete",
     priceSource: input.priceSource,
-    priceIsEstimate: input.kind === "pricing" ? false : original.priceIsEstimate,
+    priceIsEstimate: input.kind === "pricing" ? (input.estimate ?? false) : original.priceIsEstimate,
     inputTokens: null,
     cachedInputTokens: null,
     cacheWriteTokens: null,
@@ -239,6 +243,20 @@ export type PricingResult =
   /** Still no price, ours or the customer's. Try again later. */
   | { readonly status: "no_price" };
 
+/** A charge's token columns as a standard-mode usage, for a charge whose measures hold none. */
+function tokenColumns(charge: ChargeRow): ReturnType<typeof usageFromMeasures> {
+  if (charge.inputTokens === null || charge.outputTokens === null) return null;
+  return {
+    usage: {
+      inputTokens: charge.inputTokens,
+      cachedInputTokens: charge.cachedInputTokens ?? 0,
+      cacheWriteTokens: charge.cacheWriteTokens ?? 0,
+      outputTokens: charge.outputTokens,
+    },
+    mode: STANDARD_MODE,
+  };
+}
+
 /**
  * Prices an `unresolved` charge with the first price that exists (S11): the
  * customer's own rate on the connection, then ours. The correction holds the
@@ -280,15 +298,12 @@ export async function priceUnresolvedCharge(
       : (JSON.parse(connection.rates_json) as CustomerRates);
   const resolved = resolvePrice(original.providerType, original.model, customer);
   if (resolved === null) return { status: "no_price" };
-  // Token usage is what step 1a stores; other units are priced when their providers arrive.
-  if (original.inputTokens === null || original.outputTokens === null) return { status: "no_price" };
-  const usage = {
-    inputTokens: original.inputTokens,
-    cachedInputTokens: original.cachedInputTokens ?? 0,
-    cacheWriteTokens: original.cacheWriteTokens ?? 0,
-    outputTokens: original.outputTokens,
-  };
-  const priced = priceTokens(resolved.price, usage);
+  // Priced exactly as the request would have been: the stored usage, with its
+  // modalities and variants, in the service mode that served it.
+  const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
+  if (stored === null) return { status: "no_price" };
+  const { usage } = stored;
+  const priced = priceInServedMode(resolved.price, usage, stored.mode);
   if (priced === null) return { status: "no_price" };
   const correction = correctionOf(original, {
     id: pricingCorrectionId(original.id),
@@ -299,6 +314,7 @@ export async function priceUnresolvedCharge(
     rates: priced.rates,
     measures: { tokens: totalTokens(usage) },
     now: input.now,
+    estimate: priced.estimated,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

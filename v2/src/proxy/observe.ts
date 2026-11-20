@@ -6,6 +6,8 @@
  * the start or the end of a body or stream). Ported from v1's body observer.
  */
 
+import type { ApiStyle } from "../providers/operation.ts";
+
 export const OBSERVER_HEAD_BYTES = 256 * 1024;
 export const OBSERVER_TAIL_BYTES = 1024 * 1024;
 
@@ -83,10 +85,23 @@ export function bodyWindows(): { push(chunk: Uint8Array): void; read(): Observed
   };
 }
 
-/** Whether a kept stream ends with its `data: [DONE]` event: the provider had sent everything. */
-export function streamFinished(body: ObservedText): boolean {
-  const last = body.truncated ? body.tail : body.head;
-  return /(?:^|\n)data:\s*\[DONE\]\s*$/u.test(last);
+/**
+ * How each API style's stream says it has sent everything: its last event.
+ * Gemini has no closing event; its last chunk names why the answer ended.
+ */
+const LAST_EVENT: Readonly<Record<ApiStyle, RegExp>> = {
+  "openai-chat": /^data:\s*\[DONE\]$/u,
+  "openai-completions": /^data:\s*\[DONE\]$/u,
+  "openai-responses": /"type"\s*:\s*"response\.(?:completed|incomplete|failed)"/u,
+  "anthropic-messages": /"type"\s*:\s*"message_stop"/u,
+  "gemini-generate": /"finishReason"\s*:/u,
+};
+
+/** Whether a kept stream ends with its style's last event: the provider had sent everything. */
+export function streamFinished(body: ObservedText, style: ApiStyle): boolean {
+  const text = (body.truncated ? body.tail : body.head).replace(/\r\n/gu, "\n").trimEnd();
+  const last = text.slice(text.lastIndexOf("\n\n") + 1).trim();
+  return LAST_EVENT[style].test(last.split("\n").find((line) => line.startsWith("data:")) ?? "");
 }
 
 /**

@@ -58,7 +58,8 @@ export interface ChargeRow {
   readonly outputTokens: number | null;
   readonly unit: string | null;
   readonly units: number | null;
-  readonly measures: Readonly<Record<string, number>>;
+  /** Measures as integers, plus price keys such as `service_mode` as strings (D7). */
+  readonly measures: Readonly<Record<string, number | string>>;
   readonly rates: Readonly<Record<string, number>> | null;
   readonly sessionMs: number | null;
   readonly correctionKind: CorrectionKind | null;
@@ -247,7 +248,7 @@ export function chargeFromRow(row: Record<string, unknown>): ChargeRow {
     outputTokens: num("output_tokens"),
     unit: text("unit"),
     units: num("units"),
-    measures: json<Record<string, number>>("measures_json") ?? {},
+    measures: json<Record<string, number | string>>("measures_json") ?? {},
     rates: json<Record<string, number>>("rates_json"),
     sessionMs: num("session_ms"),
     correctionKind: (row.correction_kind ?? null) as CorrectionKind | null,

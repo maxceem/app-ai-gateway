@@ -3,6 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated } from "@/test/render";
+import { PROVIDER_TYPES } from "@/lib/providers";
 
 const PROVIDER = {
   id: "prov-1",
@@ -60,11 +61,12 @@ describe("ProvidersPage", () => {
     await userEvent.paste(SECRET);
     await userEvent.click(screen.getByRole("button", { name: /test key/i }));
     expect((await screen.findByRole("status")).textContent).toMatch(/accepted this key/i);
-    expect(bodyOf(fetchMock, "/v2/admin/providers/test", "POST")).toEqual({ type: "elevenlabs", secret: SECRET });
+    // The dialog starts on the first provider in label order.
+    expect(bodyOf(fetchMock, "/v2/admin/providers/test", "POST")).toEqual({ type: PROVIDER_TYPES[0]!.type, secret: SECRET });
 
     await userEvent.click(screen.getByRole("button", { name: /^add provider$/i, hidden: false }));
     await waitFor(() =>
-      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({ type: "elevenlabs", name: "Main", secret: SECRET }),
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({ type: PROVIDER_TYPES[0]!.type, name: "Main", secret: SECRET }),
     );
   });
 

@@ -21,7 +21,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import type { CustomerRates, TokenRateField } from "../pricing/prices.ts";
+import type { CustomerRates, RateField } from "../pricing/prices.ts";
 import { invalidateConnection, upstreamOrigin } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
@@ -64,16 +64,16 @@ export function secretHint(secret: string): string {
 
 /** Dollars per million to stored rates. */
 export function ratesFromPricing(pricing: DollarPricing): CustomerRates {
-  const rates: Record<string, Partial<Record<TokenRateField, number>> & { long_context_threshold?: number }> = {};
+  const rates: Record<string, Partial<Record<RateField, number>> & { long_context_threshold?: number }> = {};
   for (const [model, price] of Object.entries(pricing)) {
-    const entry: Partial<Record<TokenRateField, number>> & { long_context_threshold?: number } = {};
+    const entry: Partial<Record<RateField, number>> & { long_context_threshold?: number } = {};
     for (const [field, value] of Object.entries(price)) {
       if (field === "long_context_threshold") {
         entry.long_context_threshold = value;
         continue;
       }
       try {
-        entry[field as TokenRateField] = rateFromDollarsPerMillion(value);
+        entry[field as RateField] = rateFromDollarsPerMillion(value);
       } catch (error) {
         if (!(error instanceof MoneyError)) throw error;
         throw new GatewayError(400, "invalid_request", `pricing.${model}.${field}: the price is too large`);

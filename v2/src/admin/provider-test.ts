@@ -22,7 +22,7 @@ export type ProbeResult =
 /** `origin` ends with `/`: the connection's base URL, or the provider's own host. */
 export async function probeProviderKey(description: ProviderDescription, origin: string, secret: string): Promise<ProbeResult> {
   if (description.probe === undefined) return { validated: false, reason: "no_probe" };
-  const headers = new Headers();
+  const headers = new Headers(description.probe.headers);
   // A callback, so a key containing `$&` is sent as it is.
   headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
   let response: Response;

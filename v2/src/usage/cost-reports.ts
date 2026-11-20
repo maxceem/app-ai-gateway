@@ -1,0 +1,73 @@
+/**
+ * A provider's own report of what a request cost (ported from v1's
+ * `src/shared/cost-report.ts`). Read from the same response as the usage;
+ * where there is one, the charge is billed at it (`price_source:
+ * provider_usd`), converted to nano-dollars once (D20).
+ *
+ * A negative figure is not a charge: it reads as no report, never as a credit.
+ */
+import type { ProviderCostReport } from "../providers/operation.ts";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * What OpenRouter says the inference cost on a request paid with the
+ * customer's own upstream key (BYOK). OpenRouter's `usage.cost` is then only
+ * its own 5% fee, and the upstream's charge is reported apart; the money that
+ * left the customer is their sum. On any other request it is 0 or absent.
+ */
+function upstreamInferenceCost(usage: Record<string, unknown> | null): number {
+  const upstream = finiteNumber(asRecord(usage?.cost_details)?.upstream_inference_cost);
+  return upstream !== null && upstream > 0 ? upstream : 0;
+}
+
+/** OpenRouter: `usage.cost` on every Chat Completions answer, in dollars. */
+function openRouterCost(root: Record<string, unknown>): number | null {
+  const usage = asRecord(root.usage);
+  const cost = usage ? finiteNumber(usage.cost) : null;
+  // A zero is a real report: free models exist.
+  if (cost === null || cost < 0) return null;
+  return cost + upstreamInferenceCost(usage);
+}
+
+/** xAI's billing unit: `cost_in_usd_ticks` counts ten-billionths of a dollar. */
+const XAI_TICKS_PER_USD = 10_000_000_000;
+
+/**
+ * xAI: `usage.cost_in_usd_ticks`, the amount actually billed after every
+ * discount, at the root of an answer and under `response` on the event that
+ * closes a Responses stream.
+ */
+function xaiCost(root: Record<string, unknown>): number | null {
+  const usage = asRecord(root.usage) ?? asRecord(asRecord(root.response)?.usage);
+  const ticks = usage ? finiteNumber(usage.cost_in_usd_ticks) : null;
+  if (ticks === null || ticks < 0) return null;
+  return ticks / XAI_TICKS_PER_USD;
+}
+
+const READERS: Readonly<Record<ProviderCostReport, (root: Record<string, unknown>) => number | null>> = {
+  openrouter: openRouterCost,
+  xai: xaiCost,
+};
+
+/**
+ * The cost in dollars a response reports, or null when it reports none.
+ * Values come last first, as the usage walk gives them: a stream reports its
+ * cost in its final chunk.
+ */
+export function readProviderCost(values: Iterable<unknown>, report: ProviderCostReport): number | null {
+  const read = READERS[report];
+  for (const value of values) {
+    const root = asRecord(value);
+    if (root === null) continue;
+    const cost = read(root);
+    if (cost !== null) return cost;
+  }
+  return null;
+}

@@ -26,6 +26,9 @@
  * is built, which a test does for every provider.
  */
 
+import type { ServiceModeField, ServiceRegion } from "../usage/service-modes.ts";
+import type { Modality } from "../usage/observation.ts";
+
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** How a request runs, with its own way of charging (plan section 4.3). */
@@ -43,14 +46,35 @@ export type Transport =
   | "websocket"
   | "webrtc";
 
-/** The API styles that have a usage reader. Fallback chains link only operations of the same style. */
+/**
+ * The API styles that have a usage reader. Fallback chains link only
+ * operations of the same style.
+ *
+ * - `openai-chat`: Chat Completions, on OpenAI and every service that speaks it.
+ * - `openai-completions`: legacy and fill-in-the-middle completions. Their
+ *   usage has the Chat Completions shape.
+ * - `openai-responses`: the Responses API, and the APIs shaped like it.
+ * - `anthropic-messages`: the Messages API, on Anthropic and the services
+ *   that offer it.
+ * - `gemini-generate`: Gemini's own `generateContent`.
+ */
 export const API_STYLES = [
   "openai-chat",
+  "openai-completions",
   "openai-responses",
   "anthropic-messages",
   "gemini-generate",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
+
+/**
+ * A provider's own report of what a request cost, read from its response
+ * (plan section 4.2, `price_source: provider_usd`). The readers are in
+ * `../usage/cost-reports.ts`. An operation that has one can be served without
+ * a price of ours.
+ */
+export const PROVIDER_COST_REPORTS = ["openrouter", "xai"] as const;
+export type ProviderCostReport = (typeof PROVIDER_COST_REPORTS)[number];
 
 /** Billed units. Fractional units are stored at a fixed scale (plan section 4.2, Money). */
 export const UNITS = [
@@ -83,8 +107,12 @@ export type RequestMeasure =
  * implemented once in ordinary code.
  */
 export type Meter =
-  /** Usage in the response body or stream, read by the API style's usage reader. */
-  | { readonly kind: "response_json"; readonly style: ApiStyle }
+  /**
+   * Usage in the response body or stream, read by the API style's usage
+   * reader. `providerCost` names the provider's own cost report, read from the
+   * same response, which wins over our price.
+   */
+  | { readonly kind: "response_json"; readonly style: ApiStyle; readonly providerCost?: ProviderCostReport }
   /**
    * A response header with the billed amount, such as ElevenLabs'
    * `character-cost`. `estimate` measures the request first, for budgets
@@ -106,6 +134,22 @@ export type Meter =
   | { readonly kind: "provider_event"; readonly adapter: string };
 
 /**
+ * Where an app's output cap (`max_output_tokens`) is enforced, by the field
+ * each API reads it from. A request asking for more is refused; one asking for
+ * nothing gets the cap written in (v1's clamp styles).
+ *
+ * - `chat`: `max_tokens` and `max_completion_tokens` are both judged, and the
+ *   cap is written to `max_tokens`.
+ * - `chat-completion-tokens`: the same, but the cap is written to
+ *   `max_completion_tokens`, which OpenAI's own Chat Completions reads.
+ * - `responses`: `max_output_tokens`.
+ * - `anthropic`: `max_tokens`.
+ * - `gemini`: `generationConfig.maxOutputTokens`.
+ */
+export const OUTPUT_CAPS = ["chat", "chat-completion-tokens", "responses", "anthropic", "gemini"] as const;
+export type OutputCap = (typeof OUTPUT_CAPS)[number];
+
+/**
  * Changes the gateway makes to a request body. It can only remove, add or
  * lock fields. There is no list of allowed fields, so a new provider
  * parameter works without a gateway release. Field names are dot paths.
@@ -113,10 +157,18 @@ export type Meter =
 export interface RequestPolicy {
   /** Removed if present. */
   readonly remove?: readonly string[];
-  /** Set if absent, such as `stream_options.include_usage`. */
+  /** Set if absent. */
   readonly add?: Readonly<Record<string, unknown>>;
   /** Fields the app's settings can lock to a value, such as `model`. */
   readonly lockable?: readonly string[];
+  /** Where the app's output cap goes. Without it, the operation has no output to cap. */
+  readonly outputCap?: OutputCap;
+  /**
+   * Adds `stream_options.include_usage` to a request that streams, so a Chat
+   * Completions stream ends with its usage. Only when the request streams:
+   * OpenAI refuses `stream_options` on a request that does not.
+   */
+  readonly streamUsage?: boolean;
 }
 
 /** A field of the request: a body field (a dot path), a form field or a query parameter. */
@@ -232,9 +284,40 @@ export interface ProviderAuth {
 export interface ProviderDescription {
   /** Stored as the provider type on connections and charges. */
   readonly type: string;
-  /** Upstream hosts by key. `main` is used when an operation names none. */
+  /** What the console and the CLI call it. */
+  readonly label: string;
+  /**
+   * Upstream hosts by key. `main` is used when an operation names none. A
+   * host may end with a path prefix, such as `openrouter.ai/api`, which every
+   * upstream path is sent under.
+   */
   readonly hosts: { readonly main: string } & Readonly<Record<string, string>>;
   readonly auth: ProviderAuth;
+  /**
+   * The request fields this provider reads a service mode from, such as a
+   * tier (`service_tier`) or a region, and what each value means (plan
+   * section 9, "Service modes, as today"). Values are forwarded unchanged;
+   * this only tells the gateway what to price. Required, so a new provider
+   * has to say: one with no tiers uses `NO_SERVICE_TIERS`.
+   */
+  readonly serviceModes: readonly ServiceModeField[];
+  /**
+   * What the provider's responses say about the mode that served a request,
+   * where that differs from `serviceModes`. `header:<name>` reads a response
+   * header. Without it, `serviceModes` is read against the response too.
+   */
+  readonly servedModes?: readonly ServiceModeField[];
+  /**
+   * Hosts that serve one region at a price of their own, for a connection
+   * whose base URL points at one. Keyed by origin with a trailing `/`.
+   */
+  readonly regionalOrigins?: Readonly<Record<string, ServiceRegion>>;
+  /**
+   * Input modalities this provider always counts in its usage details, as
+   * `<modality>_tokens`. A prompt with no count for one has none of it, and
+   * the rest is text. Only the OpenAI usage shape reads it.
+   */
+  readonly countedInputModalities?: readonly Modality[];
   /**
    * Paths that are always refused, even if a customer lists them: key
    * creation, admin, account and billing paths. Checked before anything else,
@@ -248,7 +331,11 @@ export interface ProviderDescription {
    * A cheap, free `GET` on the main host that needs a valid key, used to test
    * a key before it is saved. Without one, a test answers `no_probe`.
    */
-  readonly probe?: { readonly path: string };
+  readonly probe?: {
+    readonly path: string;
+    /** Headers the provider refuses the probe without, such as Anthropic's API version. */
+    readonly headers?: Readonly<Record<string, string>>;
+  };
 }
 
 // ---------------------------------------------------------------------------

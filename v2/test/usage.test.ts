@@ -1,0 +1,315 @@
+/**
+ * Usage readers, provider cost reports and token pricing, ported from v1's
+ * `usage.test.ts`, `token-variants.test.ts` and `service-modes.test.ts`.
+ * Expected costs are worked out from the shipped price list at test time, so
+ * a routine price update never fails a test of the arithmetic.
+ */
+import { describe, expect, it } from "vitest";
+import { priceUnitsSum, rate, type RateNanoPerMillion } from "../src/money.ts";
+import { customerPrice, listPrice, priceInMode, resolvePrice, type ModelPrice } from "../src/pricing/prices.ts";
+import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
+import { anthropic } from "../src/providers/anthropic.ts";
+import { bytedance, mistral } from "../src/providers/compatible.ts";
+import { gemini } from "../src/providers/gemini.ts";
+import { openai } from "../src/providers/openai.ts";
+import { requestedServiceMode, servedServiceMode } from "../src/proxy/meter.ts";
+import { readProviderCost } from "../src/usage/cost-reports.ts";
+import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
+import type { UsageObservation } from "../src/usage/observation.ts";
+import { readUsage, responseValues, withHeaderVariants } from "../src/usage/readers.ts";
+import { STANDARD_MODE } from "../src/usage/service-modes.ts";
+import type { ApiStyle } from "../src/providers/operation.ts";
+
+function read(text: string, contentType: string, style: ApiStyle, counted?: Parameters<typeof readUsage>[2]): UsageObservation {
+  const usage = readUsage(responseValues({ head: text, tail: "", truncated: false }, contentType), style, counted);
+  expect(usage).not.toBeNull();
+  return usage!;
+}
+
+function sse(events: readonly unknown[]): string {
+  return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+}
+
+function listed(provider: string, model: string): ModelPrice {
+  const price = listPrice(provider, model);
+  expect(price, `${provider}/${model} is on the price list`).not.toBeNull();
+  return price!;
+}
+
+function cost(parts: readonly (readonly [number, RateNanoPerMillion | undefined])[]): number {
+  return priceUnitsSum(parts.map(([units, value]) => [units, value!] as const));
+}
+
+describe("usage readers", () => {
+  it("normalizes OpenAI cached and cache-write tokens as subsets of input", () => {
+    const usage = read(
+      `event: response.completed\n${sse([
+        { type: "response.completed", response: { usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 40, cache_write_tokens: 10 }, output_tokens: 20 } } },
+      ])}`,
+      "text/event-stream",
+      "openai-responses",
+    );
+    expect(usage).toEqual({ inputTokens: 50, cachedInputTokens: 40, cacheWriteTokens: 10, outputTokens: 20 });
+    const luna = listed("openai", "gpt-5.6-luna");
+    expect(priceTokens(luna, usage)?.cost).toBe(
+      cost([
+        [50, luna.rates.input],
+        [40, luna.rates.cached_input],
+        [10, luna.rates.cache_write],
+        [20, luna.rates.output],
+      ]),
+    );
+  });
+
+  it("merges an Anthropic stream's input from message_start with the output of its last delta", () => {
+    const usage = read(
+      sse([
+        { type: "message_start", message: { usage: { input_tokens: 60, cache_read_input_tokens: 30, cache_creation_input_tokens: 10, output_tokens: 1 } } },
+        { type: "content_block_delta", delta: { text: "hi" } },
+        { type: "message_delta", usage: { output_tokens: 20 } },
+        { type: "message_stop" },
+      ]),
+      "text/event-stream",
+      "anthropic-messages",
+    );
+    expect(usage).toEqual({ inputTokens: 60, cachedInputTokens: 30, cacheWriteTokens: 10, outputTokens: 20 });
+  });
+
+  it("reads Gemini's cached prompt tokens as a subset, and thinking as output", () => {
+    expect(
+      read(
+        JSON.stringify([{ candidates: [] }, { usageMetadata: { promptTokenCount: 90, cachedContentTokenCount: 25, candidatesTokenCount: 15 } }]),
+        "application/json",
+        "gemini-generate",
+      ),
+    ).toEqual({ inputTokens: 65, cachedInputTokens: 25, cacheWriteTokens: 0, outputTokens: 15 });
+    expect(
+      read(JSON.stringify({ usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 10, thoughtsTokenCount: 30 } }), "application/json", "gemini-generate"),
+    ).toEqual({ inputTokens: 40, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 40, modalityTokens: { output: { unknown: 10 } } });
+  });
+
+  it("bills generated Gemini image tokens at the image rate, and a text model's at its output rate", () => {
+    const usage = read(
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 12,
+          candidatesTokenCount: 1130,
+          thoughtsTokenCount: 50,
+          candidatesTokensDetails: [
+            { modality: "TEXT", tokenCount: 10 },
+            { modality: "IMAGE", tokenCount: 1120 },
+          ],
+        },
+      }),
+      "application/json",
+      "gemini-generate",
+    );
+    expect(usage.modalityTokens).toEqual({ output: { image: 1120 } });
+    const banana = listed("gemini", "gemini-nano-banana-2.1");
+    expect(priceTokens(banana, usage)?.cost).toBe(
+      cost([
+        [12, banana.rates.input],
+        [60, banana.rates.output],
+        [1120, banana.rates.image_output],
+      ]),
+    );
+    const flash = listed("gemini", "gemini-3.5-flash");
+    expect(priceTokens(flash, usage)?.cost).toBe(cost([[12, flash.rates.input], [1180, flash.rates.output]]));
+  });
+
+  it("bills output an image model did not break down at its image rate, never the text rate", () => {
+    const usage = read(JSON.stringify({ usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1120 } }), "application/json", "gemini-generate");
+    const banana = listed("gemini", "gemini-nano-banana-2.1");
+    expect(priceTokens(banana, usage)?.cost).toBe(cost([[12, banana.rates.input], [1120, banana.rates.image_output]]));
+  });
+
+  it("reads the input modalities a provider declares it always counts", () => {
+    const body = JSON.stringify({ usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { audio_tokens: 30 } } });
+    const usage = read(body, "application/json", "openai-chat", bytedance.countedInputModalities);
+    expect(usage.modalityTokens).toEqual({ input: { audio: 30 } });
+    const seed = listed("bytedance", "seed-2-0-lite-260428");
+    expect(priceTokens(seed, usage)?.cost).toBe(cost([[30, seed.rates.audio_input], [70, seed.rates.input], [5, seed.rates.output]]));
+    // Without the declaration, a usage that names no split is not taken to have one.
+    expect(read(body, "application/json", "openai-chat").modalityTokens).toBeUndefined();
+  });
+
+  it("refuses a count that is not a whole number, in every shape", () => {
+    const values = (value: unknown) => responseValues({ head: JSON.stringify(value), tail: "", truncated: false }, "application/json");
+    expect(readUsage(values({ usage: { prompt_tokens: 1.5, completion_tokens: 1 } }), "openai-chat")).toBeNull();
+    expect(readUsage(values({ usage: { input_tokens: 2, output_tokens: 1.5 } }), "anthropic-messages")).toBeNull();
+    expect(readUsage(values({ usageMetadata: { promptTokenCount: 2.5 } }), "gemini-generate")).toBeNull();
+  });
+
+  it("reports no usage for a body that carries none it can price", () => {
+    const values = (value: unknown) => responseValues({ head: JSON.stringify(value), tail: "", truncated: false }, "application/json");
+    expect(readUsage(values({ usage: { billed_units: { input_tokens: 5 } } }), "openai-chat")).toBeNull();
+    expect(readUsage(values({ choices: [] }), "openai-chat")).toBeNull();
+    expect(readUsage(responseValues({ head: sse([{ type: "message_stop" }]), tail: "", truncated: false }, "text/event-stream"), "anthropic-messages")).toBeNull();
+    // A reported zero is a measured zero, not an unreadable answer.
+    expect(readUsage(values({ usage: { prompt_tokens: 0, completion_tokens: 0 } }), "openai-chat")).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+    });
+  });
+
+  it("reads a truncated JSON answer's usage and served tier from its tail", () => {
+    const tail = `"padding"]},"service_tier":"flex","usage":{"input_tokens":7,"output_tokens":3}}`;
+    const usage = readUsage(responseValues({ head: '{"id":"resp_1","object":"response"', tail, truncated: true }, "application/json"), "openai-responses");
+    expect(usage).toMatchObject({ inputTokens: 7, outputTokens: 3, reportedModes: { service_tier: "flex" }, modesScanned: true });
+  });
+
+  it("reads a truncated Anthropic stream from both of its ends", () => {
+    const head = sse([{ type: "message_start", message: { usage: { input_tokens: 500, output_tokens: 1 } } }, { type: "content_block_delta", delta: { text: "x" } }]);
+    const tail = `"text":"y"}}\n\n${sse([{ type: "message_delta", usage: { output_tokens: 250 } }, { type: "message_stop" }])}`;
+    const usage = readUsage(responseValues({ head, tail, truncated: true }, "text/event-stream"), "anthropic-messages");
+    expect(usage).toMatchObject({ inputTokens: 500, outputTokens: 250 });
+  });
+});
+
+describe("token variants", () => {
+  it("bills Anthropic's one-hour cache write at its own rate, and the rest at the default write rate", () => {
+    const usage = read(
+      JSON.stringify({
+        usage: { input_tokens: 10, cache_creation_input_tokens: 100, cache_creation: { ephemeral_1h_input_tokens: 60, ephemeral_5m_input_tokens: 40 }, output_tokens: 5 },
+      }),
+      "application/json",
+      "anthropic-messages",
+    );
+    expect(usage.tokenVariants).toEqual({ cache_write: { "1h": 60 } });
+    const sonnet = listed("anthropic", "claude-sonnet-5");
+    const priced = priceTokens(sonnet, usage)!;
+    expect(priced.cost).toBe(
+      cost([
+        [10, sonnet.rates.input],
+        [60, sonnet.rates.cache_write_1h],
+        [40, sonnet.rates.cache_write],
+        [5, sonnet.rates.output],
+      ]),
+    );
+    expect(priced.rates.cache_write_1h).toBe(sonnet.rates.cache_write_1h);
+  });
+
+  it("bills OpenAI's 12-hour cache write at its own rate", () => {
+    const usage = read(
+      JSON.stringify({
+        usage: { input_tokens: 100, input_tokens_details: { cache_write_tokens: 50, cache_write_tokens_details: { ttl_12h_tokens: 20 } }, output_tokens: 1 },
+      }),
+      "application/json",
+      "openai-responses",
+    );
+    const astra = listed("openai", "gpt-6.2-astra-law");
+    expect(priceTokens(astra, usage)?.cost).toBe(
+      cost([
+        [50, astra.rates.input],
+        [20, astra.rates.cache_write_12h],
+        [30, astra.rates.cache_write],
+        [1, astra.rates.output],
+      ]),
+    );
+  });
+
+  it("reads Kimi's one-hour share from a header of an answer that does not stream, and never from a stream's", () => {
+    const usage = read(
+      JSON.stringify({ usage: { prompt_tokens: 100, completion_tokens: 1, prompt_tokens_details: { cache_write_tokens: 50 } } }),
+      "application/json",
+      "openai-chat",
+    );
+    const headers = new Headers({ "msh-usage-cache-write-tokens-1h": "30" });
+    expect(withHeaderVariants(usage, headers, "application/json", "moonshot", "openai-chat").tokenVariants).toEqual({ cache_write: { "1h": 30 } });
+    expect(withHeaderVariants(usage, headers, "text/event-stream", "moonshot", "openai-chat").tokenVariants).toBeUndefined();
+    expect(withHeaderVariants(usage, headers, "application/json", "openai", "openai-chat").tokenVariants).toBeUndefined();
+  });
+
+  it("keeps modalities and variants in a charge's measures, so it can be priced again exactly", () => {
+    const usage: UsageObservation = {
+      inputTokens: 70,
+      cachedInputTokens: 30,
+      cacheWriteTokens: 0,
+      outputTokens: 5,
+      modalityTokens: { input: { audio: 40 } },
+      tokenVariants: { cached_input: { audio: 10 } },
+    };
+    const measures = usageMeasures(usage, { tier: "flex", region: "global" });
+    expect(measures.service_mode).toBe("flex");
+    expect(usageFromMeasures(measures)).toEqual({ usage, mode: { tier: "flex", region: "global" } });
+    const seed = listed("bytedance", "seed-2-0-lite-260428");
+    expect(priceTokens(seed, usageFromMeasures(measures)!.usage)?.cost).toBe(priceTokens(seed, usage)?.cost);
+  });
+});
+
+describe("provider cost reports", () => {
+  const values = (...events: unknown[]) => responseValues({ head: sse(events), tail: "", truncated: false }, "text/event-stream").backwards();
+
+  it("reads OpenRouter's cost from a stream's last chunk, adding the upstream's charge on a BYOK request", () => {
+    expect(readProviderCost(values({ choices: [] }, { choices: [], usage: { cost: 0.0012 } }), "openrouter")).toBe(0.0012);
+    expect(readProviderCost(values({ usage: { cost: 0.05, cost_details: { upstream_inference_cost: 1 } } }), "openrouter")).toBe(1.05);
+    // A zero is a real report: free models exist. A negative one is not a charge.
+    expect(readProviderCost(values({ usage: { cost: 0 } }), "openrouter")).toBe(0);
+    expect(readProviderCost(values({ usage: { cost: -1 } }), "openrouter")).toBeNull();
+    expect(readProviderCost(values({ usage: { prompt_tokens: 1 } }), "openrouter")).toBeNull();
+  });
+
+  it("reads xAI's ticks at the root and under a closing Responses event", () => {
+    expect(readProviderCost(values({ usage: { cost_in_usd_ticks: 25_000_000 } }), "xai")).toBe(0.0025);
+    expect(readProviderCost(values({ type: "response.completed", response: { usage: { cost_in_usd_ticks: 10_000_000_000 } } }), "xai")).toBe(1);
+    expect(readProviderCost(values({ usage: { cost_in_usd_ticks: -5 } }), "xai")).toBeNull();
+  });
+});
+
+describe("service modes", () => {
+  const usage: UsageObservation = { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 };
+
+  it("reads the mode a request asks for with the provider's own table, and the region its base URL serves", () => {
+    expect(requestedServiceMode(openai, null, { service_tier: "priority" })).toEqual({ mode: { tier: "fast", region: "global" } });
+    expect(requestedServiceMode(anthropic, null, { speed: "fast", inference_geo: "us" })).toEqual({ mode: { tier: "fast", region: "us" } });
+    expect(requestedServiceMode(gemini, null, { serviceTier: "flex" })).toEqual({ mode: { tier: "flex", region: "global" } });
+    expect(requestedServiceMode(mistral, "https://api.eu.mistral.ai/", {})).toEqual({ mode: { tier: "standard", region: "eu" } });
+    // A value the table does not know leaves the tier at standard, and is reported.
+    expect(requestedServiceMode(openai, null, { service_tier: "turbo" })).toEqual({
+      mode: STANDARD_MODE,
+      unknown: { field: "service_tier", value: "turbo" },
+    });
+  });
+
+  it("believes the mode the response says served the request, but a scanned one only when it is dearer", () => {
+    const fast = { tier: "fast", region: "global" } as const;
+    // OpenAI sheds fast traffic to `default`, and bills it as standard.
+    expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" } }, new Headers()).mode).toEqual(STANDARD_MODE);
+    expect(servedServiceMode(openai, fast, { ...usage, reportedModes: { service_tier: "default" }, modesScanned: true }, new Headers()).mode).toEqual(fast);
+    // Gemini says it in a header too.
+    const priority = { tier: "priority", region: "global" } as const;
+    expect(servedServiceMode(gemini, priority, usage, new Headers({ "x-gemini-service-tier": "standard" })).mode).toEqual(STANDARD_MODE);
+  });
+
+  it("prices a mode the model lists, by its factor", () => {
+    const luna = listed("openai", "gpt-5.6-luna");
+    const flex = priceInServedMode(luna, usage, { tier: "flex", region: "global" })!;
+    expect(flex.estimated).toBe(false);
+    expect(flex.cost).toBe(priceTokens(priceInMode(luna, { tier: "flex", region: "global" })!, usage)!.cost);
+    expect(flex.cost).toBeLessThan(priceTokens(luna, usage)!.cost);
+  });
+
+  it("estimates a mode the model has no price in: a cheaper tier at standard, a dearer one at the dearest priced tier", () => {
+    const sonnet = listed("anthropic", "claude-sonnet-5");
+    const standard = priceTokens(sonnet, usage)!.cost;
+    expect(priceInServedMode(sonnet, usage, { tier: "flex", region: "global" })).toMatchObject({ cost: standard, estimated: true });
+    const luna = listed("openai", "gpt-5.6-luna");
+    const fast = priceTokens(priceInMode(luna, { tier: "fast", region: "global" })!, usage)!.cost;
+    expect(priceInServedMode(luna, usage, { tier: "ultrafast", region: "global" })).toMatchObject({ cost: fast, estimated: true });
+    // A tier in a region composes from the two factors: never below standard.
+    const mythos = listed("anthropic", "claude-mythos-5-2");
+    const both = priceInServedMode(mythos, usage, { tier: "fast", region: "us" })!;
+    expect(both.estimated).toBe(false);
+    expect(both.cost).toBeGreaterThan(priceTokens(priceInMode(mythos, { tier: "fast", region: "global" })!, usage)!.cost);
+  });
+
+  it("applies the list's mode factors to a customer's own rates", () => {
+    const luna = listed("openai", "gpt-5.6-luna");
+    const own = customerPrice({ "gpt-5.6-luna": { input: 1_000_000_000, output: 2_000_000_000 } }, "gpt-5.6-luna", luna)!;
+    const flex = priceInMode(own, { tier: "flex", region: "global" })!;
+    expect(flex.rates.input).toBe(rate(500_000_000));
+    expect(resolvePrice("openai", "gpt-5.6-luna", { "gpt-5.6-luna": { input: 1, output: 1 } })?.source).toBe("customer_rate");
+  });
+});

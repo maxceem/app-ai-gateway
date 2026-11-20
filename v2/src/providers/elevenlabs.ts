@@ -21,8 +21,11 @@ const ttsMeter = {
 
 export const elevenlabs = defineProvider({
   type: "elevenlabs",
+  label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
   auth: { header: "xi-api-key", format: "{key}" },
+  // Step 4 reviews the service modes with the full operation list.
+  serviceModes: [],
   // First draft. Step 4 reviews it with the full operation list.
   refused: [
     "v1/user/*",

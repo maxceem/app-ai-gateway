@@ -18,7 +18,7 @@ import {
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
-import { hasTokenPrice, type CustomerRates } from "../pricing/prices.ts";
+import { hasModelPrice, type CustomerRates } from "../pricing/prices.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
@@ -121,8 +121,14 @@ export async function checkAppConfig(
       }
     }
     const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
-    for (const model of routing.models ?? []) {
-      if (!hasTokenPrice(connection.type, model, rates)) {
+    // An operation whose answers carry the provider's own cost (OpenRouter's,
+    // xAI's) bills on that, so its models need no price of ours (v1).
+    const reported = description.operations.some(
+      (declared) =>
+        routing.operations.includes(declared.name) && declared.meter.kind === "response_json" && declared.meter.providerCost !== undefined,
+    );
+    for (const model of reported ? [] : (routing.models ?? [])) {
+      if (!hasModelPrice(connection.type, model, rates)) {
         throw new GatewayError(
           400,
           "pricing_not_configured",
