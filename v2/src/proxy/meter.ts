@@ -204,13 +204,15 @@ export function responseReader(
   budget: { readonly bytes: number; readonly documents: number } = READ_BUDGET,
 ): ResponseReader | null {
   const { meter } = operation;
-  const metered = meter.kind === "response_json";
-  const style: ApiStyle | undefined = metered ? meter.style : operation.style;
+  // The style whose usage the meter reads from the body: a JSON meter's, or a header meter's body reader.
+  const usageStyle: ApiStyle | undefined = meter.kind === "response_json" ? meter.style : meter.kind === "response_header" ? meter.body?.style : undefined;
+  const metered = usageStyle !== undefined;
+  const style: ApiStyle | undefined = usageStyle ?? operation.style;
   if (style === undefined) return null;
   const body: BodyReader = bodyReader(contentType, style, {
     counted: description.countedInputModalities,
     maxEvents: budget.documents,
-    ...(metered && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
+    ...(meter.kind === "response_json" && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
   });
   const decoder = new TextDecoder();
   let read = 0;
@@ -298,21 +300,38 @@ export function headerUsage(headers: Headers, header: string, unit: Unit): Usage
  * report names, is no report: the call is priced at our rate instead.
  */
 export function attemptCostUsd(operation: OperationDescription, reading: ResponseReading | null, headers: Headers): number | null {
+  const value = reportedCostUsd(operation, reading, headers);
+  if (value === null) return null;
+  // A figure too large to store as a charge is no report, from the body or a
+  // header alike: the meter's own measure prices the call instead.
+  try {
+    fromDollars(value);
+  } catch {
+    log("warn", "provider_cost_unusable", { operation: operation.name });
+    return null;
+  }
+  return value;
+}
+
+/** The provider's own figure as sent: a JSON report read with the body, or a header report. */
+function reportedCostUsd(operation: OperationDescription, reading: ResponseReading | null, headers: Headers): number | null {
   const { meter } = operation;
   if (meter.kind === "response_json") return reading?.providerCostUsd ?? null;
   if (meter.kind !== "response_header" || meter.providerCost === undefined) return null;
   const { header, currency } = meter.providerCost;
   if (currency !== undefined && headers.get(currency.header)?.trim().toLowerCase() !== currency.value.toLowerCase()) return null;
   const value = headerNumber(headers.get(header));
-  if (value === null) return null;
-  // A figure too large to store as a charge is no report: the meter's own measure prices the call instead.
-  try {
-    fromDollars(value);
-  } catch {
-    log("warn", "provider_cost_unusable", { operation: operation.name, header });
-    return null;
-  }
+  // $0 beside a positive billed amount is no report (ElevenLabs before overages
+  // on a plan's included credits): the amount bills instead, never as free.
+  if (value === 0 && (headerNumber(headers.get(meter.header)) ?? 0) > 0) return null;
   return value;
+}
+
+/** A header's usage with the body's beside it: both are the provider's reports. Either alone stands for both. */
+function withBodyUsage(header: UsageObservation | null, body: UsageObservation | null): UsageObservation | null {
+  if (body === null) return header;
+  if (header === null) return body;
+  return { ...body, units: { ...body.units, ...header.units } };
 }
 
 /**
@@ -360,10 +379,11 @@ export function attemptUsage(
       usage = withRequestMeasure(reading, meter.requestMeasure !== undefined ? fromRequest : null);
       break;
     case "response_header": {
-      // Both measures are kept: the amount the header reports, and the
-      // request's estimate. The price bills the reported one where it can,
-      // else the estimate (`priceInServedMode`).
-      const reported = headerUsage(headers, meter.header, meter.unit);
+      // Every measure is kept: the amount the header reports, what the body
+      // reports where the meter reads it, and the request's estimate. The
+      // price bills a reported one where it can, else the estimate
+      // (`priceInServedMode`).
+      const reported = withBodyUsage(headerUsage(headers, meter.header, meter.unit), meter.body !== undefined ? reading : null);
       usage = reported === null ? (fromRequest === null ? null : { ...fromRequest, reportMissing: true }) : withRequestMeasure(reported, fromRequest);
       break;
     }

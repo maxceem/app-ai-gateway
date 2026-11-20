@@ -239,6 +239,12 @@ export function audioUsage(value: unknown, countedInput: readonly Modality[] = N
   return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
 }
 
+/** ElevenLabs' speech to text: the audio's length, `audio_duration_secs`. It reports no tokens. */
+export function elevenLabsTranscriptionUsage(value: unknown): UsageObservation | null {
+  const seconds = nonNegativeNumber(asRecord(value)?.audio_duration_secs);
+  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, noTokens: true };
+}
+
 /**
  * An image API's usage: the OpenAI shape, with image tokens apart, plus the
  * images BytePlus Seedream bills per image and counts as `generated_images`
@@ -395,6 +401,7 @@ export const READ_PATHS: PathTree = {
   service_tier: true,
   response_service_tier: true,
   duration: true,
+  audio_duration_secs: true,
   type: true,
   response: { usage: true, model: true, service_tier: true, response_service_tier: true },
   message: { usage: true, model: true },
@@ -529,6 +536,8 @@ export function usageReducer(style: ApiStyle, counted: readonly Modality[] = NOT
       return lastRead(geminiUsage);
     case "openai-transcription":
       return lastRead((value) => audioUsage(value, counted));
+    case "elevenlabs-transcription":
+      return lastRead(elevenLabsTranscriptionUsage);
     case "openai-images":
       return lastRead((value) => imagesUsage(value, counted));
     case "openai-embeddings":
@@ -569,6 +578,7 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
   "openai-embeddings": null,
   "gemini-embed": null,
   "openai-speech": null,
+  "elevenlabs-transcription": null,
 };
 
 /**

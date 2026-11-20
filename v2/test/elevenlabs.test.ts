@@ -12,6 +12,7 @@ import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { attemptCostUsd, headerNumber } from "../src/proxy/meter.ts";
+import { checkAppConfig } from "../src/admin/apps.ts";
 import { servedNow } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -64,6 +65,11 @@ async function upload(path: string, key: string, fields: Record<string, string |
   for (const [name, value] of Object.entries(fields)) form.append(name, value);
   const request = new Request("https://local.invalid", { method: "POST", body: form });
   return send(path, key, new Uint8Array(await request.arrayBuffer()), { "content-type": request.headers.get("content-type")! });
+}
+
+async function openWorkFor(chargeId: string): Promise<Record<string, unknown>[]> {
+  const { results } = await env.DB.prepare("SELECT * FROM open_work WHERE charge_id = ?").bind(chargeId).all();
+  return results;
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
@@ -151,9 +157,50 @@ describe("ElevenLabs operations", () => {
     expect(listedModelProblem(openai, priceSources({ type: "openai", rates: null }), "whisper-1")).toBeNull();
   });
 
-  it("prices the flash v2 and Scribe v3 models like their siblings (4b S4)", () => {
+  it("prices the flash v2, turbo v2 and Scribe v3 models like their siblings, and Scribe at $0.20 an hour (4b S4, F4)", () => {
     expect(listPrice("elevenlabs", "eleven_flash_v2")!.rates).toEqual(listPrice("elevenlabs", "eleven_flash_v2_5")!.rates);
+    expect(listPrice("elevenlabs", "eleven_turbo_v2")!.rates).toEqual(listPrice("elevenlabs", "eleven_flash_v2_5")!.rates);
     expect(listPrice("elevenlabs", "scribe_v3")!.rates).toEqual(listPrice("elevenlabs", "scribe_v2")!.rates);
+    expect(listPrice("elevenlabs", "scribe_v2")!.rates).toEqual({ per_hour: 200_000_000 });
+  });
+
+  it("treats a model of another listed kind as wrong for the operation, at save and serve alike (4b F2)", () => {
+    const tts = elevenlabs.operations.find((op) => op.name === "elevenlabs.tts")!;
+    const stt = elevenlabs.operations.find((op) => op.name === "elevenlabs.stt")!;
+    const sources = priceSources({ type: "elevenlabs", rates: null });
+    expect(billing(tts, sources, "scribe_v2")).toMatchObject({ problem: "wrong_unit", price: null });
+    expect(billing(stt, sources, "eleven_multilingual_v2")).toMatchObject({ problem: "wrong_unit", price: null, reportsCost: false });
+    expect(billing(tts, sources, "scribe_v2", undefined, "save")).toMatchObject({ problem: "wrong_unit" });
+  });
+
+  it("refuses an app route with no model list whose connection has a model an enabled operation charges only partly (4b F1)", async () => {
+    await seedAccount();
+    const id = crypto.randomUUID().replaceAll("-", "");
+    const slug = `elevenlabs-${id.slice(0, 6)}`;
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO provider_connection
+        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
+       VALUES (?, ?, 'elevenlabs', ?, 'ElevenLabs', 'active', 'x', '5678', NULL, ?, 1, 'usr_test', ?, ?)`,
+    )
+      .bind(id, ACCOUNT_ID, slug, JSON.stringify({ m: { per_credit: 50_000 } }), now, now)
+      .run();
+    const config = (operations: string[], models?: string[]) => ({
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [slug]: { operations, ...(models !== undefined ? { models } : {}) } } },
+    });
+    // Text to speech could bill its credits but not an answer without the header: refused.
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(["elevenlabs.tts"]))).rejects.toMatchObject({ code: "pricing_not_configured" });
+    // Speech to text charges it fully, and a model list that leaves it out is judged by its own models.
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(["elevenlabs.stt"]))).resolves.toBeDefined();
+    await expect(checkAppConfig(env.DB, ACCOUNT_ID, config(["elevenlabs.tts"], ["eleven_multilingual_v2"]))).resolves.toBeDefined();
+  });
+
+  it("reads a JSON cost report too large to store as no report, in the same one place (4b F7)", () => {
+    const op = BUILT_IN_PROVIDERS.openrouter!.operations[0]!;
+    const reading = { usage: null, providerCostUsd: 1e300, closed: null };
+    expect(attemptCostUsd(op, reading, new Headers())).toBeNull();
+    expect(attemptCostUsd(op, { ...reading, providerCostUsd: 0.002 }, new Headers())).toBe(0.002);
   });
 
   it("reads ElevenLabs' dollar figure only in US dollars and as a number 0 or more", () => {
@@ -283,32 +330,50 @@ describe("speech to text through the proxy", () => {
     ]);
   });
 
-  it("bills the credits at the list rate when the dollar figure is in another currency", async () => {
+  it("bills the audio's length at ElevenLabs' $0.20 an hour when the dollar figure is in another currency (4b F4)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
     fetchSpy.mockResolvedValue(
-      Response.json({ text: "Hello." }, { headers: { "character-cost": "5", "fiat-cost-before-overages": "0.0005", "fiat-currency": "eur" } }),
+      Response.json(
+        { text: "Hello.", audio_duration_secs: 4.7090625 },
+        { headers: { "character-cost": "5", "fiat-cost-before-overages": "0.0005", "fiat-currency": "eur" } },
+      ),
     );
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v2", file: new Blob([new Uint8Array(8)]) });
-    // 5 credits at $0.0001 each.
-    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+    // 4.7090625 s is 4,710 ms on whole milliseconds; at $0.20 an hour: 4,710 × 200,000,000 ÷ 3,600,000, rounded up.
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "audio_seconds", cost_nano: 261_667 }]);
   });
 
-  it("bills the credits when ElevenLabs' dollar figure is too large to store, and never retries that figure (4b S2)", async () => {
+  it("bills the audio's length when ElevenLabs' dollar figure is too large to store, and never retries that figure (4b S2, F7)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(
-      Response.json({ text: "Hello." }, { headers: { "character-cost": "5", "fiat-cost-before-overages": "1e300", "fiat-currency": "usd" } }),
+      Response.json(
+        { text: "Hello.", audio_duration_secs: 4.7090625 },
+        { headers: { "character-cost": "5", "fiat-cost-before-overages": "1e300", "fiat-currency": "usd" } },
+      ),
     );
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v2", file: new Blob([new Uint8Array(8)]) });
-    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "list_rate", unit: "audio_seconds", cost_nano: 261_667 }]);
     expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_unusable"));
   });
 
-  it("bills Scribe v3's credits at the list rate when no dollar figure comes (4b S4)", async () => {
+  it("reads a dollar figure of $0 beside positive credits as no report, so the audio's length bills (4b F5)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
-    fetchSpy.mockResolvedValue(Response.json({ text: "Hello." }, { headers: { "character-cost": "5" } }));
+    fetchSpy.mockResolvedValue(
+      Response.json(
+        { text: "Hello.", audio_duration_secs: 4.7090625 },
+        { headers: { "character-cost": "5", "fiat-cost-before-overages": "0", "fiat-currency": "usd" } },
+      ),
+    );
+    await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v2", file: new Blob([new Uint8Array(8)]) });
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "list_rate", unit: "audio_seconds", cost_nano: 261_667 }]);
+  });
+
+  it("bills Scribe v3's audio at the list rate per hour when no dollar figure comes (4b S4, F4)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
+    fetchSpy.mockResolvedValue(Response.json({ text: "Hello.", audio_duration_secs: 4.7090625 }, { headers: { "character-cost": "5" } }));
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v3", file: new Blob([new Uint8Array(8)]) });
-    expect(await chargesOf(appId)).toMatchObject([{ model: "scribe_v3", price_source: "list_rate", unit: "credits", cost_nano: 500_000 }]);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "scribe_v3", price_source: "list_rate", unit: "audio_seconds", cost_nano: 261_667 }]);
   });
 
   it("never sends a client's single-use token, and keeps the other query options (4b S5)", async () => {
@@ -323,13 +388,26 @@ describe("speech to text through the proxy", () => {
     expect(sent.searchParams.get("enable_logging")).toBe("false");
   });
 
-  it("leaves the cost unresolved and logged when a model with no price of ours gets no dollar figure", async () => {
+  it("leaves a model with no price of ours and no dollar figure unresolved, and asks the sweep to price it later (4b F3)", async () => {
     const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     fetchSpy.mockResolvedValue(Response.json({ text: "Hello." }, { headers: { "character-cost": "5" } }));
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "scribe_v9", file: new Blob([new Uint8Array(8)]) });
-    expect(await chargesOf(appId)).toMatchObject([{ status: "ok", price_source: "unresolved", cost_nano: null }]);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ status: "ok", price_source: "unresolved", cost_nano: null });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
+    expect(await openWorkFor(String(charge!.id))).toMatchObject([{ kind: "unresolved" }]);
+  });
+
+  it("asks the sweep to price a charge whose reported unit the price cannot bill yet (4b F3)", async () => {
+    const { appId, slug, key } = await setup({ operations: ["elevenlabs.stt"] }, { m: { per_credit: 100_000 } });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // No credits header: only the audio's length, which a price in credits cannot bill.
+    fetchSpy.mockResolvedValue(Response.json({ text: "Hello.", audio_duration_secs: 4.7 }));
+    await upload(`/v2/apps/${appId}/proxy/${slug}/v1/speech-to-text`, key, { model_id: "m", file: new Blob([new Uint8Array(8)]) });
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ status: "ok", price_source: "unresolved", cost_nano: null });
+    expect(await openWorkFor(String(charge!.id))).toMatchObject([{ kind: "unresolved" }]);
   });
 
   it("bills credits at the customer's rate when ElevenLabs sends no dollar figure", async () => {

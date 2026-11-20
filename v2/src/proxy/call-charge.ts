@@ -97,6 +97,19 @@ export interface AttemptOutcome {
   readonly latencyMs: number | null;
 }
 
+/** Whether a usage counts something other than tokens: credits, characters, seconds or images. */
+function hasUnitCount(usage: UsageObservation): boolean {
+  if ((usage.audioSeconds ?? 0) > 0 || (usage.images ?? 0) > 0) return true;
+  return Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0);
+}
+
+/** Whether a usage measures anything a price could bill: tokens, or a count in another unit. */
+function hasMeasure(usage: UsageObservation): boolean {
+  if (hasUnitCount(usage)) return true;
+  if (usage.noTokens === true) return false;
+  return usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens > 0;
+}
+
 /** `priceInServedMode`, with a figure too large to price read as no price, so the caller can fall back. */
 function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceMode, doubt: boolean): ReturnType<typeof priceInServedMode> {
   try {
@@ -162,13 +175,32 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   } else if (usage !== null) {
     // Set below, from the measure the pricing result billed.
     measured = "complete";
+    // An unresolved charge with a measure is always retried: the sweep prices
+    // it once a price for that measure exists (the customer adds a rate).
+    const retried = (): void => {
+      openWork.push({
+        id: `unresolved:${id}`,
+        kind: "unresolved",
+        accountId: attempt.accountId,
+        appId: attempt.appId,
+        ownerType: "call",
+        ownerId: attempt.requestId,
+        chargeId: id,
+        detail: { providerType: attempt.providerType, model: attempt.model },
+        dueAt: now + UNRESOLVED_FIRST_TRY_MS,
+        createdAt: now,
+      });
+    };
     if (attempt.price !== null && priced === null) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
-      // Its price would multiply counters that were never sent, and no later
-      // price can fix that, so the sweep is not asked (v1).
+      // Tokens priced by time would multiply counters that were never sent, so
+      // a token count alone is not retried (v1). A count in another unit
+      // (credits, seconds, images) is: a rate for it may be added later.
       costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
-      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure" });
+      const unitCount = hasUnitCount(usage);
+      if (unitCount) retried();
+      log("error", "usage_unresolved_cost", { ...facts, reason: "no_priced_measure", retried: unitCount });
     } else if (priced !== null) {
       costed = {
         costNano: priced.cost,
@@ -179,23 +211,15 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
       logModes(attempt, servedMode, outcome.servedModeUnknown, priced.estimated, facts);
     } else {
       costed = { costNano: null, priceSource: "unresolved", estimate: false, rates: null };
-      if (attempt.reportsCost && attempt.price === null) {
-        // The provider's answer was meant to carry its cost, and did not.
-        log("error", "usage_unresolved_cost", { ...facts, reason: "no_cost_reported" });
+      if (attempt.reportsCost) {
+        // The provider's answer was meant to carry its cost, and did not. With
+        // a measure beside it, a rate added later still prices it.
+        const measured = hasMeasure(usage);
+        if (measured) retried();
+        log("error", "usage_unresolved_cost", { ...facts, reason: "no_cost_reported", retried: measured });
       } else {
         // A price will be ours or the customer's: the sweep tries again later.
-        openWork.push({
-          id: `unresolved:${id}`,
-          kind: "unresolved",
-          accountId: attempt.accountId,
-          appId: attempt.appId,
-          ownerType: "call",
-          ownerId: attempt.requestId,
-          chargeId: id,
-          detail: { providerType: attempt.providerType, model: attempt.model },
-          dueAt: now + UNRESOLVED_FIRST_TRY_MS,
-          createdAt: now,
-        });
+        retried();
         log("error", "usage_unpriced_model", facts);
       }
     }

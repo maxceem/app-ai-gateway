@@ -65,6 +65,8 @@ export type Transport =
  *   (`generated_images`) for a model priced per image.
  * - `openai-embeddings`: embeddings, billed on their input tokens.
  * - `gemini-embed`: Gemini's own `embedContent`, usage in `usageMetadata`.
+ * - `elevenlabs-transcription`: ElevenLabs' speech to text, whose answer
+ *   names the audio's length in `audio_duration_secs`.
  * - `openai-speech`: text to speech. Usage in the OpenAI shape when the answer
  *   is a stream of events. A plain audio answer reports none, so its cost is
  *   unknown, as in v1, until step 4 measures the request.
@@ -80,6 +82,7 @@ export const API_STYLES = [
   "openai-embeddings",
   "gemini-embed",
   "openai-speech",
+  "elevenlabs-transcription",
 ] as const;
 export type ApiStyle = (typeof API_STYLES)[number];
 
@@ -167,6 +170,12 @@ export type Meter =
       readonly unit: Unit;
       readonly estimate?: RequestMeasure & { readonly unit: Unit };
       readonly providerCost?: HeaderCostReport;
+      /**
+       * A reader of the answer's body, whose measures are kept beside the
+       * header's: ElevenLabs' speech to text reports its audio's length. `units`
+       * are the units the reader reports.
+       */
+      readonly body?: { readonly style: ApiStyle; readonly units: readonly Unit[] };
     }
   /** For providers that report no usage: measured from the request. */
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)

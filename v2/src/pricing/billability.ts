@@ -162,9 +162,18 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
  */
 type Reach = "full" | "partial" | "none";
 
+/**
+ * The one kind rule: whether an operation serves a model of its price's kind
+ * (`modelKinds`). A model the price list names as another kind is
+ * `wrong_unit` for the operation everywhere, at save, serve and charge. A
+ * price with no kind is judged by its rates alone.
+ */
+function kindServed(operation: OperationDescription, price: ModelPrice): boolean {
+  return operation.modelKinds === undefined || price.kind === undefined || operation.modelKinds.includes(price.kind);
+}
+
 function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined, costCounts: boolean): Reach {
-  // A model the price list names as another kind is not one this operation serves.
-  if (operation.modelKinds !== undefined && price.kind !== undefined && !operation.modelKinds.includes(price.kind)) return "none";
+  if (!kindServed(operation, price)) return "none";
   if (costCounts && reportsCost(operation)) return "full";
   let some = false;
   for (const way of meterCases(operation)) {
@@ -194,8 +203,7 @@ function reach(operation: OperationDescription, price: ModelPrice, mode: Service
 function firstGap(
   operations: readonly OperationDescription[],
   price: ModelPrice,
-  costCounts = false,
-  partialBlocks = true,
+  { costCounts = false, partialBlocks = true, needsFull = true }: { costCounts?: boolean; partialBlocks?: boolean; needsFull?: boolean } = {},
 ): { readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string } | null {
   const modes = servedModes(price);
   // An operation sees only the keys it reads, so many combinations are the same check: each is run once.
@@ -212,7 +220,7 @@ function firstGap(
       const reaches = operations.map((operation) => reachOf(operation, mode, candidate.values));
       const partly = partialBlocks ? reaches.indexOf("partial") : -1;
       if (partly !== -1) return { values: candidate.values, mode: serviceModeName(mode), operation: operations[partly]!.name };
-      if (!reaches.includes("full")) return { values: candidate.values, mode: serviceModeName(mode) };
+      if (needsFull && !reaches.includes("full")) return { values: candidate.values, mode: serviceModeName(mode) };
     }
   }
   return null;
@@ -249,6 +257,8 @@ export function billing(operation: OperationDescription, connection: PriceSource
 
 /** `billing`, given the model's resolved price: the one place the rule is written. */
 function billingAt(operation: OperationDescription, resolved: ResolvedPrice | null, mode?: ServiceMode, check: BillingCheck = "serve"): Billing {
+  // A model of another kind is not this operation's, whatever it reports.
+  if (resolved !== null && !kindServed(operation, resolved.price)) return { price: null, reportsCost: false, problem: "wrong_unit" };
   const cost = reportsCost(operation);
   const price = resolved !== null && operationBillable(operation, resolved.price, check) ? resolved : null;
   if (price === null) {
@@ -284,8 +294,30 @@ export function listedModelProblem(
     return refused === undefined ? null : { operation: refused.name };
   }
   // One rule with saving a connection's rates: some operation charges it fully, and none only partly.
-  const gap = firstGap(operations, resolved.price, true);
+  const gap = firstGap(operations, resolved.price, { costCounts: true });
   return gap === null ? null : gap.operation !== undefined ? { operation: gap.operation } : {};
+}
+
+/**
+ * For a route with no model list, which allows any model: the first model
+ * with the connection's own rate that an enabled operation charges only
+ * partly, or null. Serving stays lenient (a call whose fallback cannot be
+ * priced was served in v1), so the app save closes the hole: no operation it
+ * enables may reach such a model in some ways and not others. A model none of
+ * them reaches is fine; its calls are refused when made.
+ */
+export function partialCustomerModel(
+  operations: readonly OperationDescription[],
+  connection: PriceSources,
+): { readonly model: string; readonly operation: string } | null {
+  if (operations.length === 0) return null;
+  for (const model of Object.keys(connection.rates() ?? {})) {
+    const resolved = resolve(connection, model);
+    if (resolved === null) continue;
+    const gap = firstGap(operations, resolved.price, { costCounts: true, needsFull: false });
+    if (gap?.operation !== undefined) return { model, operation: gap.operation };
+  }
+  return null;
 }
 
 /**
@@ -366,6 +398,6 @@ export function savedPriceProblem(
   }
   // The connection does not know which operations an app will enable: a model with no listed kind
   // needs only one it charges fully; the app save refuses the ones it charges partly.
-  const gap = firstGap(operations, price, false, price.kind !== undefined);
+  const gap = firstGap(operations, price, { partialBlocks: price.kind !== undefined });
   return gap === null ? null : { kind: "bills_nothing", ...gap };
 }

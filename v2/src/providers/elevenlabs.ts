@@ -13,8 +13,9 @@
  *   states both, so the estimate and the header bill alike.
  * - Speech to text is a form upload. ElevenLabs also sends its own dollar
  *   figure for it, `fiat-cost-before-overages`, which is billed as it is
- *   (`provider_usd`, plan section 4.2). Without it, its credits are priced at
- *   the model's rate per credit, as text to speech's are.
+ *   (`provider_usd`, plan section 4.2). Without it, the audio's length in
+ *   the answer (`audio_duration_secs`) is priced at the list rate per hour,
+ *   or its credits at a customer's rate per credit.
  *
  * v1 never served ElevenLabs, so nothing here replaces anything v1 did.
  */
@@ -113,6 +114,8 @@ export const elevenlabs = defineProvider({
         header: "character-cost",
         unit: "credits",
         providerCost: { header: "fiat-cost-before-overages", currency: { header: "fiat-currency", value: "usd" } },
+        // The answer names the audio's length, which the list price bills by the hour.
+        body: { style: "elevenlabs-transcription", units: ["audio_seconds"] },
       },
     }),
   ],

@@ -116,7 +116,9 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
     }
     case "response_header": {
       const estimate = meter.estimate?.unit;
-      const present = withEstimate(reported(meter.unit), estimate);
+      // What the body reports comes with the header, as the provider sends both.
+      const body = Object.fromEntries((meter.body?.units ?? []).map((unit) => [unit, sample(unit)]));
+      const present = withEstimate({ ...NO_TOKENS, units: { [meter.unit]: sample(meter.unit), ...body } }, estimate);
       if (estimate === undefined) return [[present]];
       return [[present, { ...withEstimate(NO_TOKENS, estimate), reportMissing: true }]];
     }
