@@ -19,6 +19,7 @@
 import type { ObservedText } from "../proxy/observe.ts";
 import type { ApiStyle } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenVariants, UsageObservation } from "./observation.ts";
+import { anchoredRootFields, type AnchoredText } from "./root-fields.ts";
 import { VARIANTS } from "./token-rates.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -401,7 +402,9 @@ function sseData(block: string): string | null {
 function sseEvents(text: string): { forwards(): Iterable<unknown>; backwards(): Iterable<unknown>; cut(): Iterable<unknown> } {
   const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
   const parsed = new Array<unknown>(blocks.length);
-  const broken: string[] = [];
+  // Events whose data is not whole JSON: each starts where its event starts,
+  // and ended when a blank line follows it inside the text.
+  const broken: { data: string; ended: boolean }[] = [];
   function valueAt(index: number): unknown {
     const seen = parsed[index];
     if (seen !== undefined) return seen;
@@ -411,7 +414,7 @@ function sseEvents(text: string): { forwards(): Iterable<unknown>; backwards(): 
       try {
         value = JSON.parse(data) as unknown;
       } catch {
-        broken.push(data);
+        broken.push({ data, ended: index < blocks.length - 1 });
       }
     }
     parsed[index] = value;
@@ -433,8 +436,8 @@ function sseEvents(text: string): { forwards(): Iterable<unknown>; backwards(): 
     *cut() {
       // Every block is parsed by now, so `broken` is complete.
       for (let index = 0; index < blocks.length; index += 1) valueAt(index);
-      for (const data of broken) {
-        const document = rootFields(data, data);
+      for (const { data, ended } of broken) {
+        const document = rootFields({ head: data, ...(ended ? { tail: data } : {}) });
         if (document) yield document;
       }
     },
@@ -467,177 +470,40 @@ function carriesMessageUsage(value: unknown): boolean {
  * read as a whole one, so the events are only those after the first boundary.
  * What comes before it is kept apart as `cut`.
  */
-function splitTail(tail: string): { cut: string; events: string } {
+/**
+ * A kept tail's first event, cut at its start, and the whole events after it.
+ * `ended` says the cut event did end inside the tail, so its end is known.
+ */
+function splitTail(tail: string): { cut: string; ended: boolean; events: string } {
   const normalized = tail.replace(/\r\n/gu, "\n");
   const boundary = normalized.indexOf("\n\n");
-  return boundary === -1 ? { cut: normalized, events: "" } : { cut: normalized.slice(0, boundary), events: normalized.slice(boundary + 2) };
+  return boundary === -1
+    ? { cut: normalized, ended: false, events: "" }
+    : { cut: normalized.slice(0, boundary), ended: true, events: normalized.slice(boundary + 2) };
 }
-
-/** The JSON object starting at `start`, or null when it does not close inside the text. */
-function jsonObjectAt(text: string, start: number): string | null {
-  let depth = 0;
-  let inString = false;
-  for (let index = start; index < text.length; index += 1) {
-    const character = text[index];
-    if (inString) {
-      if (character === "\\") index += 1;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') inString = true;
-    else if (character === "{") depth += 1;
-    else if (character === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, index + 1);
-    }
-  }
-  return null;
-}
-
-const TAIL_USAGE_KEYS = ["usage", "usageMetadata"] as const;
 
 /**
  * The root fields a reader or the meter needs from a document it cannot parse
  * whole: its usage objects, and the values naming what served it and how much
- * (the model, the tier, a transcription's duration). This lookup is the only
- * way any reader gets a root field of such a document (`rootFields`). Each
- * value is returned raw, whatever its type: the reader judges it, so a tier
- * that is a number or empty is present but unusable, which means unknown.
+ * (the model, the tier, a transcription's duration). `./root-fields.ts` is
+ * the only way any reader gets them, through explicit anchors. Each value is
+ * raw, whatever its type: the reader judges it, so a tier that is a number or
+ * empty is present but unusable, which means unknown.
  */
-const ROOT_KEYS: readonly string[] = [...TAIL_USAGE_KEYS, "model", "service_tier", "duration"];
+const ROOT_KEYS: readonly string[] = ["usage", "usageMetadata", "model", "service_tier", "duration"];
 
-/** A JSON scalar at the start of a value: a string, a number, true, false or null. */
-const JSON_SCALAR = /^\s*:\s*("(?:[^"\\]|\\.){0,400}"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/u;
-
-/**
- * The root field `key` whose value starts right after `end` (the key's closing
- * quote), if it is one of the root fields and its value is whole: an object,
- * or a scalar. Undefined otherwise.
- */
-function rootFieldValue(text: string, key: string, end: number): { value: unknown; length: number } | undefined {
-  if (!ROOT_KEYS.includes(key)) return undefined;
-  const object = /^\s*:\s*\{/u.exec(text.slice(end + 1));
-  if (object) {
-    const whole = jsonObjectAt(text, end + 1 + object[0].length - 1);
-    if (!whole) return undefined;
-    try {
-      return { value: JSON.parse(whole) as unknown, length: object[0].length + whole.length - 1 };
-    } catch {
-      return undefined;
-    }
-  }
-  const scalar = JSON_SCALAR.exec(text.slice(end + 1));
-  if (!scalar) return undefined;
-  try {
-    return { value: JSON.parse(scalar[1]!) as unknown, length: scalar[0].length };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The root fields (`ROOT_KEYS`) of a document's kept
- * head: the top-level `usage` or `usageMetadata` objects, the `model`, the tier,
- * for an answer that reports its usage first and then a large payload, such
- * as an image API's base64 (`gpt-image-1`). Only keys of the root object
- * count, never one nested in the answer's content, which the client may have
- * written. Null when the head holds none whole.
- */
-function headUsageDocument(head: string): Record<string, unknown> | null {
-  const start = head.search(/\S/u);
-  if (start === -1 || head[start] !== "{") return null;
-  const document: Record<string, unknown> = {};
-  let depth = 0;
-  for (let at = start; at < head.length; at += 1) {
-    const character = head[at];
-    if (character === '"') {
-      // A string: a key of the root object when it is followed by a colon at depth 1.
-      let end = at + 1;
-      while (end < head.length && head[end] !== '"') end += head[end] === "\\" ? 2 : 1;
-      if (end >= head.length) break;
-      const key = head.slice(at + 1, end);
-      at = end;
-      if (depth !== 1 || Object.hasOwn(document, key)) continue;
-      const found = rootFieldValue(head, key, end);
-      if (found === undefined) continue;
-      document[key] = found.value;
-      at = end + found.length;
-    } else if (character === "{" || character === "[") {
-      depth += 1;
-    } else if (character === "}" || character === "]") {
-      depth -= 1;
-    }
-  }
-  if (Object.keys(document).length === 0) return null;
-  SCANNED.add(document);
-  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
-  return document;
-}
-
-/** Whether the quote at `at` is escaped: an odd run of backslashes before it. */
-function escapedQuote(text: string, at: number): boolean {
-  let slashes = 0;
-  for (let index = at - 1; index >= 0 && text[index] === "\\"; index -= 1) slashes += 1;
-  return slashes % 2 === 1;
-}
-
-/**
- * The root fields (`ROOT_KEYS`) found in a
- * document's kept tail, read backwards from where the root object ends, so only keys of the
- * root count: a `usage` nested in the answer's content (a Gemini function
- * call's arguments, say) never does. The tail's start may be cut, but every
- * position read backwards from the real end is placed exactly. Null when the
- * tail holds none whole.
- */
-function rootTailUsageDocument(tail: string): Record<string, unknown> | null {
-  let at = tail.length - 1;
-  while (at >= 0 && /\s/u.test(tail[at]!)) at -= 1;
-  if (tail[at] !== "}") return null;
-  const document: Record<string, unknown> = {};
-  let depth = 0;
-  for (; at >= 0; at -= 1) {
-    const character = tail[at];
-    if (character === "}" || character === "]") depth += 1;
-    else if (character === "{" || character === "[") {
-      depth -= 1;
-      if (depth === 0) break;
-    } else if (character === '"' && !escapedQuote(tail, at)) {
-      // A whole string, read back to its opening quote.
-      const end = at;
-      at -= 1;
-      while (at >= 0 && !(tail[at] === '"' && !escapedQuote(tail, at))) at -= 1;
-      if (at < 0) break;
-      const key = tail.slice(at + 1, end);
-      if (depth !== 1 || Object.hasOwn(document, key)) continue;
-      const found = rootFieldValue(tail, key, end);
-      if (found !== undefined) document[key] = found.value;
-    }
-  }
-  if (Object.keys(document).length === 0) return null;
-  SCANNED.add(document);
-  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
-  return document;
-}
-
-/**
- * The root fields of a document that could not be parsed whole, each found on
- * its own: in `tail`, read backwards from where the root ends, else in `head`,
- * read forwards from where it starts. A field found in either is in the one
- * document returned, whichever window it was in. For a single cut piece of
- * text, pass it as both. Null when no root field is whole in either.
- */
-function rootFields(head: string, tail: string): Record<string, unknown> | null {
-  const fromTail = rootTailUsageDocument(tail);
-  const fromHead = headUsageDocument(head);
-  const root: Record<string, unknown> = {};
-  for (const key of ROOT_KEYS) {
-    const value = fromTail !== null && Object.hasOwn(fromTail, key) ? fromTail[key] : fromHead?.[key];
-    if (value !== undefined) root[key] = value;
-  }
-  if (Object.keys(root).length === 0) return null;
+function rootFields(text: AnchoredText): Record<string, unknown> | null {
+  const root = anchoredRootFields(text, ROOT_KEYS);
+  if (root === null) return null;
   SCANNED.add(root);
   for (const value of Object.values(root)) if (typeof value === "object" && value !== null) SCANNED.add(value);
   return root;
+}
+
+/** Whether a body was read to its real end: neither the app nor the provider cut it. */
+function readToEnd(body: ObservedText): boolean {
+  const flags = body as Partial<{ clientAborted: boolean; upstreamFailed: boolean }>;
+  return flags.clientAborted !== true && flags.upstreamFailed !== true;
 }
 
 /** The values of one response, parsed where a reader reaches one and nowhere else. */
@@ -675,7 +541,8 @@ export function responseValues(body: ObservedText, contentType: string): Respons
         if (tail) yield* tail.backwards();
         if (split) {
           // The duration a transcription's cut event still shows counts too, as v1.
-          cutDocument ??= rootFields(split.cut, split.cut);
+          // Cut at its start, so only its end anchors it, when it did end.
+          cutDocument ??= split.ended ? rootFields({ tail: split.cut }) : null;
           if (cutDocument) yield cutDocument;
         }
         yield* head.backwards();
@@ -690,15 +557,16 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     // One root, read field by field: each root field is taken from the kept
     // tail, where most answers report, else from the top of the kept head,
     // for an answer that reports it before a large payload.
-    const document = rootFields(body.head, body.tail);
+    // The head starts at the body's start; the tail ends at its end only when it was read to the end.
+    const document = rootFields({ head: body.head, ...(readToEnd(body) ? { tail: body.tail } : {}) });
     return documentValues(document === null ? [] : [document]);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.head) as unknown;
   } catch {
-    // A body whose JSON never closed (a cut answer) may still end with its usage.
-    const document = rootFields(body.head, body.head);
+    // A body whose JSON never closed (a cut answer): its start is known, its end is not.
+    const document = rootFields({ head: body.head });
     return documentValues(document === null ? [] : [document]);
   }
   return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
