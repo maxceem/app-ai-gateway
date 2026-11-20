@@ -142,12 +142,22 @@ export const ModelPricingSchema = z
     if ((entry.input === undefined) !== (entry.output === undefined)) {
       context.addIssue({ code: "custom", message: "input and output are priced together" });
     }
-    const keyed = Object.values(price.by ?? {}).flatMap((table) => Object.values(table)) as Record<string, unknown>[];
-    const billing = [entry, ...keyed].some(
-      (rates) => (rates.input !== undefined && rates.output !== undefined) || UNIT_RATE_FIELDS.some((field) => rates[field] !== undefined),
+    const bills = (rates: Record<string, unknown>) =>
+      (rates.input !== undefined && rates.output !== undefined) || UNIT_RATE_FIELDS.some((field) => rates[field] !== undefined);
+    const keyed = Object.entries(price.by ?? {}).flatMap(([key, table]) =>
+      Object.entries(table).map(([value, rates]) => ({ key, value, rates: rates as Record<string, unknown> })),
     );
-    if (!billing) {
+    if (!bills(entry) && !keyed.some(({ rates }) => bills(rates))) {
       context.addIssue({ code: "custom", message: "Give input and output token rates, or a unit rate such as per_minute or per_million_characters" });
+    }
+    // Each value a key names must leave a price that bills, once its rates
+    // replace the model's own (a value's unit rate replaces every unit rate).
+    for (const { key, value, rates } of keyed) {
+      const states = UNIT_RATE_FIELDS.some((field) => rates[field] !== undefined);
+      const merged: Record<string, unknown> = { ...entry };
+      if (states) for (const field of UNIT_RATE_FIELDS) delete merged[field];
+      Object.assign(merged, rates);
+      if (!bills(merged)) context.addIssue({ code: "custom", path: ["by", key, value], message: "This value leaves no rate that bills: give input and output, or a unit rate" });
     }
     if (price.long_context_threshold === undefined && Object.keys(entry).some((field) => field.startsWith("long_") && field !== "long_context_threshold")) {
       context.addIssue({ code: "custom", message: "Long-context rates need long_context_threshold" });

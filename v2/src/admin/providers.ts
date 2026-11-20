@@ -27,6 +27,7 @@ import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
+import { parseServiceModeName } from "../usage/service-modes.ts";
 import {
   keyOrigin,
   readCloudflareGateway,
@@ -105,6 +106,36 @@ function mapTables(
   return Object.fromEntries(Object.entries(tables).map(([name, rates]) => [name, convert(rates as Record<string, unknown>, `${where}.${name}`)]));
 }
 
+/**
+ * Refuses a price whose rates, scaled by its service modes, leave the range a
+ * rate can be stored and priced in: each mode's factor, and a tier's in a
+ * region (the tier's rates times the region's factor), as `priceInMode`
+ * composes them.
+ */
+function assertFactoredRatesFit(entry: Readonly<Record<string, unknown>>, where: string): void {
+  const modes = (entry.modes ?? {}) as Record<string, Record<string, unknown>>;
+  const factor = (mode: Record<string, unknown> | undefined) => (typeof mode?.factor === "number" ? mode.factor : 1);
+  const tiers: [string, Record<string, unknown>][] = [["standard", {}]];
+  const regions: number[] = [1];
+  for (const [name, mode] of Object.entries(modes)) {
+    const parsed = parseServiceModeName(name);
+    if (parsed === null) continue;
+    if (parsed.region === "global" || parsed.tier !== "standard") tiers.push([name, mode]);
+    if (parsed.tier === "standard" && parsed.region !== "global") regions.push(factor(mode));
+  }
+  const base = Object.entries(entry).filter(([field, value]) => typeof value === "number" && field !== "long_context_threshold") as [string, number][];
+  for (const [name, mode] of tiers) {
+    for (const regionFactor of regions) {
+      for (const [field, value] of base) {
+        const own = typeof mode[field] === "number" ? (mode[field] as number) : value * factor(mode);
+        if (!Number.isSafeInteger(Math.ceil(own * regionFactor))) {
+          throw new GatewayError(400, "invalid_request", `${where}.modes.${name}: ${field} is too large in this mode`);
+        }
+      }
+    }
+  }
+}
+
 /** Dollars to stored rates: each rate to whole nano-dollars per its amount, modes and price keys too. */
 export function ratesFromPricing(pricing: DollarPricing): CustomerRates {
   const rates: Record<string, Record<string, unknown>> = {};
@@ -114,6 +145,7 @@ export function ratesFromPricing(pricing: DollarPricing): CustomerRates {
     const entry: Record<string, unknown> = storedRates(flat, where);
     const storedModes = mapTables(modes, storedRates, `${where}.modes`);
     if (storedModes !== undefined) entry.modes = storedModes;
+    assertFactoredRatesFit(entry, where);
     if (by !== undefined) {
       entry.by = Object.fromEntries(Object.entries(by).map(([key, table]) => [key, mapTables(table, storedRates, `${where}.by.${key}`)]));
     }

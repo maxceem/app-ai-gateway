@@ -22,7 +22,7 @@ import type { Unit } from "../providers/operation.ts";
 import type { Modality, ModalityCounts, TokenCounts, TokenVariants, UsageObservation } from "../usage/observation.ts";
 import { SERVICE_TIERS, STANDARD_MODE, type ServiceMode, type ServiceRegion, type ServiceTier } from "../usage/service-modes.ts";
 import { bucketRates, modalityRate, VARIANTS, variantRate, type ModalityRate, type Variant } from "../usage/token-rates.ts";
-import { listedModes, priceForKeys, priceInMode, type ModelPrice } from "./prices.ts";
+import { keyedPrices, listedModes, priceInMode, type ModelPrice } from "./prices.ts";
 import { UNIT_RATES, type UnitRate } from "./units.ts";
 
 /** Token counts as a usage reader reports them. */
@@ -37,6 +37,11 @@ export interface Pricing {
    */
   readonly rates: Readonly<Record<string, RateNanoPerMillion>>;
   readonly longContext: boolean;
+  /** The unit the price billed, and its count at the unit's scale: the charge's unit and units. */
+  readonly unit: Unit | "tokens";
+  readonly units: number;
+  /** The measure billed was worked out from the request, not reported by the provider. */
+  readonly fromEstimate: boolean;
 }
 
 type Part = readonly [units: number, rate: RateNanoPerMillion];
@@ -155,7 +160,7 @@ export function priceTokens(price: ModelPrice, usage: UsageObservation): Pricing
     ...bucketParts("cache_write", usage.cacheWriteTokens, buckets.cache_write, price, longContext, tokenVariants, used),
     ...sideParts(usage.outputTokens, buckets.output, modalityRates(price, OUTPUT_RATES, longContext, used), usage.modalityTokens?.output),
   ];
-  return { cost: priceUnitsSum(parts), rates: used, longContext };
+  return { cost: priceUnitsSum(parts), rates: used, longContext, unit: "tokens", units: totalTokens(usage), fromEstimate: false };
 }
 
 /**
@@ -176,9 +181,13 @@ function statedUnitRates(price: ModelPrice): UnitRate[] {
   return UNIT_RATES.filter((unitRate) => price.rates[unitRate.field] !== undefined);
 }
 
-/** The first unit a stated rate bills that the usage reports, with its count. */
-function reportedUnit(unitRate: UnitRate, usage: UsageObservation): { unit: Unit; count: number } | null {
+/**
+ * The first unit a stated rate bills that the usage reports, with its count.
+ * With `reportedOnly`, a unit worked out from the request is passed over.
+ */
+function reportedUnit(unitRate: UnitRate, usage: UsageObservation, reportedOnly = false): { unit: Unit; count: number } | null {
   for (const unit of unitRate.units) {
+    if (reportedOnly && usage.estimatedUnits?.includes(unit) === true) continue;
     const count = unitCount(usage, unit);
     if (count !== undefined) return { unit, count };
   }
@@ -187,20 +196,30 @@ function reportedUnit(unitRate: UnitRate, usage: UsageObservation): { unit: Unit
 
 /**
  * The cost of a usage at a unit rate (`./units.ts`: per minute, per image,
- * per million characters, ...), or undefined when the price states none. The
- * first rate whose unit the usage reports bills. A price with unit rates but
- * none the usage reports prices as null: the counter was never sent, and
- * pricing it would claim a confident $0. A price that also bills tokens falls
- * back to them.
+ * per million characters, ...), or undefined when the price states none.
+ * A unit the provider reported is billed before one worked out from the
+ * request (a header's credits before the request's characters); among them,
+ * the table's order. A price with unit rates but none the usage reports
+ * prices as null: the counter was never sent, and pricing it would claim a
+ * confident $0. A price that also bills tokens falls back to them.
  */
 function priceUnitRate(price: ModelPrice, usage: UsageObservation): Pricing | null | undefined {
   const stated = statedUnitRates(price);
   if (stated.length === 0) return undefined;
-  for (const unitRate of stated) {
-    const reported = reportedUnit(unitRate, usage);
-    if (reported === null) continue;
-    const value = price.rates[unitRate.field]!;
-    return { cost: priceUnitsPer(reported.count, value, unitRate.per), rates: { [unitRate.field]: value }, longContext: false };
+  for (const reportedOnly of [true, false]) {
+    for (const unitRate of stated) {
+      const reported = reportedUnit(unitRate, usage, reportedOnly);
+      if (reported === null) continue;
+      const value = price.rates[unitRate.field]!;
+      return {
+        cost: priceUnitsPer(reported.count, value, unitRate.per),
+        rates: { [unitRate.field]: value },
+        longContext: false,
+        unit: reported.unit,
+        units: reported.count,
+        fromEstimate: usage.estimatedUnits?.includes(reported.unit) === true,
+      };
+    }
   }
   return price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true ? undefined : null;
 }
@@ -216,18 +235,6 @@ export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing 
   if (unit !== undefined) return unit;
   if (usage.noTokens === true) return null;
   return priceTokens(price, usage);
-}
-
-/**
- * Whether a usage reports the measure a price bills (v1's
- * `reportsPricedMeasure`): a unit its unit rates bill, or tokens for a token
- * price.
- */
-export function reportsPricedMeasure(price: ModelPrice, usage: UsageObservation): boolean {
-  const stated = statedUnitRates(price);
-  if (stated.some((unitRate) => reportedUnit(unitRate, usage) !== null)) return true;
-  if (price.rates.input !== undefined && price.rates.output !== undefined) return usage.noTokens !== true;
-  return stated.length === 0 && usage.noTokens !== true;
 }
 
 /**
@@ -249,15 +256,20 @@ export function priceInServedMode(
   served: ServiceMode = STANDARD_MODE,
   doubt = false,
 ): (Pricing & { readonly estimated: boolean }) | null {
-  // A price key's value the price does not list bills at the dearest listed, as an estimate.
-  const keyed = priceForKeys(price, usage.priceKeys);
-  price = keyed.price;
-  const priced = priceIn(price, usage, served);
+  // Each candidate price the request's key values give: one, or one per listed
+  // value of a key the price does not list the request's value for.
+  const keyed = keyedPrices(price, usage.priceKeys);
+  let priced: (Pricing & { readonly estimated: boolean }) | null = null;
+  for (const candidate of keyed.candidates) {
+    const one = priceIn(candidate, usage, served);
+    if (one !== null && (priced === null || one.cost > priced.cost)) priced = one;
+  }
   if (priced === null) return null;
   const estimated = priced.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   if (!estimated) return { ...priced, estimated: false };
   // The one floor, after every path: an estimate costs at least what the same
-  // usage costs at the model's standard price, whichever axis lacked a price.
+  // usage costs at the model's own standard price, before any key value or
+  // mode was applied, whichever made it an estimate.
   const standard = priceUsage(priceInMode(price, STANDARD_MODE) ?? price, usage);
   return standard !== null && standard.cost > priced.cost ? { ...standard, estimated: true } : { ...priced, estimated: true };
 }
@@ -299,21 +311,16 @@ export function totalTokens(usage: TokenCounts): number {
 }
 
 /**
- * A usage's main billed unit and its count, kept on the charge and in the
- * rollups: the unit its price bills, else the one the usage reports. Counts
- * are at the unit's scale (`./units.ts`), so audio is in milliseconds.
+ * The unit and count an unpriced usage is kept under, on the charge and in
+ * the rollups: the unit it reports (an estimate's only when it reports
+ * nothing else), else its tokens. A priced usage is kept under the unit its
+ * price billed (`Pricing.unit`). Counts are at the unit's scale.
  */
-export function billedUnits(usage: UsageObservation, price: ModelPrice | null): { unit: Unit | "tokens"; units: number } {
-  if (price !== null) {
-    for (const unitRate of statedUnitRates(price)) {
-      const reported = reportedUnit(unitRate, usage);
-      if (reported !== null) return { unit: reported.unit, units: reported.count };
-    }
-  }
-  // With no price, the unit the usage reports; with one, the price's unit.
-  if (price === null && usage.noTokens === true) {
-    const reported = Object.entries(usage.units ?? {}).find(([, count]) => count !== undefined);
-    if (reported !== undefined) return { unit: reported[0] as Unit, units: reported[1]! };
+export function reportedUnits(usage: UsageObservation): { unit: Unit | "tokens"; units: number } {
+  if (usage.noTokens === true) {
+    const entries = Object.entries(usage.units ?? {}).filter(([, count]) => count !== undefined) as [Unit, number][];
+    const reported = entries.find(([unit]) => usage.estimatedUnits?.includes(unit) !== true) ?? entries[0];
+    if (reported !== undefined) return { unit: reported[0], units: reported[1] };
     if (usage.audioSeconds !== undefined) return { unit: "audio_seconds", units: toMilli(usage.audioSeconds) };
     if (usage.images !== undefined) return { unit: "images", units: usage.images };
   }

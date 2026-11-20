@@ -384,7 +384,8 @@ describe("images", () => {
     fetchSpy.mockResolvedValue(Response.json({ data: [{}], usage: { generated_images: 1 } }));
     await json(`/v2/apps/${appId}/proxy/${slug}/v1/images/generations`, key, { model: "gpt-image-1", prompt: "a cat" });
     const [charge] = await chargesOf(appId);
-    expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, unit: "tokens", units: 0 });
+    // Kept under the unit the answer reported, since no price billed it.
+    expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, unit: "images", units: 1 });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
     // Nor later, when the sweep tries: the measures say no tokens were reported.
     expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({ status: "no_price" });
@@ -427,7 +428,7 @@ describe("embeddings and speech", () => {
     expect(await chargesOf(appId)).toMatchObject([
       { status: "ok", cost_nano: priceTokens(listPrice("openai", "gpt-4o-mini-tts")!, usage)!.cost },
       // Plain audio is measured by its input's characters, which a token price cannot bill.
-      { status: "ok", measured: "estimated", price_source: "unresolved", cost_nano: null, unit: "tokens" },
+      { status: "ok", measured: "estimated", price_source: "unresolved", cost_nano: null, unit: "characters", units: 2 },
     ]);
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
   });

@@ -35,9 +35,9 @@ let providerId = "";
 let appId = "";
 let appKey = "";
 
-// The customer's own prices, in dollars: $15 per million characters, and $0.01 a minute for a
+// The customer's own prices, in dollars: $10 per million characters (our list says $15), and $0.01 a minute for a
 // whisper-style model the price list does not know (the mock answers its duration).
-const PRICING = { "tts-1": { per_million_characters: 15 }, "whisper-house": { per_minute: 0.01 } };
+const PRICING = { "tts-1": { per_million_characters: 10 }, "whisper-house": { per_minute: 0.01 } };
 
 before(async () => {
   if (skip !== false) return;
@@ -95,8 +95,8 @@ test("speech answered as plain audio is billed on its input's characters, at the
   await response.arrayBuffer();
   const usage = await usageOf(user);
   assert.equal(usage.charges, 1);
-  // 11 characters at $15 per million: 15,000,000,000 × 11 ÷ 1,000,000.
-  assert.equal(usage.cost_nano, 165_000);
+  // 11 characters at $10 per million: 10,000,000,000 × 11 ÷ 1,000,000.
+  assert.equal(usage.cost_nano, 110_000);
 });
 
 test("a transcription model priced only by the customer, per minute, is billed on its seconds", { skip }, async () => {

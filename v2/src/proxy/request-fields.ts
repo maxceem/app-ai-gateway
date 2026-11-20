@@ -90,7 +90,7 @@ function requestUsageOf(unit: Unit, count: number): UsageObservation {
     outputTokens: 0,
     noTokens: true,
     units: { [unit]: count },
-    fromRequest: true,
+    estimatedUnits: [unit],
   };
 }
 
@@ -134,6 +134,20 @@ function deleteAt(body: Record<string, unknown>, path: string): boolean {
   return true;
 }
 
+/**
+ * Removes an operation's outbound form fields from a form about to be sent,
+ * whatever path built it (the proxy rebuilding an upload, a preset copying
+ * one). A no-op on a form without them.
+ */
+export function removeOutboundForm(operation: OperationDescription, form: FormData): void {
+  for (const ref of outboundRemoved(operation)) if (ref.in === "form" || ref.in === "body") form.delete(ref.field);
+}
+
+/** Whether an operation removes any field of a form, so its uploads must be read and rebuilt. */
+export function removesFormFields(operation: OperationDescription): boolean {
+  return outboundRemoved(operation).some((ref) => ref.in !== "query");
+}
+
 /** Fields an operation removes before sending: every webhook field, and fetch fields it does not need. */
 function outboundRemoved(operation: OperationDescription): FieldRef[] {
   return [...(operation.outbound?.webhooks ?? []), ...(operation.outbound?.fetches ?? [])];
@@ -141,7 +155,7 @@ function outboundRemoved(operation: OperationDescription): FieldRef[] {
 
 /**
  * Removes the operation's outbound fields from a request. A JSON body is
- * changed in place; a query is returned without them, or null when it had
+ * changed in place (pass null for a form); a query is returned without them, or null when it had
  * none of them, so it is sent as it came. A form's fields are
  * returned by name, for the caller to drop when it rebuilds the form.
  */
@@ -159,8 +173,9 @@ export function removeOutbound(
       queryChanged ||= kept.has(ref.field);
       kept.delete(ref.field);
     }
-    else if (ref.in === "form") formFields.push(ref.field);
-    else if (body !== null && deleteAt(body, ref.field)) bodyChanged = true;
+    // A form names a body field the same way: both are dropped from a form.
+    else if (ref.in === "form" || body === null) formFields.push(ref.field);
+    else if (deleteAt(body, ref.field)) bodyChanged = true;
   }
   return { bodyChanged, query: queryChanged ? kept : null, formFields };
 }

@@ -50,7 +50,7 @@ import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { priceKeyValues, removeOutbound, requestUsage } from "./request-fields.ts";
+import { priceKeyValues, removeOutbound, removeOutboundForm, requestUsage } from "./request-fields.ts";
 import {
   jsonBody,
   meteredTranscriptionFormat,
@@ -222,6 +222,8 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     fields = { ...formText(upload), ...(location.in === "form" || location.in === "body" ? { [location.field]: model } : {}) };
     build = () => {
       const form = copyForm(upload);
+      // Webhook fields, and fetch fields the operation does not need, never reach the provider.
+      removeOutboundForm(operation, form);
       if (location.in === "form" || location.in === "body") form.set(location.field, model);
       if (format !== null) form.set("response_format", format);
       return { form, contentType: null };

@@ -64,10 +64,12 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly units?: Readonly<Partial<Record<Unit, number>>>;
   /**
-   * The usage was worked out from the request, not reported by the provider
-   * (a request measure, or a response header's estimate): `measured: estimated`.
+   * The units in `units` that were worked out from the request, not reported
+   * by the provider (a request measure, or a response header's estimate). A
+   * charge billed in one of them is `measured: estimated`. A unit the
+   * provider reported is billed before them.
    */
-  readonly fromRequest?: true;
+  readonly estimatedUnits?: readonly Unit[];
   /**
    * The provider was meant to report the billed amount (a response header)
    * and did not, so the request's estimate bills instead: priced as an estimate.

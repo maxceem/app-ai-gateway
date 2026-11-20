@@ -41,7 +41,7 @@ export type KeyedRates = Readonly<Record<string, Readonly<Record<string, RateSet
 /** A model's rates as integers, plus the rest of its price-file entry as written. */
 export interface ModelPrice {
   readonly rates: RateSet;
-  /** Rates by price key value (`priceForKeys`). */
+  /** Rates by price key value (`keyedPrices`). */
   readonly keyed?: KeyedRates;
   /** Prompt size above which the `long_*` rates apply. */
   readonly longContextThreshold?: number;
@@ -237,32 +237,61 @@ export function reportsCost(operation: OperationDescription): boolean {
   return operation.meter.kind === "response_json" && operation.meter.providerCost !== undefined;
 }
 
+/** Whether rates state a unit rate. */
+function statesUnitRate(rates: RateSet): boolean {
+  return UNIT_RATES.some((unitRate) => rates[unitRate.field] !== undefined);
+}
+
 /**
- * A price with its price keys applied: each key's value from the request
- * replaces the rates it states. A value the price does not list, or a key the
- * request did not name and the operation gives no default for, bills at the
- * dearest value listed for that key, each rate on its own, as an estimate
- * (`AGENTS.md`: the closest known price, never less).
+ * Rates with one price-key value's rates applied: they replace the model's
+ * own. A value that states a unit rate replaces every unit rate the model
+ * has, so the unit it names is the one billed, not one the model listed first.
  */
-export function priceForKeys(price: ModelPrice, values: Readonly<Record<string, string>> | undefined): { price: ModelPrice; estimated: boolean } {
-  if (price.keyed === undefined) return { price, estimated: false };
-  const rates: Partial<Record<RateField, RateNanoPerMillion>> = { ...price.rates };
+function withValue(rates: RateSet, value: RateSet): RateSet {
+  const merged: Partial<Record<RateField, RateNanoPerMillion>> = { ...rates };
+  if (statesUnitRate(value)) for (const unitRate of UNIT_RATES) delete merged[unitRate.field];
+  return Object.assign(merged, value);
+}
+
+/** At most this many candidate prices are worked out for unknown key values; beyond it, each key's dearest rates are merged. */
+const MAX_KEY_CANDIDATES = 64;
+
+/**
+ * The prices a request bills at, with its price keys applied (an operation's
+ * `priceKeys`, a price's `by`). A value the request names and the price lists
+ * gives one price. A value the price does not list, or a key the request did
+ * not name and the operation gives no default for, gives one candidate per
+ * value listed for that key: the caller bills the dearest, as an estimate,
+ * then applies the standard floor (`AGENTS.md`: the closest known price,
+ * never less).
+ */
+export function keyedPrices(price: ModelPrice, values: Readonly<Record<string, string>> | undefined): { candidates: ModelPrice[]; estimated: boolean } {
+  if (price.keyed === undefined) return { candidates: [price], estimated: false };
+  let candidates: RateSet[] = [price.rates];
   let estimated = false;
   for (const [key, table] of Object.entries(price.keyed)) {
     const value = values !== undefined && Object.hasOwn(values, key) ? values[key] : undefined;
     if (value !== undefined && Object.hasOwn(table, value)) {
-      Object.assign(rates, table[value]);
+      candidates = candidates.map((rates) => withValue(rates, table[value]!));
       continue;
     }
     estimated = true;
-    for (const listed of Object.values(table)) {
-      for (const [field, amount] of Object.entries(listed)) {
-        const current = rates[field];
-        if (amount !== undefined && (current === undefined || amount > current)) rates[field] = amount;
+    const listed = Object.values(table);
+    if (listed.length === 0) continue;
+    if (candidates.length * listed.length > MAX_KEY_CANDIDATES) {
+      // Too many to try: each rate at its dearest listed value.
+      const dearest: Partial<Record<RateField, RateNanoPerMillion>> = {};
+      for (const rates of listed) {
+        for (const [field, amount] of Object.entries(rates)) {
+          if (amount !== undefined && (dearest[field] === undefined || amount > dearest[field]!)) dearest[field] = amount;
+        }
       }
+      candidates = candidates.map((rates) => withValue(rates, dearest));
+      continue;
     }
+    candidates = candidates.flatMap((rates) => listed.map((value) => withValue(rates, value)));
   }
-  return { price: { ...price, rates }, estimated };
+  return { candidates: candidates.map((rates) => ({ ...price, rates })), estimated };
 }
 
 /** A rate × factor, rounded up once, so a mode price is never under its true figure. */

@@ -35,7 +35,7 @@ import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
-import { billedUnits, priceInServedMode, reportsPricedMeasure } from "../pricing/tokens.ts";
+import { priceInServedMode, reportedUnits } from "../pricing/tokens.ts";
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -138,9 +138,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";
   } else if (usage !== null) {
-    // Worked out from the request, not reported by the provider: estimated, whatever the price.
-    measured = outcome.cut ? "partial" : usage.fromRequest === true ? "estimated" : "complete";
-    if (attempt.price !== null && !reportsPricedMeasure(attempt.price.price, usage)) {
+    // Set below, from the measure the pricing result billed.
+    measured = "complete";
+    if (attempt.price !== null && priced === null) {
       // The answer reported a measure, but not the one the model is priced in:
       // a duration for a token-priced model, or tokens for a time-priced one.
       // Its price would multiply counters that were never sent, and no later
@@ -192,7 +192,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = "complete";
   }
 
-  const billed = usage === null ? null : billedUnits(usage, attempt.price?.price ?? null);
+  // The unit the price billed, with its count, from the pricing result itself;
+  // an unpriced usage keeps the unit it reports.
+  const billed = priced !== null ? { unit: priced.unit, units: priced.units } : usage === null ? null : reportedUnits(usage);
+  if (usage !== null && reported === null) {
+    // Worked out from the request, not reported by the provider: estimated, whatever the price.
+    const fromEstimate = priced !== null ? priced.fromEstimate : billed !== null && billed.unit !== "tokens" && usage.estimatedUnits?.includes(billed.unit) === true;
+    measured = outcome.cut ? "partial" : fromEstimate ? "estimated" : "complete";
+  }
   const charge: ChargeRow = {
     id,
     kind: "attempt",

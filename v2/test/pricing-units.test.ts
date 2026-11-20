@@ -12,13 +12,16 @@ import { ModelPricingSchema } from "../src/contracts/admin.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
 import { MILLI_SCALE, rate } from "../src/money.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
-import { customerPrice, priceForKeys, type ModelPrice } from "../src/pricing/prices.ts";
-import { billedUnits, priceInServedMode, priceUsage } from "../src/pricing/tokens.ts";
+import { customerPrice, keyedPrices, type ModelPrice } from "../src/pricing/prices.ts";
+import { priceInServedMode, priceUsage, reportedUnits } from "../src/pricing/tokens.ts";
+import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
+import { requestBody } from "../src/proxy/serve.ts";
+import type { ProviderDescription } from "../src/providers/operation.ts";
 import { operationUnits, scaledCount } from "../src/pricing/units.ts";
 import { defineOperation } from "../src/providers/operation.ts";
 import { openai } from "../src/providers/openai.ts";
 import { attemptUsage, headerUsage } from "../src/proxy/meter.ts";
-import { priceKeyValues, removeOutbound, requestUsage } from "../src/proxy/request-fields.ts";
+import { priceKeyValues, removeOutbound, removeOutboundForm, requestUsage } from "../src/proxy/request-fields.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
 import { STANDARD_MODE, parseServiceModeName } from "../src/usage/service-modes.ts";
@@ -55,9 +58,10 @@ describe("unit rates", () => {
     expect(priceUsage(priced({ input: 1, output: 1 }), counted({ characters: 10 }))).toBeNull();
   });
 
-  it("keeps the unit the price bills on the charge", () => {
-    expect(billedUnits(counted({ characters: 42 }), priced({ per_million_characters: 1 }))).toEqual({ unit: "characters", units: 42 });
-    expect(billedUnits(counted({ characters: 42 }), null)).toEqual({ unit: "characters", units: 42 });
+  it("gives the unit and count it billed in its result, which the charge keeps", () => {
+    expect(priceUsage(priced({ per_million_characters: 1 }), counted({ characters: 42 }))).toMatchObject({ unit: "characters", units: 42 });
+    // Unpriced, the unit the usage reports, a reported one before an estimate.
+    expect(reportedUnits({ ...counted({ characters: 42, credits: 7000 }), estimatedUnits: ["characters"] })).toEqual({ unit: "credits", units: 7000 });
   });
 
   it("knows the units each meter measures", () => {
@@ -81,14 +85,37 @@ describe("price keys", () => {
   const sized = priced({ per_image: 40_000_000 }, { keyed: { size: { "1024x1024": { per_image: rate(40_000_000) }, "1792x1024": { per_image: rate(80_000_000) } } } });
 
   it("bills the rates the request's value names", () => {
-    expect(priceForKeys(sized, { size: "1792x1024" })).toMatchObject({ estimated: false, price: { rates: { per_image: 80_000_000 } } });
+    expect(keyedPrices(sized, { size: "1792x1024" })).toMatchObject({ estimated: false, candidates: [{ rates: { per_image: 80_000_000 } }] });
     const usage = { ...counted(undefined), images: 1, priceKeys: { size: "1792x1024" } };
     expect(priceInServedMode(sized, usage, STANDARD_MODE)).toMatchObject({ cost: 80_000_000, estimated: false });
   });
 
   it("bills a value it does not list at the dearest listed, as an estimate", () => {
-    expect(priceForKeys(sized, { size: "512x512" })).toMatchObject({ estimated: true, price: { rates: { per_image: 80_000_000 } } });
+    expect(keyedPrices(sized, { size: "512x512" })).toMatchObject({ estimated: true, candidates: [{}, {}] });
     expect(priceInServedMode(sized, { ...counted(undefined), images: 2 }, STANDARD_MODE)).toMatchObject({ cost: 160_000_000, estimated: true });
+  });
+
+  it("floors an unknown value at the model's own standard price, not the keyed one", () => {
+    // $1 a second as standard; one listed value bills $1 a minute. An unknown
+    // value must not bill 60 s at the per-minute value.
+    const timed = priced({ per_second: 1_000_000_000 }, { keyed: { quality: { draft: { per_minute: rate(1_000_000_000) } } } });
+    const usage = { ...counted({ video_seconds: 60_000 }), priceKeys: { quality: "mystery" } };
+    expect(priceInServedMode(timed, usage, STANDARD_MODE)).toMatchObject({ cost: 60_000_000_000, estimated: true, unit: "video_seconds" });
+  });
+
+  it("charges a price set only per key value in the unit it bills, never unresolved", () => {
+    const byOnly = priced({}, { keyed: { size: { "1024x1024": { per_image: rate(40_000_000) } } } });
+    const usage = { ...counted(undefined), images: 1, priceKeys: { size: "1024x1024" } };
+    expect(priceInServedMode(byOnly, usage, STANDARD_MODE)).toMatchObject({ cost: 40_000_000, unit: "images", units: 1 });
+    const attempt = {
+      requestId: "r", seq: 1, accountId: "acc", appId: "app",
+      identity: { authMethod: "api_key", installId: null, appleAccountId: null, userId: "u", apiKeyId: "k" },
+      providerType: "openai", connectionId: "c", providerSlug: "s", operation: "openai.images", model: "m",
+      price: { price: byOnly, source: "customer_rate" }, reportsCost: false, requestedMode: STANDARD_MODE,
+      startedAt: Date.now(), appVersion: null, clientTraceId: null,
+    } as unknown as CallAttempt;
+    const { charge } = callCharge(attempt, { status: "ok", httpStatus: 200, errorCode: null, usage, cut: false, latencyMs: 1 });
+    expect(charge).toMatchObject({ priceSource: "customer_rate", costNano: 40_000_000, unit: "images", units: 1 });
   });
 
   it("reads key values from the request, with the operation's default", () => {
@@ -106,6 +133,18 @@ describe("customer rates in any unit", () => {
     expect(ModelPricingSchema.safeParse({ input: 1 }).success).toBe(false);
     expect(ModelPricingSchema.safeParse({ input: 1, output: 2, long_input: 3 }).success).toBe(false);
     expect(ModelPricingSchema.safeParse({ input: 1, output: 2, modes: { standard: { factor: 1 } } }).success).toBe(false);
+    // Each key value must leave a price that bills once applied: input alone does not.
+    expect(ModelPricingSchema.safeParse({ by: { q: { x: { input: 1 }, y: { per_image: 1 } } } }).success).toBe(false);
+    expect(ModelPricingSchema.safeParse({ input: 1, output: 2, by: { q: { x: { per_image: 1 } } } }).success).toBe(true);
+  });
+
+  it("refuses rates that no longer fit once a mode's factor scales them, tier and region together", () => {
+    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 5_000_000, output: 1, modes: { priority: { factor: 2 } } }) })).toThrow(/too large/u);
+    // Each fits alone; a tier in a region multiplies both factors.
+    expect(() =>
+      ratesFromPricing({ m: ModelPricingSchema.parse({ input: 3_100_000, output: 1, modes: { priority: { factor: 2 }, eu: { factor: 1.5 } } }) }),
+    ).toThrow(/too large/u);
+    expect(() => ratesFromPricing({ m: ModelPricingSchema.parse({ input: 1, output: 1, modes: { priority: { factor: 2 } } }) })).not.toThrow();
   });
 
   it("stores each rate in nano-dollars, its modes and price keys too, and bills with them", () => {
@@ -128,7 +167,7 @@ describe("request measures and headers", () => {
 
   it("measures characters as a person counts them, and seconds and images with their defaults", () => {
     const chars = operation({ kind: "request_measure", unit: "characters", measure: "characters", field: "text" });
-    expect(requestUsage(chars, fields({ text: "héllo 👋" }))).toMatchObject({ units: { characters: 7 }, fromRequest: true, noTokens: true });
+    expect(requestUsage(chars, fields({ text: "héllo 👋" }))).toMatchObject({ units: { characters: 7 }, estimatedUnits: ["characters"], noTokens: true });
     expect(requestUsage(chars, fields({}))).toBeNull();
     const seconds = operation({ kind: "request_measure", unit: "video_seconds", measure: "requested_seconds", field: "duration", default: 5 });
     expect(requestUsage(seconds, fields({}))).toMatchObject({ units: { video_seconds: 5000 } });
@@ -151,8 +190,19 @@ describe("request measures and headers", () => {
     expect(attemptUsage(op, { requestUsage: null }, null, new Headers({ "character-cost": "oops" }))).toBeNull();
   });
 
+  it("keeps both a header's amount and the request's estimate, and bills the one the price can", () => {
+    const op = operation({ kind: "response_header", header: "character-cost", unit: "credits", estimate: { measure: "characters", field: "text", unit: "characters" } });
+    const both = attemptUsage(op, { requestUsage: requestUsage(op, fields({ text: "hello" })) }, null, new Headers({ "character-cost": "12" }))!;
+    // A price per credit bills the reported credits, exactly.
+    expect(priceInServedMode(priced({ per_credit: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits", units: 12_000, fromEstimate: false, estimated: false });
+    // A price per character only bills the estimate, never leaving the call unresolved.
+    expect(priceInServedMode(priced({ per_million_characters: 1_000_000 }), both, STANDARD_MODE)).toMatchObject({ unit: "characters", units: 5, fromEstimate: true });
+    // With both, the reported measure wins.
+    expect(priceInServedMode(priced({ per_credit: 1, per_million_characters: 1 }), both, STANDARD_MODE)).toMatchObject({ unit: "credits" });
+  });
+
   it("keeps units, price keys and the request's facts in the charge's measures", () => {
-    const usage = { ...counted({ characters: 9 }), fromRequest: true as const, reportMissing: true as const, priceKeys: { size: "1024x1024" } };
+    const usage = { ...counted({ characters: 9 }), estimatedUnits: ["characters" as const], reportMissing: true as const, priceKeys: { size: "1024x1024" } };
     expect(usageFromMeasures(usageMeasures(usage, STANDARD_MODE))?.usage).toMatchObject(usage);
   });
 });
@@ -177,6 +227,26 @@ describe("outbound fields", () => {
     expect(result.query?.toString()).toBe("keep=1");
     // A request with none of them is sent as it came.
     expect(removeOutbound(op, { text: "hi" }, new URLSearchParams("keep=1"))).toMatchObject({ bodyChanged: false, query: null });
+  });
+
+  it("removes them from a form on every path: body and form fields alike", async () => {
+    // A form names a body field the same way.
+    expect(removeOutbound(op, null, new URLSearchParams()).formFields).toEqual(["webhook_url", "callback", "options.image_url"]);
+    const form = new FormData();
+    form.append("callback", "https://hook");
+    form.append("webhook_url", "https://hook");
+    form.append("prompt", "hi");
+    removeOutboundForm(op, form);
+    expect([...form.keys()]).toEqual(["prompt"]);
+    // An operation with its model in the path still reads its form when it has outbound fields to remove.
+    const pathModel = defineOperation({
+      name: "test.upload", match: { method: "POST", path: "v1/{model}/upload" }, lifecycle: "call", transport: "upload",
+      model: { in: "path", part: "model" }, meter: { kind: "request_count" }, outbound: { webhooks: [{ in: "form", field: "callback" }] },
+    });
+    const request = new Request("https://local.invalid", { method: "POST", body: form.has("callback") ? form : (form.append("callback", "x"), form) });
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const parsed = await requestBody(bytes, request.headers.get("content-type")!, pathModel, { serviceModes: [] } as unknown as ProviderDescription);
+    expect(parsed.kind === "form" && parsed.fields.has("callback")).toBe(true);
   });
 });
 
@@ -210,14 +280,14 @@ describe("through the proxy", () => {
     return { id, appId, slug, key };
   }
 
-  async function speak(appId: string, slug: string, key: string, input: string) {
+  async function speak(appId: string, slug: string, key: string, input: string, model = "tts-1") {
     fetchSpy.mockResolvedValueOnce(new Response(new Uint8Array([0xff, 0xf3]), { headers: { "content-type": "audio/mpeg" } }));
     const ctx = createExecutionContext();
     const response = await worker.fetch(
       new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/audio/speech`, {
         method: "POST",
         headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
-        body: JSON.stringify({ model: "tts-1", input }),
+        body: JSON.stringify({ model, input }),
       }),
       env,
       ctx,
@@ -230,20 +300,28 @@ describe("through the proxy", () => {
   }
 
   it("bills plain-audio speech from its characters at a customer's rate per character", async () => {
-    // $15 per million characters, stored as nano-dollars.
-    const { appId, slug, key } = await setup({ "tts-1": { per_million_characters: 15_000_000_000 } }, { operations: ["openai.speech"] });
+    // $10 per million characters, stored as nano-dollars, in place of our list's $15.
+    const { appId, slug, key } = await setup({ "tts-1": { per_million_characters: 10_000_000_000 } }, { operations: ["openai.speech"] });
     const [charge] = await speak(appId, slug, key, "a".repeat(1000));
-    expect(charge).toMatchObject({ price_source: "customer_rate", measured: "estimated", unit: "characters", units: 1000, cost_nano: 15_000_000 });
+    expect(charge).toMatchObject({ price_source: "customer_rate", measured: "estimated", unit: "characters", units: 1000, cost_nano: 10_000_000 });
+  });
+
+  it("bills plain-audio speech of a model our list prices per character, with no customer rate", async () => {
+    const { appId, slug, key } = await setup(null, { operations: ["openai.speech"] });
+    const [charge] = await speak(appId, slug, key, "c".repeat(1000));
+    // tts-1 is $15 per million characters on OpenAI's price list.
+    expect(charge).toMatchObject({ price_source: "list_rate", measured: "estimated", unit: "characters", units: 1000, cost_nano: 15_000_000 });
   });
 
   it("prices a character-measured charge later, once a rate exists", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { id, appId, slug, key } = await setup(null, { operations: ["openai.speech"], models: ["tts-1"] });
-    const [charge] = await speak(appId, slug, key, "b".repeat(2000));
+    // A voice model our list does not price, listed by name: served, and priced later.
+    const { id, appId, slug, key } = await setup(null, { operations: ["openai.speech"], models: ["house-voice"] });
+    const [charge] = await speak(appId, slug, key, "b".repeat(2000), "house-voice");
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, unit: "characters", units: 2000 });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_unpriced_model"));
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
-      .bind(JSON.stringify({ "tts-1": { per_million_characters: 15_000_000_000 } }), id)
+      .bind(JSON.stringify({ "house-voice": { per_million_characters: 15_000_000_000 } }), id)
       .run();
     expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({
       status: "priced",

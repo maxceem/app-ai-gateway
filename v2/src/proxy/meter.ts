@@ -293,9 +293,16 @@ export function attemptUsage(
     case "response_json":
       usage = reading ?? (meter.requestMeasure !== undefined ? fromRequest : null);
       break;
-    case "response_header":
-      usage = headerUsage(headers, meter.header, meter.unit) ?? (fromRequest === null ? null : { ...fromRequest, reportMissing: true });
+    case "response_header": {
+      // Both measures are kept: the amount the header reports, and the
+      // request's estimate. The price bills the reported one where it can,
+      // else the estimate (`priceUnitRate`).
+      const reported = headerUsage(headers, meter.header, meter.unit);
+      if (reported === null) usage = fromRequest === null ? null : { ...fromRequest, reportMissing: true };
+      else if (fromRequest === null) usage = reported;
+      else usage = { ...reported, units: { ...fromRequest.units, ...reported.units }, estimatedUnits: fromRequest.estimatedUnits ?? [] };
       break;
+    }
     case "request_measure":
     case "request_count":
       usage = fromRequest;
