@@ -23,7 +23,7 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "./connections.ts";
-import type { ProviderDescription } from "./operation.ts";
+import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
 
 /** Cloudflare AI Gateway's own request headers that an app may send: caching and retries (v1). */
 const CLOUDFLARE_CLIENT_HEADERS: readonly string[] = [
@@ -41,8 +41,14 @@ export interface UpstreamRequestInput {
   readonly path: string;
   /** The query string, with its `?`, or "". */
   readonly query: string;
+  /** The operation's API style, which may choose how the key is sent (`authByStyle`). None for a key test. */
+  readonly style?: ApiStyle;
   readonly credentials: UpstreamCredentials;
-  /** The app's own request headers, for the Cloudflare headers it may send. */
+  /**
+   * The app's request headers, for the Cloudflare headers it may send, with
+   * the gateway's own credentials and end-user ids already taken out: a header
+   * an app's sign-in uses is never forwarded, whatever its name.
+   */
   readonly client?: Headers;
   readonly appId: string;
   readonly userId: string | null;
@@ -54,9 +60,9 @@ export interface UpstreamRequest {
   readonly headers: Readonly<Record<string, string>>;
 }
 
-/** The provider's key, in the provider's own header and format. A callback, so a key with `$&` is sent as it is. */
-function providerAuth(description: ProviderDescription, key: string): Record<string, string> {
-  return { [description.auth.header]: description.auth.format.replace("{key}", () => key) };
+/** The provider's key, in the header and format given. A callback, so a key with `$&` is sent as it is. */
+function providerAuth(auth: ProviderAuth, key: string): Record<string, string> {
+  return { [auth.header]: auth.format.replace("{key}", () => key) };
 }
 
 /**
@@ -69,16 +75,23 @@ function asciiJson(value: unknown): string {
   return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/** Where `cloudflare_gateway` sends requests: `CLOUDFLARE_AI_GATEWAY_ORIGIN`, unless a test deployment moved it. */
-function cloudflareOrigin(env: Env): string {
-  const moved = (env as { CLOUDFLARE_AI_GATEWAY_ORIGIN?: string }).CLOUDFLARE_AI_GATEWAY_ORIGIN;
-  if (moved === undefined || moved === "") return CLOUDFLARE_AI_GATEWAY_ORIGIN;
+/**
+ * A test deployment's stand-in for Cloudflare AI Gateway (the mock), set at
+ * build time by `define` in its own gitignored Wrangler config, and in no other
+ * build. Nothing at run time can set it: a Worker variable could otherwise
+ * send Cloudflare tokens and provider keys to any origin.
+ */
+declare const __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__: string | undefined;
+
+/** Where requests through Cloudflare AI Gateway go: Cloudflare, unless this is a test deployment's build. */
+export function cloudflareOrigin(): string {
+  const moved = typeof __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ === "string" ? __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ : "";
+  if (moved === "") return CLOUDFLARE_AI_GATEWAY_ORIGIN;
   return moved.endsWith("/") ? moved : `${moved}/`;
 }
 
 /** The URL and headers of one request to a connection's provider. */
 export function upstreamRequest(
-  env: Env,
   connection: ConnectionRecord,
   description: ProviderDescription,
   input: UpstreamRequestInput,
@@ -91,7 +104,7 @@ export function upstreamRequest(
     }
     return {
       url: `${upstreamOrigin(connection, description, input.hostKey)}${input.path}${input.query}`,
-      headers: { ...attribution, ...providerAuth(description, input.credentials.providerKey) },
+      headers: { ...attribution, ...providerAuth(description.auth, input.credentials.providerKey) },
     };
   }
   const route = description.cloudflareGateway;
@@ -113,9 +126,12 @@ export function upstreamRequest(
     // Cloudflare's own logs, under the real app and user: set here alone.
     "cf-aig-metadata": asciiJson({ app_id: input.appId, ...(input.userId === null ? {} : { user_id: input.userId }) }),
   });
-  if (input.credentials.providerKey !== null) Object.assign(headers, providerAuth(description, input.credentials.providerKey));
+  if (input.credentials.providerKey !== null) {
+    const auth = (input.style !== undefined ? route.authByStyle?.[input.style] : undefined) ?? description.auth;
+    Object.assign(headers, providerAuth(auth, input.credentials.providerKey));
+  }
   return {
-    url: `${cloudflareOrigin(env)}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`,
+    url: `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`,
     headers,
   };
 }

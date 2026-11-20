@@ -58,7 +58,7 @@ Inside `v2/`:
   `V2_MANAGEMENT_KEY` and `V2_MOCK_URL` (the deployed mock), and the sign-in and MCP checks
   `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only. The console
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
-  `V2_MOCK_CLOUDFLARE=1`, set only where `CLOUDFLARE_AI_GATEWAY_ORIGIN` points at the mock.
+  `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
 
@@ -73,9 +73,10 @@ Inside `v2/`:
 
 ## Test deployment settings
 
-- `CLOUDFLARE_AI_GATEWAY_ORIGIN`: where connections set to go through Cloudflare AI Gateway send
-  their requests, instead of `https://gateway.ai.cloudflare.com/`. Only for a test deployment, set to
-  the mock (`smoke/mock/`) so no request reaches Cloudflare. Never set it anywhere else.
+- `define: { "__TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__": "\"<mock URL>\"" }` in the test deployment's own
+  Wrangler config: where connections set to go through Cloudflare AI Gateway send their requests,
+  instead of `https://gateway.ai.cloudflare.com/`, so no request reaches Cloudflare. It is compiled
+  in at build time; no Worker variable can set it. Never add it to any other config.
 
 ## Sign-in settings
 

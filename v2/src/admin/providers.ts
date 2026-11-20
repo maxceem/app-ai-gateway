@@ -294,6 +294,26 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
           ? current.cloudflare_gateway_json
           : await storedCloudflare(c.env, actor.accountId, current.id, { ...asked, token: asked.token });
 
+  // A change of Cloudflare route (on, off, or another gateway) always says what
+  // key goes with it: a key that was sent to one gateway is never quietly
+  // re-sealed for another destination, and a keyless connection never
+  // quietly stays keyless on a new one.
+  const cloudflareMoved =
+    (storedCloudflareSetting === null) !== (cloudflare === null) ||
+    (storedCloudflareSetting !== null &&
+      cloudflare !== null &&
+      (storedCloudflareSetting.accountId !== cloudflare.accountId || storedCloudflareSetting.gatewayId !== cloudflare.gatewayId));
+  if (cloudflareMoved && cloudflare === null && typeof body.secret !== "string") {
+    throw new GatewayError(400, "invalid_request", "secret: going direct again needs the provider's key in the same request");
+  }
+  if (cloudflareMoved && cloudflare !== null && body.secret === undefined) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "secret: a new Cloudflare AI Gateway needs the provider's key in the same request, or null to use the keys stored in Cloudflare",
+    );
+  }
+
   // The key follows its origin: a new origin needs the key again, and going back to the provider's own re-seals it.
   const from = keyOrigin({ baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting });
   const to = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
@@ -382,7 +402,6 @@ export async function testProvider(c: AdminContext): Promise<Response> {
     description.probe === undefined
       ? null
       : upstreamRequest(
-          c.env,
           {
             id: "",
             accountId: "",

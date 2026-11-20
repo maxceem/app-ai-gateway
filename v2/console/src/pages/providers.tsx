@@ -565,7 +565,10 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       update.reset();
     }
   };
-  const key = secret ? { secret } : storedKeys ? { secret: null } : {};
+  // Ticking "use the keys stored in Cloudflare" means no key, whatever was typed.
+  const key = storedKeys ? { secret: null } : secret ? { secret } : {};
+  // A new gateway, or turning it on, moves the key: it must be sent again, or given up for Cloudflare's own.
+  const moving = !sameGateway;
 
   return (
     <FormDialog
@@ -577,14 +580,14 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={!cloudflareReady(draft, sameGateway)}
+      disabled={!cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys)}
       onSubmit={() => void save({ cloudflareGateway: cloudflareBody(draft), ...key }, "Cloudflare AI Gateway saved")}
     >
       <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
       <Field
         label="API key"
         htmlFor="cloudflare-provider-secret"
-        hint="A connection's key goes only where it was given. Send it again for the gateway, or use the keys stored in Cloudflare."
+        hint="A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare. Going direct again needs it too."
       >
         <Input
           id="cloudflare-provider-secret"
@@ -596,15 +599,22 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
         />
       </Field>
       <label className="flex items-center gap-2 text-sm">
-        <Checkbox checked={storedKeys} onCheckedChange={(checked) => setStoredKeys(checked === true)} />
+        <Checkbox
+          checked={storedKeys}
+          onCheckedChange={(checked) => {
+            setStoredKeys(checked === true);
+            if (checked === true) setSecret("");
+          }}
+        />
         Use the keys stored in Cloudflare, and remove this connection&apos;s key
       </label>
       {stored ? (
         <Button
           type="button"
           variant="outline"
-          disabled={update.isPending}
-          onClick={() => void save({ cloudflareGateway: null, ...(secret ? { secret } : {}) }, "Connection goes direct again")}
+          // Going direct needs the provider's key: the one sent to the gateway is not reused.
+          disabled={update.isPending || !secret || storedKeys}
+          onClick={() => void save({ cloudflareGateway: null, secret }, "Connection goes direct again")}
         >
           Stop using Cloudflare AI Gateway
         </Button>

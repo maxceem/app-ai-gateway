@@ -39,6 +39,7 @@ import { billedUnits, priceInServedMode, reportsPricedMeasure } from "../pricing
 import { usageMeasures } from "../usage/measures.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
+import type { Alternatives } from "./alternatives.ts";
 
 /** When the sweep first tries to price an `unresolved` charge. */
 export const UNRESOLVED_FIRST_TRY_MS = 60 * 60 * 1000;
@@ -66,6 +67,8 @@ export interface CallAttempt {
   readonly startedAt: number;
   readonly appVersion: string | null;
   readonly clientTraceId: string | null;
+  /** The request's other models the provider may serve it with, each judged and priced (`./alternatives.ts`). */
+  readonly alternatives?: Alternatives;
 }
 
 export interface AttemptOutcome {

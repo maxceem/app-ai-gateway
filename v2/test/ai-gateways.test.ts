@@ -80,7 +80,7 @@ describe("where a request goes (route.ts)", () => {
   const base = { hostKey: "main", query: "?x=1", appId: "app_1", userId: "józsef" };
 
   it("goes direct with the provider's key", () => {
-    const target = upstreamRequest(env, record(), BUILT_IN_PROVIDERS.openai!, {
+    const target = upstreamRequest(record(), BUILT_IN_PROVIDERS.openai!, {
       ...base,
       path: "v1/chat/completions",
       credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
@@ -91,7 +91,7 @@ describe("where a request goes (route.ts)", () => {
 
   it("goes through Cloudflare with its token, the provider's name, and the key when there is one", () => {
     const client = new Headers({ "cf-aig-cache-ttl": "60", "cf-aig-authorization": "Bearer stolen", "cf-aig-metadata": "{}" });
-    const withKey = upstreamRequest(env, record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
+    const withKey = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
       ...base,
       path: "v1/chat/completions",
       client,
@@ -107,7 +107,7 @@ describe("where a request goes (route.ts)", () => {
     expect(() => new Headers({ "cf-aig-metadata": withKey.headers["cf-aig-metadata"]! })).not.toThrow();
     expect(JSON.parse(withKey.headers["cf-aig-metadata"]!)).toEqual({ app_id: "app_1", user_id: "józsef" });
 
-    const byok = upstreamRequest(env, record({ type: "xai", cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.xai!, {
+    const byok = upstreamRequest(record({ type: "xai", cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.xai!, {
       ...base,
       path: "v1/chat/completions",
       credentials: { providerKey: null, cloudflareToken: CF_TOKEN },
@@ -119,14 +119,14 @@ describe("where a request goes (route.ts)", () => {
 
   it("refuses a provider Cloudflare does not serve, and a connection with no key going direct", () => {
     expect(() =>
-      upstreamRequest(env, record({ type: "groq", cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.groq!, {
+      upstreamRequest(record({ type: "groq", cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.groq!, {
         ...base,
         path: "v1/chat/completions",
         credentials: { providerKey: null, cloudflareToken: CF_TOKEN },
       }),
     ).toThrow(/cannot be reached through Cloudflare AI Gateway/);
     expect(() =>
-      upstreamRequest(env, record(), BUILT_IN_PROVIDERS.openai!, {
+      upstreamRequest(record(), BUILT_IN_PROVIDERS.openai!, {
         ...base,
         path: "v1/chat/completions",
         credentials: { providerKey: null, cloudflareToken: null },
@@ -134,9 +134,24 @@ describe("where a request goes (route.ts)", () => {
     ).toThrow(/credential is missing/);
   });
 
+  it("sends Anthropic's key through Cloudflare as each endpoint takes it (S3)", () => {
+    const anthropic = BUILT_IN_PROVIDERS.anthropic!;
+    const through = (style: "openai-chat" | "anthropic-messages") =>
+      upstreamRequest(record({ type: "anthropic", cloudflareGateway: cloudflare }), anthropic, {
+        ...base,
+        path: style === "openai-chat" ? "v1/chat/completions" : "v1/messages",
+        style,
+        credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      }).headers;
+    expect(through("openai-chat")).toMatchObject({ authorization: `Bearer ${PROVIDER_KEY}` });
+    expect(through("openai-chat")["x-api-key"]).toBeUndefined();
+    expect(through("anthropic-messages")).toMatchObject({ "x-api-key": PROVIDER_KEY });
+    expect(through("anthropic-messages").authorization).toBeUndefined();
+  });
+
   it("sets Vercel's spend attribution, leaving out a user id it would refuse", () => {
     const vercel = BUILT_IN_PROVIDERS.vercel!;
-    const plain = upstreamRequest(env, record({ type: "vercel" }), vercel, {
+    const plain = upstreamRequest(record({ type: "vercel" }), vercel, {
       ...base,
       userId: "user-7",
       path: "v1/chat/completions",
@@ -144,7 +159,7 @@ describe("where a request goes (route.ts)", () => {
     });
     expect(plain.url).toBe("https://ai-gateway.vercel.sh/v1/chat/completions?x=1");
     expect(plain.headers).toMatchObject({ "ai-reporting-user": "user-7", "ai-reporting-tags": "app:app_1" });
-    const odd = upstreamRequest(env, record({ type: "vercel" }), vercel, {
+    const odd = upstreamRequest(record({ type: "vercel" }), vercel, {
       ...base,
       path: "v1/chat/completions",
       credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
@@ -177,6 +192,8 @@ describe("Vercel's models, priced and read as their provider's", () => {
     // `priority` is fast on OpenAI's models and priority on Gemini's.
     expect(requestedServiceMode(vercel, null, body, "openai/gpt-4o-mini").mode.tier).toBe("fast");
     expect(requestedServiceMode(vercel, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
+    // The model's provider's own fields are read too, with its table (S5).
+    expect(requestedServiceMode(vercel, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
     // A value only Vercel names keeps Vercel's meaning.
     expect(requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
       "standard",
@@ -241,6 +258,31 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(offWithKey.body.provider.cloudflareGateway).toBeNull();
   });
 
+  it("says what key goes with every change of Cloudflare route (S6)", async () => {
+    const key = await seedManagementKey();
+    const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };
+    const withKey = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, cloudflareGateway: gateway });
+    const id = withKey.body.provider.id as string;
+    // The key given for the gateway is never quietly re-sealed for the provider's own host.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: null })).status).toBe(400);
+    const keyless = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "y", slug: slugFor("openai"), cloudflareGateway: gateway });
+    const other = { accountId: "acct", gatewayId: "other", token: CF_TOKEN };
+    // A keyless connection says so again for a new gateway.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${keyless.body.provider.id}`, { revision: 1, cloudflareGateway: other })).status).toBe(400);
+    expect((await admin(key, "PUT", `/v2/admin/providers/${keyless.body.provider.id}`, { revision: 1, cloudflareGateway: other, secret: null })).status).toBe(200);
+  });
+
+  it("takes no Cloudflare setting in a provider hand-off, which could not carry its token (S7)", async () => {
+    const key = await seedManagementKey();
+    const opened = await admin(key, "POST", "/v2/admin/provider-handoffs", {
+      type: "openai",
+      name: "x",
+      slug: slugFor("openai"),
+      cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN },
+    });
+    expect(opened.status).toBe(400);
+  });
+
   it("tests a key through the gateway, as live requests are sent", async () => {
     const key = await seedManagementKey();
     fetchSpy.mockResolvedValue(new Response("{}", { status: 200 }));
@@ -259,28 +301,40 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
 });
 
 describe("calls through the gateways, end to end", () => {
-  async function routed(provider: Record<string, unknown>, operation: string, models: readonly string[]) {
+  async function routed(
+    provider: Record<string, unknown>,
+    operation: string,
+    models: readonly string[] | undefined,
+    endUserHeader = "x-end-user-id",
+  ) {
     const key = await seedManagementKey();
     const slug = slugFor(String(provider.type));
     const created = await admin(key, "POST", "/v2/admin/providers", { name: "gw", slug, ...provider });
     expect(created.status).toBe(201);
     const appId = await seedRoutedApp(
-      { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
-      { providers: { [slug]: { operations: [operation], models } } },
+      { type: "api_key", end_user: { source: "header", header: endUserHeader } },
+      { providers: { [slug]: { operations: [operation], ...(models === undefined ? {} : { models }) } } },
     );
     const { key: appKey } = await seedAppKey(appId);
     return { appId, slug, appKey };
   }
 
-  async function call(slug: string, appKey: string, appId: string, path: string, body: Record<string, unknown>) {
+  async function call(
+    slug: string,
+    appKey: string,
+    appId: string,
+    path: string,
+    body: Record<string, unknown>,
+    options: { headers?: Record<string, string>; environment?: Env } = {},
+  ) {
     const ctx = createExecutionContext();
     const response = await worker.fetch(
       new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": "user-1" },
+        headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": "user-1", ...options.headers },
         body: JSON.stringify(body),
       }),
-      env,
+      options.environment ?? env,
       ctx,
     );
     await response.text();
@@ -326,6 +380,66 @@ describe("calls through the gateways, end to end", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.price_source).toBe("list_rate");
     const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
+    expect(Number(rows[0]!.cost_nano)).toBe(expected);
+  });
+
+  it("goes to Cloudflare whatever the Worker's variables say: only a test build can move it (S1)", async () => {
+    const { appId, slug, appKey } = await routed(
+      { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } },
+      "openai.chat",
+      ["gpt-4o-mini"],
+    );
+    fetchSpy.mockResolvedValue(Response.json({ id: "c1", model: "gpt-4o-mini", choices: [], usage }));
+    const environment = { ...env, CLOUDFLARE_AI_GATEWAY_ORIGIN: "https://attacker.example/" } as Env;
+    await call(slug, appKey, appId, "v1/chat/completions", { model: "gpt-4o-mini", messages: [] }, { environment });
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/chat/completions");
+  });
+
+  it("never forwards a header the app's sign-in uses, even under a Cloudflare name (S2)", async () => {
+    const { appId, slug, appKey } = await routed(
+      { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } },
+      "openai.chat",
+      ["gpt-4o-mini"],
+      "cf-aig-skip-cache",
+    );
+    fetchSpy.mockResolvedValue(Response.json({ id: "c1", model: "gpt-4o-mini", choices: [], usage }));
+    await call(slug, appKey, appId, "v1/chat/completions", { model: "gpt-4o-mini", messages: [] }, { headers: { "cf-aig-skip-cache": "user-secret-id", "cf-aig-cache-ttl": "60" } });
+    const headers = new Headers(fetchSpy.mock.calls[0]![1]?.headers);
+    expect(headers.get("cf-aig-skip-cache")).toBeNull();
+    expect(headers.get("cf-aig-cache-ttl")).toBe("60");
+  });
+
+  it("judges Vercel's fallback models as the request's own, and bills the one that served (S4)", async () => {
+    const listed = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", ["openai/gpt-4o-mini"]);
+    fetchSpy.mockResolvedValue(Response.json({ id: "c1", model: "openai/gpt-4o-mini", choices: [], usage }));
+    const outside = await call(listed.slug, listed.appKey, listed.appId, "v1/chat/completions", {
+      model: "openai/gpt-4o-mini",
+      messages: [],
+      providerOptions: { gateway: { models: ["anthropic/claude-sonnet-5"] } },
+    });
+    expect(outside.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const open = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", undefined);
+    const unpriced = await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
+      model: "openai/gpt-4o-mini",
+      messages: [],
+      providerOptions: { gateway: { models: ["nobody/model"] } },
+    });
+    expect(unpriced.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockResolvedValue(Response.json({ id: "c2", model: "anthropic/claude-sonnet-5", choices: [], usage }));
+    const served = await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
+      model: "openai/gpt-4o-mini",
+      messages: [],
+      providerOptions: { gateway: { models: ["anthropic/claude-sonnet-5"] } },
+    });
+    expect(served.status).toBe(200);
+    const rows = await charges(open.appId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.model).toBe("anthropic/claude-sonnet-5");
+    const expected = priceTokens(listPrice("anthropic", "claude-sonnet-5")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
     expect(Number(rows[0]!.cost_nano)).toBe(expected);
   });
 

@@ -109,7 +109,7 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
   return builtInProvider(connection.type);
 }
 
-/** Where Cloudflare AI Gateway lives. `CLOUDFLARE_AI_GATEWAY_ORIGIN` moves it, for a test deployment's mock only. */
+/** Where Cloudflare AI Gateway lives. Only a test deployment's own build moves it (`./route.ts`). */
 export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
 
 /**

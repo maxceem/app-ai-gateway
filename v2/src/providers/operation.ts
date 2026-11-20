@@ -363,7 +363,16 @@ export interface ProviderDescription {
    * returns the provider's own response, so metering and prices are the
    * provider's. Without this, a connection of this type cannot use it.
    */
-  readonly cloudflareGateway?: { readonly slug: string; readonly stripPathPrefix?: string };
+  readonly cloudflareGateway?: {
+    readonly slug: string;
+    readonly stripPathPrefix?: string;
+    /**
+     * How the provider's key is sent through Cloudflare for an API style whose
+     * endpoint takes it differently from `auth`, as Cloudflare documents it:
+     * Anthropic's Messages takes `x-api-key`, its Chat Completions a bearer token.
+     */
+    readonly authByStyle?: Partial<Readonly<Record<ApiStyle, ProviderAuth>>>;
+  };
   /**
    * For a gateway that serves other providers' models (Vercel AI Gateway):
    * its model ids are `<namespace>/<model>`, and each namespace names the
@@ -372,6 +381,14 @@ export interface ProviderDescription {
    * `gpt-4o`. A namespace not listed has no price of ours.
    */
   readonly modelNamespaces?: Readonly<Record<string, string>>;
+  /**
+   * A request field listing more models the provider may serve the request
+   * with when the first cannot (Vercel's `providerOptions.gateway.models`).
+   * Each one is judged as the request's own model is: the app's model list,
+   * and a price (`src/proxy/alternatives.ts`). The charge is priced at the
+   * model the answer says served it.
+   */
+  readonly alternativeModels?: { readonly field: string };
   /**
    * Headers the gateway sets on every request to this provider for its own
    * reporting, such as Vercel's spend attribution. A client can never send

@@ -232,7 +232,7 @@ function keyOf(request: Request): string | null {
 
 /**
  * Cloudflare AI Gateway's URL space, for a test deployment whose
- * `CLOUDFLARE_AI_GATEWAY_ORIGIN` points here: `/v1/<account>/<gateway>/<provider>/<path>`.
+ * build points Cloudflare AI Gateway here (`__TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__`): `/v1/<account>/<gateway>/<provider>/<path>`.
  * OpenAI's name there stands for its `v1/` prefix, as on Cloudflare.
  */
 const CLOUDFLARE_PATH = /^\/v1\/([^/]+)\/([^/]+)\/(openai|anthropic|grok|google-ai-studio|perplexity-ai)\/(.*)$/u;

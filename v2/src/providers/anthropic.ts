@@ -13,7 +13,9 @@ export const anthropic = defineProvider({
   // included. On live traffic the version is the client's own, sent by every
   // SDK, so it is never set there.
   probe: { path: "v1/models", headers: { "anthropic-version": "2023-06-01" } },
-  cloudflareGateway: { slug: "anthropic" },
+  // Through Cloudflare, Messages takes `x-api-key` and the OpenAI-compatible
+  // Chat Completions a bearer token, each as Cloudflare documents it.
+  cloudflareGateway: { slug: "anthropic", authByStyle: { "openai-chat": { header: "authorization", format: "Bearer {key}" } } },
   // Fast mode is `speed`, and the region is `inference_geo`. `service_tier`
   // draws on a Priority Tier commitment paid for by contract, so it bills as
   // standard.

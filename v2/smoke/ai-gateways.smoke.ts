@@ -7,7 +7,7 @@
  * - Cloudflare AI Gateway, a setting on a built-in provider: the request goes
  *   to the gateway's URL with its token and no provider key, and is billed
  *   from the provider's own answer. Run only where the deployment's
- *   `CLOUDFLARE_AI_GATEWAY_ORIGIN` points at the mock (V2_MOCK_CLOUDFLARE=1),
+ *   test build has the mock as Cloudflare's stand-in (V2_MOCK_CLOUDFLARE=1),
  *   so nothing reaches Cloudflare.
  *
  *   V2_BASE_URL=https://gateway.example.com \

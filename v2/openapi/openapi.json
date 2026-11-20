@@ -2238,32 +2238,6 @@
           "baseUrl": {
             "type": "string"
           },
-          "cloudflareGateway": {
-            "type": "object",
-            "properties": {
-              "accountId": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "gatewayId": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "token": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4096
-              }
-            },
-            "required": [
-              "accountId",
-              "gatewayId",
-              "token"
-            ],
-            "additionalProperties": false
-          },
           "pricing": {
             "type": "object",
             "additionalProperties": {

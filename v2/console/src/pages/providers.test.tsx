@@ -195,6 +195,32 @@ describe("ProvidersPage", () => {
     expect(screen.queryByRole("button", { name: /test key/i })).toBeNull();
   });
 
+  it("sends no key when Cloudflare's stored keys are chosen, whatever was typed (S8)", async () => {
+    const fetchMock = stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-1234");
+    // Moving to a gateway says what key goes with it: Save waits for one.
+    expect(screen.getByRole("button", { name: /^save$/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByLabelText(/^api key$/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("checkbox", { name: /use the keys stored in cloudflare/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-1234" },
+        secret: null,
+      }),
+    );
+  });
+
   it("stops a read-only member adding a provider", async () => {
     stub();
     renderAuthenticated(<ProvidersPage />, { session: { role: "member" } });

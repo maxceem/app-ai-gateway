@@ -55,8 +55,9 @@ import { upstreamRequest } from "../providers/route.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
+import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { clientResponseHeaders, upstreamHeaders } from "./headers.ts";
+import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
 import { observeBody, streamClosed } from "./observe.ts";
 
@@ -283,6 +284,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (bill.problem === "no_price" && routing.models === undefined) {
         throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
       }
+      // Models the provider may serve the request with instead pass the same policy.
+      const alternatives = judgedAlternatives(description, operation, body, { allowed: routing.models, sources: priceSources(connection) });
       // A rewritten model is written where the request named it: the path,
       // or the body or form field.
       let upstream = match.upstream;
@@ -360,6 +363,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         startedAt,
         appVersion: caller.appVersion,
         clientTraceId: caller.clientTraceId,
+        ...(alternatives.size > 0 ? { alternatives } : {}),
       };
       return await sendAttempts(c, strippedHeaders(app, caller), [
         {
@@ -756,8 +760,10 @@ export async function sendAttempts(
     let providerStart: number;
     try {
       const body = prepared.body();
-      const headers = upstreamHeaders(c.req.raw.headers);
-      for (const name of stripped) headers.delete(name);
+      // The app's headers without the gateway's own credentials and end-user ids:
+      // the only client headers anything below may forward, the provider's or Cloudflare's.
+      const client = withoutHeaders(c.req.raw.headers, stripped);
+      const headers = upstreamHeaders(client);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
         if (!headers.has(name)) headers.set(name, value);
       }
@@ -767,12 +773,13 @@ export async function sendAttempts(
       if (body.contentType === null) headers.delete("content-type");
       else headers.set("content-type", body.contentType);
       // Where it goes and what it carries: set last, so nothing a client sent can override it.
-      const target = upstreamRequest(c.env, connection, description, {
+      const target = upstreamRequest(connection, description, {
         hostKey: prepared.hostKey,
         path: prepared.path.replace(/^\//u, ""),
         query: prepared.query,
+        ...(prepared.operation.style !== undefined ? { style: prepared.operation.style } : {}),
         credentials,
-        client: c.req.raw.headers,
+        client,
         appId: attempt.appId,
         userId: attempt.identity.userId,
       });
@@ -941,7 +948,8 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
               cut,
               latencyMs,
             };
-        return recordLedgerEntry(c.env, safeCharge(attempt, outcome));
+        // Priced at the model that served it, when the request named another it could be served with.
+        return recordLedgerEntry(c.env, safeCharge(ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt, outcome));
       },
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),

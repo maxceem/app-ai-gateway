@@ -40,6 +40,9 @@ export const vercel = defineProvider({
   // the model's creator, so it matches a provider type only where that
   // provider serves its own models: Grok is under `spacexai/`, Gemini under
   // `google/`, Kimi under `moonshotai/`.
+  // Vercel's own fallback models, tried when the first cannot serve: each must
+  // be one the app allows and has a price for, and the one that served is billed.
+  alternativeModels: { field: "providerOptions.gateway.models" },
   modelNamespaces: {
     openai: "openai",
     anthropic: "anthropic",

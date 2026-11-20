@@ -47,6 +47,7 @@ import {
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream, streamingSibling } from "../providers/presets.ts";
 import type { CallAttempt } from "./call-charge.ts";
+import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
 import {
@@ -197,6 +198,9 @@ function targetAttempt(input: TargetInput): PreparedAttempt {
     const judged = shaped();
     refuseBackground(operation, judged);
     applyOutputCap(operation, judged, preset.max_output_tokens);
+    // A preset fixes its model: another the provider could serve instead is
+    // allowed only when it is that same model.
+    judgedAlternatives(description, operation, judged, { allowed: [model], sources: priceSources(connection) });
     fields = judged;
     build = () => {
       const body = shaped();

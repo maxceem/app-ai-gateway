@@ -215,7 +215,8 @@ export function readServiceMode(
 }
 
 /** A field's value, following a dotted name into nested objects. */
-function fieldValue(read: (name: string) => unknown, name: string): unknown {
+/** A field's value, where a dotted name is a path into nested objects (`providerOptions.gateway.models`). */
+export function fieldValue(read: (name: string) => unknown, name: string): unknown {
   const dot = name.indexOf(".");
   if (dot === -1) return read(name);
   let value = read(name.slice(0, dot));
