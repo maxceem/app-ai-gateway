@@ -310,12 +310,29 @@ describe("Fable's second round on the derived checks", () => {
     expect(priceInServedMode(price, usage, STANDARD_MODE)).toMatchObject({ unit: "credits", rates: { per_credit: 5 }, cost: 5 });
   });
 
-  it("never bills an estimate below the standard price on the unit it billed, even where the standard price's own choice is cheaper", () => {
-    // An unknown voice a bills the estimated characters cheaply; the standard price prefers the reported credit at 1 nano,
-    // but its own character rate, on the unit a billed, is a dollar per million.
+  it("floors an estimate at the standard price's charge on what the provider reported, not on the request's estimate", () => {
+    // An unknown voice a has no credit rate, so it bills the estimated characters at 10 nano. The standard price can
+    // charge the reported credit (1 nano), so its estimated characters are not its floor: the estimate bills its 10.
     const price = customerPrice({ m: { per_credit: 1, per_million_characters: 1_000_000_000, by: { voice: { a: { per_million_characters: 10 } } } } }, "m")!;
     const estimateOnly: UsageObservation = { ...usage, units: { credits: 1_000, characters: 1_000_000 } };
-    // a has no credit rate, so it bills characters (10 nano); base on characters is 1,000,000,000 nano, its own choice 1 nano.
-    expect(priceInServedMode(price, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 1_000_000_000, estimated: true });
+    expect(priceInServedMode(price, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 10, estimated: true });
+    // Where the standard price can charge nothing reported, its estimate is the floor: a dollar per million characters.
+    const noCredit = customerPrice({ m: { per_million_characters: 1_000_000_000, by: { voice: { a: { per_million_characters: 10 } } } } }, "m")!;
+    expect(priceInServedMode(noCredit, estimateOnly, STANDARD_MODE)).toMatchObject({ unit: "characters", cost: 1_000_000_000, estimated: true });
+  });
+});
+
+describe("Astra's review of the derived checks", () => {
+  it("floors an estimate at the dearest charge the standard price can make, across every reported measure", () => {
+    // An image API: no quality named, 300 input and 33 output tokens, one image. The standard price bills the
+    // tokens at 1,998,000 nano or the image at 1,000,000; an unknown quality bills high's 1,500,000 per image.
+    const price = customerPrice(
+      { m: { input: 6_000_000_000, output: 6_000_000_000, per_image: 1_000_000, by: { quality: { low: { per_image: 500_000 }, high: { per_image: 1_500_000 } } } } },
+      "m",
+    )!;
+    const usage: UsageObservation = { inputTokens: 300, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 33, units: { images: 1 } };
+    const charged = priceInServedMode(price, usage, STANDARD_MODE)!;
+    expect(charged.cost).toBeGreaterThanOrEqual(1_998_000);
+    expect(charged).toMatchObject({ unit: "tokens", cost: 1_998_000, estimated: true });
   });
 });
