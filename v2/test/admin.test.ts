@@ -119,6 +119,32 @@ describe("provider connections", () => {
 });
 
 describe("apps", () => {
+  it("checks each model against every enabled operation's unit, with the provider-cost exception per operation", async () => {
+    const key = await seedManagementKey();
+    const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });
+    const xaiSlug = xai.body.provider.slug as string;
+    const create = (routing: Record<string, unknown>) =>
+      request(key, "POST", "/v2/admin/apps", { name: "Units", config: apiKeyConfig(routing) });
+    // xAI's chat reports its own cost, so it needs no price of ours; its Messages API does.
+    expect((await create({ [xaiSlug]: { operations: ["xai.chat"], models: ["grok-unpriced-zz"] } })).status).toBe(201);
+    expect(await create({ [xaiSlug]: { operations: ["xai.chat", "xai.messages"], models: ["grok-unpriced-zz"] } })).toMatchObject({
+      status: 400,
+      body: { error: { code: "pricing_not_configured", data: { operation: "xai.messages" } } },
+    });
+    // A price per minute cannot bill a token operation.
+    const openai = await createProvider(key);
+    expect(await create({ [openai.body.provider.slug]: { operations: ["openai.chat"], models: ["whisper-1"] } })).toMatchObject({
+      status: 400,
+      body: { error: { code: "pricing_not_configured" } },
+    });
+  });
+
+  it("refuses a provider's key header as the end user header when saved", async () => {
+    const key = await seedManagementKey();
+    const config = { authentication: { type: "api_key", end_user: { source: "header", header: "x-goog-api-key" } }, routing: { providers: {} } };
+    expect(await request(key, "POST", "/v2/admin/apps", { name: "Header", config })).toMatchObject({ status: 400 });
+  });
+
   it("checks every connection, operation and model the config names when saved", async () => {
     const key = await seedManagementKey();
     const { body } = await createProvider(key);

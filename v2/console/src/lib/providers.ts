@@ -1,14 +1,8 @@
 import { BUILT_IN_PROVIDERS } from "@providers/index";
 
-/** What people call each built-in provider. A type not listed here shows as itself. */
-const LABELS: Record<string, string> = {
-  openai: "OpenAI",
-  elevenlabs: "ElevenLabs",
-  fal: "fal",
-};
-
+/** What people call each built-in provider. A type this build does not know shows as itself. */
 export function providerLabel(type: string): string {
-  return LABELS[type] ?? type;
+  return Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]!.label : type;
 }
 
 /** Every provider type a connection can be added for, by label. */

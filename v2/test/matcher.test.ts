@@ -146,6 +146,8 @@ describe("passthrough paths", () => {
   it("gives a custom provider on a built-in host that provider's refused paths", () => {
     const custom = defineProvider({
       type: "custom",
+      label: "Custom",
+      serviceModes: [],
       hosts: { main: "api.openai.com" },
       auth: { header: "authorization", format: "Bearer {key}" },
       refused: [],
@@ -162,6 +164,8 @@ describe("passthrough paths", () => {
 describe("upstream templates", () => {
   const provider = defineProvider({
     type: "test",
+    label: "Test",
+    serviceModes: [],
     hosts: { main: "example.com" },
     auth: { header: "x", format: "{key}" },
     refused: [],
@@ -194,7 +198,7 @@ describe("upstream templates", () => {
 
 describe("broken descriptions are caught when compiled", () => {
   const provider = (operation: ReturnType<typeof defineOperation>, hosts = { main: "example.com" }) =>
-    defineProvider({ type: "test", hosts, auth: { header: "x", format: "{key}" }, refused: [], operations: [operation] });
+    defineProvider({ type: "test", label: "Test", serviceModes: [], hosts, auth: { header: "x", format: "{key}" }, refused: [], operations: [operation] });
   const base = { lifecycle: "call", transport: "http", meter: { kind: "request_count" } } as const;
 
   it("an unknown upstream host", () => {
@@ -210,7 +214,7 @@ describe("broken descriptions are caught when compiled", () => {
 
   it("an operation declared twice", () => {
     const op = defineOperation({ ...base, name: "t.dup", match: { method: "GET", path: "v1/x" }, model: { in: "fixed", model: "m" } });
-    const twice = defineProvider({ type: "test", hosts: { main: "example.com" }, auth: { header: "x", format: "{key}" }, refused: [], operations: [op, op] });
+    const twice = defineProvider({ type: "test", label: "Test", serviceModes: [], hosts: { main: "example.com" }, auth: { header: "x", format: "{key}" }, refused: [], operations: [op, op] });
     expect(() => new ProviderMatcher(twice)).toThrow(/declared twice/);
   });
 });

@@ -6,6 +6,8 @@
  * the start or the end of a body or stream). Ported from v1's body observer.
  */
 
+import type { ApiStyle } from "../providers/operation.ts";
+
 export const OBSERVER_HEAD_BYTES = 256 * 1024;
 export const OBSERVER_TAIL_BYTES = 1024 * 1024;
 
@@ -83,10 +85,98 @@ export function bodyWindows(): { push(chunk: Uint8Array): void; read(): Observed
   };
 }
 
-/** Whether a kept stream ends with its `data: [DONE]` event: the provider had sent everything. */
-export function streamFinished(body: ObservedText): boolean {
-  const last = body.truncated ? body.tail : body.head;
-  return /(?:^|\n)data:\s*\[DONE\]\s*$/u.test(last);
+/** One whole SSE frame: its event name and its data, comment lines skipped. */
+interface SseFrame {
+  readonly event: string | null;
+  readonly data: string;
+}
+
+/**
+ * The last frame of a kept stream, or null when there is none. A frame ends
+ * with a blank line, so text after the last blank line is a frame still
+ * arriving, and is not one.
+ */
+function lastFrame(text: string, startsAtBoundary: boolean, skip: (frame: SseFrame) => boolean): SseFrame | null {
+  const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
+  // The last block is whatever follows the last blank line: an unfinished
+  // frame, or nothing. The first is the rest of a frame cut by the kept
+  // window, unless the text starts where the stream does.
+  const first = startsAtBoundary ? 0 : 1;
+  for (let index = blocks.length - 2; index >= first; index -= 1) {
+    let event: string | null = null;
+    const data: string[] = [];
+    for (const line of blocks[index]!.split("\n")) {
+      if (line === "" || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (event === null && data.length === 0) continue;
+    const frame = { event, data: data.join("\n") };
+    if (!skip(frame)) return frame;
+  }
+  return null;
+}
+
+/** The `type` of a frame's data, when the data is a whole JSON object. */
+function dataType(frame: SseFrame): string | null {
+  try {
+    const value = JSON.parse(frame.data) as unknown;
+    const type = typeof value === "object" && value !== null ? (value as { type?: unknown }).type : undefined;
+    return typeof type === "string" ? type : null;
+  } catch {
+    return null;
+  }
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a frame is one of `names`, by its data's `type`, else by its event
+ * name. Its data must be whole JSON either way: a cut payload never closes a
+ * stream.
+ */
+function namedFrame(frame: SseFrame, names: readonly string[]): boolean {
+  const type = dataType(frame);
+  if (type !== null) return names.includes(type);
+  return frame.event !== null && names.includes(frame.event) && isJson(frame.data);
+}
+
+/** Whether a frame is its style's closing event. Null for a style whose stream has none. */
+const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>> = {
+  "openai-chat": (frame) => frame.data === "[DONE]",
+  "openai-completions": (frame) => frame.data === "[DONE]",
+  "openai-responses": (frame) => namedFrame(frame, ["response.completed", "response.incomplete", "response.failed"]),
+  "anthropic-messages": (frame) => namedFrame(frame, ["message_stop"]),
+  // Gemini's stream has no closing event: it simply ends.
+  "gemini-generate": null,
+};
+
+/** Whether a style's stream closes with `[DONE]` itself. */
+function closesWithDone(style: ApiStyle): boolean {
+  return style === "openai-chat" || style === "openai-completions";
+}
+
+/**
+ * Whether a kept stream ended with its style's closing event: the provider
+ * had sent everything. Null for a style whose stream has no closing event, so
+ * only the end of the stream says it is whole.
+ */
+export function streamClosed(body: ObservedText, style: ApiStyle): boolean | null {
+  const closing = CLOSING[style];
+  if (closing === null) return null;
+  // A kept tail starts wherever the window cut the stream, maybe mid-frame.
+  // A `[DONE]` some services send after a Responses or Messages stream's
+  // closing event is not the stream's own last word.
+  const skip = (frame: SseFrame) => !closesWithDone(style) && frame.data === "[DONE]";
+  const frame = body.truncated ? lastFrame(body.tail, false, skip) : lastFrame(body.head, true, skip);
+  return frame !== null && closing(frame);
 }
 
 /**

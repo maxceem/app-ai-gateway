@@ -16,9 +16,9 @@ import {
   AppValidateRequestSchema,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { AppConfigSchema, type AppConfig } from "../contracts/app-config.ts";
+import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
-import { hasTokenPrice, type CustomerRates } from "../pricing/prices.ts";
+import { pricesOperation, reportsCost, resolvePrice, type CustomerRates } from "../pricing/prices.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
@@ -81,7 +81,10 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
  * `provider_not_configured` until it is back. An added or changed entry for
  * that slug needs the connection, because nothing could check it.
  */
-/** An app document's config, read by its schema alone, without the account's current state. */
+/**
+ * An app document's config as it is saved, read by its schema and the
+ * save-only rules, without the account's current state.
+ */
 export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (!parsed.success) {
@@ -89,6 +92,8 @@ export function parseAppConfig(raw: unknown): AppConfig {
     const where = issue === undefined ? "config" : ["config", ...issue.path.map(String)].join(".");
     throw invalid(`${where}: ${issue?.message ?? "is invalid"}`);
   }
+  const header = providerKeyHeaderProblem(parsed.data);
+  if (header !== null) throw invalid(`config.${header}`);
   return parsed.data;
 }
 
@@ -121,14 +126,22 @@ export async function checkAppConfig(
       }
     }
     const rates = connection.rates_json === null ? null : (JSON.parse(connection.rates_json) as CustomerRates);
+    const enabled = description.operations.filter((declared) => routing.operations.includes(declared.name));
     for (const model of routing.models ?? []) {
-      if (!hasTokenPrice(connection.type, model, rates)) {
+      const resolved = resolvePrice(connection.type, model, rates);
+      // Each enabled operation needs a price in the unit it measures. One
+      // whose answers carry the provider's own cost (OpenRouter's, xAI's)
+      // bills on that, so it needs no price of ours (v1).
+      const unpriced = enabled.find(
+        (operation) => !reportsCost(operation) && (resolved === null || !pricesOperation(operation, resolved.price)),
+      );
+      if (unpriced !== undefined) {
         throw new GatewayError(
           400,
           "pricing_not_configured",
-          `config.routing.providers.${slug}.models: ${model} has no price; add one to the provider connection first`,
+          `config.routing.providers.${slug}.models: ${model} has no price that ${unpriced.name} can bill; add one to the provider connection first`,
           undefined,
-          { data: { slug, model } },
+          { data: { slug, model, operation: unpriced.name } },
         );
       }
     }

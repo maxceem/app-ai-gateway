@@ -18,8 +18,8 @@
  * 6. After the answer is sent, read its usage, price it and write one charge.
  *    Counting never fails or delays the request (`AGENTS.md`).
  *
- * Only calls measured by the OpenAI chat usage reader are served for now.
- * Fallback chains, presets and conversation storage come in later steps.
+ * Calls measured from the response body are served: today's LLM APIs (step
+ * 3). Fallback chains, presets and conversation storage come in later steps.
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
@@ -37,7 +37,7 @@ import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejectio
 import { bodyOnce } from "../http/body.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { resolvePrice } from "../pricing/prices.ts";
+import { pricesOperation, reportsCost, resolvePrice } from "../pricing/prices.ts";
 import {
   connectionDescription,
   connectionSecret,
@@ -47,11 +47,12 @@ import {
 } from "../providers/connections.ts";
 import { ProviderMatcher } from "../providers/matcher.ts";
 import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { applyChatOutputCap, requestStreamUsage } from "./chat-policy.ts";
+import { applyOutputCap, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, upstreamHeaders } from "./headers.ts";
-import { observeBody, streamFinished } from "./observe.ts";
-import { readChatUsage } from "./openai-chat-usage.ts";
+import { readResponse, requestedServiceMode, servedServiceMode } from "./meter.ts";
+import { observeBody, streamClosed } from "./observe.ts";
 
 /** How long a provider may take to send its response headers (v1's default). */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -69,10 +70,11 @@ function matcherFor(description: ProviderDescription): ProviderMatcher {
   return matcher;
 }
 
-/** Whether this step can serve an operation: a call, measured by the OpenAI chat usage reader. */
+/** Whether this build can serve an operation: a call measured from its response body. */
 function servedNow(operation: OperationDescription): boolean {
-  return operation.lifecycle === "call" && operation.meter.kind === "response_json" && operation.meter.style === "openai-chat";
+  return operation.lifecycle === "call" && operation.meter.kind === "response_json";
 }
+
 
 /** The parts of the URL after `/v2/apps/{app}/proxy/`, still encoded. */
 function proxyTarget(url: URL): { slug: string; path: string } {
@@ -183,20 +185,25 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
     const bytes = await readBody();
     const body = jsonBody(bytes);
-    model = requestModel(operation, body);
+    refuseBackground(operation, body);
+    model = requestModel(operation, body, match.parts);
     if (routing.models !== undefined && !routing.models.includes(model)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
     }
-    const price = resolvePrice(connection.type, model, connection.rates);
-    if (price === null && routing.models === undefined) {
+    const resolved = resolvePrice(connection.type, model, connection.rates);
+    // A price in another unit (per minute, say) cannot bill this operation.
+    const price = resolved !== null && pricesOperation(operation, resolved.price) ? resolved : null;
+    if (price === null && routing.models === undefined && !reportsCost(operation)) {
       // Never served: a model with no price is refused, and nothing is listed by name.
       throw new GatewayError(400, "pricing_not_configured", `Model ${model} has no price`, undefined, { data: { model } });
     }
+    // Read, never judged: a service mode is never refused (`./meter.ts`).
+    const mode = requestedServiceMode(description, connection.baseUrl, body);
 
     // The output cap refuses on its own, so it runs before admission: a request
     // it refuses must not spend a request limit or the plan allowance.
-    const capped = applyChatOutputCap(body, routing.max_output_tokens);
-    const metered = requestStreamUsage(body);
+    const capped = applyOutputCap(operation, body, routing.max_output_tokens);
+    const metered = requestStreamUsage(operation, body);
 
     // Admission comes last, once the request is known to be one that can be
     // served: the app's own limits, then the plan allowance.
@@ -222,6 +229,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       operation: operation.name,
       model,
       price,
+      reportsCost: reportsCost(operation),
+      requestedMode: mode.mode,
+      ...(mode.unknown !== undefined ? { requestedModeUnknown: mode.unknown } : {}),
       startedAt,
       appVersion,
       clientTraceId,
@@ -230,6 +240,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       app,
       connection,
       description,
+      operation,
       hostKey: match.upstream.host,
       path: match.upstream.path,
       query: sanitizedQuery(url),
@@ -286,9 +297,14 @@ function jsonBody(bytes: Uint8Array): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requestModel(operation: OperationDescription, body: Record<string, unknown>): string {
+function requestModel(operation: OperationDescription, body: Record<string, unknown>, parts: Parts): string {
   const location = operation.model;
   if (location.in === "fixed") return location.model;
+  if (location.in === "path") {
+    const value = Object.hasOwn(parts, location.part) ? parts[location.part] : undefined;
+    if (value === undefined || value.trim() === "") throw new GatewayError(400, "invalid_request", "Request path must name a model");
+    return value;
+  }
   if (location.in !== "body") throw new GatewayError(500, "internal_error", "This operation's model location is not served yet");
   const value = body[location.field] ?? location.default;
   if (typeof value !== "string" || value.trim() === "") {
@@ -332,6 +348,7 @@ async function sendUpstream(
     app: AppRecord;
     connection: ConnectionRecord;
     description: ProviderDescription;
+    operation: OperationDescription;
     hostKey: string;
     path: string;
     query: string;
@@ -341,7 +358,7 @@ async function sendUpstream(
     attempt: CallAttempt;
   },
 ): Promise<Response> {
-  const { connection, description, attempt } = input;
+  const { connection, description, operation, attempt } = input;
   const secret = await connectionSecret(c.env, connection);
   const headers = upstreamHeaders(c.req.raw.headers);
   for (const name of input.stripped) headers.delete(name);
@@ -408,18 +425,28 @@ async function sendUpstream(
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        const usage = ok ? readChatUsage(body, contentType) : null;
-        // A stream closed right after its `[DONE]`, with its usage read, was
-        // whole: the end of stream simply had not arrived yet.
-        const finished = usage !== null && streamFinished(body);
-        const cut = !finished && (body.clientAborted || body.upstreamFailed);
+        const reading = ok ? readResponse(body, contentType, upstream.headers, description, operation) : null;
+        const usage = reading?.usage ?? null;
+        // A stream is whole once its style's closing event arrived, even if the
+        // app went away right after. One that ended without it was cut short,
+        // however it ended. A style with no closing event, and an answer that
+        // is not a stream, are whole when they were read to the end.
+        const closed =
+          ok && operation.style !== undefined && contentType.toLowerCase().includes("text/event-stream")
+            ? streamClosed(body, operation.style)
+            : null;
+        const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
+        const served = servedServiceMode(description, attempt.requestedMode, usage, upstream.headers);
         const outcome: AttemptOutcome = ok
           ? {
-              // A stream the provider broke is a failed attempt, not one the app left.
+              // A stream the provider broke, or ended early, is a failed attempt, not one the app left.
               status: !cut ? "ok" : body.clientAborted ? "client_aborted" : "network_error",
               httpStatus: upstream.status,
               errorCode: null,
               usage,
+              providerCostUsd: reading?.providerCostUsd ?? null,
+              servedMode: served.mode,
+              ...(served.unknown !== undefined ? { servedModeUnknown: served.unknown } : {}),
               cut,
               latencyMs,
             }

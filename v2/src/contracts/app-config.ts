@@ -46,14 +46,17 @@ const IssuerClaimValuesSchema = z
 
 /**
  * Headers the gateway already uses, which an app may name neither as its end
- * user id header nor as its issuer token header. That includes every built-in
- * provider's key header, so a provider key is never read as a user id.
+ * user id header nor as its issuer token header. Every built-in provider's key
+ * header is refused too, but only when settings are saved
+ * (`providerKeyHeaderProblem`): a provider added in a later release must not
+ * make a stored app that already names its header unreadable.
  */
 const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
   "cookie",
   "x-appattest-proof",
-  ...Object.values(BUILT_IN_PROVIDERS).map((provider) => provider.auth.header.toLowerCase()),
+  // The key headers of the providers step 1 had, which stored apps never named.
+  "xi-api-key",
   "x-app-version",
   "x-client-sdk",
   "x-client-trace-id",
@@ -62,6 +65,27 @@ const RESERVED_APP_HEADERS: ReadonlySet<string> = new Set([
   "content-length",
   "host",
 ]);
+
+/** Every built-in provider's key header, so a provider key is never read as a user id. */
+const PROVIDER_KEY_HEADERS: ReadonlySet<string> = new Set(
+  Object.values(BUILT_IN_PROVIDERS).map((provider) => provider.auth.header.toLowerCase()),
+);
+
+/**
+ * Why an app's end-user or issuer token header cannot be saved: it is a
+ * built-in provider's key header. Checked when settings are saved only.
+ */
+export function providerKeyHeaderProblem(config: AppConfig): string | null {
+  const endUser = config.authentication.end_user;
+  const named: [string, string | undefined][] = [
+    ["authentication.end_user.header", endUser.source === "header" ? endUser.header : undefined],
+    ["authentication.end_user.issuer.token_header", endUser.source === "issuer" ? endUser.issuer.token_header : undefined],
+  ];
+  for (const [path, header] of named) {
+    if (header !== undefined && PROVIDER_KEY_HEADERS.has(header)) return `${path}: cannot be ${header}: the gateway already uses that header`;
+  }
+  return null;
+}
 
 function refuseReservedHeader(header: string, context: z.RefinementCtx): void {
   if (RESERVED_APP_HEADERS.has(header)) {

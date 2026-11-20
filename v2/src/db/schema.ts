@@ -320,8 +320,12 @@ export const charge = sqliteTable(
      */
     unit: text("unit"),
     units: integer("units"),
-    /** All measures, including the ones above, as integers at a fixed scale per unit (D7). */
-    measures: text("measures_json", { mode: "json" }).$type<Record<string, number>>().notNull(),
+    /**
+     * All measures, including the ones above, as integers at a fixed scale per
+     * unit, plus the price keys a charge was priced with, such as
+     * `service_mode`, as strings (D7).
+     */
+    measures: text("measures_json", { mode: "json" }).$type<Record<string, number | string>>().notNull(),
     /** The rates used to price this charge, in nano-dollars per million units. A units correction uses them. */
     rates: text("rates_json", { mode: "json" }).$type<Record<string, number>>(),
     /**

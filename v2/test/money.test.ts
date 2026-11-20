@@ -13,7 +13,7 @@ import {
   toMilli,
   type NanoDollars,
 } from "../src/money.ts";
-import { hasTokenPrice, listPrice, PRICE_LIST, resolvePrice } from "../src/pricing/prices.ts";
+import { listPrice, PRICE_LIST, resolvePrice } from "../src/pricing/prices.ts";
 import { priceTokens } from "../src/pricing/tokens.ts";
 
 describe("money (plan D20)", () => {
@@ -99,8 +99,8 @@ describe("the price list", () => {
     expect(resolvePrice("openai", "gpt-4o-mini", null)?.source).toBe("list_rate");
     const customer = { "gpt-4o-mini": { input: 1, output: 2 } };
     expect(resolvePrice("openai", "gpt-4o-mini", customer)).toMatchObject({ source: "customer_rate", price: { rates: { input: 1 } } });
-    expect(hasTokenPrice("openai", "no-such-model", null)).toBe(false);
-    expect(hasTokenPrice("openai", "no-such-model", { "no-such-model": { input: 1, output: 1 } })).toBe(true);
+    expect(resolvePrice("openai", "no-such-model", null)).toBeNull();
+    expect(resolvePrice("openai", "no-such-model", { "no-such-model": { input: 1, output: 1 } })?.source).toBe("customer_rate");
   });
 
   it("prices tokens by bucket, cached and cache writes at the input rate when they have none", () => {
@@ -125,18 +125,18 @@ describe("the price list", () => {
 
 describe("reading chat usage", () => {
   it("refuses a token count that is not a whole number, instead of rounding it", async () => {
-    const { openAiChatUsage } = await import("../src/proxy/openai-chat-usage.ts");
-    expect(openAiChatUsage({ usage: { prompt_tokens: 1.5, completion_tokens: 0 } })).toBeNull();
-    expect(openAiChatUsage({ usage: { prompt_tokens: 2, completion_tokens: 1 } })).toMatchObject({ inputTokens: 2, outputTokens: 1 });
+    const { openAiUsage } = await import("../src/usage/readers.ts");
+    expect(openAiUsage({ usage: { prompt_tokens: 1.5, completion_tokens: 0 } })).toBeNull();
+    expect(openAiUsage({ usage: { prompt_tokens: 2, completion_tokens: 1 } })).toMatchObject({ inputTokens: 2, outputTokens: 1 });
   });
 });
 
 describe("reading chat usage from a cut stream (S2)", () => {
   it("recovers a whole usage object from an event whose JSON never closed", async () => {
-    const { readChatUsage } = await import("../src/proxy/openai-chat-usage.ts");
+    const { readUsage, responseValues } = await import("../src/usage/readers.ts");
     const intact = `data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`;
     const cut = 'data: {"id":"x","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3},"extra":"never clo';
-    expect(readChatUsage({ head: intact + cut, tail: "", truncated: false }, "text/event-stream")).toEqual({
+    expect(readUsage(responseValues({ head: intact + cut, tail: "", truncated: false }, "text/event-stream"), "openai-chat")).toEqual({
       inputTokens: 12,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
