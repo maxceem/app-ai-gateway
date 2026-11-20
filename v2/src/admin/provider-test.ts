@@ -11,6 +11,7 @@
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
+import type { UpstreamRequest } from "../providers/route.ts";
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -19,15 +20,18 @@ export type ProbeResult =
   | { validated: false; reason: "no_probe" | "unreachable" }
   | { validated: false; reason: "unexpected_status" | "rejected"; status: number };
 
-/** `origin` ends with `/`: the connection's base URL, or the provider's own host. */
-export async function probeProviderKey(description: ProviderDescription, origin: string, secret: string): Promise<ProbeResult> {
-  if (description.probe === undefined) return { validated: false, reason: "no_probe" };
+/**
+ * Sends the provider's probe, built where live requests are built
+ * (`src/providers/route.ts`), so the test reaches the same host with the
+ * same credentials. `probe` is null for a provider with no probe.
+ */
+export async function probeProviderKey(description: ProviderDescription, probe: UpstreamRequest | null): Promise<ProbeResult> {
+  if (description.probe === undefined || probe === null) return { validated: false, reason: "no_probe" };
   const headers = new Headers(description.probe.headers);
-  // A callback, so a key containing `$&` is sent as it is.
-  headers.set(description.auth.header, description.auth.format.replace("{key}", () => secret));
+  for (const [name, value] of Object.entries(probe.headers)) headers.set(name, value);
   let response: Response;
   try {
-    response = await fetch(`${origin}${description.probe.path}`, {
+    response = await fetch(probe.url, {
       method: "GET",
       headers,
       // Never follow a redirect: it could take the key to another host.

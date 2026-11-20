@@ -1760,6 +1760,31 @@
               "null"
             ]
           },
+          "cloudflareGateway": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "accountId": {
+                "type": "string"
+              },
+              "gatewayId": {
+                "type": "string"
+              },
+              "tokenHint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "tokenHint"
+            ]
+          },
           "pricing": {
             "type": [
               "object",
@@ -1831,6 +1856,7 @@
           "status",
           "secretHint",
           "baseUrl",
+          "cloudflareGateway",
           "pricing",
           "revision",
           "createdAt",
@@ -1871,6 +1897,32 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
           },
           "pricing": {
             "type": "object",
@@ -1924,8 +1976,7 @@
         },
         "required": [
           "type",
-          "name",
-          "secret"
+          "name"
         ],
         "additionalProperties": false
       },
@@ -1968,11 +2019,36 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "type",
-          "secret"
+          "type"
         ],
         "additionalProperties": false
       },
@@ -1989,7 +2065,10 @@
             "maxLength": 100
           },
           "secret": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 4096
           },
@@ -1998,6 +2077,34 @@
               "string",
               "null"
             ]
+          },
+          "cloudflareGateway": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId"
+            ],
+            "additionalProperties": false
           },
           "pricing": {
             "type": [
@@ -2130,6 +2237,32 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
           },
           "pricing": {
             "type": "object",

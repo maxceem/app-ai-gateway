@@ -334,7 +334,7 @@ async function checkPreset(
     // Naming a service mode in the parameters chooses it for every target, so
     // each must know it and be able to bill it.
     if (preset.params !== undefined) {
-      const mode = requestedServiceMode(description, connection.base_url, preset.params);
+      const mode = requestedServiceMode(description, connection.base_url, preset.params, target.model);
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
       }

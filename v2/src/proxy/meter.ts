@@ -10,6 +10,8 @@
  *   provider's own cost report, where the operation has one, from the same
  *   values.
  */
+import { builtInProvider } from "../providers/index.ts";
+import { listedAs } from "../providers/listing.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { readProviderCost } from "../usage/cost-reports.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -33,16 +35,40 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
 }
 
 /**
+ * A provider's service-mode fields as they read for one model. A gateway's
+ * field that it hands on as the provider's own (`as`) is read with the table
+ * of the provider the model is listed under (`src/providers/listing.ts`), so
+ * a value means what it means there: Vercel's `priority` is fast on OpenAI's
+ * models and priority on Gemini's. Any other field reads as declared.
+ */
+function fieldsFor(description: ProviderDescription, fields: readonly ServiceModeField[], model: string | undefined): readonly ServiceModeField[] {
+  if (model === undefined || description.modelNamespaces === undefined) return fields;
+  const listed = listedAs(description.type, model);
+  const target = listed.type === description.type ? null : builtInProvider(listed.type);
+  if (target === null) return fields;
+  return fields.map((field) => {
+    if (field.as === undefined) return field;
+    const own = target.serviceModes.find((candidate) => candidate.axis === field.axis && candidate.names.includes(field.as!));
+    // The provider's meaning wins; a value only the gateway names keeps the gateway's.
+    return own === undefined ? field : ({ ...field, values: { ...field.values, ...own.values } } as ServiceModeField);
+  });
+}
+
+/**
  * The service mode a request asks for: its body read with the provider's
  * table, and the region its connection's base URL serves. `unknown` is the
  * first value the table does not know, which leaves its axis at the default.
+ * `model` picks the table of a gateway's field handed on as the provider's.
  */
 export function requestedServiceMode(
   description: ProviderDescription,
   baseUrl: string | null,
   body: Record<string, unknown>,
+  model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const reading = readServiceMode(description.serviceModes, (name) => (Object.hasOwn(body, name) ? body[name] : undefined));
+  const reading = readServiceMode(fieldsFor(description, description.serviceModes, model), (name) =>
+    Object.hasOwn(body, name) ? body[name] : undefined,
+  );
   const region = baseUrlRegion(description, baseUrl);
   const mode: ServiceMode =
     reading.mode.region === "global" && region !== "global" ? { tier: reading.mode.tier, region } : reading.mode;
@@ -60,8 +86,9 @@ export function servedServiceMode(
   requested: ServiceMode,
   usage: UsageObservation | null,
   headers: Headers,
+  model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const fields = description.servedModes ?? description.serviceModes;
+  const fields = fieldsFor(description, description.servedModes ?? description.serviceModes, model);
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);

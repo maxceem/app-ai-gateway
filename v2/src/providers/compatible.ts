@@ -16,6 +16,7 @@ export const perplexity = defineProvider({
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   // No probe: Perplexity has no free call that needs a key.
+  cloudflareGateway: { slug: "perplexity-ai" },
   // `fast` is Perplexity's alias for priority.
   serviceModes: [
     {

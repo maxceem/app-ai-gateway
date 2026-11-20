@@ -230,10 +230,35 @@ function keyOf(request: Request): string | null {
   return request.headers.get("x-api-key") ?? request.headers.get("x-goog-api-key");
 }
 
-export default {
+/**
+ * Cloudflare AI Gateway's URL space, for a test deployment whose
+ * `CLOUDFLARE_AI_GATEWAY_ORIGIN` points here: `/v1/<account>/<gateway>/<provider>/<path>`.
+ * OpenAI's name there stands for its `v1/` prefix, as on Cloudflare.
+ */
+const CLOUDFLARE_PATH = /^\/v1\/([^/]+)\/([^/]+)\/(openai|anthropic|grok|google-ai-studio|perplexity-ai)\/(.*)$/u;
+
+const mock = {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") return Response.json({ ok: true });
+    // Through the stand-in for Cloudflare AI Gateway: its token is needed, the
+    // provider's key is not (Cloudflare can use the keys it stores). The
+    // answer says what came through, for the smoke checks to see.
+    const cloudflare = CLOUDFLARE_PATH.exec(url.pathname);
+    if (cloudflare !== null) {
+      if (!(request.headers.get("cf-aig-authorization") ?? "").startsWith("Bearer ")) {
+        return Response.json({ error: { message: "Missing Cloudflare token", code: "unauthorized" } }, { status: 401 });
+      }
+      const [, , , provider, rest] = cloudflare;
+      const path = provider === "openai" ? `/v1/${rest}` : `/${rest}`;
+      const forwarded = new Request(new URL(`${path}${url.search}`, url), request);
+      if (keyOf(forwarded) === null) forwarded.headers.set("authorization", "Bearer cloudflare-stored-key");
+      const response = await mock.fetch(forwarded);
+      const answered = new Response(response.body, response);
+      answered.headers.set("x-mock-via-cloudflare", provider!);
+      answered.headers.set("x-mock-cf-metadata", request.headers.get("cf-aig-metadata") ?? "");
+      return answered;
+    }
     const key = keyOf(request);
     if (key === null || key === "") {
       return Response.json({ error: { message: "Missing key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
@@ -271,6 +296,11 @@ export default {
     const model = typeof body.model === "string" ? body.model : "mock-model";
     const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname });
     for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+    // Vercel AI Gateway's spend attribution, for the smoke checks to see.
+    const tags = request.headers.get("ai-reporting-tags");
+    if (tags !== null) response.headers.set("x-mock-reporting-tags", tags);
     return response;
   },
 } satisfies ExportedHandler;
+
+export default mock;

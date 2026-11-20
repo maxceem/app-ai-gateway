@@ -45,7 +45,7 @@ import { GatewayError } from "../core/errors.ts";
 import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
-import { invalidateConnection } from "../providers/connections.ts";
+import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
@@ -172,6 +172,8 @@ interface RotateReview {
   name: string;
   slug: string;
   baseUrl: string | null;
+  /** The connection's Cloudflare AI Gateway, where its key is sent instead of the provider's own host. */
+  cloudflareGateway?: { accountId: string; gatewayId: string } | null;
   secretHint: string | null;
 }
 
@@ -241,9 +243,16 @@ export async function openProviderKeyHandoff(c: AdminContext): Promise<Response>
     name: current.name,
     slug: current.slug,
     baseUrl: current.base_url,
+    cloudflareGateway: cloudflareIds(current.cloudflare_gateway_json),
     secretHint: current.secret_hint,
   };
   return openBrowserStep(c, "provider.rotate-key", review as unknown as Record<string, unknown>);
+}
+
+/** A stored Cloudflare AI Gateway setting's account and gateway, without its token. */
+function cloudflareIds(stored: string | null): { accountId: string; gatewayId: string } | null {
+  const setting = readCloudflareGateway(stored);
+  return setting === null ? null : { accountId: setting.accountId, gatewayId: setting.gatewayId };
 }
 
 async function refuseTakenSlug(db: D1Database, accountId: string, slug: string): Promise<void> {
@@ -281,9 +290,18 @@ export async function getHandoff(c: PageContext): Promise<Response> {
   const { proof } = await parseBody(c, HandoffProofSchema);
   const { details, kind, review, accountId } = await verifiedStep(c, proof);
   const baseUrl = typeof review.baseUrl === "string" ? review.baseUrl : null;
-  // Every host the key goes to: a custom base URL replaces only the main one.
+  const gateway = review.cloudflareGateway as { accountId?: unknown; gatewayId?: unknown } | null | undefined;
+  const cloudflare =
+    gateway && typeof gateway.accountId === "string" && typeof gateway.gatewayId === "string"
+      ? { accountId: gateway.accountId, gatewayId: gateway.gatewayId }
+      : null;
+  // Every host the key goes to: a custom base URL replaces only the main one;
+  // through Cloudflare AI Gateway, the gateway is the only one.
   const hosts = builtInProvider(String(review.type))?.hosts ?? {};
-  const destinations = Object.entries(hosts).map(([key, host]) => (key === "main" && baseUrl !== null ? baseUrl : `https://${host}/`));
+  const destinations =
+    cloudflare !== null
+      ? [keyOrigin({ baseUrl: null, cloudflareGateway: cloudflare })]
+      : Object.entries(hosts).map(([key, host]) => (key === "main" && baseUrl !== null ? baseUrl : `https://${host}/`));
   return c.json({
     id: details.id,
     kind,
@@ -411,6 +429,7 @@ async function providerAddWrite(
     secret_blob: null,
     secret_hint: secretHint(secret),
     base_url: review.baseUrl,
+    cloudflare_gateway_json: null,
     rates_json: rates === null ? null : JSON.stringify(rates),
     revision: 1,
     created_by: openerUserId,
@@ -437,8 +456,9 @@ async function providerKeyWrite(env: Env, accountId: string, review: RotateRevie
   if (current.revision !== review.revision) {
     throw new GatewayError(409, "conflict", "The provider connection changed since this was asked for; ask for it again");
   }
-  // Sealed for the origin the connection has now, which the update requires to be unchanged.
-  const blob = await sealSecret(env, "providerKey", [accountId, current.id, current.type, current.base_url ?? ""], secret);
+  // Sealed for the origin the connection has now, which the revision check keeps unchanged.
+  const origin = keyOrigin({ baseUrl: current.base_url, cloudflareGateway: readCloudflareGateway(current.cloudflare_gateway_json) });
+  const blob = await sealSecret(env, "providerKey", [accountId, current.id, current.type, origin], secret);
   const now = Date.now();
   const statement = database(env.DB)
     .update(providerConnection)

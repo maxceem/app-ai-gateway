@@ -18,6 +18,7 @@ import { fal } from "./fal.ts";
 import { gemini } from "./gemini.ts";
 import { openai } from "./openai.ts";
 import { openrouter } from "./openrouter.ts";
+import { vercel } from "./vercel.ts";
 import type { ProviderDescription } from "./operation.ts";
 import { xai } from "./xai.ts";
 
@@ -38,6 +39,7 @@ const ALL: readonly ProviderDescription[] = [
   baseten,
   bytedance,
   openrouter,
+  vercel,
   elevenlabs,
   fal,
 ];

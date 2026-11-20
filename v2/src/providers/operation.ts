@@ -356,6 +356,28 @@ export interface ProviderDescription {
    * including nothing, so `v1/organization/*` also refuses `v1/organization`.
    */
   readonly refused: readonly string[];
+  /**
+   * This provider can be reached through Cloudflare AI Gateway (D13): the
+   * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's
+   * name already implies, which is taken off the request's path. Cloudflare
+   * returns the provider's own response, so metering and prices are the
+   * provider's. Without this, a connection of this type cannot use it.
+   */
+  readonly cloudflareGateway?: { readonly slug: string; readonly stripPathPrefix?: string };
+  /**
+   * For a gateway that serves other providers' models (Vercel AI Gateway):
+   * its model ids are `<namespace>/<model>`, and each namespace names the
+   * provider type whose entries in our price list, and whose service-mode
+   * tables, the model is read with. `openai/gpt-4o` is priced as OpenAI's
+   * `gpt-4o`. A namespace not listed has no price of ours.
+   */
+  readonly modelNamespaces?: Readonly<Record<string, string>>;
+  /**
+   * Headers the gateway sets on every request to this provider for its own
+   * reporting, such as Vercel's spend attribution. A client can never send
+   * them: client headers are an allowlist (`src/proxy/headers.ts`).
+   */
+  readonly attributionHeaders?: (context: { readonly appId: string; readonly userId: string | null }) => Readonly<Record<string, string>>;
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
   /**

@@ -13,6 +13,7 @@ export const anthropic = defineProvider({
   // included. On live traffic the version is the client's own, sent by every
   // SDK, so it is never set there.
   probe: { path: "v1/models", headers: { "anthropic-version": "2023-06-01" } },
+  cloudflareGateway: { slug: "anthropic" },
   // Fast mode is `speed`, and the region is `inference_geo`. `service_tier`
   // draws on a Priority Tier commitment paid for by contract, so it bills as
   // standard.
