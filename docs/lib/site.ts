@@ -68,3 +68,23 @@ export function shareMetadata(page: { title: string; description?: string; url: 
     },
   };
 }
+
+/**
+ * Structured data for the docs home: the organization behind the product, so
+ * search engines and AI tools can tell who publishes these docs. The `@id` is
+ * the one the marketing site gives the same organization, so both sites
+ * describe one organization. The logo is served by the marketing site; a fork
+ * that sets `DOCS_MARKETING_URL` should serve its own at the same path.
+ */
+export function organizationJsonLd() {
+  const home = `${externalUrls.marketing}/`;
+  return {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": `${home}#organization`,
+    name: siteName,
+    url: home,
+    logo: { "@type": "ImageObject", url: `${home}logo-1024.png`, width: 1024, height: 1024 },
+    sameAs: [externalUrls.repo],
+  };
+}
