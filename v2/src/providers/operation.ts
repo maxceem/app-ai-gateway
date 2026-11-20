@@ -594,6 +594,13 @@ export interface ProviderDescription {
    * them: client headers are an allowlist (`src/proxy/headers.ts`).
    */
   readonly attributionHeaders?: (context: { readonly appId: string; readonly userId: string | null }) => Readonly<Record<string, string>>;
+  /**
+   * Its operations are paths a customer listed (a custom provider,
+   * `./custom.ts`), not paths the gateway declares: refused paths are judged
+   * on every way the connection's base URL may be read, as they are for a
+   * listed passthrough path.
+   */
+  readonly customerPaths?: true;
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
   /**

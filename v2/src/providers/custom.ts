@@ -1,0 +1,191 @@
+/**
+ * Custom providers (plan section 4.5, D10): a provider the gateway does not
+ * know. The customer sets its base URL, how its key is sent, and the paths
+ * it lists. Each listed path is a passthrough path, served by the same code
+ * as a built-in provider's (`./passthrough.ts`), unless it names a built-in
+ * API style: then it is an operation of that style, metered by the style's
+ * usage reader and priced at the connection's own rates.
+ *
+ * A connection's description is built here from what it stores, so every
+ * part of the gateway (matching, routing, pricing, saving) reads a custom
+ * provider exactly as it reads a built-in one.
+ *
+ * - **Its host.** The base URL is its only host. It passed the origin guard
+ *   when saved (`../core/origin-guard.ts`).
+ * - **A known host.** A base URL on a built-in provider's host gets that
+ *   provider's hosts and refused paths, so a custom provider cannot reach
+ *   the key, admin or account paths a built-in connection never can.
+ *   Cloudflare AI Gateway's host is refused when saved: it reaches every
+ *   provider, and a built-in connection's own setting goes there instead.
+ * - **Its paths.** Refused paths are judged on every way its base URL may be
+ *   read (`customerPaths`), for its API-style operations as for its plain
+ *   listings: the customer, not the gateway, chose those paths.
+ */
+import type { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
+import { BUILT_IN_PROVIDERS } from "./index.ts";
+import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
+import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
+import type { PassthroughPath } from "./matcher.ts";
+import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
+
+/** The provider type every custom provider connection has (`CUSTOM_PROVIDER_TYPE` in the contracts). */
+export const CUSTOM_TYPE = "custom";
+
+/** What the console and the CLI call a custom provider. */
+export const CUSTOM_LABEL = "Custom provider";
+
+/**
+ * The API styles a custom path may name, each with the builder a built-in
+ * provider uses for it. The styles whose model is in the body or a form
+ * field: a style that reads its model from the path (Gemini's) or from a
+ * provider's own answer shape is not offered.
+ */
+const STYLE_BUILDERS: Readonly<Record<(typeof CUSTOM_PATH_STYLES)[number], (name: string, path: string) => OperationDescription>> = {
+  "openai-chat": (name: string, path: string) => chat(name, path),
+  "openai-completions": (name: string, path: string) => completions(name, path),
+  "openai-responses": (name: string, path: string) => responses(name, path),
+  "anthropic-messages": (name: string, path: string) => messages(name, path),
+  "openai-embeddings": (name: string, path: string) => embeddings(name, path),
+  "openai-images": (name: string, path: string) => images(name, path),
+  "openai-transcription": (name: string, path: string) => transcription(name, path),
+  "openai-speech": (name: string, path: string) => speech(name, path),
+};
+
+/** A style a custom path may name. Each is a built-in API style: a compile error otherwise. */
+export type CustomStyle = (typeof CUSTOM_PATH_STYLES)[number];
+const EVERY_STYLE_IS_AN_API_STYLE: readonly ApiStyle[] = [] as CustomStyle[];
+void EVERY_STYLE_IS_AN_API_STYLE;
+
+export const CUSTOM_STYLES = Object.keys(STYLE_BUILDERS) as readonly CustomStyle[];
+
+export function isCustomStyle(value: string): value is CustomStyle {
+  return Object.hasOwn(STYLE_BUILDERS, value);
+}
+
+/**
+ * The operation name a custom path of `style` is enabled and charged as. One
+ * path per style, so the name stays the same when other paths are listed or
+ * removed.
+ */
+export function customOperationName(style: CustomStyle): string {
+  return `${CUSTOM_TYPE}.${style}`;
+}
+
+/** The operation a custom path of `style` is served as. */
+export function customOperation(style: CustomStyle, path: string): OperationDescription {
+  return STYLE_BUILDERS[style](customOperationName(style), path);
+}
+
+/**
+ * Every custom operation, at a stand-in path: what an operation of each name
+ * is, wherever a connection lists it. For checks that read an operation by
+ * name alone (a preset's style, a rewrite's target).
+ */
+export const CUSTOM_OPERATIONS: readonly OperationDescription[] = CUSTOM_STYLES.map((style) => customOperation(style, style));
+
+/** The host name of a base URL, lower-cased, or null when it does not read. */
+function hostOf(baseUrl: string): string | null {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** Cloudflare AI Gateway's host: it reaches every provider it serves, so no custom provider may use it. */
+export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+
+/**
+ * The built-in provider whose host a base URL is on, or null: any of its
+ * hosts, or a regional host it prices apart. Compared on the host name alone,
+ * so a base URL with its own path on that host is still that provider's.
+ */
+export function knownHostOwner(baseUrl: string): ProviderDescription | null {
+  const host = hostOf(baseUrl);
+  if (host === null) return null;
+  for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+    const hosts = [
+      ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
+      ...Object.keys(description.regionalOrigins ?? {}).map((origin) => hostOf(origin)),
+    ];
+    if (hosts.includes(host)) return description;
+  }
+  return null;
+}
+
+/** What a custom provider connection stores, as its description is built from. */
+export interface CustomSetting {
+  readonly baseUrl: string;
+  readonly auth: ProviderAuth;
+  readonly paths: readonly PassthroughPath[];
+}
+
+/**
+ * A custom connection's description: its API-style paths as operations, and
+ * its base URL's host, or a known provider's hosts and refused paths when the
+ * base URL is on one. Its plain listed paths are passthrough paths, which the
+ * description does not hold, as for a built-in provider.
+ */
+export function customDescription(setting: CustomSetting): ProviderDescription {
+  const owner = knownHostOwner(setting.baseUrl);
+  const host = hostOf(setting.baseUrl) ?? "";
+  const operations = setting.paths.flatMap((listed) =>
+    listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST" ? [customOperation(listed.style, listed.path)] : [],
+  );
+  return {
+    type: CUSTOM_TYPE,
+    label: CUSTOM_LABEL,
+    // A known provider's hosts, so its paths are read under its own host prefix (`upstreamRoute`).
+    hosts: owner === null ? { main: host } : owner.hosts,
+    auth: setting.auth,
+    serviceModes: NO_SERVICE_TIERS,
+    refused: owner === null ? [] : owner.refused,
+    customerPaths: true,
+    operations,
+  };
+}
+
+/**
+ * Header names a custom provider's key may not be sent in: ones the request
+ * itself, its body or its connection depend on, the gateway's own, and
+ * Cloudflare's. Compared lower-cased.
+ */
+const RESERVED_KEY_HEADERS: ReadonlySet<string> = new Set([
+  "host",
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "upgrade",
+  "te",
+  "trailer",
+  "expect",
+  "cookie",
+  "accept",
+  "accept-encoding",
+  "user-agent",
+  "origin",
+  "referer",
+]);
+
+/** An HTTP header name: RFC 9110 `token`. */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]+$/u;
+
+/**
+ * Why a custom provider's key header and format cannot be used, or null.
+ * The format holds `{key}` exactly once, and only printable ASCII besides,
+ * so the header can always be sent.
+ */
+export function customAuthProblem(auth: ProviderAuth): string | null {
+  const header = auth.header;
+  if (!HEADER_NAME.test(header)) return "auth.header: must be a header name in lowercase letters, digits and - _ .";
+  if (RESERVED_KEY_HEADERS.has(header) || header.startsWith("cf-") || header.startsWith("x-agw-") || header.startsWith("sec-")) {
+    return `auth.header: ${header} cannot carry the key`;
+  }
+  const format = auth.format;
+  if (format.split("{key}").length !== 2) return "auth.format: must hold {key} exactly once";
+  if (!/^[\x20-\x7e]*$/u.test(format)) return "auth.format: may hold only printable ASCII characters";
+  return null;
+}

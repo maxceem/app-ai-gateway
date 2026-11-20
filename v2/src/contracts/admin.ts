@@ -149,6 +149,25 @@ export const ModelPricingSchema = z
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
 /**
+ * The built-in API styles a custom provider's path may name. Each is served
+ * as an operation named `custom.<style>`, metered by that style's usage
+ * reader at the connection's own rates. One path per style.
+ */
+export const CUSTOM_PATH_STYLES = [
+  "openai-chat",
+  "openai-completions",
+  "openai-responses",
+  "anthropic-messages",
+  "openai-embeddings",
+  "openai-images",
+  "openai-transcription",
+  "openai-speech",
+] as const;
+
+/** The provider type of a custom provider: one the gateway does not know, at the base URL the connection names. */
+export const CUSTOM_PROVIDER_TYPE = "custom";
+
+/**
  * A path a provider connection lists for passthrough (plan section 4.5): a
  * path of the provider the gateway does not declare, forwarded as it is to
  * apps that enable `passthrough`. `{name}` parts match exactly one segment.
@@ -159,9 +178,27 @@ export const PassthroughPathSchema = z
     path: z.string().trim().min(1).max(500),
     /** A flat price per request, in dollars, charged for each answer the provider accepts. Without it, its calls are not priced and budgets are not enforced on them. */
     per_request: z.number().finite().nonnegative().optional(),
+    /**
+     * A custom provider's path only: the built-in API style it speaks. It is
+     * then served as the operation `custom.<style>`, metered by that style and
+     * priced at the connection's rates for its models, not passed through.
+     */
+    style: z.enum(CUSTOM_PATH_STYLES).optional(),
   })
   .strict()
   .meta({ id: "PassthroughPath" });
+
+/**
+ * How a custom provider's key is sent: the header, and its value with
+ * `{key}` where the key goes, such as `Bearer {key}`.
+ */
+export const CustomAuthSchema = z
+  .object({
+    header: z.string().trim().toLowerCase().min(1).max(100),
+    format: z.string().min(5).max(200),
+  })
+  .strict()
+  .meta({ id: "CustomProviderAuth" });
 
 const PassthroughListSchema = z.array(PassthroughPathSchema).max(100, { error: "passthrough may list at most 100 paths" });
 
@@ -188,6 +225,8 @@ export const ProviderSchema = z
     servingProviders: z.array(z.string()).nullable().optional(),
     /** The paths it lists for passthrough. Left out when it lists none. */
     passthrough: z.array(PassthroughPathSchema).optional(),
+    /** A custom provider's key header and format. Left out for a built-in provider. */
+    auth: CustomAuthSchema.optional(),
     pricing: ProviderPricingSchema.nullable(),
     revision: z.number().int().positive(),
     createdAt: z.string(),
@@ -235,6 +274,8 @@ export const ProviderCreateRequestSchema = z
     servingProviders: ServingProvidersSchema.optional(),
     /** Paths to forward as they are, to apps that enable `passthrough` on this connection. */
     passthrough: PassthroughListSchema.optional(),
+    /** For type `custom` only, and needed there with `baseUrl`: how its key is sent. */
+    auth: CustomAuthSchema.optional(),
     pricing: ProviderPricingSchema.optional(),
   })
   .strict()
@@ -256,6 +297,8 @@ export const ProviderUpdateRequestSchema = z
     servingProviders: ServingProvidersSchema.nullable().optional(),
     /** The whole new list of passthrough paths, or null to list none. */
     passthrough: PassthroughListSchema.nullable().optional(),
+    /** A custom provider's new key header and format. */
+    auth: CustomAuthSchema.optional(),
     pricing: ProviderPricingSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })
@@ -424,6 +467,8 @@ export const ProviderTestRequestSchema = z
     secret: SecretSchema.optional(),
     baseUrl: z.string().optional(),
     cloudflareGateway: CloudflareGatewayInputSchema.optional(),
+    /** For type `custom`: how its key is sent. */
+    auth: CustomAuthSchema.optional(),
   })
   .strict()
   .meta({ id: "ProviderTestRequest" });

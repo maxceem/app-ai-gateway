@@ -76,7 +76,8 @@ function responseDeadlineMs(operation: OperationDescription): number {
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
-const matchers = new Map<string, ProviderMatcher>();
+/** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
+const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
 
 const ROUTES = new WeakMap<ConnectionRecord, UpstreamRoute>();
 
@@ -91,10 +92,10 @@ function routeOf(description: ProviderDescription, connection: ConnectionRecord)
 }
 
 export function matcherFor(description: ProviderDescription): ProviderMatcher {
-  let matcher = matchers.get(description.type);
+  let matcher = matchers.get(description);
   if (matcher === undefined) {
     matcher = new ProviderMatcher(description);
-    matchers.set(description.type, matcher);
+    matchers.set(description, matcher);
   }
   return matcher;
 }

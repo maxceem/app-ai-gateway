@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, Cloud, KeyRound, Plus, Power, Trash2 } from "lucide-react";
+import { AlertCircle, Ban, CheckCircle2, Cloud, KeyRound, ListTree, Plus, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, PageHeader } from "@/components/field";
@@ -15,7 +16,7 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, PROVIDER_TYPES, providerLabel } from "@/lib/providers";
+import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel } from "@/lib/providers";
 import { useCreateProvider, useDeleteProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
@@ -44,6 +45,12 @@ export function ProvidersPage() {
     if (cloudflareId !== null && list.data && routing === null) setCloudflareId(null);
   }, [cloudflareId, list.data, routing]);
   const [removing, setRemoving] = useState<ProviderConnection | null>(null);
+  // By id too, for the same reason.
+  const [pathsId, setPathsId] = useState<string | null>(null);
+  const listing = list.data?.providers.find((provider) => provider.id === pathsId) ?? null;
+  useEffect(() => {
+    if (pathsId !== null && list.data && listing === null) setPathsId(null);
+  }, [pathsId, list.data, listing]);
 
   const providers = list.data?.providers ?? [];
 
@@ -137,6 +144,10 @@ export function ProvidersPage() {
                         <KeyRound />
                         Replace key
                       </RowAction>
+                      <RowAction onSelect={() => setPathsId(provider.id)}>
+                        <ListTree />
+                        {provider.type === "custom" ? "Paths" : "Passthrough paths"}
+                      </RowAction>
                       {cloudflareCapable(provider.type) ? (
                         <RowAction onSelect={() => setCloudflareId(provider.id)}>
                           <Cloud />
@@ -164,6 +175,7 @@ export function ProvidersPage() {
       {/* Keyed by connection, so each replace starts with an empty draft. */}
       <ReplaceKeyDialog key={rotatingId ?? "none"} provider={rotating} onClose={() => setRotatingId(null)} />
       <CloudflareDialog key={`cf-${cloudflareId ?? "none"}`} provider={routing} onClose={() => setCloudflareId(null)} />
+      <PathsDialog key={`paths-${pathsId ?? "none"}`} provider={listing} onClose={() => setPathsId(null)} />
 
       <ConfirmDialog
         open={removing !== null}
@@ -241,7 +253,13 @@ function useKeyTest() {
   // Each run and each clear starts a new generation, so an answer that comes
   // back after the key was edited or the dialog closed is dropped.
   const generation = useRef(0);
-  const run = (body: { type: string; secret?: string; baseUrl?: string; cloudflareGateway?: Required<CloudflareBody> }) => {
+  const run = (body: {
+    type: string;
+    secret?: string;
+    baseUrl?: string;
+    cloudflareGateway?: Required<CloudflareBody>;
+    auth?: { header: string; format: string };
+  }) => {
     const mine = ++generation.current;
     setResult(null);
     const keep = (outcome: TestOutcome) => {
@@ -344,22 +362,27 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const [slug, setSlug] = useState("");
   const [secret, setSecret] = useState("");
   const [cloudflare, setCloudflare] = useState<CloudflareDraft>(NO_CLOUDFLARE);
+  const [custom, setCustom] = useState<CustomDraft>(NO_CUSTOM);
 
   const reset = () => {
     setName("");
     setSlug("");
     setSecret("");
     setCloudflare(NO_CLOUDFLARE);
+    setCustom(NO_CUSTOM);
     test.clear();
   };
   const slugInvalid = slug !== "" && !SLUG.test(slug);
+  const isCustom = type === "custom";
   // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
   const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
-  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare);
+  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom));
   // A new setting always carries its token.
   const route = viaCloudflare
     ? { cloudflareGateway: { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim(), token: cloudflare.token } }
-    : {};
+    : isCustom
+      ? { baseUrl: custom.baseUrl.trim(), auth: { header: custom.header.trim().toLowerCase(), format: custom.format } }
+      : {};
 
   const submit = async () => {
     try {
@@ -393,6 +416,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           onValueChange={(value) => {
             setType(value);
             setCloudflare(NO_CLOUDFLARE);
+            setCustom(NO_CUSTOM);
             test.clear();
           }}
         >
@@ -435,13 +459,24 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           }}
         />
       ) : null}
+      {isCustom ? (
+        <CustomFields
+          draft={custom}
+          onChange={(next) => {
+            setCustom(next);
+            test.clear();
+          }}
+        />
+      ) : null}
       <Field
         label="API key"
         htmlFor="provider-secret"
         hint={
           viaCloudflare
             ? "Optional through Cloudflare: leave it empty to use the keys stored in your Cloudflare AI Gateway. Stored encrypted if given."
-            : "Stored encrypted. It is never shown again, only its last characters."
+            : isCustom
+              ? "Stored encrypted, and sent only to the base URL above, in the header you name. It is never shown again, only its last characters."
+              : "Stored encrypted. It is never shown again, only its last characters."
         }
       >
         <div className="flex gap-2">
@@ -466,6 +501,209 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         </div>
       </Field>
       <TestResult result={test.result} />
+    </FormDialog>
+  );
+}
+
+/** A custom provider's base URL and key header, as the add form holds them, and the trust choice. */
+interface CustomDraft {
+  baseUrl: string;
+  header: string;
+  format: string;
+  trusted: boolean;
+}
+
+const NO_CUSTOM: CustomDraft = { baseUrl: "", header: "authorization", format: "Bearer {key}", trusted: false };
+
+/** Complete enough to send: an https base URL, a header, a format with `{key}` once, and the trust choice made. */
+function customReady(draft: CustomDraft): boolean {
+  return (
+    draft.trusted &&
+    draft.baseUrl.trim().startsWith("https://") &&
+    draft.header.trim() !== "" &&
+    draft.format.split("{key}").length === 2
+  );
+}
+
+/**
+ * What passing paths through gives up (plan section 4.5), said where a person
+ * makes the choice: listing paths on a provider, or adding a custom one.
+ */
+export function TrustNotice() {
+  return (
+    <Alert>
+      <AlertCircle />
+      <AlertTitle>Paths you list are passed through as they are</AlertTitle>
+      <AlertDescription>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>A path without a price is not priced, so your budgets do not limit it. Request limits still apply.</li>
+          <li>
+            Ids the provider returns, such as file or job ids, are not tied to the app. Another app with the same provider key
+            could read them.
+          </li>
+          <li>For such paths, use a provider key of their own.</li>
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function CustomFields({ draft, onChange }: { draft: CustomDraft; onChange: (draft: CustomDraft) => void }) {
+  return (
+    <>
+      <Field
+        label="Base URL"
+        htmlFor="custom-base-url"
+        hint="Public https only. The gateway cannot tell where a public name points, so name only a host you trust."
+      >
+        <Input
+          id="custom-base-url"
+          value={draft.baseUrl}
+          placeholder="https://llm.example.com/v1/"
+          autoComplete="off"
+          onChange={(event) => onChange({ ...draft, baseUrl: event.target.value })}
+        />
+      </Field>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Key header" htmlFor="custom-header">
+          <Input id="custom-header" value={draft.header} autoComplete="off" onChange={(event) => onChange({ ...draft, header: event.target.value })} />
+        </Field>
+        <Field label="Key format" htmlFor="custom-format" hint="{key} is where the key goes.">
+          <Input id="custom-format" value={draft.format} autoComplete="off" onChange={(event) => onChange({ ...draft, format: event.target.value })} />
+        </Field>
+      </div>
+      <p className="text-sm text-muted-foreground">You list its paths after adding it. Every path it serves is one you list.</p>
+      <TrustNotice />
+      <label className="flex items-center gap-2 text-sm font-medium">
+        <Checkbox checked={draft.trusted} onCheckedChange={(checked) => onChange({ ...draft, trusted: checked === true })} />
+        I understand, and want to add this provider
+      </label>
+    </>
+  );
+}
+
+type ListedPath = NonNullable<ProviderConnection["passthrough"]>[number];
+
+/** One listed path as a line: method, path, then a price in dollars or an API style. */
+export function pathLine(path: ListedPath): string {
+  return [path.method, path.path, ...(path.per_request !== undefined ? [`$${path.per_request}`] : []), ...(path.style !== undefined ? [path.style] : [])].join(" ");
+}
+
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * Lines back to listed paths. Each line is a method and a path, then
+ * optionally `$<dollars>` per request, or, on a custom provider, an API
+ * style. Returns the paths, or the first problem with its line number.
+ */
+export function parsePathLines(text: string, custom: boolean): { paths: ListedPath[] } | { problem: string } {
+  const paths: ListedPath[] = [];
+  const lines = text.split("\n");
+  for (const [index, raw] of lines.entries()) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const where = `Line ${index + 1}`;
+    const [method, path, ...rest] = line.split(/\s+/u);
+    const upper = method!.toUpperCase();
+    if (!(METHODS as readonly string[]).includes(upper)) return { problem: `${where}: start with GET, POST, PUT, PATCH or DELETE.` };
+    if (path === undefined) return { problem: `${where}: add the path after the method.` };
+    const entry: ListedPath = { method: upper as ListedPath["method"], path };
+    for (const token of rest) {
+      if (token.startsWith("$")) {
+        const price = Number(token.slice(1));
+        if (token.length === 1 || !Number.isFinite(price) || price < 0) return { problem: `${where}: a price is $ and a number, such as $0.002.` };
+        entry.per_request = price;
+      } else if (custom && CUSTOM_STYLES.includes(token)) {
+        entry.style = token as ListedPath["style"];
+      } else {
+        return {
+          problem: custom
+            ? `${where}: ${token} is not a price or an API style (${CUSTOM_STYLES.join(", ")}).`
+            : `${where}: ${token} is not a price. Write a price as $0.002.`,
+        };
+      }
+    }
+    paths.push(entry);
+  }
+  return { paths };
+}
+
+/**
+ * The paths a connection lists. On a built-in provider, listing the first one
+ * is a trust choice, made here with what it gives up in view. A custom
+ * provider's was made when it was added.
+ */
+function PathsDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const custom = provider?.type === "custom";
+  const listed = provider?.passthrough ?? [];
+  const [text, setText] = useState(listed.map(pathLine).join("\n"));
+  const [trusted, setTrusted] = useState(false);
+  const parsed = parsePathLines(text, custom);
+  // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
+  const choosing = !custom && listed.length === 0;
+  const paths = "paths" in parsed ? parsed.paths : null;
+
+  const save = async () => {
+    if (!provider || paths === null) return;
+    try {
+      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, passthrough: paths.length === 0 ? null : paths } });
+      toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save the paths");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title={custom ? "Paths" : "Passthrough paths"}
+      description={
+        custom
+          ? "Every path this provider serves. A path with an API style is metered by it, at your prices for its models."
+          : "Paths of this provider the gateway does not serve as an operation. Apps reach them once they allow passthrough."
+      }
+      submitLabel="Save paths"
+      pending={update.isPending}
+      disabled={paths === null || (choosing && paths.length > 0 && !trusted)}
+      onSubmit={() => void save()}
+    >
+      <Field
+        label="One path per line"
+        htmlFor="listed-paths"
+        hint={
+          custom
+            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} matches one part of the path."
+            : "Method and path, then a price such as $0.002 if you want one. {name} matches one part of the path."
+        }
+      >
+        <Textarea
+          id="listed-paths"
+          rows={6}
+          className="font-mono text-xs"
+          value={text}
+          placeholder={custom ? "POST chat/completions openai-chat\nGET models" : "GET v1/files/{file_id} $0.001"}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </Field>
+      {"problem" in parsed ? (
+        <p role="alert" className="text-sm text-destructive">
+          {parsed.problem}
+        </p>
+      ) : null}
+      <TrustNotice />
+      {choosing ? (
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <Checkbox checked={trusted} onCheckedChange={(checked) => setTrusted(checked === true)} />
+          I understand, and want these paths passed through
+        </label>
+      ) : null}
     </FormDialog>
   );
 }
@@ -526,7 +764,10 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
               variant="outline"
               disabled={!secret || !provider || test.pending}
               // Against the connection's own host, if it has one.
-              onClick={() => provider && test.run({ type: provider.type, secret, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}) })}
+              onClick={() =>
+                provider &&
+                test.run({ type: provider.type, secret, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}), ...(provider.auth ? { auth: provider.auth } : {}) })
+              }
             >
               Test key
             </Button>

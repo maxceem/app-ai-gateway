@@ -33,7 +33,10 @@ import {
   type Gap,
 } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
-import { PASSTHROUGH } from "../providers/passthrough.ts";
+import { describeConnection } from "../providers/connections.ts";
+import { CUSTOM_OPERATIONS, CUSTOM_TYPE } from "../providers/custom.ts";
+import type { ProviderDescription } from "../providers/operation.ts";
+import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -123,6 +126,17 @@ interface ConnectionRow {
   type: string;
   rates_json: string | null;
   base_url: string | null;
+  passthrough_json: string | null;
+}
+
+/** A connection row's description: its built-in type's, or a custom provider's own (`describeConnection`). */
+function rowDescription(row: ConnectionRow): ProviderDescription | null {
+  return describeConnection({
+    type: row.type,
+    baseUrl: row.base_url,
+    passthrough: readPassthrough(row.passthrough_json),
+    customAuth: readCustomAuth(row.passthrough_json),
+  });
 }
 
 /**
@@ -185,7 +199,7 @@ export async function checkAppConfig(
       rows.set(
         slug,
         await db
-          .prepare("SELECT type, rates_json, base_url FROM provider_connection WHERE account_id = ? AND slug = ?")
+          .prepare("SELECT type, rates_json, base_url, passthrough_json FROM provider_connection WHERE account_id = ? AND slug = ?")
           .bind(accountId, slug)
           .first<ConnectionRow>(),
       );
@@ -206,13 +220,17 @@ export async function checkAppConfig(
       if (!changed.routing(slug)) continue;
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
-    const description = builtInProvider(connection.type);
+    const description = rowDescription(connection);
     if (description === null) {
       throw invalid(`config.routing.providers.${slug}: provider type ${connection.type} is not supported`, { slug });
     }
     for (const operation of routing.operations) {
       // `passthrough` reaches the paths the connection lists (plan section 4.5): each was checked when the connection was saved.
       if (operation === PASSTHROUGH) continue;
+      // Unchanged, a route may keep an operation its connection no longer has (a
+      // custom provider's path removed since): its requests are refused, as for
+      // a deleted connection, and another edit of the app still saves.
+      if (!changed.routing(slug)) continue;
       if (!description.operations.some((declared) => declared.name === operation)) {
         throw invalid(`config.routing.providers.${slug}.operations: ${operation} is not an operation of ${connection.type}`, {
           slug,
@@ -234,7 +252,7 @@ export async function checkAppConfig(
   const views = new Map<string, ConnectionView | null>();
   for (const slug of slugs) {
     const row = await connectionRow(slug);
-    const description = row === null ? null : builtInProvider(row.type);
+    const description = row === null ? null : rowDescription(row);
     // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
     views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description, baseUrl: row.base_url });
   }
@@ -396,7 +414,7 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
 export async function checkConnectionRates(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
+  connection: JudgedConnection,
   before: CustomerRates | null,
   after: CustomerRates | null,
 ): Promise<void> {
@@ -410,6 +428,14 @@ export async function checkConnectionRates(
   await judgeConnectionApps(db, accountId, connection, after, { models });
 }
 
+/** A connection whose apps are judged: its description is its built-in type's unless given (a custom provider's). */
+export interface JudgedConnection {
+  readonly slug: string;
+  readonly type: string;
+  readonly baseUrl: string | null;
+  readonly description?: ProviderDescription;
+}
+
 /**
  * A connection is about to be created, by the API or a hand-off: apps may
  * already route to its slug (one deleted and made again). Every call they
@@ -418,7 +444,7 @@ export async function checkConnectionRates(
 export async function checkNewConnection(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
+  connection: JudgedConnection,
   rates: CustomerRates | null,
 ): Promise<void> {
   await judgeConnectionApps(db, accountId, connection, rates, null);
@@ -428,11 +454,11 @@ export async function checkNewConnection(
 async function judgeConnectionApps(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
+  connection: JudgedConnection,
   after: CustomerRates | null,
   change: { readonly models: ReadonlySet<string> } | null,
 ): Promise<void> {
-  const description = builtInProvider(connection.type);
+  const description = connection.description ?? builtInProvider(connection.type);
   if (description === null) return;
   const { results } = await db
     .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
@@ -485,7 +511,8 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
   // Each connection's rates are read only if the search reaches it, so one
   // with unreadable rates cannot block a target the catalog alone allows.
   const connections = results.map(priceSources);
-  const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
+  // A custom provider's operations by their names alone, wherever its connection lists them.
+  const operationsOf = (type: string) => (type === CUSTOM_TYPE ? CUSTOM_OPERATIONS : (builtInProvider(type)?.operations ?? []));
   for (const [source, target] of targets) {
     if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {
       throw new GatewayError(
@@ -530,7 +557,7 @@ async function checkPreset(
     if (connection === null) {
       throw invalid(`${target.label}.provider: no provider connection ${target.provider} exists`, { slug });
     }
-    const description = builtInProvider(connection.type);
+    const description = rowDescription(connection);
     if (description === null) {
       throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
     }
