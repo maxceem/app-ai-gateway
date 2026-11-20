@@ -96,3 +96,55 @@ export function messages(name: string, path: string, options: TextOptions = {}):
     meter: meter("anthropic-messages", options),
   });
 }
+
+/**
+ * The text paths v1 served on every provider by their path alone, when an
+ * app listed no paths (v1's `defaultPath`): Chat Completions, Responses and
+ * Messages at each layout v1 recognised. Gemini's own paths are declared by
+ * Gemini only: no other provider has them, so they never worked elsewhere.
+ */
+const V1_TEXT_PATHS: readonly (readonly [suffix: string, path: string, style: "chat" | "responses" | "messages"])[] = [
+  ["chat", "v1/chat/completions", "chat"],
+  ["chat", "chat/completions", "chat"],
+  ["chat.openai", "openai/v1/chat/completions", "chat"],
+  ["chat.inference", "inference/v1/chat/completions", "chat"],
+  ["chat.gemini-openai", "v1beta/openai/chat/completions", "chat"],
+  ["responses", "v1/responses", "responses"],
+  ["responses.openai", "openai/v1/responses", "responses"],
+  ["messages", "v1/messages", "messages"],
+];
+
+const BUILDERS = { chat, responses, messages } as const;
+
+/**
+ * A provider's operations, plus every text path v1 served for it that it does
+ * not declare already, so nothing v1 served is refused. `styles` narrows them
+ * (OpenRouter served Chat Completions only); `options` gives each style's
+ * output cap and cost report, as the provider's own operations have them.
+ *
+ * An added operation is named `<type>.<suffix>`. When that name is taken, it
+ * gets `.v1` for a path under `v1/`, else `.bare`.
+ */
+export function withV1Paths(
+  type: string,
+  operations: readonly OperationDescription[],
+  options: {
+    readonly styles?: readonly ("chat" | "responses" | "messages")[];
+    readonly chat?: TextOptions;
+    readonly responses?: TextOptions;
+    readonly messages?: TextOptions;
+  } = {},
+): OperationDescription[] {
+  const all = [...operations];
+  const names = new Set(all.map((operation) => operation.name));
+  const paths = new Set(all.map((operation) => operation.match.path));
+  for (const [suffix, path, style] of V1_TEXT_PATHS) {
+    if (paths.has(path) || (options.styles !== undefined && !options.styles.includes(style))) continue;
+    let name = `${type}.${suffix}`;
+    if (names.has(name)) name = `${name}.${path.startsWith("v1/") ? "v1" : "bare"}`;
+    names.add(name);
+    paths.add(path);
+    all.push(BUILDERS[style](name, path, options[style]));
+  }
+  return all;
+}

@@ -245,6 +245,10 @@ describe("the end of a stream", () => {
     // A kept tail starts mid-frame: a clipped comment that reads like [DONE] is not a closing frame.
     expect(streamClosed({ head: "", tail: "data: [DONE]\n\n", truncated: true }, "openai-chat")).toBe(false);
     expect(streamClosed({ head: "", tail: 'x"}\n\ndata: [DONE]\n\n', truncated: true }, "openai-chat")).toBe(true);
+    // Some services send [DONE] after a Responses or Messages stream's own closing event.
+    expect(streamClosed(body('data: {"type":"response.completed","response":{}}\n\ndata: [DONE]\n\n'), "openai-responses")).toBe(true);
+    expect(streamClosed(body('data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'), "anthropic-messages")).toBe(true);
+    expect(streamClosed(body("data: [DONE]\n\n"), "anthropic-messages")).toBe(false);
     // Gemini's stream has no closing event.
     expect(streamClosed(body("data: {}\n\n"), "gemini-generate")).toBeNull();
   });
@@ -374,6 +378,9 @@ describe("service modes", () => {
     const disagree = servedServiceMode(gemini, flex, { ...usage, reportedModes: { serviceTier: "flex" } }, new Headers({ "x-gemini-service-tier": "priority" }));
     expect(disagree.mode.tier).toBe("priority");
     expect(disagree.unknown).toBeDefined();
+    // Anthropic's `speed` and `service_tier` answer different questions, so they never disagree.
+    const both = servedServiceMode(anthropic, fast, { ...usage, reportedModes: { speed: "fast", service_tier: "standard" } }, new Headers());
+    expect(both).toEqual({ mode: fast });
     // Gemini says it in a header too.
     const priority = { tier: "priority", region: "global" } as const;
     expect(servedServiceMode(gemini, priority, usage, new Headers({ "x-gemini-service-tier": "standard" })).mode).toEqual(STANDARD_MODE);

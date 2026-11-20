@@ -3,7 +3,7 @@
  * Completions, most with more APIs beside it. Each is declared at its own
  * paths, as v1's provider list serves them.
  */
-import { chat, completions, messages, responses } from "./llm.ts";
+import { chat, completions, messages, responses, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
@@ -22,7 +22,7 @@ export const perplexity = defineProvider({
       values: { auto: "standard", default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "priority" },
     },
   ],
-  operations: [
+  operations: withV1Paths("perplexity", [
     chat("perplexity.chat", "chat/completions"),
     chat("perplexity.chat.v1", "v1/chat/completions"),
     responses("perplexity.agent", "v1/agent"),
@@ -30,7 +30,7 @@ export const perplexity = defineProvider({
     chat("perplexity.router.chat", "router/v1/chat/completions"),
     responses("perplexity.router.responses", "router/v1/responses"),
     messages("perplexity.router.messages", "router/v1/messages"),
-  ],
+  ]),
 });
 
 export const deepseek = defineProvider({
@@ -42,13 +42,13 @@ export const deepseek = defineProvider({
   refused: [],
   probe: { path: "models" },
   serviceModes: NO_SERVICE_TIERS,
-  operations: [
+  operations: withV1Paths("deepseek", [
     chat("deepseek.chat", "chat/completions"),
     chat("deepseek.chat.v1", "v1/chat/completions"),
     responses("deepseek.responses", "responses"),
     completions("deepseek.completions", "beta/completions"),
     messages("deepseek.messages", "anthropic/v1/messages"),
-  ],
+  ]),
 });
 
 export const groq = defineProvider({
@@ -68,7 +68,7 @@ export const groq = defineProvider({
       values: { default: "standard", on_demand: "standard", flex: "flex", performance: "standard", auto: "standard" },
     },
   ],
-  operations: [chat("groq.chat", "openai/v1/chat/completions"), responses("groq.responses", "openai/v1/responses")],
+  operations: withV1Paths("groq", [chat("groq.chat", "openai/v1/chat/completions"), responses("groq.responses", "openai/v1/responses")]),
 });
 
 export const mistral = defineProvider({
@@ -86,7 +86,7 @@ export const mistral = defineProvider({
   ],
   // Regional inference, 10% over the global host.
   regionalOrigins: { "https://api.eu.mistral.ai/": "eu", "https://api.us.mistral.ai/": "us" },
-  operations: [chat("mistral.chat", "v1/chat/completions"), completions("mistral.fim", "v1/fim/completions")],
+  operations: withV1Paths("mistral", [chat("mistral.chat", "v1/chat/completions"), completions("mistral.fim", "v1/fim/completions")]),
 });
 
 export const together = defineProvider({
@@ -100,7 +100,7 @@ export const together = defineProvider({
   serviceModes: NO_SERVICE_TIERS,
   // The US geo-pinned host, priced apart for the models it serves.
   regionalOrigins: { "https://us-api.together.ai/": "us" },
-  operations: [chat("together.chat", "v1/chat/completions"), completions("together.completions", "v1/completions")],
+  operations: withV1Paths("together", [chat("together.chat", "v1/chat/completions"), completions("together.completions", "v1/completions")]),
 });
 
 export const fireworks = defineProvider({
@@ -109,15 +109,17 @@ export const fireworks = defineProvider({
   // The inference plane is `inference/v1`; `v1` on the same host is the control plane.
   hosts: { main: "api.fireworks.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: ["v1/*"],
+  // Its control plane under `v1/` is not refused yet: v1 served text paths
+  // there by their shape. Step 5 reviews refused paths.
+  refused: [],
   // No probe: its list-models call needs the account id, which the key does not give.
   serviceModes: NO_SERVICE_TIERS,
-  operations: [
+  operations: withV1Paths("fireworks", [
     chat("fireworks.chat", "inference/v1/chat/completions"),
     completions("fireworks.completions", "inference/v1/completions"),
     messages("fireworks.messages", "inference/v1/messages"),
     responses("fireworks.responses", "inference/v1/responses"),
-  ],
+  ]),
 });
 
 export const cerebras = defineProvider({
@@ -132,7 +134,7 @@ export const cerebras = defineProvider({
   serviceModes: [
     { names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "standard", auto: "standard", flex: "standard" } },
   ],
-  operations: [chat("cerebras.chat", "v1/chat/completions"), completions("cerebras.completions", "v1/completions")],
+  operations: withV1Paths("cerebras", [chat("cerebras.chat", "v1/chat/completions"), completions("cerebras.completions", "v1/completions")]),
 });
 
 export const moonshot = defineProvider({
@@ -144,7 +146,7 @@ export const moonshot = defineProvider({
   refused: [],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
-  operations: [chat("moonshot.chat", "v1/chat/completions"), messages("moonshot.messages", "anthropic/v1/messages")],
+  operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions"), messages("moonshot.messages", "anthropic/v1/messages")]),
 });
 
 export const huggingface = defineProvider({
@@ -158,7 +160,7 @@ export const huggingface = defineProvider({
   refused: [],
   // No probe: its model list is public and answers any token.
   serviceModes: NO_SERVICE_TIERS,
-  operations: [chat("huggingface.chat", "v1/chat/completions")],
+  operations: withV1Paths("huggingface", [chat("huggingface.chat", "v1/chat/completions")]),
 });
 
 export const baseten = defineProvider({
@@ -170,7 +172,7 @@ export const baseten = defineProvider({
   refused: [],
   probe: { path: "v1/models" },
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", flex: "flex", priority: "priority" } }],
-  operations: [chat("baseten.chat", "v1/chat/completions")],
+  operations: withV1Paths("baseten", [chat("baseten.chat", "v1/chat/completions")]),
 });
 
 export const bytedance = defineProvider({
@@ -188,5 +190,5 @@ export const bytedance = defineProvider({
   servedModes: [{ names: ["response_service_tier"], axis: "tier", values: { default: "standard", flex: "flex" } }],
   // Seed models that hear price audio input apart, and report it as `audio_tokens`.
   countedInputModalities: ["audio"],
-  operations: [chat("bytedance.chat", "chat/completions"), responses("bytedance.responses", "responses")],
+  operations: withV1Paths("bytedance", [chat("bytedance.chat", "chat/completions"), responses("bytedance.responses", "responses")]),
 });

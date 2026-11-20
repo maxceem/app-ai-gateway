@@ -4,7 +4,7 @@
  * Anthropic-compatible Messages API is not documented to report it, so it
  * bills on our price.
  */
-import { chat, completions, messages, responses } from "./llm.ts";
+import { chat, completions, messages, responses, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
 export const xai = defineProvider({
@@ -18,10 +18,14 @@ export const xai = defineProvider({
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } }],
   // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
   regionalOrigins: { "https://us.api.x.ai/": "us" },
-  operations: [
-    chat("xai.chat", "v1/chat/completions", { providerCost: "xai" }),
-    responses("xai.responses", "v1/responses", { providerCost: "xai" }),
-    completions("xai.completions", "v1/completions", { providerCost: "xai" }),
-    messages("xai.messages", "v1/messages"),
-  ],
+  operations: withV1Paths(
+    "xai",
+    [
+      chat("xai.chat", "v1/chat/completions", { providerCost: "xai" }),
+      responses("xai.responses", "v1/responses", { providerCost: "xai" }),
+      completions("xai.completions", "v1/completions", { providerCost: "xai" }),
+      messages("xai.messages", "v1/messages"),
+    ],
+    { chat: { providerCost: "xai" }, responses: { providerCost: "xai" } },
+  ),
 });

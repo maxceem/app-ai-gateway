@@ -5,7 +5,7 @@
  * WebSocket, one of the hardest shapes: a relayed session with its model in
  * the query, measured from the provider's usage events (step 9).
  */
-import { chat, responses } from "./llm.ts";
+import { chat, responses, withV1Paths } from "./llm.ts";
 import { defineOperation, defineProvider } from "./operation.ts";
 
 export const openai = defineProvider({
@@ -40,7 +40,7 @@ export const openai = defineProvider({
   // No regional hosts: OpenAI's data residency hosts cost more only for some
   // models, and its pages give no release date for most, so requests through
   // them bill as through the global host (v1).
-  operations: [
+  operations: withV1Paths("openai", [
     // OpenAI's Chat Completions deprecated `max_tokens` for `max_completion_tokens`.
     chat("openai.chat", "v1/chat/completions", { cap: "chat-completion-tokens" }),
     responses("openai.responses", "v1/responses"),
@@ -53,5 +53,5 @@ export const openai = defineProvider({
       meter: { kind: "provider_event", adapter: "openai-realtime" },
       session: { slot: "conversational", mode: "relayed" },
     }),
-  ],
+  ], { chat: { cap: "chat-completion-tokens" } }),
 });

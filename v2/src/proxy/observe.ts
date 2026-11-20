@@ -96,7 +96,7 @@ interface SseFrame {
  * with a blank line, so text after the last blank line is a frame still
  * arriving, and is not one.
  */
-function lastFrame(text: string, startsAtBoundary: boolean): SseFrame | null {
+function lastFrame(text: string, startsAtBoundary: boolean, skip: (frame: SseFrame) => boolean): SseFrame | null {
   const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
   // The last block is whatever follows the last blank line: an unfinished
   // frame, or nothing. The first is the rest of a frame cut by the kept
@@ -110,7 +110,9 @@ function lastFrame(text: string, startsAtBoundary: boolean): SseFrame | null {
       if (line.startsWith("event:")) event = line.slice(6).trim();
       else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
     }
-    if (event !== null || data.length > 0) return { event, data: data.join("\n") };
+    if (event === null && data.length === 0) continue;
+    const frame = { event, data: data.join("\n") };
+    if (!skip(frame)) return frame;
   }
   return null;
 }
@@ -156,6 +158,11 @@ const CLOSING: Readonly<Record<ApiStyle, ((frame: SseFrame) => boolean) | null>>
   "gemini-generate": null,
 };
 
+/** Whether a style's stream closes with `[DONE]` itself. */
+function closesWithDone(style: ApiStyle): boolean {
+  return style === "openai-chat" || style === "openai-completions";
+}
+
 /**
  * Whether a kept stream ended with its style's closing event: the provider
  * had sent everything. Null for a style whose stream has no closing event, so
@@ -165,7 +172,10 @@ export function streamClosed(body: ObservedText, style: ApiStyle): boolean | nul
   const closing = CLOSING[style];
   if (closing === null) return null;
   // A kept tail starts wherever the window cut the stream, maybe mid-frame.
-  const frame = body.truncated ? lastFrame(body.tail, false) : lastFrame(body.head, true);
+  // A `[DONE]` some services send after a Responses or Messages stream's
+  // closing event is not the stream's own last word.
+  const skip = (frame: SseFrame) => !closesWithDone(style) && frame.data === "[DONE]";
+  const frame = body.truncated ? lastFrame(body.tail, false, skip) : lastFrame(body.head, true, skip);
   return frame !== null && closing(frame);
 }
 

@@ -4,7 +4,7 @@
  * list covers its hundreds of models, so its other APIs, whose answers do not
  * report a cost, are not declared (v1).
  */
-import { chat } from "./llm.ts";
+import { chat, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
 export const openrouter = defineProvider({
@@ -24,5 +24,8 @@ export const openrouter = defineProvider({
       values: { default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "fast", ultrafast: "ultrafast" },
     },
   ],
-  operations: [chat("openrouter.chat", "v1/chat/completions", { providerCost: "openrouter" })],
+  operations: withV1Paths("openrouter", [chat("openrouter.chat", "v1/chat/completions", { providerCost: "openrouter" })], {
+    styles: ["chat"],
+    chat: { providerCost: "openrouter" },
+  }),
 });

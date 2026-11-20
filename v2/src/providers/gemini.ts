@@ -2,7 +2,7 @@
  * Gemini: its own `generateContent`, with the model in the path, and its
  * OpenAI-compatible Chat Completions.
  */
-import { chat, DETACHED } from "./llm.ts";
+import { chat, DETACHED, withV1Paths } from "./llm.ts";
 import { defineOperation, defineProvider } from "./operation.ts";
 
 /** `generateContent` and its streaming twin, under one API version. */
@@ -53,10 +53,10 @@ export const gemini = defineProvider({
       values: { standard: "standard", flex: "flex", priority: "priority" },
     },
   ],
-  operations: [
+  operations: withV1Paths("gemini", [
     ...generate("v1beta"),
     ...generate("v1"),
     ...generate("v1alpha"),
     chat("gemini.chat", "v1beta/openai/chat/completions"),
-  ],
+  ]),
 });

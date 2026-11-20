@@ -119,8 +119,24 @@ describe("provider descriptions", () => {
       const match = new ProviderMatcher(BUILT_IN_PROVIDERS[type]!).match("POST", path);
       expect(match, `${type} ${path}`).toMatchObject({ kind: "operation", operation: { name } });
     }
-    // OpenRouter's other APIs carry no cost report, so they are not declared.
+    // OpenRouter's other APIs carry no cost report, so they are not declared, as v1 refused them.
     expect(new ProviderMatcher(BUILT_IN_PROVIDERS.openrouter!).match("POST", "v1/responses")).toMatchObject({ kind: "refused" });
+  });
+});
+
+describe("paths v1 served", () => {
+  it("declares every text path v1 served on every provider, so none is refused", () => {
+    const chatPaths = ["v1/chat/completions", "chat/completions", "openai/v1/chat/completions", "inference/v1/chat/completions", "v1beta/openai/chat/completions"];
+    const otherPaths = ["v1/responses", "openai/v1/responses", "v1/messages"];
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      if (description.type === "elevenlabs" || description.type === "fal") continue;
+      const matcher = new ProviderMatcher(description);
+      // OpenRouter served Chat Completions only.
+      const served = description.type === "openrouter" ? chatPaths : [...chatPaths, ...otherPaths];
+      for (const path of served) {
+        expect(matcher.match("POST", path), `${description.type} ${path}`).toMatchObject({ kind: "operation" });
+      }
+    }
   });
 });
 

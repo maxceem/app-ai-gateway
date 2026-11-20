@@ -92,12 +92,15 @@ export function servedServiceMode(
 /**
  * The first tier value a response gives that the gateway cannot price
  * exactly: one its table does not know, or one that disagrees with another
- * source of the same answer (a header and the body, say).
+ * name of the same field (a header and the body, say).
  */
 function doubtfulTier(fields: readonly ServiceModeField[], read: (name: string) => unknown): ServiceModeValue | undefined {
-  const known = new Set<string>();
   for (const field of fields) {
     if (field.axis !== "tier") continue;
+    // Only two names of one field can disagree, such as Gemini's header and
+    // its body: two fields (Anthropic's `speed` and `service_tier`) answer
+    // different questions.
+    const known = new Set<string>();
     for (const name of field.names) {
       const value = read(name);
       if (value === undefined || value === null) continue;

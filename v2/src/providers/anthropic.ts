@@ -1,5 +1,5 @@
 /** Anthropic: the Messages API. */
-import { messages } from "./llm.ts";
+import { messages, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
 export const anthropic = defineProvider({
@@ -27,5 +27,5 @@ export const anthropic = defineProvider({
     { names: ["service_tier"], axis: "tier", values: { standard: "standard", priority: "standard", batch: "standard" } },
     { names: ["inference_geo"], axis: "region", values: { global: "global", us: "us" } },
   ],
-  operations: [messages("anthropic.messages", "v1/messages")],
+  operations: withV1Paths("anthropic", [messages("anthropic.messages", "v1/messages")]),
 });
