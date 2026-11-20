@@ -55,9 +55,9 @@ export interface UsageObservation extends TokenCounts {
    */
   readonly noTokens?: true;
   /**
-   * A stream's final event was cut before its JSON closed, and held no usage:
-   * what was read came from an earlier event, so it may be short. Billed as
-   * an estimate, never as exact.
+   * The answer did not end whole: its last document was cut, the stream did
+   * not close, or a value was too large to keep. What was read may be short,
+   * an earlier event's count, say. Billed as an estimate, never as exact.
    */
   readonly finalEventUnread?: true;
 }

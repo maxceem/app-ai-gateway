@@ -119,6 +119,15 @@ function nonSpace(text: string, at: number): number {
   return -1;
 }
 
+/**
+ * `text` in storage of its own. A string cut from a larger one may share that
+ * one's memory, so keeping a short value could keep a whole large piece of
+ * the body alive: what is kept past the piece it came from is copied first.
+ */
+export function copyString(text: string): string {
+  return text.length === 0 ? "" : (JSON.parse(JSON.stringify(text)) as string);
+}
+
 /** Whether `text` has a backslash between `from` and `to`. Keys are short. */
 function hasBackslash(text: string, from: number, to: number): boolean {
   for (let index = from; index < to; index += 1) if (text.charCodeAt(index) === 92) return true;
@@ -223,7 +232,7 @@ export class Skimmer {
       this.capture.length = 0;
       return;
     }
-    if (!this.captureOverflow) this.capture.push(text.slice(from, to));
+    if (!this.captureOverflow) this.capture.push(copyString(text.slice(from, to)));
   }
 
   /** One step from `at`; returns where to go on. */
@@ -355,7 +364,7 @@ export class Skimmer {
       } else {
         const raw = this.capture.length === 1 ? this.capture[0]! : this.capture.join("");
         // A plain string, the usual leaf, needs no parser.
-        if (raw.length >= 2 && raw.charCodeAt(0) === 34 && !raw.includes("\\")) holder[this.targetKey] = raw.slice(1, -1);
+        if (raw.length >= 2 && raw.charCodeAt(0) === 34 && !raw.includes("\\")) holder[this.targetKey] = copyString(raw.slice(1, -1));
         else {
           try {
             holder[this.targetKey] = JSON.parse(raw) as unknown;
@@ -445,7 +454,7 @@ export class Skimmer {
     if (this.keyLength > MAX_KEY) {
       this.keyTooLong = true;
       this.keyPieces = null;
-    } else this.keyPieces!.push(text.slice(from, to));
+    } else this.keyPieces!.push(copyString(text.slice(from, to)));
   }
 
   private decodedKey(): string | null {

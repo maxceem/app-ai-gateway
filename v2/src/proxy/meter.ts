@@ -163,7 +163,8 @@ export interface ResponseReading {
  * byte and every event (`scripts/bench-usage-reading.ts`): about 4 GB/s over a
  * large body (a base64 image, a number array), and about 2 µs per SSE event.
  * Past either limit, reading stops: the call is recorded unresolved and the
- * stop is logged, and the answer itself is never touched.
+ * stop is logged, and the answer itself is never touched. Events are counted
+ * by the framer, every one, before it is read.
  *
  * - 32 MiB of body: about 8 ms of CPU, more than any answer the gateway
  *   meters today.
@@ -176,7 +177,8 @@ export const READ_BUDGET = { bytes: 32 * 1024 * 1024, documents: 25_000 } as con
 /** Reads a response as it streams past (`./observe.ts` hands it each piece), then gives its reading. */
 export interface ResponseReader {
   push(chunk: Uint8Array): void;
-  finish(headers: Headers): ResponseReading;
+  /** The answer ended; `clean` when it was read to its real end, neither the app nor the provider cutting it. */
+  finish(headers: Headers, clean: boolean): ResponseReading;
 }
 
 /**
@@ -199,6 +201,7 @@ export function responseReader(
   if (style === undefined) return null;
   const body: BodyReader = bodyReader(contentType, style, {
     counted: description.countedInputModalities,
+    maxEvents: budget.documents,
     ...(metered && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
   });
   const decoder = new TextDecoder();
@@ -217,19 +220,24 @@ export function responseReader(
       try {
         body.push(decoder.decode(chunk, { stream: true }));
       } catch (error) {
-        return stop("failed", error);
+        stop("failed", error);
       }
-      if (body.documents > budget.documents) stop("budget");
     },
-    finish(headers) {
-      if (stopped !== null) return { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+    finish(headers, clean) {
+      const unread = { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+      if (stopped !== null) return unread;
       let reading;
       try {
         body.push(decoder.decode());
-        reading = body.end();
+        reading = body.end(clean);
       } catch (error) {
         stop("failed", error);
-        return { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+        return unread;
+      }
+      // The framer counts every event, and stops before reading one past the limit.
+      if (reading.stopped) {
+        stop("budget");
+        return unread;
       }
       if (reading.overflow) log("warn", "usage_value_too_large", facts);
       const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, description.type, style);

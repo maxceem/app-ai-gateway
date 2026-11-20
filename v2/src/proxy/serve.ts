@@ -927,7 +927,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        const reading = reader?.finish(upstream.headers) ?? null;
+        const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
         const usage = reading?.usage ?? null;
         // A stream is whole once its style's closing event arrived, even if the
         // app went away right after. One that ended without it was cut short,

@@ -175,6 +175,66 @@ describe("a body is read whole, whatever its size and wherever it was split", ()
   });
 });
 
+describe("how an answer ended is judged once, for the whole reading (Sol round 1)", () => {
+  const usage = { prompt_tokens: 4, completion_tokens: 2 };
+
+  it("ends a line at a carriage return, a line feed, or both, even split across pieces (S1)", () => {
+    for (const ending of ["\r", "\n", "\r\n"]) {
+      const body = `data: ${JSON.stringify({ usage })}${ending}${ending}data: [DONE]${ending}${ending}`;
+      const reading = read(body, SSE, "openai-chat");
+      expect(reading.usage, JSON.stringify(ending)).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+      expect(reading.usage?.finalEventUnread).toBeUndefined();
+      expect(reading.closed).toBe(true);
+    }
+  });
+
+  it("counts every event against the limit, scalar ones and a last one cut at the end included (S2)", () => {
+    const scalars = `data: 1\n\ndata: "x"\n\ndata: ${JSON.stringify({ usage })}\n\n`;
+    expect(readBody(scalars, SSE, "openai-chat", { maxEvents: 2 }).stopped).toBe(true);
+    expect(readBody(scalars, SSE, "openai-chat", { maxEvents: 3 }).stopped).toBe(false);
+    const cutLast = `data: 1\n\ndata: 2\n\ndata: ${JSON.stringify({ usage })}`;
+    expect(readBody(cutLast, SSE, "openai-chat", { maxEvents: 2 }).stopped).toBe(true);
+    const chunks = JSON.stringify([{ usageMetadata: { promptTokenCount: 1 } }, { usageMetadata: { promptTokenCount: 2 } }, { usageMetadata: { promptTokenCount: 3 } }]);
+    expect(readBody(chunks, JSON_BODY, "gemini-generate", { maxEvents: 2 }).stopped).toBe(true);
+  });
+
+  it("bills a count read from an answer that did not end whole as an estimate, for every style (S3)", () => {
+    const chunks = [
+      { candidates: [], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1 } },
+      { candidates: [], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 9 } },
+    ];
+    // A Gemini array stream that ended mid-array: the earlier chunk's count is not exact.
+    const array = JSON.stringify(chunks);
+    expect(read(array.slice(0, array.length - 1), JSON_BODY, "gemini-generate").usage).toMatchObject({ outputTokens: 9, finalEventUnread: true });
+    expect(read(array.slice(0, array.indexOf("},{") + 1), JSON_BODY, "gemini-generate").usage).toMatchObject({ outputTokens: 1, finalEventUnread: true });
+    expect(read(array, JSON_BODY, "gemini-generate").usage?.finalEventUnread).toBeUndefined();
+    // A stream with no closing event is whole only when it was read to its real end.
+    const reader = bodyReader(SSE, "gemini-generate");
+    reader.push(sse(chunks.slice(0, 1)));
+    expect(reader.end(false).usage).toMatchObject({ outputTokens: 1, finalEventUnread: true });
+    // A stream with a closing event is whole once it came, and not before.
+    expect(read(sse([{ usage }]), SSE, "openai-chat").usage).toMatchObject({ finalEventUnread: true });
+  });
+
+  it("never books an earlier count as exact when a later usage was too large to keep (S4)", () => {
+    const huge = { ...usage, completion_tokens: 7, padding: "a".repeat(70_000) };
+    const body = sse([{ usage }, { usage: huge }]) + "data: [DONE]\n\n";
+    const reading = readBody(body, SSE, "openai-chat");
+    expect(reading.overflow).toBe(true);
+    expect(reading.usage).toMatchObject({ outputTokens: 2, finalEventUnread: true });
+  });
+
+  it("closes a stream only on a closing event whose data is valid JSON, named by its type or its event (S6)", () => {
+    expect(read('event: message_stop\ndata: {"type":"message_stop","x":tru}\n\n', SSE, "anthropic-messages").closed).toBe(false);
+    expect(read('event: message_stop\ndata: {"x":[1,}\n\n', SSE, "anthropic-messages").closed).toBe(false);
+    expect(read('event: message_stop\ndata: {"x":[1]}\n\n', SSE, "anthropic-messages").closed).toBe(true);
+  });
+
+  it("reads `[DONE]` with space before it, as before (S8)", () => {
+    expect(read(`data: ${JSON.stringify({ usage })}\n\ndata:   [DONE]\n\n`, SSE, "openai-chat").closed).toBe(true);
+  });
+});
+
 describe("the response reader", () => {
   const openai = BUILT_IN_PROVIDERS.openai!;
   const chat = openai.operations.find((operation) => operation.name === "openai.chat")!;
@@ -185,7 +245,7 @@ describe("the response reader", () => {
       const reader = responseReader(JSON_BODY, openai, chat, {})!;
       reader.push(bytes.slice(0, at));
       reader.push(bytes.slice(at));
-      expect(reader.finish(new Headers()).usage).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+      expect(reader.finish(new Headers(), true).usage).toMatchObject({ inputTokens: 3, outputTokens: 2 });
     }
   });
 
@@ -193,10 +253,10 @@ describe("the response reader", () => {
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const reader = responseReader(JSON_BODY, openai, chat, { app: "app_budget" }, { bytes: 16, documents: 10 })!;
     reader.push(new TextEncoder().encode('{"usage":{"prompt_tokens":3,"completion_tokens":2}}'));
-    expect(reader.finish(new Headers()).usage).toBeNull();
+    expect(reader.finish(new Headers(), true).usage).toBeNull();
     const events = responseReader(SSE, openai, chat, { app: "app_budget" }, { bytes: 1024 * 1024, documents: 2 })!;
     events.push(new TextEncoder().encode(sse([{ choices: [] }, { choices: [] }, { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2 } }])));
-    expect(events.finish(new Headers()).usage).toBeNull();
+    expect(events.finish(new Headers(), true).usage).toBeNull();
     expect(warnings.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("usage_read_budget_exceeded"));
     warnings.mockRestore();
   });

@@ -6,8 +6,9 @@
  *   Gemini stream without SSE), one per object element.
  * - An SSE stream is one document per event: the event's `data:` lines, each
  *   without the field name and one space after it, joined with line breaks,
- *   as SSE does. Comments and other fields are never data. This is the one
- *   SSE parser in the gateway.
+ *   as SSE does. Comments and other fields are never data. A line ends at a
+ *   carriage return, a line feed, or both together, even when the two arrive
+ *   in different pieces. This is the one SSE parser in the gateway.
  *
  * Every byte is seen once, in order, so the framer always knows where a line
  * and an event start and end: nothing is ever read from the middle of one.
@@ -16,10 +17,11 @@
  *
  * A document is whole when its JSON closed, with nothing but space after it.
  * One that was not whole holds only the values that were whole when it
- * stopped. An event's blank line says the event ended, which only the
- * stream-closing check needs.
+ * stopped. How the body ended is reported as facts (`cut`, `overflow`,
+ * `stopped`), for the reader to judge the whole reading by, never one
+ * document at a time.
  */
-import { Skimmer, type PathTree } from "./skim.ts";
+import { copyString, Skimmer, type PathTree } from "./skim.ts";
 
 export interface BodyDocument {
   /** The document's declared values. */
@@ -31,9 +33,9 @@ export interface BodyDocument {
 /** One SSE event that ended (its blank line came), as the stream-closing check reads it. */
 export interface SseFrame {
   readonly event: string | null;
-  /** `none`: no data line. `done`: exactly `[DONE]`. `json`: a whole JSON value. `other`: anything else. */
+  /** `none`: no data line. `done`: `[DONE]`. `json`: valid JSON. `other`: anything else. */
   readonly data: "none" | "done" | "json" | "other";
-  /** The data's `type`, when the data is a whole JSON object naming one. */
+  /** The data's `type`, when the data is a valid JSON object naming one. */
   readonly type: string | null;
 }
 
@@ -42,12 +44,21 @@ export interface FramerListener {
   readonly onFrame?: (frame: SseFrame) => void;
 }
 
+export interface FramerOptions {
+  /** The most events (an SSE stream's, or a JSON array's elements) read; past it the framer stops. */
+  readonly maxEvents?: number;
+}
+
 export interface Framer {
   push(text: string): void;
-  /** A value was too large to keep. */
-  readonly overflow: boolean;
-  /** The body ended: an event or document still open was cut. */
+  /** The body ended. */
   end(): void;
+  /** A declared value was too large to keep: the reading lacks it. */
+  readonly overflow: boolean;
+  /** The body ended inside a document or an event: what it held was not all there. */
+  readonly cut: boolean;
+  /** More events came than `maxEvents`: the framer stopped reading, and nothing after was read. */
+  readonly stopped: boolean;
 }
 
 export function isEventStream(contentType: string): boolean {
@@ -55,21 +66,46 @@ export function isEventStream(contentType: string): boolean {
 }
 
 /** The framer for a body of `contentType`, keeping the values `tree` declares. */
-export function framer(contentType: string, tree: PathTree, listener: FramerListener): Framer {
-  return isEventStream(contentType) ? sseFramer(tree, listener) : jsonFramer(tree, listener);
+export function framer(contentType: string, tree: PathTree, listener: FramerListener, options: FramerOptions = {}): Framer {
+  const maxEvents = options.maxEvents ?? Number.POSITIVE_INFINITY;
+  return isEventStream(contentType) ? sseFramer(tree, listener, maxEvents) : jsonFramer(tree, listener, maxEvents);
 }
 
-function jsonFramer(tree: PathTree, listener: FramerListener): Framer {
-  const skimmer = new Skimmer(tree, { arrayDocuments: true, onDocument: (value) => listener.onDocument({ value, whole: true }) });
+function jsonFramer(tree: PathTree, listener: FramerListener, maxEvents: number): Framer {
+  let events = 0;
+  let stopped = false;
+  let cut = false;
+  const skimmer = new Skimmer(tree, {
+    arrayDocuments: true,
+    onDocument(value) {
+      if (stopped) return;
+      events += 1;
+      if (events > maxEvents) stopped = true;
+      else listener.onDocument({ value, whole: true });
+    },
+  });
   return {
-    push: (text) => skimmer.push(text),
+    push(text) {
+      if (!stopped) skimmer.push(text);
+    },
+    end() {
+      if (stopped) return;
+      skimmer.end();
+      cut = !skimmer.complete;
+      const open = skimmer.openDocument;
+      if (open === null) return;
+      events += 1;
+      if (events > maxEvents) stopped = true;
+      else listener.onDocument({ value: open, whole: false });
+    },
     get overflow() {
       return skimmer.overflow;
     },
-    end() {
-      skimmer.end();
-      const open = skimmer.openDocument;
-      if (open !== null) listener.onDocument({ value: open, whole: false });
+    get cut() {
+      return cut;
+    },
+    get stopped() {
+      return stopped;
     },
   };
 }
@@ -78,6 +114,9 @@ function jsonFramer(tree: PathTree, listener: FramerListener): Framer {
 const MAX_FIELD = 16;
 const MAX_EVENT_NAME = 128;
 const DONE = "[DONE]";
+/** The data an event keeps whole, to check that a small one, a closing event say, is valid JSON. */
+const MAX_CHECKED_DATA = 64 * 1024;
+const LINE_BREAK = /[\r\n]/gu;
 
 const Line = {
   /** Reading the field name, from the start of a line. */
@@ -93,26 +132,38 @@ const Line = {
 } as const;
 type Line = (typeof Line)[keyof typeof Line];
 
-function sseFramer(tree: PathTree, listener: FramerListener): Framer {
+function sseFramer(tree: PathTree, listener: FramerListener, maxEvents: number): Framer {
   let line: Line = Line.Field;
   let field = "";
-  /** A carriage return ended the last piece; it belongs to a line break if a line feed follows. */
-  let pendingReturn = false;
+  /** The last piece ended with a carriage return: a line feed starting the next one is the same break. */
+  let afterReturn = false;
+  let events = 0;
+  let stopped = false;
+  let overflow = false;
+  let cut = false;
   // The event being read.
   let skimmer: Skimmer | null = null;
   let document: Record<string, unknown> | null = null;
   let dataLines = 0;
   let dataLength = 0;
-  let dataStart = "";
+  /** The event's data, kept while it is small, to check it is valid JSON. */
+  let checked: string[] | null = [];
   let eventName: string | null = null;
-  let overflow = false;
 
   function data(text: string): void {
     if (text === "") return;
     dataLength += text.length;
-    if (dataStart.length < DONE.length + 1) dataStart += text.slice(0, DONE.length + 1 - dataStart.length);
+    if (checked !== null) {
+      if (dataLength > MAX_CHECKED_DATA) checked = null;
+      else checked.push(copyString(text));
+    }
     skimmer ??= new Skimmer(tree, { onDocument: (value) => (document = value) });
     skimmer.push(text);
+  }
+
+  function startData(): void {
+    if (dataLines > 0) data("\n");
+    dataLines += 1;
   }
 
   function reset(): void {
@@ -121,22 +172,33 @@ function sseFramer(tree: PathTree, listener: FramerListener): Framer {
     document = null;
     dataLines = 0;
     dataLength = 0;
-    dataStart = "";
+    checked = [];
     eventName = null;
   }
 
   /** The event ends: `ended` when its blank line came, false when the stream stopped inside it. */
   function dispatch(ended: boolean): void {
     if (dataLines === 0 && eventName === null) return reset();
+    events += 1;
+    if (events > maxEvents) {
+      stopped = true;
+      return reset();
+    }
     const current = skimmer as Skimmer | null;
     current?.end();
-    const done = dataLength === DONE.length && dataStart === DONE;
-    const json = current !== null && current.complete;
-    const value = (document as Record<string, unknown> | null) ?? (current?.openDocument ?? null);
-    // The data's JSON closing is what makes it whole: the event's blank line only says the event ended.
-    if (value !== null && !done) listener.onDocument({ value, whole: json && document !== null });
+    const text = checked === null ? null : checked.join("");
+    // `[DONE]` is read as before: space before it on any line does not matter.
+    const done = text !== null && text.split("\n").map((part) => part.trimStart()).join("\n") === DONE;
+    // Valid JSON: a small event is checked whole; a large one, by its structure.
+    const json = current !== null && current.complete && (text === null || isJson(text));
+    const value = (document as Record<string, unknown> | null) ?? current?.openDocument ?? null;
+    const whole = json && document !== null;
+    // Only the last event with data says how the stream ended.
+    if (dataLines > 0) cut = !(ended && (done || json));
+    if (value !== null && !done) listener.onDocument({ value, whole });
     if (ended) {
-      const type = json && document !== null && typeof (document as Record<string, unknown>).type === "string" ? ((document as Record<string, unknown>).type as string) : null;
+      const named = (document as Record<string, unknown> | null)?.type;
+      const type = json && typeof named === "string" ? named : null;
       listener.onFrame?.({ event: eventName, data: dataLines === 0 ? "none" : done ? "done" : json ? "json" : "other", type });
     }
     reset();
@@ -144,111 +206,116 @@ function sseFramer(tree: PathTree, listener: FramerListener): Framer {
 
   /** A line ended. */
   function lineEnd(): void {
-    if (line === Line.Field && field === "") dispatch(true);
-    else if (line === Line.Field) {
+    if (line === Line.Field) {
+      if (field === "") dispatch(true);
       // A field with no colon: its name is the whole line, and its value is empty.
-      if (field === "data") {
-        if (dataLines > 0) data("\n");
-        dataLines += 1;
-      } else if (field === "event") eventName = "";
-    }
+      else if (field === "data") startData();
+      else if (field === "event") eventName = "";
+    } else if (line === Line.Event && eventName !== null) eventName = copyString(eventName.trim());
     line = Line.Field;
     field = "";
   }
 
-  function push(text: string): void {
+  /** Part of one line, with no line break in it. */
+  function segment(piece: string): void {
     let at = 0;
-    if (pendingReturn) {
-      pendingReturn = false;
-      if (text[0] !== "\n" && line === Line.Data) data("\r");
-    }
-    while (at < text.length) {
+    while (at < piece.length) {
       switch (line) {
         case Line.Field: {
           // The usual line, read without looking at each character.
-          if (field === "" && text.startsWith("data:", at)) {
+          if (field === "" && piece.startsWith("data:", at)) {
             at += 5;
-            if (dataLines > 0) data("\n");
-            dataLines += 1;
+            startData();
             line = Line.DataStart;
             break;
           }
-          const character = text[at]!;
-          if (character === "\n") {
-            lineEnd();
-            at += 1;
-          } else if (character === "\r") {
-            if (at + 1 < text.length && text[at + 1] !== "\n") field += character;
-            at += 1;
-          } else if (character === ":") {
-            at += 1;
-            if (field === "data") {
-              if (dataLines > 0) data("\n");
-              dataLines += 1;
-              line = Line.DataStart;
-            } else if (field === "event") {
-              eventName = "";
-              line = Line.Event;
-            } else line = Line.Skip;
-          } else {
-            field += character;
-            at += 1;
-            if (field.length > MAX_FIELD) line = Line.Skip;
+          const colon = piece.indexOf(":", at);
+          const end = colon === -1 ? piece.length : colon;
+          if (field.length + end - at > MAX_FIELD) {
+            line = Line.Skip;
+            at = piece.length;
+            break;
           }
+          field += piece.slice(at, end);
+          if (colon === -1) {
+            at = piece.length;
+            break;
+          }
+          at = colon + 1;
+          if (field === "data") {
+            startData();
+            line = Line.DataStart;
+          } else if (field === "event") {
+            eventName = "";
+            line = Line.Event;
+          } else line = Line.Skip;
           break;
         }
         case Line.DataStart:
-          if (text[at] === " ") at += 1;
+          if (piece.charCodeAt(at) === 32) at += 1;
           line = Line.Data;
           break;
-        case Line.Data: {
-          const feed = text.indexOf("\n", at);
-          if (feed === -1) {
-            const ends = text.endsWith("\r");
-            data(text.slice(at, ends ? text.length - 1 : text.length));
-            pendingReturn = ends;
-            at = text.length;
-          } else {
-            data(text.slice(at, feed > at && text[feed - 1] === "\r" ? feed - 1 : feed));
-            at = feed;
-            lineEnd();
-            at += 1;
-          }
+        case Line.Data:
+          data(piece.slice(at));
+          at = piece.length;
           break;
-        }
-        case Line.Event: {
-          const feed = text.indexOf("\n", at);
-          const piece = text.slice(at, feed === -1 ? text.length : feed);
-          if (eventName !== null && eventName.length < MAX_EVENT_NAME) eventName = (eventName + piece).slice(0, MAX_EVENT_NAME);
-          if (feed === -1) at = text.length;
-          else {
-            eventName = eventName?.trim() ?? null;
-            lineEnd();
-            at = feed + 1;
-          }
+        case Line.Event:
+          if (eventName !== null && eventName.length < MAX_EVENT_NAME) eventName = (eventName + piece.slice(at)).slice(0, MAX_EVENT_NAME);
+          at = piece.length;
           break;
-        }
-        case Line.Skip: {
-          const feed = text.indexOf("\n", at);
-          if (feed === -1) at = text.length;
-          else {
-            lineEnd();
-            at = feed + 1;
-          }
+        case Line.Skip:
+          at = piece.length;
           break;
-        }
       }
     }
   }
 
   return {
-    push,
-    get overflow() {
-      return overflow;
+    push(text) {
+      if (stopped) return;
+      let at = 0;
+      if (afterReturn) {
+        afterReturn = false;
+        if (text.charCodeAt(0) === 10) at = 1;
+      }
+      while (at < text.length && !stopped) {
+        LINE_BREAK.lastIndex = at;
+        if (!LINE_BREAK.test(text)) {
+          segment(at === 0 ? text : text.slice(at));
+          return;
+        }
+        const index = LINE_BREAK.lastIndex - 1;
+        if (index > at) segment(text.slice(at, index));
+        lineEnd();
+        at = index + 1;
+        if (text.charCodeAt(index) === 13) {
+          if (at === text.length) afterReturn = true;
+          else if (text.charCodeAt(at) === 10) at += 1;
+        }
+      }
     },
     end() {
+      if (stopped) return;
       if (line === Line.Event && eventName !== null) eventName = eventName.trim();
       dispatch(false);
     },
+    get overflow() {
+      return overflow;
+    },
+    get cut() {
+      return cut;
+    },
+    get stopped() {
+      return stopped;
+    },
   };
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -547,18 +547,6 @@ export function answeredModel(value: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Whether a stream's last document was cut before its JSON closed, holding no usage. */
-function finalEventReducer(): Reducer<boolean> {
-  let unread = false;
-  return {
-    step(document) {
-      const value = document.value;
-      unread = !document.whole && value.usage === undefined && value.usageMetadata === undefined && asRecord(value.response)?.usage === undefined;
-    },
-    finish: () => unread,
-  };
-}
-
 /** Whether an SSE frame is one of `names`, by its data's `type`, else by its event name with whole JSON data. */
 function namedFrame(frame: SseFrame, names: readonly string[]): boolean {
   if (frame.type !== null) return names.includes(frame.type);
@@ -612,56 +600,72 @@ export interface BodyReading {
   readonly servedModel: string | null;
   /** For a stream: whether it ended with its style's closing event; null when the style has none, or it is no stream. */
   readonly closed: boolean | null;
-  /** A value was too large to keep. */
+  /** A declared value was too large to keep. */
   readonly overflow: boolean;
+  /** More events came than the reader's limit: it stopped, and the reading is not to be used. */
+  readonly stopped: boolean;
 }
 
 export interface BodyReader {
   push(text: string): void;
-  end(): BodyReading;
-  /** The documents read so far: an SSE stream's events, or a JSON body's one. */
-  readonly documents: number;
+  /** The body ended. `clean` says it was read to its real end: neither the app nor the provider cut it. */
+  end(clean?: boolean): BodyReading;
 }
 
 export interface BodyReaderOptions {
   readonly counted?: readonly Modality[];
   readonly providerCost?: ProviderCostReport;
+  /** The most events read (an SSE stream's, or a JSON array's elements). */
+  readonly maxEvents?: number;
 }
 
-/** Reads a response body of `contentType`, by its API style, as its text streams past. */
+/**
+ * Reads a response body of `contentType`, by its API style, as its text
+ * streams past.
+ *
+ * The usage read is complete only when the answer ended whole: a stream with
+ * its style's closing event (or, for a style that has none, read to its real
+ * end), a JSON body closed and read to its end, the last document whole, and
+ * no declared value too large to keep. Otherwise what was read may be short,
+ * an earlier event's count, say: it is marked `finalEventUnread`, and billed
+ * as an estimate, never as exact. One rule, for every style.
+ */
 export function bodyReader(contentType: string, style: ApiStyle, options: BodyReaderOptions = {}): BodyReader {
   const usage = usageReducer(style, options.counted);
   const cost = options.providerCost === undefined ? null : lastRead(costReader(options.providerCost));
   const model = lastRead(answeredModel);
   const stream = isEventStream(contentType);
-  const finalEvent = finalEventReducer();
   const closing = closingReader(style);
-  let documents = 0;
-  const frames = framer(contentType, READ_PATHS, {
-    onDocument(document) {
-      documents += 1;
-      usage.step(document);
-      cost?.step(document);
-      model.step(document);
-      finalEvent.step(document);
+  const frames = framer(
+    contentType,
+    READ_PATHS,
+    {
+      onDocument(document) {
+        usage.step(document);
+        cost?.step(document);
+        model.step(document);
+      },
+      onFrame: (frame) => closing.frame(frame),
     },
-    onFrame: (frame) => closing.frame(frame),
-  });
+    options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents },
+  );
   return {
     push: (text) => frames.push(text),
-    get documents() {
-      return documents;
-    },
-    end() {
+    end(clean = true) {
       frames.end();
+      const closed = stream ? closing.finish() : null;
+      // A closing event says the stream is whole; without one, its real end does.
+      const ended = closed ?? clean;
+      const whole = ended && !frames.cut && !frames.overflow;
       let read = usage.finish();
-      if (read !== null && stream && finalEvent.finish()) read = { ...read, finalEventUnread: true };
+      if (read !== null && !whole) read = { ...read, finalEventUnread: true };
       return {
         usage: read,
         providerCostUsd: cost?.finish() ?? null,
         servedModel: model.finish(),
-        closed: stream ? closing.finish() : null,
+        closed,
         overflow: frames.overflow,
+        stopped: frames.stopped,
       };
     },
   };
