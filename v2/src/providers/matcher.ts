@@ -152,10 +152,25 @@ export interface UpstreamRoute {
    * back on; any other path is read with it added. Null when direct.
    */
   readonly cloudflarePrefix: readonly string[] | null;
+  /**
+   * A base URL on one of the provider's own hosts (`https://openrouter.ai/`):
+   * that host's built-in path prefix (`api`), in segments, under which the
+   * provider reads its paths. Null otherwise.
+   */
+  readonly hostPrefix?: readonly string[] | null;
 }
 
 /** The provider's own hosts, with no base URL or Cloudflare. */
 export const DIRECT_ROUTE: UpstreamRoute = { basePath: null, cloudflarePrefix: null };
+
+const pathSegments = (pathname: string): string[] =>
+  pathname.split("/").filter((piece) => piece !== "").map((piece) => {
+    try {
+      return decodeURIComponent(piece);
+    } catch {
+      return piece;
+    }
+  });
 
 /**
  * A connection's route, as `upstreamRequest` (`./route.ts`) sends it:
@@ -171,20 +186,18 @@ export function upstreamRoute(
     return { basePath: null, cloudflarePrefix: prefix.split("/").filter((piece) => piece !== "") };
   }
   if (connection.baseUrl !== null) {
-    let pathname = "/";
+    let url: URL | null = null;
     try {
-      pathname = new URL(connection.baseUrl).pathname;
+      url = new URL(connection.baseUrl);
     } catch {
       // A stored base URL passed the origin guard; one that does not read sends nothing anyway.
     }
-    const basePath = pathname.split("/").filter((piece) => piece !== "").map((piece) => {
-      try {
-        return decodeURIComponent(piece);
-      } catch {
-        return piece;
-      }
-    });
-    return { basePath, cloudflarePrefix: null };
+    const basePath = pathSegments(url?.pathname ?? "/");
+    // On one of the provider's own hosts, its paths are read under that host's built-in prefix.
+    const own = Object.values(description.hosts)
+      .map((host) => ({ name: host.split("/")[0]!.toLowerCase(), prefix: pathSegments(host.slice(host.split("/")[0]!.length)) }))
+      .find((host) => host.name === url?.host.toLowerCase() && host.prefix.length > 0);
+    return { basePath, cloudflarePrefix: null, ...(own !== undefined ? { hostPrefix: own.prefix } : {}) };
   }
   return DIRECT_ROUTE;
 }
@@ -228,12 +241,21 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
     return { host: "main", paths: may ? [path, added] : [added] };
   }
   const base = route.basePath;
-  if (base !== null && base.length > 0) {
-    const paths: (readonly TemplateSegment[])[] = base.map((_, from) => [...base.slice(from).map(literal), ...path]);
-    paths.push(path);
-    return { host: "main", paths };
+  if (base === null) return { host: "main", paths: [path] };
+  const paths: (readonly TemplateSegment[])[] = base.map((_, from) => [...base.slice(from).map(literal), ...path]);
+  paths.push(path);
+  // A base URL on the provider's own host: the provider reads the whole path
+  // under its built-in prefix, so that prefix is taken off where it may lead.
+  const own = route.hostPrefix ?? [];
+  if (own.length > 0) {
+    const whole = [...base.map(literal), ...path];
+    const head = whole.slice(0, own.length);
+    const may =
+      head.length === own.length &&
+      head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: own[index]! }));
+    if (may) paths.push(whole.slice(own.length));
   }
-  return { host: "main", paths: [path] };
+  return { host: "main", paths };
 }
 
 export interface MatchContext {
@@ -245,7 +267,8 @@ export interface MatchContext {
 
 export class ProviderMatcher {
   readonly provider: ProviderDescription;
-  private readonly refused: readonly Template[];
+  /** Each refused path, with the methods it refuses, or null for every method. */
+  private readonly refused: readonly { readonly template: Template; readonly methods: ReadonlySet<string> | null }[];
   private readonly operations: readonly CompiledOperation[];
 
   /**
@@ -255,10 +278,12 @@ export class ProviderMatcher {
    * `extraRefused` adds another provider's refused paths, for a custom
    * provider whose host belongs to a built-in one.
    */
-  constructor(provider: ProviderDescription, extraRefused: readonly string[] = []) {
+  constructor(provider: ProviderDescription, extraRefused: ProviderDescription["refused"] = []) {
     this.provider = provider;
-    this.refused = [...provider.refused, ...extraRefused].map((pattern) =>
-      parseTemplate(pattern, { rest: true }),
+    this.refused = [...provider.refused, ...extraRefused].map((entry) =>
+      typeof entry === "string"
+        ? { template: parseTemplate(entry, { rest: true }), methods: null }
+        : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods) },
     );
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
@@ -314,11 +339,8 @@ export class ProviderMatcher {
     if (!normalized.ok) return { kind: "refused", reason: "bad_path", detail: normalized.reason };
     const { segments } = normalized;
 
-    for (const pattern of this.refused) {
-      if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) {
-        return { kind: "refused", reason: "refused_path", pattern: pattern.source };
-      }
-    }
+    const gateway = this.refusedAt(method, { host: "main", paths: [segments.map(literal)] });
+    if (gateway !== null) return { kind: "refused", reason: "refused_path", pattern: gateway };
 
     const route = context.route ?? DIRECT_ROUTE;
     for (const listed of context.passthrough ?? []) {
@@ -326,7 +348,7 @@ export class ProviderMatcher {
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
       // Refused paths are judged again where the request really goes.
-      const refused = this.refusedAt(upstreamTargets(route, "main", segments.map(literal)));
+      const refused = this.refusedAt(method, upstreamTargets(route, "main", segments.map(literal)));
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "passthrough", listed: listed.listed, parts, upstream: { host: "main", path: joinSegments(segments) } };
     }
@@ -342,7 +364,7 @@ export class ProviderMatcher {
       // URL whose own path looks like a refused one (`.../user/42/`) still
       // serves every operation, as it always did.
       const sent = normalizePath(path);
-      const refused = sent.ok ? this.refusedAt(upstreamTargets({ ...route, basePath: null }, compiled.host, sent.segments.map(literal))) : null;
+      const refused = sent.ok ? this.refusedAt(method, upstreamTargets({ ...route, basePath: null }, compiled.host, sent.segments.map(literal))) : null;
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
@@ -355,14 +377,15 @@ export class ProviderMatcher {
    * `{name}` part stands for any value), or null. Only the main host has
    * refused paths: the others serve declared operations only.
    */
-  private refusedAt(targets: UpstreamTargets | null): string | null {
+  private refusedAt(method: string, targets: UpstreamTargets | null): string | null {
     if (targets === null || targets.host !== "main") return null;
     for (const path of targets.paths) {
       const segments = path.map((segment) =>
         segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
       );
-      for (const pattern of this.refused) {
-        if (matchTemplate(pattern, segments, { ignoreCase: true }) !== null) return pattern.source;
+      for (const { template, methods } of this.refused) {
+        if (methods !== null && !methods.has(method)) continue;
+        if (matchTemplate(template, segments, { ignoreCase: true }) !== null) return methods === null ? template.source : `${[...methods].join(",")} ${template.source}`;
       }
     }
     return null;
@@ -376,8 +399,9 @@ export class ProviderMatcher {
    * reported, for the same reason.
    */
   refusedCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
-    const gateway = this.refusedAt({ host: "main", paths: [listed.template.segments] });
-    return gateway ?? this.refusedAt(upstreamTargets(route, "main", listed.template.segments));
+    const { method } = listed.listed;
+    const gateway = this.refusedAt(method, { host: "main", paths: [listed.template.segments] });
+    return gateway ?? this.refusedAt(method, upstreamTargets(route, "main", listed.template.segments));
   }
 
   /**

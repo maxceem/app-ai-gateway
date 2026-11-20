@@ -459,6 +459,8 @@ async function servePassthrough(
     identity: caller.identity,
     waitUntil: (promise) => c.executionCtx.waitUntil(promise),
     refuse: refusal,
+    // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
+    ...(bill.notPriced === true ? { unpriced: true } : {}),
   });
   const attempt: CallAttempt = {
     requestId: timeOrderedId(startedAt),
@@ -901,7 +903,8 @@ export async function sendAttempts(
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
       const client = withoutHeaders(c.req.raw.headers, stripped);
-      const headers = upstreamHeaders(client);
+      // A listed passthrough path also forwards the headers its provider declares for one.
+      const headers = upstreamHeaders(client, isPassthrough(prepared.operation) ? (description.passthroughHeaders ?? []) : []);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
         if (!headers.has(name)) headers.set(name, value);
       }

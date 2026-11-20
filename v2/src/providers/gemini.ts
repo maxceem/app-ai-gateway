@@ -58,6 +58,8 @@ export const gemini = defineProvider({
   // are refused until a customer can opt in to them path by path (plan D4).
   refused: ["{version}/tunedModels/*", "{version}/corpora/{corpus}/permissions/*", "{version}/auth_tokens/*"],
   probe: { path: "v1beta/models" },
+  // The Files API's resumable uploads (`upload/v1beta/files`), once listed.
+  passthroughHeaders: ["x-goog-upload-"],
   cloudflareGateway: { slug: "google-ai-studio" },
   // Gemini's REST surface accepts both spellings of a field.
   serviceModes: [

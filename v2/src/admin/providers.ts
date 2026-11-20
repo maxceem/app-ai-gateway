@@ -217,13 +217,17 @@ function passthroughJson(
   before: readonly PassthroughPath[],
 ): string | null {
   const matcher = new ProviderMatcher(description);
-  const known = new Set(before.map((listed) => `${listed.method} ${listed.path}`));
+  const known = new Set(before.flatMap((listed) => {
+    try {
+      return [listingShape(compilePassthrough([listed])[0]!)];
+    } catch {
+      return [];
+    }
+  }));
   const seen = new Set<string>();
   const paths: PassthroughPath[] = asked.map((entry, index) => {
     const where = `passthrough.${index}`;
     const key = `${entry.method} ${entry.path}`;
-    if (seen.has(key)) throw new GatewayError(400, "invalid_request", `${where}: ${key} is listed twice`);
-    seen.add(key);
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
       try {
@@ -241,10 +245,14 @@ function passthroughJson(
       if (!(error instanceof TemplateError)) throw error;
       throw new GatewayError(400, "invalid_request", `${where}.path: ${error.message}`);
     }
+    // Two listings that match the same requests are one, whatever their parts are called.
+    const shape = listingShape(compiled);
+    if (seen.has(shape)) throw new GatewayError(400, "invalid_request", `${where}: ${key} matches the same requests as another listed path`);
+    seen.add(shape);
     if (callGap(resolvePassthrough(listed)) !== null) {
       throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
-    if (!known.has(key)) {
+    if (!known.has(shape)) {
       if (matcher.refusedCovering(compiled, route) !== null) {
         throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
       }
@@ -268,11 +276,19 @@ function passthroughJson(
   return storedPassthrough(paths);
 }
 
+/** A listing's method and the requests it matches: a leading `/` and the names of its parts make no difference. */
+function listingShape(compiled: CompiledPassthrough): string {
+  const segments = compiled.template.segments.map((segment) =>
+    segment.kind === "literal" ? `l:${segment.value}` : segment.kind === "part" ? `p:${segment.prefix}\u0000${segment.suffix}` : segment.kind,
+  );
+  return [compiled.listed.method, ...segments].join("/");
+}
+
 /** Whether two routes send every path to the same provider path (`upstreamTargets`). */
 function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
   const same = (x: readonly string[] | null, y: readonly string[] | null) =>
     x === null || y === null ? x === y : x.length === y.length && x.every((piece, index) => piece === y[index]);
-  return same(a.basePath, b.basePath) && same(a.cloudflarePrefix, b.cloudflarePrefix);
+  return same(a.basePath, b.basePath) && same(a.cloudflarePrefix, b.cloudflarePrefix) && same(a.hostPrefix ?? null, b.hostPrefix ?? null);
 }
 
 export function providerView(row: ConnectionRow) {

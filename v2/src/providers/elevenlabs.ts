@@ -55,7 +55,9 @@ export const elevenlabs = defineProvider({
   // ElevenLabs has no service modes on these APIs.
   serviceModes: [],
   // The account, its workspace, keys (service accounts), history and usage,
-  // the agents' stored secrets, and adding or editing voices. Tokens and
+  // the agents' stored secrets, adding, editing or deleting voices, and
+  // creating, changing or deleting agents (the provider research's "never
+  // expose" list); reading voices and agents stays allowed. Tokens and
   // signed URLs for live sessions are refused until a customer can opt in to
   // them path by path (plan D4).
   refused: [
@@ -66,6 +68,10 @@ export const elevenlabs = defineProvider({
     "v1/usage/*",
     "v1/voices/add",
     "v1/voices/{voice_id}/edit",
+    { path: "v1/voices/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
+    "v1/convai/agents/create",
+    { path: "v1/convai/agents/{agent_id}/duplicate", methods: ["POST"] },
+    { path: "v1/convai/agents/{agent_id}", methods: ["PUT", "PATCH", "DELETE"] },
     "v1/convai/secrets/*",
     "v1/convai/conversation/token/*",
     "v1/convai/conversation/get-signed-url/*",

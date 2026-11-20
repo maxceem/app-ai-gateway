@@ -14,6 +14,7 @@ import { matchTemplate, parseTemplate } from "../src/providers/path.ts";
 import { upstreamRequest } from "../src/providers/route.ts";
 import { openai } from "../src/providers/openai.ts";
 import { readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
+import { isExtraClientHeader } from "../src/proxy/headers.ts";
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
@@ -214,6 +215,35 @@ describe("judging a listing where the provider reads it", () => {
     }
   });
 
+  it("reads a base URL on the provider's own host under that host's built-in prefix", () => {
+    const openrouter = BUILT_IN_PROVIDERS.openrouter!;
+    const route = upstreamRoute(openrouter, { baseUrl: "https://openrouter.ai/", cloudflareGateway: null });
+    expect(route.hostPrefix).toEqual(["api"]);
+    const matcher = new ProviderMatcher(openrouter);
+    expect(matcher.overlappingOperation(compiled("POST", "api/v1/chat/completions"), route)).toBe("openrouter.chat");
+    expect(matcher.refusedCovering(compiled("GET", "api/v1/keys"), route)).not.toBeNull();
+    // Another host has no built-in prefix to read.
+    expect(upstreamRoute(openrouter, { baseUrl: "https://proxy.example/", cloudflareGateway: null }).hostPrefix).toBeUndefined();
+  });
+
+  it("refuses some methods on a path and allows the others: deleting a voice, not reading one", () => {
+    const elevenlabs = BUILT_IN_PROVIDERS.elevenlabs!;
+    const matcher = new ProviderMatcher(elevenlabs);
+    const listed = compilePassthrough([
+      { method: "GET", path: "v1/voices/{voice_id}" },
+      { method: "DELETE", path: "v1/voices/{voice_id}" },
+      { method: "PATCH", path: "v1/convai/agents/{agent_id}" },
+      { method: "GET", path: "v1/convai/agents/{agent_id}" },
+    ]);
+    expect(matcher.refusedCovering(listed[0]!)).toBeNull();
+    expect(matcher.refusedCovering(listed[1]!)).toMatch(/DELETE/u);
+    expect(matcher.refusedCovering(listed[2]!)).toMatch(/PATCH/u);
+    expect(matcher.refusedCovering(listed[3]!)).toBeNull();
+    expect(matcher.match("GET", "v1/voices/v1", { passthrough: listed })).toMatchObject({ kind: "passthrough" });
+    expect(matcher.match("DELETE", "v1/voices/v1", { passthrough: listed })).toMatchObject({ reason: "refused_path" });
+    expect(matcher.match("delete".toUpperCase(), "V1/VOICES/v1", { passthrough: listed })).toMatchObject({ reason: "refused_path" });
+  });
+
   it("refuses on fal a listing its priced-models path would also take upstream", () => {
     const fal = new ProviderMatcher(BUILT_IN_PROVIDERS.fal!);
     expect(fal.overlappingOperation(compiled("POST", "fal-ai/{a}/{b}"))).toBe("fal.run");
@@ -283,9 +313,11 @@ describe("judging a listing where the provider reads it", () => {
     let saved = 0;
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       const matcher = new ProviderMatcher(description);
-      const refused = description.refused.map((pattern) => parseTemplate(pattern, { rest: true }));
+      const refused = description.refused.map((entry) =>
+        typeof entry === "string" ? { template: parseTemplate(entry, { rest: true }), methods: null } : { template: parseTemplate(entry.path, { rest: true }), methods: entry.methods as readonly string[] },
+      );
       const words = new Set(["v1", "x", "files", "chat"]);
-      for (const source of [...description.refused, ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
+      for (const source of [...description.refused.map((entry) => (typeof entry === "string" ? entry : entry.path)), ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
         for (const piece of source.split("/")) if (piece !== "" && piece !== "*" && !piece.includes("{")) words.add(piece);
       }
       const vocabulary = [...words];
@@ -301,7 +333,7 @@ describe("judging a listing where the provider reads it", () => {
         const route = upstreamRoute(description, connection);
         const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
         for (let round = 0; round < 60; round += 1) {
-          const method = (["GET", "POST"] as const)[random(2)]!;
+          const method = (["GET", "POST", "DELETE", "PATCH"] as const)[random(4)]!;
           const path = Array.from({ length: 1 + random(4) }, () => shapes[random(shapes.length)]!).join("/");
           let listing;
           try {
@@ -319,7 +351,9 @@ describe("judging a listing where the provider reads it", () => {
             if (match.kind !== "passthrough") continue;
             for (const read of readAs(description, connection, match.upstream.path)) {
               const where = `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
-              for (const pattern of refused) expect(matchTemplate(pattern, read, { ignoreCase: true }), where).toBeNull();
+              for (const { template, methods } of refused) {
+                if (methods === null || methods.includes(method)) expect(matchTemplate(template, read, { ignoreCase: true }), where).toBeNull();
+              }
               for (const { op, template, lists } of operations) {
                 if (op.match.method !== method) continue;
                 const readings = prefix.length > 0 && !template.segments.slice(0, prefix.length).every((segment, index) => segment.kind === "literal" && segment.value === prefix[index])
@@ -334,6 +368,28 @@ describe("judging a listing where the provider reads it", () => {
     }
     // The fuzz judged a real number of saved listings, not only refused ones.
     expect(saved).toBeGreaterThan(300);
+  });
+});
+
+describe("passthrough headers", () => {
+  it("forward a declared name or prefix, never one that may carry a credential", () => {
+    const extra = ["x-goog-upload-", "x-exact"];
+    expect(isExtraClientHeader("X-Goog-Upload-Protocol", extra)).toBe(true);
+    expect(isExtraClientHeader("x-exact", extra)).toBe(true);
+    expect(isExtraClientHeader("x-exactly", extra)).toBe(false);
+    for (const name of ["x-goog-upload-api-key", "x-goog-upload-token", "x-goog-upload-authorization", "x-goog-upload-cookie", "x-goog-upload-secret"]) {
+      expect(isExtraClientHeader(name, extra), name).toBe(false);
+    }
+  });
+
+  it("are declared by no provider with a name that may carry a credential", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const name of description.passthroughHeaders ?? []) {
+        expect(name, description.type).toBe(name.toLowerCase());
+        expect(isExtraClientHeader(name.endsWith("-") ? `${name}x` : name, [name]), `${description.type} ${name}`).toBe(true);
+        expect(name.startsWith(description.auth.header), description.type).toBe(false);
+      }
+    }
   });
 });
 
@@ -411,7 +467,7 @@ describe("billing a listed path", () => {
 async function setup(
   paths: readonly { method: string; path: string; priceNano?: number }[],
   operations: readonly string[] = ["passthrough"],
-  connection: { type?: string; baseUrl?: string } = {},
+  connection: { type?: string; baseUrl?: string; limits?: Record<string, unknown> } = {},
 ) {
   await seedAccount();
   const type = connection.type ?? "openai";
@@ -431,6 +487,10 @@ async function setup(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
     { providers: { [slug]: { operations } } },
   );
+  if (connection.limits !== undefined) {
+    const config = { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers: { [slug]: { operations } } }, limits: connection.limits };
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify(config), appId).run();
+  }
   const { key } = await seedAppKey(appId);
   return { appId, slug, key };
 }
@@ -548,6 +608,55 @@ describe("serving a listed path", () => {
     expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://proxy.example/user/42/chat/completions");
   });
 
+  it("lets an unpriced path past the spending limits, but not past the request limits", async () => {
+    const atBudget = { per_app: { spending: { monthly_nano: 0 } }, per_user: { spending: { monthly_nano: 0 } } };
+    const { appId, slug, key } = await setup(
+      [{ method: "GET", path: "v1/files/{file_id}" }, { method: "POST", path: "v1/moderations", priceNano: 1_000 }],
+      ["passthrough"],
+      { limits: atBudget },
+    );
+    fetchSpy.mockImplementation(async () => Response.json({ ok: true }));
+    expect((await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/files/file-abc`, key)).response.status).toBe(200);
+    // A priced one spends, so the budget refuses it.
+    const priced = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/moderations`, key, { body: "{}", headers: { "content-type": "application/json" } });
+    expect(priced.response.status).toBe(429);
+    expect(JSON.parse(priced.text)).toMatchObject({ error: { code: "app_budget_exhausted" } });
+
+    const limited = await setup([{ method: "GET", path: "v1/files/{file_id}" }], ["passthrough"], { limits: { per_app: { requests: { per_minute: 1 } } } });
+    expect((await send("GET", `/v2/apps/${limited.appId}/proxy/${limited.slug}/v1/files/a`, limited.key)).response.status).toBe(200);
+    const second = await send("GET", `/v2/apps/${limited.appId}/proxy/${limited.slug}/v1/files/b`, limited.key);
+    expect(second.response.status).toBe(429);
+    expect(JSON.parse(second.text)).toMatchObject({ error: { code: "app_rate_limited" } });
+  });
+
+  it("forwards the upload headers Gemini declares for passthrough, never a credential, and only on a listed path", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "upload/v1beta/files" }], ["passthrough"], { type: "gemini" });
+    fetchSpy.mockResolvedValueOnce(Response.json({}, { headers: { "x-goog-upload-url": "https://example.com/u" } }));
+    const { response } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/upload/v1beta/files`, key, {
+      body: "{}",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-upload-protocol": "resumable",
+        "x-goog-upload-command": "start",
+        "x-goog-upload-header-content-length": "2048",
+        "x-goog-upload-api-key": "sneaky",
+        "x-goog-api-key": "client-key",
+      },
+    });
+    expect(response.status).toBe(200);
+    const headers = new Headers(fetchSpy.mock.calls[0]![1]!.headers);
+    expect(headers.get("x-goog-upload-protocol")).toBe("resumable");
+    expect(headers.get("x-goog-upload-command")).toBe("start");
+    expect(headers.get("x-goog-upload-header-content-length")).toBe("2048");
+    expect(headers.get("x-goog-upload-api-key")).toBeNull();
+    expect(headers.get("x-goog-api-key")).toBe(SECRET);
+    // OpenAI declares none: the same header is not forwarded on its passthrough.
+    const other = await setup([{ method: "GET", path: "v1/files/{file_id}" }]);
+    fetchSpy.mockResolvedValueOnce(Response.json({}));
+    await send("GET", `/v2/apps/${other.appId}/proxy/${other.slug}/v1/files/f`, other.key, { headers: { "x-goog-upload-protocol": "resumable" } });
+    expect(new Headers(fetchSpy.mock.calls[1]![1]!.headers).get("x-goog-upload-protocol")).toBeNull();
+  });
+
   it("checks who is calling first: a listed path needs a valid app key", async () => {
     const { appId, slug } = await setup([{ method: "GET", path: "v1/files/{file_id}" }]);
     const { response } = await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/files/file-abc`, "agw_not_a_key");
@@ -620,7 +729,8 @@ describe("saving a listed path", () => {
     [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
     [[{ method: "GET", path: "v1/files/%2e%2e" }], "path"],
-    [[{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/files" }], "listed twice"],
+    [[{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/files" }], "matches the same requests"],
+    [[{ method: "GET", path: "v1/files/{id}" }, { method: "GET", path: "/v1/files/{file_id}" }], "matches the same requests"],
     [[{ method: "GET", path: "v1/files", per_request: -1 }], "per_request"],
     [[{ method: "HEAD", path: "v1/files" }], "method"],
   ])("refuses %j", async (passthrough, message) => {
@@ -731,6 +841,29 @@ describe("saving a listed path", () => {
     const direct = await create(key, [{ method: "POST", path: "v1/embeddings" }], { baseUrl: "https://example.com/v1/" });
     expect(direct.status).toBe(400);
     expect(JSON.stringify(direct.body)).toContain("enable openai.embeddings on the app");
+  });
+
+  it("refuses a listing that reaches OpenRouter's own chat or keys behind a base URL on its host", async () => {
+    const key = await seedManagementKey();
+    for (const listing of [{ method: "POST", path: "api/v1/chat/completions" }, { method: "GET", path: "api/v1/keys" }]) {
+      const refused = await admin(key, "POST", "/v2/admin/providers", {
+        type: "openrouter",
+        name: "OpenRouter",
+        slug: `or-${crypto.randomUUID().slice(0, 6)}`,
+        secret: "sk-or-live-secret-abcd",
+        baseUrl: "https://openrouter.ai/",
+        passthrough: [listing],
+      });
+      expect(refused.status, listing.path).toBe(400);
+    }
+  });
+
+  it("refuses deleting an ElevenLabs voice when listed, and saves reading one", async () => {
+    const key = await seedManagementKey();
+    const make = (passthrough: unknown) =>
+      admin(key, "POST", "/v2/admin/providers", { type: "elevenlabs", name: "ElevenLabs", slug: `el-${crypto.randomUUID().slice(0, 6)}`, secret: "el-live-secret-abcd", passthrough });
+    expect((await make([{ method: "DELETE", path: "v1/voices/{voice_id}" }])).status).toBe(400);
+    expect((await make([{ method: "GET", path: "v1/voices/{voice_id}" }])).status).toBe(201);
   });
 
   it("refuses on fal a listing its model runs would also take", async () => {

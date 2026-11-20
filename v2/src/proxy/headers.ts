@@ -37,11 +37,30 @@ export function withoutHeaders(client: Headers, names: readonly string[]): Heade
   return headers;
 }
 
-/** The client's headers a provider may see. */
-export function upstreamHeaders(client: Headers): Headers {
+/**
+ * Words in a header's name that mean it may carry a credential. A header a
+ * provider's passthrough forwards (`passthroughHeaders`) never does: the
+ * provider key is the gateway's alone.
+ */
+const CREDENTIAL_WORDS: readonly string[] = ["auth", "key", "token", "secret", "cookie", "session", "signature"];
+
+/** Whether `name` is one of `extra` (an exact name, or a prefix ending in `-`) and cannot carry a credential. */
+export function isExtraClientHeader(name: string, extra: readonly string[]): boolean {
+  const lower = name.toLowerCase();
+  if (CREDENTIAL_WORDS.some((word) => lower.includes(word))) return false;
+  return extra.some((entry) => (entry.endsWith("-") ? lower.startsWith(entry) : lower === entry));
+}
+
+/**
+ * The client's headers a provider may see: the allowlist, plus, on a listed
+ * passthrough path, the headers its provider declares for one
+ * (`passthroughHeaders`, such as Gemini's `x-goog-upload-*`). The app's own
+ * credential headers were taken out before (`withoutHeaders`).
+ */
+export function upstreamHeaders(client: Headers, extra: readonly string[] = []): Headers {
   const headers = new Headers();
   client.forEach((value, name) => {
-    if (isForwardedClientHeader(name)) headers.set(name, value);
+    if (isForwardedClientHeader(name) || (extra.length > 0 && isExtraClientHeader(name, extra))) headers.set(name, value);
   });
   return headers;
 }
