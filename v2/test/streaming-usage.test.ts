@@ -230,6 +230,29 @@ describe("how an answer ended is judged once, for the whole reading (Sol round 1
     expect(read('event: message_stop\ndata: {"x":[1]}\n\n', SSE, "anthropic-messages").closed).toBe(true);
   });
 
+  it("keeps a carriage return pending across an empty piece (round 2, S1)", () => {
+    const reader = bodyReader(SSE, "openai-chat");
+    for (const piece of ['data: {"usage":{"prompt_tokens":4,"completion_tokens":2}}\r', "", '\ndata: {"model":"m"}\r\n\r\ndata: [DONE]\r\n\r\n']) reader.push(piece);
+    // One event with two data lines, which together are not JSON: never two events.
+    expect(reader.end()).toEqual(readBody('data: {"usage":{"prompt_tokens":4,"completion_tokens":2}}\r\ndata: {"model":"m"}\r\n\r\ndata: [DONE]\r\n\r\n', SSE, "openai-chat"));
+  });
+
+  it("counts a JSON array's scalar elements before reading anything (round 2, S2)", () => {
+    const reading = readBody('[1,2,{"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":1}}]', JSON_BODY, "gemini-generate", { maxEvents: 1 });
+    expect(reading.stopped).toBe(true);
+    expect(reading.usage).toBeNull();
+  });
+
+  it("never lets [DONE] clear a cut earlier event (round 2, S3)", () => {
+    const body = 'data: {"usage":{"prompt_tokens":4,"completion_tokens":2},"text":"nev\n\ndata: [DONE]\n\n';
+    expect(readBody(body, SSE, "openai-chat").usage).toMatchObject({ outputTokens: 2, finalEventUnread: true });
+  });
+
+  it("never closes on a large closing event whose brackets do not match (round 2, S6)", () => {
+    const body = `event: message_stop\ndata: {"type":"message_stop","pad":"${"a".repeat(70_000)}","x":[1}}\n\n`;
+    expect(readBody(body, SSE, "anthropic-messages").closed).toBe(false);
+  });
+
   it("reads `[DONE]` with space before it, as before (S8)", () => {
     expect(read(`data: ${JSON.stringify({ usage })}\n\ndata:   [DONE]\n\n`, SSE, "openai-chat").closed).toBe(true);
   });

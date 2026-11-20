@@ -119,6 +119,9 @@ function nonSpace(text: string, at: number): number {
   return -1;
 }
 
+/** A slice of at most this many characters is copied, never shared (V8 shares only longer ones). */
+const SHORT_SLICE = 12;
+
 /**
  * `text` in storage of its own. A string cut from a larger one may share that
  * one's memory, so keeping a short value could keep a whole large piece of
@@ -146,6 +149,12 @@ export interface SkimOptions {
   readonly arrayDocuments?: boolean;
   /** Called with each document's object once it closes. */
   readonly onDocument?: (value: Holder) => void;
+  /**
+   * Called as each root-array element (with `arrayDocuments`), or else the
+   * root value, starts, before any of it is read. Returning false stops the
+   * skimmer there.
+   */
+  readonly onElement?: () => boolean;
 }
 
 export class Skimmer {
@@ -157,8 +166,8 @@ export class Skimmer {
   private targetKey = "";
   private targetTree: PathTree | null = null;
   private readonly frames: Frame[] = [];
-  /** Open containers inside the value being skipped. */
-  private skipDepth = 0;
+  /** The closing bracket each open container inside the value being skipped expects, innermost last. */
+  private readonly skipClosers: number[] = [];
   /** A backslash ended the last piece inside a string: the next character is escaped. */
   private escapePending = false;
   /** The captured JSON text of a leaf value, in pieces, while one is being read. */
@@ -202,8 +211,8 @@ export class Skimmer {
   push(text: string): void {
     let at = 0;
     while (at < text.length && this.mode !== Mode.Failed) at = this.step(text, at);
-    // A leaf value still open at the end of the piece: keep what of it arrived.
-    if (this.capture !== null && this.mode !== Mode.Failed) this.keep(text, this.captureFrom, text.length);
+    // A leaf value still open at the end of the piece: keep what of it arrived, copied, as it outlives the piece.
+    if (this.capture !== null && this.mode !== Mode.Failed) this.keep(text, this.captureFrom, text.length, true);
     this.captureFrom = 0;
   }
 
@@ -224,7 +233,8 @@ export class Skimmer {
     return Number.MAX_SAFE_INTEGER;
   }
 
-  private keep(text: string, from: number, to: number): void {
+  /** Adds text to the captured value. `outlives` copies it: it is kept past the piece it came from. */
+  private keep(text: string, from: number, to: number, outlives = false): void {
     if (this.capture === null || to <= from) return;
     this.captureLength += to - from;
     if (this.captureLength > SKIM_VALUE_CAP) {
@@ -232,7 +242,7 @@ export class Skimmer {
       this.capture.length = 0;
       return;
     }
-    if (!this.captureOverflow) this.capture.push(copyString(text.slice(from, to)));
+    if (!this.captureOverflow) this.capture.push(outlives ? copyString(text.slice(from, to)) : text.slice(from, to));
   }
 
   /** One step from `at`; returns where to go on. */
@@ -269,6 +279,15 @@ export class Skimmer {
     if (index === -1) return text.length;
     const character = text.charCodeAt(index);
     const target = this.target;
+    // A root-array element, or else the root value, is counted before any of it is read.
+    const onElement = this.options.onElement;
+    if (
+      onElement !== undefined &&
+      (target === Target.Document || (target === Target.Root && !(character === 91 && this.options.arrayDocuments === true))) &&
+      !onElement()
+    ) {
+      return this.fail();
+    }
     if (character === 123 /* { */ && (target === Target.Inner || target === Target.Document || target === Target.Root)) {
       const value: Holder = {};
       const document = target !== Target.Inner;
@@ -293,12 +312,13 @@ export class Skimmer {
       this.captureFrom = index;
     }
     if (character === 34 /* " */) {
-      this.skipDepth = 0;
+      this.skipClosers.length = 0;
       this.mode = Mode.SkipString;
       return index + 1;
     }
     if (character === 123 || character === 91) {
-      this.skipDepth = 1;
+      this.skipClosers.length = 0;
+      this.skipClosers.push(character === 123 ? 125 : 93);
       this.mode = Mode.SkipContainer;
       return index + 1;
     }
@@ -324,7 +344,7 @@ export class Skimmer {
         from = quote + 1;
         continue;
       }
-      if (this.skipDepth === 0) return this.valueEnd(text, quote + 1);
+      if (this.skipClosers.length === 0) return this.valueEnd(text, quote + 1);
       this.mode = Mode.SkipContainer;
       return quote + 1;
     }
@@ -339,10 +359,12 @@ export class Skimmer {
         this.mode = Mode.SkipString;
         return STRUCTURE.lastIndex;
       }
-      if (character === 123 || character === 91) this.skipDepth += 1;
+      // A container is closed only by its own kind of bracket.
+      if (character === 123) this.skipClosers.push(125);
+      else if (character === 91) this.skipClosers.push(93);
       else {
-        this.skipDepth -= 1;
-        if (this.skipDepth === 0) return this.valueEnd(text, STRUCTURE.lastIndex);
+        if (this.skipClosers.pop() !== character) return this.fail();
+        if (this.skipClosers.length === 0) return this.valueEnd(text, STRUCTURE.lastIndex);
       }
     }
   }
@@ -363,8 +385,9 @@ export class Skimmer {
         this.overflow = true;
       } else {
         const raw = this.capture.length === 1 ? this.capture[0]! : this.capture.join("");
-        // A plain string, the usual leaf, needs no parser.
-        if (raw.length >= 2 && raw.charCodeAt(0) === 34 && !raw.includes("\\")) holder[this.targetKey] = copyString(raw.slice(1, -1));
+        // A short plain string, the usual leaf, needs no parser: a slice this short is a copy.
+        // Anything else is parsed, which also gives it storage of its own.
+        if (raw.length <= SHORT_SLICE && raw.charCodeAt(0) === 34 && !raw.includes("\\")) holder[this.targetKey] = raw.slice(1, -1);
         else {
           try {
             holder[this.targetKey] = JSON.parse(raw) as unknown;

@@ -180,6 +180,15 @@ describe("the skimmer keeps exactly what JSON.parse would, at the declared paths
     expect(skim(text, [text.slice(0, 123_456), text.slice(123_456)]).documents).toEqual([{ usage: { prompt_tokens: 5 } }]);
   });
 
+  it("closes a skipped container only with its own kind of bracket (Sol round 2, S6)", () => {
+    for (const text of ['{"x":[1,2}}', '{"x":{"a":1]}', '{"x":[{"a":[1}]}']) {
+      const skimmer = new Skimmer(TREE);
+      skimmer.push(text);
+      skimmer.end();
+      expect(skimmer.failed, text).toBe(true);
+    }
+  });
+
   it("stops reading at text that is not JSON, keeping what was whole before it", () => {
     const skimmer = new Skimmer(TREE);
     skimmer.push('{"model":"m","usage" 5}');
