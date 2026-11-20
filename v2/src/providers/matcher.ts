@@ -337,8 +337,12 @@ export class ProviderMatcher {
       if (parts === null) continue;
       const path = compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts);
       if (path === null) return { kind: "refused", reason: "bad_path", detail: "dot_segment" };
+      // A declared operation is never a refused path: only how its route adds
+      // a prefix is judged, not each way a base URL may be mounted. A base
+      // URL whose own path looks like a refused one (`.../user/42/`) still
+      // serves every operation, as it always did.
       const sent = normalizePath(path);
-      const refused = sent.ok ? this.refusedAt(upstreamTargets(route, compiled.host, sent.segments.map(literal))) : null;
+      const refused = sent.ok ? this.refusedAt(upstreamTargets({ ...route, basePath: null }, compiled.host, sent.segments.map(literal))) : null;
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }

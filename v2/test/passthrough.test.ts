@@ -201,6 +201,19 @@ describe("judging a listing where the provider reads it", () => {
     expect(matcher.match("POST", "realtime/client_secrets", { passthrough })).toMatchObject({ kind: "passthrough" });
   });
 
+  it("judges a declared operation without each way a base URL may be mounted, and a listing with them", () => {
+    for (const [description, baseUrl, method, path] of [
+      [BUILT_IN_PROVIDERS.deepseek!, "https://proxy.example/user/42/", "POST", "chat/completions"],
+      [openai, "https://proxy.example/v1/organization/team-a/", "POST", "v1/chat/completions"],
+    ] as const) {
+      const route = upstreamRoute(description, { baseUrl, cloudflareGateway: null });
+      const matcher = new ProviderMatcher(description);
+      expect(matcher.match(method, path, { route })).toMatchObject({ kind: "operation" });
+      // A listing behind it could reach the refused path, so it is still refused.
+      expect(matcher.refusedCovering(compiled("GET", "models"), route)).not.toBeNull();
+    }
+  });
+
   it("refuses on fal a listing its priced-models path would also take upstream", () => {
     const fal = new ProviderMatcher(BUILT_IN_PROVIDERS.fal!);
     expect(fal.overlappingOperation(compiled("POST", "fal-ai/{a}/{b}"))).toBe("fal.run");
@@ -395,18 +408,24 @@ describe("billing a listed path", () => {
 });
 
 /** A connection with `paths` listed, written as a save would, and an app routed to it. */
-async function setup(paths: readonly { method: string; path: string; priceNano?: number }[], operations: readonly string[] = ["passthrough"]) {
+async function setup(
+  paths: readonly { method: string; path: string; priceNano?: number }[],
+  operations: readonly string[] = ["passthrough"],
+  connection: { type?: string; baseUrl?: string } = {},
+) {
   await seedAccount();
+  const type = connection.type ?? "openai";
+  const baseUrl = connection.baseUrl ?? null;
   const id = crypto.randomUUID().replaceAll("-", "");
-  const slug = `openai-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", ""], SECRET);
+  const slug = `${type}-${id.slice(0, 6)}`;
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
       (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, passthrough_json, revision, created_by, created_at, updated_at)
-     VALUES (?, ?, 'openai', ?, 'OpenAI', 'active', ?, '4321', NULL, ?, 1, 'usr_test', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, 'active', ?, '4321', ?, ?, 1, 'usr_test', ?, ?)`,
   )
-    .bind(id, ACCOUNT_ID, slug, blob, storedPassthrough(paths as never), now, now)
+    .bind(id, ACCOUNT_ID, type, slug, type, blob, baseUrl, storedPassthrough(paths as never), now, now)
     .run();
   const appId = await seedRoutedApp(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
@@ -514,6 +533,19 @@ describe("serving a listed path", () => {
       expect(response.status, path).toBe(403);
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("serves declared operations behind a base URL whose own path looks like a refused one, as before", async () => {
+    const { appId, slug, key } = await setup([], ["deepseek.chat"], { type: "deepseek", baseUrl: "https://proxy.example/user/42/" });
+    fetchSpy.mockResolvedValueOnce(
+      Response.json({ id: "c1", object: "chat.completion", model: "deepseek-v4-flash", choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }),
+    );
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(200);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://proxy.example/user/42/chat/completions");
   });
 
   it("checks who is calling first: a listed path needs a valid app key", async () => {
@@ -675,6 +707,30 @@ describe("saving a listed path", () => {
     const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://example.com/v1/", secret: "sk-live-secret-abcd" });
     expect(moved.status).toBe(400);
     expect(JSON.stringify(moved.body)).toContain("never allows");
+  });
+
+  it("keeps listings saved before when the route reads paths the same way, such as another Cloudflare gateway", async () => {
+    const key = await seedManagementKey();
+    const gateway = (gatewayId: string) => ({ cloudflareGateway: { accountId: "acct", gatewayId, token: "cf-token-for-tests-1234" } });
+    const created = await create(key, [{ method: "POST", path: "moderations" }], gateway("gw-a"));
+    expect(created.status).toBe(201);
+    // As if a release had since declared or refused it.
+    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
+      .bind(storedPassthrough([{ method: "POST", path: "responses" }]), created.body.provider.id)
+      .run();
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, ...gateway("gw-b"), secret: "sk-live-secret-abcd" });
+    expect(moved.status).toBe(200);
+    expect(moved.body.provider.passthrough).toEqual([{ method: "POST", path: "responses" }]);
+  });
+
+  it("says when an overlap comes from the base URL, not from the listing itself", async () => {
+    const key = await seedManagementKey();
+    const behind = await create(key, [{ method: "POST", path: "embeddings" }], { baseUrl: "https://example.com/v1/" });
+    expect(behind.status).toBe(400);
+    expect(JSON.stringify(behind.body)).toContain("behind this connection's base URL");
+    const direct = await create(key, [{ method: "POST", path: "v1/embeddings" }], { baseUrl: "https://example.com/v1/" });
+    expect(direct.status).toBe(400);
+    expect(JSON.stringify(direct.body)).toContain("enable openai.embeddings on the app");
   });
 
   it("refuses on fal a listing its model runs would also take", async () => {

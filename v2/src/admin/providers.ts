@@ -252,16 +252,27 @@ function passthroughJson(
       // could match any of an operation's paths would take its requests unmetered.
       const operation = matcher.overlappingOperation(compiled, route);
       if (operation !== null) {
+        // Only through the base URL's path: the listing itself is not the operation's path.
+        const throughBase = route.basePath !== null && matcher.overlappingOperation(compiled, { ...route, basePath: null }) === null;
         throw new GatewayError(
           400,
           "invalid_request",
-          `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
+          throughBase
+            ? `${where}.path: behind this connection's base URL, ${key} can reach the provider path of the ${operation} operation; list a path the provider does not serve as an operation, or change the base URL`
+            : `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
         );
       }
     }
     return listed;
   });
   return storedPassthrough(paths);
+}
+
+/** Whether two routes send every path to the same provider path (`upstreamTargets`). */
+function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
+  const same = (x: readonly string[] | null, y: readonly string[] | null) =>
+    x === null || y === null ? x === y : x.length === y.length && x.every((piece, index) => piece === y[index]);
+  return same(a.basePath, b.basePath) && same(a.cloudflarePrefix, b.cloudflarePrefix);
 }
 
 export function providerView(row: ConnectionRow) {
@@ -519,10 +530,17 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       : description === null
         ? null
         : servingProvidersJson(description, body.servingProviders);
-  // Listed paths are judged on the route they will be sent on. A new base URL
-  // or Cloudflare setting judges every listed path again, kept or sent.
+  // Listed paths are judged on the route they will be sent on. A route that
+  // changes where the provider reads a path (a base URL's path, or going
+  // through Cloudflare or not) judges every listed path again, kept or sent.
+  // Another Cloudflare gateway, or another host with the same path, does not.
   let passthroughStored = current.passthrough_json;
-  const routeMoved = to !== from;
+  const routeMoved =
+    description !== null &&
+    !sameRoute(
+      upstreamRoute(description, { baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting }),
+      upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare }),
+    );
   const kept = body.passthrough === undefined && routeMoved ? passthroughView(current.passthrough_json) : undefined;
   const listing = body.passthrough === null ? null : (body.passthrough ?? kept);
   if (listing === null) passthroughStored = null;
