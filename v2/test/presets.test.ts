@@ -114,13 +114,18 @@ const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), co
 /** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */
 function unitAttempt(
   seq: number,
-  overrides: Partial<{ credentials: () => Promise<UpstreamCredentials>; body: () => ReturnType<typeof jsonBody>; requestId: string }> = {},
+  overrides: Partial<{
+    credentials: () => Promise<UpstreamCredentials>;
+    body: () => ReturnType<typeof jsonBody>;
+    requestId: string;
+    operation: OperationDescription;
+  }> = {},
 ) {
   const description = BUILT_IN_PROVIDERS.openai!;
   return {
     connection: { id: `conn_${seq}`, accountId: ACCOUNT_ID, type: "openai", slug: `openai-unit-${seq}`, status: "active" as const, baseUrl: null, secretBlob: null, rates: null, cloudflareGateway: null, servingProviders: null },
     description,
-    operation: description.operations.find((operation) => operation.name === "openai.chat")!,
+    operation: overrides.operation ?? description.operations.find((operation) => operation.name === "openai.chat")!,
     hostKey: "main",
     path: "/v1/chat/completions",
     query: "",
@@ -471,6 +476,40 @@ describe("presets", () => {
       expect(fallback.body).not.toHaveBeenCalled();
       expect(fallback.credentials).not.toHaveBeenCalled();
       expect((await chargesOfCall(requestId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits as long as an operation declares for the provider's answer, and 120 s otherwise", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // The provider answers after 150 s, honouring the request's abort signal.
+      fetchSpy.mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((resolve, reject) => {
+            const answer = () => resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+            const timer = setTimeout(answer, 150_000); // real-timer: faked by vi.useFakeTimers above; the provider's 150 s, advanced by the test.
+            init?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+      const chat = BUILT_IN_PROVIDERS.openai!.operations.find((operation) => operation.name === "openai.chat")!;
+      const patient = fakeContext();
+      const waited = sendAttempts(patient.c, [], [unitAttempt(1, { operation: { ...chat, responseDeadlineMs: 20 * 60 * 1000 } })]);
+      await vi.advanceTimersByTimeAsync(150_001);
+      const got = await waited;
+      expect(got.status).toBe(200);
+      // The charge is written once the answer has been read.
+      await got.text();
+      await patient.done();
+      const hurried = fakeContext();
+      const cut = sendAttempts(hurried.c, [], [unitAttempt(1)]).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(150_001);
+      expect(await cut).toMatchObject({ status: 504 });
+      await hurried.done();
     } finally {
       vi.useRealTimers();
     }

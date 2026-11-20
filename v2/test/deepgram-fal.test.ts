@@ -414,6 +414,31 @@ describe("Deepgram through the proxy", () => {
     expect(warnings.mock.calls.some((call) => String(call[0]).includes("served_model_unexpected"))).toBe(true);
   });
 
+  it("treats every model the answer names as served: one fallback channel makes the charge an estimate, floored at standard", async () => {
+    // A customer's own Nova-3: $0.010 a minute, $0.005 for French.
+    const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] }, {
+      "nova-3": { per_minute: 10_000_000, by: { language: { fr: { per_minute: 5_000_000 } } } },
+    });
+    fetchSpy.mockResolvedValue(
+      Response.json({
+        metadata: {
+          duration: 60,
+          channels: 2,
+          model_info: { a: { arch: "nova-3", name: "general-nova-3" }, b: { arch: "nova-2", name: "2-general-nova" } },
+        },
+        results: { channels: [{ detected_language: "fr" }, { detected_language: "fr" }] },
+      }),
+    );
+    await send(`/v2/apps/${appId}/proxy/${slug}/v1/listen?model=nova-3&detect_language=true&multichannel=true`, key, new Uint8Array([1]), {
+      "content-type": "audio/wav",
+    });
+    const [charge] = await chargesOf(appId);
+    // Two channel-minutes at the standard $0.010, never the French $0.005.
+    expect(charge).toMatchObject({ price_source: "customer_rate", price_is_estimate: 1, cost_nano: 20_000_000 });
+    expect(JSON.parse(String(charge!.measures_json))).toMatchObject({ estimate_reasons: "served_model" });
+    expect(deepgram.operations[0]!.responseDeadlineMs).toBe(20 * 60 * 1000);
+  });
+
   it("accepts a reported model name equal to the billed model, as a customer's own model", async () => {
     const { appId, slug, key } = await setup("deepgram", { operations: ["deepgram.listen"] }, { "nova-2": { per_minute: 5_800_000 } });
     fetchSpy.mockResolvedValue(

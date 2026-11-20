@@ -288,7 +288,8 @@ export function deepgramListenUsage(value: unknown): UsageObservation | null {
     const language = asRecord(channel)?.detected_language;
     return typeof language === "string" && REPORTED_NAME.test(language) ? language : null;
   });
-  const models = Object.values(asRecord(metadata?.model_info) ?? {}).flatMap((info) => {
+  // Every model it names, each with its own names; one with none it can read is kept, empty, as unknown.
+  const models = Object.values(asRecord(metadata?.model_info) ?? {}).map((info) => {
     const record = asRecord(info);
     return [record?.arch, record?.name].filter((name): name is string => typeof name === "string" && REPORTED_NAME.test(name));
   });

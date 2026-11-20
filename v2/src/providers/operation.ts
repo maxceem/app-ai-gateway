@@ -428,6 +428,13 @@ export interface OperationDescription {
    * logged (AGENTS.md: estimate, never bill as free).
    */
   readonly unpricedOptions?: readonly SwitchRef[];
+  /**
+   * How long the provider may take to send its response headers, in
+   * milliseconds, for an operation whose provider works longer before it
+   * answers (Deepgram's prerecorded transcription). The proxy's 120 s when
+   * left out. A fallback chain shares its first target's.
+   */
+  readonly responseDeadlineMs?: number;
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
 }

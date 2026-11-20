@@ -118,8 +118,13 @@ export interface UsageObservation extends TokenCounts {
    * is one channel's length until then.
    */
   readonly audioChannels?: number;
-  /** The models the answer says served it, for a model the provider may change (`answeredWhen`). */
-  readonly reportedModels?: readonly string[];
+  /**
+   * The models the answer says served it, for a model the provider may change
+   * (`answeredWhen`): one entry per model it names (a channel's, say), each
+   * with the names it goes by (Deepgram's `arch` and `name`). Every entry
+   * must be the billed model; any other is a fallback.
+   */
+  readonly reportedModels?: readonly (readonly string[])[];
 }
 
 /** Whether a usage measures anything a price could bill: tokens, or a count above 0 in another unit. */

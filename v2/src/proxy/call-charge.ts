@@ -324,17 +324,19 @@ function logModes(
 
 /**
  * Whether the model that served an answer is in doubt: the provider may
- * serve another model for this request (`servedModels`), and no name the
- * answer reports is the billed model itself, exactly, or stands for it by
- * the operation's own declaration (`servedAs`). A name it does not declare
- * is a fallback. Logged; the charge is then an estimate.
+ * serve another model for this request (`servedModels`), and the answer
+ * names none, or names one that is not the billed model. Each model it names
+ * must be the billed one by one of its own names: the billed model itself,
+ * exactly, or a name the operation declares stands for it (`servedAs`). One
+ * that is not, on any channel, is a fallback. Logged; the charge is then an
+ * estimate, at least at the model's standard price.
  */
 function servedModelInDoubt(attempt: CallAttempt, usage: UsageObservation, facts: Readonly<Record<string, unknown>>): boolean {
   const servedAs = attempt.servedModels;
   if (servedAs === undefined) return false;
   const reported = usage.reportedModels ?? [];
-  const names = (name: string) => name === attempt.model || (Object.hasOwn(servedAs, name) && servedAs[name]!.includes(attempt.model));
-  if (reported.some(names)) return false;
+  const isBilled = (name: string) => name === attempt.model || (Object.hasOwn(servedAs, name) && servedAs[name]!.includes(attempt.model));
+  if (reported.length > 0 && reported.every((names) => names.some(isBilled))) return false;
   log("warn", reported.length === 0 ? "served_model_unknown" : "served_model_unexpected", facts);
   return true;
 }

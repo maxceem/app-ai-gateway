@@ -62,8 +62,13 @@ import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, ser
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 
-/** How long a provider may take to send its response headers (v1's default). */
+/** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
+
+/** How long an operation's provider may take to send its response headers (`responseDeadlineMs`). */
+function responseDeadlineMs(operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
+}
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
@@ -735,7 +740,8 @@ function clientGone(c: ProxyContext): boolean {
  * - Every attempt is one charge, with its own `seq`. A failed one costs
  *   nothing: its cost is empty, not $0.
  * - All attempts share one budget for the provider's first byte, the
- *   proxy's own 120 s: a fallback gets what is left of it.
+ *   proxy's own 120 s, or the first operation's own (`responseDeadlineMs`):
+ *   a fallback gets what is left of it.
  * - Every attempt sends the whole body again: it was read whole before the
  *   first one, and each attempt's own body is built only when it is sent.
  * - A fallback's key is opened only when the chain reaches it, within what
@@ -776,7 +782,7 @@ export async function sendAttempts(
     }
     let credentials: UpstreamCredentials;
     try {
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? PROVIDER_TTFB_TIMEOUT_MS : deadline - Date.now());
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? responseDeadlineMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -828,7 +834,7 @@ export async function sendAttempts(
         throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
       }
       providerStart = Date.now();
-      deadline ??= providerStart + PROVIDER_TTFB_TIMEOUT_MS;
+      deadline ??= providerStart + responseDeadlineMs(prepared.operation);
       const remainingMs = deadline - providerStart;
       if (remainingMs <= 0) throw budgetExhausted(index);
       controller = new AbortController();

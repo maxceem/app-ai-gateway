@@ -101,6 +101,10 @@ export const deepgram = defineProvider({
         fetchKept: [{ in: "body", field: "url" }],
       },
       // Billed once per channel only with `multichannel=true`; without it Deepgram mixes the channels down.
+      // Deepgram answers when the transcript is done: it allows up to 10
+      // minutes of processing for Nova, Base and Enhanced, and 20 for Whisper,
+      // then answers 504 itself (docs: pre-recorded audio, Getting Started).
+      responseDeadlineMs: 20 * 60 * 1000,
       meter: { kind: "response_json", style: "deepgram-listen", units: ["audio_seconds"], perChannelWhen: { in: "query", field: "multichannel" } },
     }),
   ],
