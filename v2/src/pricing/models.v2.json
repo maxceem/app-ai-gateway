@@ -16,55 +16,55 @@
   "elevenlabs": {
     "eleven_multilingual_v2": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 80.0,
       "author": "ElevenLabs"
     },
     "eleven_v3": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 80.0,
       "author": "ElevenLabs"
     },
     "eleven_v4": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 80.0,
       "author": "ElevenLabs"
     },
     "eleven_flash_v2_5": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
     "eleven_flash_v2": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
     "eleven_turbo_v2_5": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
     "eleven_turbo_v2": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
     "eleven_v4_turbo": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },
     "eleven_v3_conversational": {
       "kind": "speech",
-      "per_credit": 0.00008,
+      "per_credit": 0.0002,
       "per_million_characters": 40.0,
       "author": "ElevenLabs"
     },

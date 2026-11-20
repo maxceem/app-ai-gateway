@@ -7,8 +7,10 @@
  *   published rate per million characters: ElevenLabs bills API usage in
  *   dollars per character, not in credits. The `character-cost` header, in
  *   credits, is recorded beside the characters as a cross-check (T27); it
- *   bills only a customer's price that has a rate per credit and none per
- *   character.
+ *   bills only a price that has a rate per credit and none per character.
+ *   The list rate per credit, $0.0002, is the per-character price over what
+ *   real calls reported: about 0.2 credits a character on Flash and 0.4 on
+ *   Multilingual v2.
  * - Speech to text is a form upload. ElevenLabs also sends its own dollar
  *   figure for it, `fiat-cost-before-overages`, which is billed as it is
  *   (`provider_usd`, plan section 4.2). Without it, the audio's length in

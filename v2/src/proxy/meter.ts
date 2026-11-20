@@ -359,26 +359,57 @@ function withRequestMeasure(reported: UsageObservation | null, fromRequest: Usag
   };
 }
 
+/** What one whole unit costs at the model's list price, in nano-dollars, or null (`listedUnitRate`). */
+export type ListedRate = (unit: Unit) => number | null;
+
 /**
  * The request's measure as the billed usage, exact, with the header's amount
- * kept beside it as a secondary measure (`headerRole: "cross_check"`). A
- * header that disagrees with the request's measure is logged at `info`: it
- * is expected (credits are not characters), and recorded for comparison.
- * With no header, the request's measure bills alone, still exact.
+ * kept beside it as a secondary measure (`headerRole: "cross_check"`). With
+ * no header, the request's measure bills alone, still exact. With only the
+ * header, it bills as an estimate.
  */
-function crossChecked(operation: OperationDescription, header: UsageObservation | null, fromRequest: UsageObservation | null, headerUnit: Unit): UsageObservation | null {
+function crossChecked(
+  operation: OperationDescription,
+  header: UsageObservation | null,
+  fromRequest: UsageObservation | null,
+  headerUnit: Unit,
+  listedRate: ListedRate | null,
+): UsageObservation | null {
   const measured = fromRequest === null ? null : (({ estimatedUnits: _estimated, ...exact }) => exact)(fromRequest);
   if (header === null) return measured;
-  const recorded: UsageObservation = { ...header, secondaryUnits: [headerUnit] };
-  if (measured === null) return recorded;
-  // Compared as whole amounts, each unit at its own scale (credits can be fractional).
-  const amount = (unit: Unit, count: number | undefined) => (count === undefined ? null : count / unitScale(unit));
-  const headerAmount = amount(headerUnit, header.units?.[headerUnit]);
-  const measures = Object.entries(measured.units ?? {}).map(([unit, count]) => [unit, amount(unit as Unit, count)] as const);
-  if (measures.some(([unit, value]) => unit !== headerUnit && value !== headerAmount)) {
-    log("info", "header_cross_check_differs", { operation: operation.name, header_unit: headerUnit, header_amount: headerAmount, request: Object.fromEntries(measures) });
-  }
+  if (measured === null) return { ...header, estimatedUnits: [headerUnit] };
+  checkHeader(operation, header, measured, headerUnit, listedRate);
   return { ...measured, units: { ...header.units, ...measured.units }, secondaryUnits: [headerUnit] };
+}
+
+/**
+ * Logs a cross-check header at `info` when it looks wrong: zero, or far from
+ * what the model's list price implies. The list price states both rates, so
+ * their ratio is the header's expected amount per unit of the request's
+ * measure (ElevenLabs: about 0.2 credits per character on Flash, 0.4 on
+ * Multilingual v2, T27). A small text may round up a little, so a gap of 2
+ * whole units, or half the expected amount, is allowed.
+ */
+function checkHeader(operation: OperationDescription, header: UsageObservation, measured: UsageObservation, headerUnit: Unit, listedRate: ListedRate | null): void {
+  const headerAmount = (header.units?.[headerUnit] ?? 0) / unitScale(headerUnit);
+  const headerRate = listedRate?.(headerUnit) ?? null;
+  for (const [unit, count] of Object.entries(measured.units ?? {}) as [Unit, number][]) {
+    if (unit === headerUnit) continue;
+    const amount = count / unitScale(unit);
+    const unitRate = listedRate?.(unit) ?? null;
+    const expected = headerRate === null || unitRate === null ? null : (amount * unitRate) / headerRate;
+    const far = expected !== null && Math.abs(headerAmount - expected) > Math.max(2, expected / 2);
+    if ((headerAmount === 0 && amount > 0) || far) {
+      log("info", "header_cross_check_differs", {
+        operation: operation.name,
+        header_unit: headerUnit,
+        header_amount: headerAmount,
+        unit,
+        amount,
+        expected_amount: expected === null ? null : Math.round(expected * 1000) / 1000,
+      });
+    }
+  }
 }
 
 /**
@@ -398,6 +429,8 @@ export function attemptUsage(
     readonly priceKeys?: Readonly<Record<string, string>>;
     readonly answeredKeys?: readonly string[];
     readonly perChannel?: true;
+    /** The model's list rates, which say what a cross-check header should report. */
+    readonly listedRate?: ListedRate;
   },
   reading: UsageObservation | null,
   headers: Headers,
@@ -414,7 +447,7 @@ export function attemptUsage(
       break;
     case "response_header": {
       if (meter.headerRole === "cross_check") {
-        usage = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit);
+        usage = crossChecked(operation, headerUsage(headers, meter.header, meter.unit), fromRequest, meter.unit, attempt.listedRate ?? null);
         break;
       }
       // Every measure is kept: the amount the header reports, what the body

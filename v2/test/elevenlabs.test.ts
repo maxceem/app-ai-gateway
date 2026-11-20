@@ -115,12 +115,13 @@ describe("ElevenLabs operations", () => {
     for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(true);
   });
 
-  it("prices each listed model's credits and characters alike, so the estimate and the header bill the same", () => {
-    // 33 characters on multilingual v2 cost 33 credits; on flash v2.5, 16.5 (T2).
+  it("prices each listed model's credits at what its characters cost, as real calls measured them (T27)", () => {
+    // 33 characters gave 13 credits on Multilingual v2 (about 0.4 a character) and 7 on Flash v2.5
+    // (about 0.2), against $80 and $40 per million characters: $0.0002 a credit either way.
     const multilingual = listPrice("elevenlabs", "eleven_multilingual_v2")!;
     const flash = listPrice("elevenlabs", "eleven_flash_v2_5")!;
-    expect(multilingual.rates).toMatchObject({ per_credit: 80_000, per_million_characters: 80_000_000_000 });
-    expect(flash.rates).toMatchObject({ per_credit: 80_000, per_million_characters: 40_000_000_000 });
+    expect(multilingual.rates).toMatchObject({ per_credit: 200_000, per_million_characters: 80_000_000_000 });
+    expect(flash.rates).toMatchObject({ per_credit: 200_000, per_million_characters: 40_000_000_000 });
   });
 
   it("bills text to speech without a price of ours only through a customer rate, and speech to text through ElevenLabs' own dollars", () => {
