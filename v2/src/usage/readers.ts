@@ -530,6 +530,50 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
   return document;
 }
 
+/**
+ * The top-level `usage` or `usageMetadata` objects of a document's kept head,
+ * for an answer that reports its usage first and then a large payload, such
+ * as an image API's base64 (`gpt-image-1`). Only keys of the root object
+ * count, never one nested in the answer's content, which the client may have
+ * written. Null when the head holds none whole.
+ */
+function headUsageDocument(head: string): Record<string, unknown> | null {
+  const start = head.search(/\S/u);
+  if (start === -1 || head[start] !== "{") return null;
+  const document: Record<string, unknown> = {};
+  let depth = 0;
+  for (let at = start; at < head.length; at += 1) {
+    const character = head[at];
+    if (character === '"') {
+      // A string: a key of the root object when it is followed by a colon at depth 1.
+      let end = at + 1;
+      while (end < head.length && head[end] !== '"') end += head[end] === "\\" ? 2 : 1;
+      if (end >= head.length) break;
+      const key = head.slice(at + 1, end);
+      at = end;
+      if (depth !== 1 || !(TAIL_USAGE_KEYS as readonly string[]).includes(key)) continue;
+      const separator = /^\s*:\s*\{/u.exec(head.slice(end + 1));
+      if (!separator) continue;
+      const object = jsonObjectAt(head, end + 1 + separator[0].length - 1);
+      if (!object) break;
+      try {
+        document[key] = JSON.parse(object) as unknown;
+      } catch {
+        break;
+      }
+      at = end + separator[0].length + object.length - 1;
+    } else if (character === "{" || character === "[") {
+      depth += 1;
+    } else if (character === "}" || character === "]") {
+      depth -= 1;
+    }
+  }
+  if (Object.keys(document).length === 0) return null;
+  SCANNED.add(document);
+  for (const value of Object.values(document)) if (typeof value === "object" && value !== null) SCANNED.add(value);
+  return document;
+}
+
 /** A transcription's duration is a number, not an object, so it is matched as one. */
 const TAIL_DURATION = /"duration"\s*:\s*(\d+(?:\.\d+)?)/gu;
 /**
@@ -600,7 +644,10 @@ export function responseValues(body: ObservedText, contentType: string): Respons
     };
   }
   if (body.truncated) {
-    const document = withDuration(tailUsageDocument(body.tail), body.tail, body.head);
+    // The tail first, where most answers report; else a usage the answer
+    // reported first, at the top of its kept head.
+    const tailDocument = tailUsageDocument(body.tail);
+    const document = withDuration(tailDocument ?? headUsageDocument(body.head), body.tail, body.head);
     // Only beside usage it found: the tier says what that usage was billed in.
     if (document !== null && document.usage !== undefined) {
       const tier = [...body.tail.matchAll(TAIL_SERVICE_TIER)].at(-1)?.[1] ?? HEAD_SERVICE_TIER.exec(body.head)?.[1];

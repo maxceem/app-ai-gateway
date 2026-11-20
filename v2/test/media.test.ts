@@ -339,6 +339,18 @@ describe("images", () => {
     expect(await chargesOf(appId)).toMatchObject([{ operation: "openai.images", unit: "tokens", cost_nano: expected }]);
   });
 
+  it("prices a large image answer that reports its usage before 2 MiB of base64", async () => {
+    const { appId, slug, key } = await setup("openai", { operations: ["openai.images"] });
+    const usage = { input_tokens: 50, output_tokens: 4160, input_tokens_details: { text_tokens: 50, image_tokens: 0 } };
+    // The client's own prompt, echoed in the answer, names a usage too: only the root's counts.
+    const body = `{"created":1,"echo":{"usage":{"input_tokens":1,"output_tokens":1}},"usage":${JSON.stringify(usage)},"data":[{"b64_json":"${"A".repeat(2 * 1024 * 1024)}"}]}`;
+    fetchSpy.mockResolvedValue(new Response(body, { headers: { "content-type": "application/json" } }));
+    const { response } = await json(`/v2/apps/${appId}/proxy/${slug}/v1/images/generations`, key, { model: "gpt-image-1", prompt: "a cat" });
+    expect(response.status).toBe(200);
+    const expected = priceTokens(listPrice("openai", "gpt-image-1")!, { inputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 4160, modalityTokens: { input: {} } })!.cost;
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "list_rate", input_tokens: 50, output_tokens: 4160, cost_nano: expected }]);
+  });
+
   it("reads the model of an image edit from its form", async () => {
     const { appId, slug, key } = await setup("openai", { operations: ["openai.images.edits"] });
     fetchSpy.mockResolvedValue(Response.json({ data: [], usage: { input_tokens: 10, output_tokens: 100 } }));
