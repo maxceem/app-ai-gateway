@@ -526,6 +526,96 @@ describe("saving a custom provider", () => {
     expect(app.status, JSON.stringify(app.body)).toBe(201);
   });
 
+  it("lets an app use chat and transcription on one custom provider: each model is judged on the path its price fits", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, {
+      passthrough: [
+        { method: "POST", path: "chat/completions", style: "openai-chat" },
+        { method: "POST", path: "audio/transcriptions", style: "openai-transcription" },
+      ],
+      pricing: { llama: { input: 1, output: 2 }, whisper: { input: 1, output: 2, per_minute: 0.006 } },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const app = await admin(key, "POST", "/v2/admin/apps", {
+      name: "Chat and transcription",
+      config: {
+        authentication: { type: "api_key", end_user: { source: "none" } },
+        routing: { providers: { [created.body.provider.slug]: { operations: ["custom.openai-chat", "custom.openai-transcription"] } } },
+      },
+    });
+    expect(app.status, JSON.stringify(app.body)).toBe(201);
+  });
+
+  it("saves a transcription provider priced per minute alone, and an image provider priced per image alone", async () => {
+    const key = await seedManagementKey();
+    const transcription = await createCustom(key, {
+      passthrough: [{ method: "POST", path: "audio/transcriptions", style: "openai-transcription" }],
+      pricing: { whisper: { per_minute: 0.006 } },
+    });
+    expect(transcription.status, JSON.stringify(transcription.body)).toBe(201);
+    const images = await createCustom(key, {
+      passthrough: [{ method: "POST", path: "images/generations", style: "openai-images" }],
+      pricing: { "flux-dev": { per_image: 0.025 } },
+    });
+    expect(images.status, JSON.stringify(images.body)).toBe(201);
+    for (const [created, operation, model] of [
+      [transcription, "custom.openai-transcription", "whisper"],
+      [images, "custom.openai-images", "flux-dev"],
+    ] as const) {
+      const app = await admin(key, "POST", "/v2/admin/apps", {
+        name: `${model} app`,
+        config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [created.body.provider.slug]: { operations: [operation], models: [model] } } } },
+      });
+      expect(app.status, JSON.stringify(app.body)).toBe(201);
+    }
+  });
+
+  it("names the measure a price lacks", async () => {
+    const key = await seedManagementKey();
+    const refused = await createCustom(key, { passthrough: [{ method: "POST", path: "audio/speech", style: "openai-speech" }], pricing: { tts: { input: 1, output: 2 } } });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("it needs a rate for characters");
+  });
+
+  it("judges only what a save changes: a stored header or style a later rule refuses keeps saving", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }], pricing: PRICING });
+    const id = created.body.provider.id as string;
+    // As if stored by an earlier release, before these rules: a header the gateway reads, and xAI's image style.
+    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
+      .bind(
+        storedPassthrough(
+          [
+            { method: "POST", path: "v1/chat/completions", style: "openai-chat" },
+            { method: "POST", path: "v1/images/generations", style: "openai-images" },
+          ],
+          { header: "x-end-user-id", format: "{key}" },
+        ),
+        id,
+      )
+      .run();
+    const renamed = await admin(key, "PUT", `/v2/admin/providers/${id}`, {
+      revision: 1,
+      name: "Renamed",
+      passthrough: [
+        { method: "POST", path: "v1/chat/completions", style: "openai-chat" },
+        { method: "POST", path: "v1/images/generations", style: "openai-images" },
+        { method: "GET", path: "v1/models" },
+      ],
+    });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+    // A new header is judged.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, auth: { header: "x-appattest-proof", format: "{key}" } })).status).toBe(400);
+  });
+
+  it("refuses a plain path that would take a known host's declared operation, and suggests its style", async () => {
+    const key = await seedManagementKey();
+    const refused = await createCustom(key, { baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("list it with the style openai-chat");
+    expect((await createCustom(key, { baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/moderations" }] })).status).toBe(201);
+  });
+
   it("saves an API-style path with no rate yet: an app that routes it is judged when saved", async () => {
     const key = await seedManagementKey();
     const created = await createCustom(key, { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }] });

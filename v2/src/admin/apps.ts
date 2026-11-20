@@ -14,6 +14,7 @@ import {
   AppPatchRequestSchema,
   AppUpdateRequestSchema,
   AppValidateRequestSchema,
+  CUSTOM_PROVIDER_TYPE,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
@@ -34,7 +35,7 @@ import {
 } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
 import { describeConnection } from "../providers/connections.ts";
-import { CUSTOM_OPERATIONS, CUSTOM_TYPE } from "../providers/custom.ts";
+import { CUSTOM_OPERATIONS } from "../providers/custom.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
 import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
@@ -475,19 +476,6 @@ export async function checkConnectionChange(
   }
 }
 
-/** A connection's rates are about to change, and nothing else (a hand-off's review): `checkConnectionChange`. */
-export async function checkConnectionRates(
-  db: D1Database,
-  accountId: string,
-  connection: JudgedConnection,
-  before: CustomerRates | null,
-  after: CustomerRates | null,
-): Promise<void> {
-  const description = connection.description ?? builtInProvider(connection.type);
-  if (description === null) return;
-  await checkConnectionChange(db, accountId, connection, { description, baseUrl: connection.baseUrl, rates: before }, { description, baseUrl: connection.baseUrl, rates: after });
-}
-
 /**
  * A connection is about to be created, by the API or a hand-off: apps may
  * already route to its slug (one deleted and made again). Every call they
@@ -513,7 +501,7 @@ function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): Gatew
     `pricing.${model}: the app ${app} routes ${model} to ${slug}, and ${
       gap.selectedMode
         ? `a preset selects the ${gap.mode} service mode, which this price lacks; give it a rate in that mode`
-        : `${operation} could bill ${call.bill.price === null ? "no price of it" : "this price only partly"}; give it a rate for every way it answers`
+        : `${operation} could bill ${call.bill.price === null ? "no price of it" : "this price only partly"}; give it a rate for every way it answers${gap.measure === undefined ? "" : `, including ${gap.measure}`}`
     }`,
     undefined,
     { data: { model, slug, app, operation } },
@@ -531,7 +519,7 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
   // with unreadable rates cannot block a target the catalog alone allows.
   const connections = results.map(priceSources);
   // A custom provider's operations by their names alone, wherever its connection lists them.
-  const operationsOf = (type: string) => (type === CUSTOM_TYPE ? CUSTOM_OPERATIONS : (builtInProvider(type)?.operations ?? []));
+  const operationsOf = (type: string) => (type === CUSTOM_PROVIDER_TYPE ? CUSTOM_OPERATIONS : (builtInProvider(type)?.operations ?? []));
   for (const [source, target] of targets) {
     if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {
       throw new GatewayError(

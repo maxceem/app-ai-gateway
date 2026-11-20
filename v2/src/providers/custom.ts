@@ -35,8 +35,13 @@ import { meterCases } from "../pricing/units.ts";
 import { hasMeasure } from "../usage/observation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
-/** The provider type every custom provider connection has (`CUSTOM_PROVIDER_TYPE` in the contracts). */
-export const CUSTOM_TYPE = "custom";
+
+/**
+ * The provider type every custom provider connection has. Kept here, off the
+ * management schemas, since a provider request reads it; the contracts
+ * re-export it.
+ */
+export const CUSTOM_PROVIDER_TYPE = "custom";
 
 /** What the console and the CLI call a custom provider. */
 export const CUSTOM_LABEL = "Custom provider";
@@ -93,7 +98,7 @@ export function isCustomStyle(value: string): value is CustomStyle {
  * removed.
  */
 export function customOperationName(style: CustomStyle): string {
-  return `${CUSTOM_TYPE}.${style}`;
+  return `${CUSTOM_PROVIDER_TYPE}.${style}`;
 }
 
 /**
@@ -270,7 +275,7 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST" ? [customOperation(listed.style, listed.path, owner)] : [],
   );
   return {
-    type: CUSTOM_TYPE,
+    type: CUSTOM_PROVIDER_TYPE,
     label: CUSTOM_LABEL,
     // A known provider's hosts, so its paths are read under its own host prefix (`upstreamRoute`).
     hosts: owner === null ? { main: host } : owner.hosts,

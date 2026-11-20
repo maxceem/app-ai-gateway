@@ -100,7 +100,7 @@ export function requestedServiceMode(
  * be billed in: each tier and region its request and answer can name, read
  * with the same tables and the base URL's region as `requestedServiceMode`
  * and `servedServiceMode`. A request that names no region is in the base
- * URL's. Saving judges a mode rate against these (`unselectableModeRates`).
+ * URL's. Saving judges a mode rate against these (`unusedModeRate`).
  */
 export function selectableModes(
   description: ProviderDescription,

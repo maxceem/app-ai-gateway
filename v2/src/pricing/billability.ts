@@ -38,7 +38,7 @@ import { listedAs, type ListedModel } from "../providers/listing.ts";
 import { readingRules, rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
-import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
+import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
 import { PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
@@ -186,8 +186,7 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
  * How far an operation can charge a price, at the key values it reads
  * (`keysRead`), if any, from the price's own rates:
  *
- * - `full`: one of its ways (`meterCases`) prices every usage in it, or,
- *   for an operation priced every way (`pricedEveryWay`), each of them does;
+ * - `full`: one of its ways (`meterCases`) prices every usage in it;
  * - `partial`: some usage is priced, but no way fully, as a price in credits
  *   alone on text to speech, whose answer can come without its header;
  * - `none`: no usage at all, as `whisper-1` on chat, or a model the price list
@@ -208,17 +207,29 @@ function kindServed(operation: OperationDescription, price: ModelPrice): boolean
 function reach(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys: Readonly<Record<string, string>> | undefined): Reach {
   if (!kindServed(operation, price)) return "none";
   let some = false;
-  let every = true;
   for (const way of meterCases(operation)) {
     const priced = way.map((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode));
-    const full = priced.every(Boolean);
-    // One way is enough, unless every way must be priced (`pricedEveryWay`, a custom provider's path).
-    if (full && operation.pricedEveryWay !== true) return "full";
-    if (!full) every = false;
+    if (priced.every(Boolean)) return "full";
     if (priced.some(Boolean)) some = true;
   }
-  if (operation.pricedEveryWay === true && every) return "full";
   return some ? "partial" : "none";
+}
+
+/**
+ * The first measure `operation` produces that `price` cannot price, in the
+ * way that comes closest, as words for a message: `characters`, `tokens`.
+ * Null when some way prices every usage in it.
+ */
+export function missingMeasure(operation: OperationDescription, price: ModelPrice, mode: ServiceMode = STANDARD_MODE): string | null {
+  let missing: string | null = null;
+  for (const way of meterCases(operation)) {
+    const unpriced = way.find((usage) => !pricesUsage(price, usage, mode));
+    if (unpriced === undefined) return null;
+    const units = Object.keys(unpriced.units ?? {}).map((unit) => unit.replace(/_/gu, " "));
+    const measure = units.length > 0 ? units.join(" or ") : unpriced.noTokens === true ? "an answer with no usage" : "tokens";
+    if (missing === null || way.length > 1) missing = measure;
+  }
+  return missing;
 }
 
 /** Where a price falls short: the key values and mode at which it does, and the operation, when one reaches it only partly. */
@@ -228,6 +239,8 @@ export interface Gap {
   readonly operation?: string;
   /** The gap is the mode the call selects (`ReachableCall.mode`), which its price lacks. */
   readonly selectedMode?: true;
+  /** The measure the price has no rate for (`missingMeasure`), when one operation is short of it. */
+  readonly measure?: string;
 }
 
 /**
@@ -258,7 +271,13 @@ function chargeGap(operation: OperationDescription, price: ModelPrice): Gap | nu
     for (const mode of servedModes(price)) {
       const answer = reachOf(operation, mode, candidate.values);
       if (answer !== "full") {
-        return { values: candidate.values, mode: serviceModeName(mode), ...(answer === "partial" ? { operation: operation.name } : {}) };
+        const measure = missingMeasure(operation, price, mode);
+        return {
+          values: candidate.values,
+          mode: serviceModeName(mode),
+          ...(answer === "partial" ? { operation: operation.name } : {}),
+          ...(measure !== null ? { measure } : {}),
+        };
       }
     }
   }
@@ -286,7 +305,11 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
 
 /** Whether `operation` can bill `price`, by the check asked for. */
 function operationBillable(operation: OperationDescription, price: ModelPrice, check: BillingCheck): boolean {
-  return check === "serve" ? servable(operation, price) : chargeGap(operation, price) === null;
+  if (check === "save") return chargeGap(operation, price) === null;
+  // A custom provider's path is never served on a price that cannot bill some way of its in full: one rule
+  // for serving and saving, so a model priced for another style is `wrong_unit` there, as whisper-1 is on chat.
+  if (operation.pricedEveryWay === true) return reach(operation, price, STANDARD_MODE, undefined) === "full";
+  return servable(operation, price);
 }
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about, by the check asked for. */
@@ -760,7 +783,14 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string }
+  | {
+      readonly kind: "bills_nothing";
+      readonly values: Readonly<Record<string, string>>;
+      readonly mode: string;
+      readonly operation?: string;
+      /** The measure the price has no rate for, when one operation is short of it. */
+      readonly measure?: string;
+    }
   | null {
   const resolved = resolve(priceSources({ type: providerType, rates: stored }), model);
   if (resolved === null) return null;
@@ -781,9 +811,12 @@ export function savedPriceProblem(
   }
   // The connection does not know which operations an app will enable: its own rates must charge some
   // operation fully, at every key value and mode. The apps that route to it are judged call by call when
-  // its rates are saved (`../admin/apps.ts`, `checkConnectionRates`).
+  // its rates are saved (`../admin/apps.ts`, `checkConnectionChange`).
   const gap = ownRatesGap(operations, price);
-  return gap === null ? null : { kind: "bills_nothing", ...gap };
+  if (gap === null) return null;
+  const named = operations.find((operation) => operation.name === gap.operation) ?? (operations.length === 1 ? operations[0] : undefined);
+  const measure = named === undefined ? null : missingMeasure(named, price);
+  return { kind: "bills_nothing", ...gap, ...(measure !== null ? { measure } : {}) };
 }
 
 /**

@@ -165,7 +165,7 @@ export const CUSTOM_PATH_STYLES = [
 ] as const;
 
 /** The provider type of a custom provider: one the gateway does not know, at the base URL the connection names. */
-export const CUSTOM_PROVIDER_TYPE = "custom";
+export { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 
 /**
  * A path a provider connection lists for passthrough (plan section 4.5): a

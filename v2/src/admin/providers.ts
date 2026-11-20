@@ -30,6 +30,7 @@
  */
 import type { Context } from "hono";
 import {
+  CUSTOM_PROVIDER_TYPE,
   ProviderCreateRequestSchema,
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
@@ -53,7 +54,6 @@ import {
 } from "../providers/connections.ts";
 import {
   CLOUDFLARE_AI_GATEWAY_HOST,
-  CUSTOM_TYPE,
   customAuthProblem,
   customDescription,
   customOperationName,
@@ -167,7 +167,11 @@ function assertEffectivePrices(
   }
   if (problem.kind === "too_large") throw new GatewayError(400, "invalid_request", `${where}: a rate is too large once a service mode's factor applies`);
   const named = Object.entries(problem.values).map(([key, value]) => `${key} ${value}`).join(", ");
-  throw new GatewayError(400, "invalid_request", `${where}: the price${named === "" ? "" : ` for ${named}`} in ${problem.mode} has no rate that bills`);
+  throw new GatewayError(
+    400,
+    "invalid_request",
+    `${where}: the price${named === "" ? "" : ` for ${named}`} in ${problem.mode} has no rate that bills${problem.measure === undefined ? "" : `; it needs a rate for ${problem.measure}`}`,
+  );
 }
 
 /**
@@ -288,8 +292,6 @@ function passthroughJson(
       }
       if (styles.has(entry.style)) throw new GatewayError(400, "invalid_request", `${where}.style: list one path per API style; ${entry.style} has one already`);
       styles.add(entry.style);
-      const problem = customStyleProblem(entry.style, subject.baseUrl);
-      if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
     }
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
@@ -328,9 +330,33 @@ function passthroughJson(
   const matcher = new ProviderMatcher(description);
   // A new API-style path is an operation the plain listings could now overlap: they are judged against it again.
   const styleAdded = checked.some((one) => one.listed.style !== undefined && one.isNew);
+  // A custom provider on a known provider's host: that provider's declared operations, where its paths are read.
+  const owner = subject.kind === "custom" ? knownHostOwner(subject.baseUrl) : null;
+  const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
+  const ownerRoute = owner === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
   for (const { where, key, listed, compiled, isNew } of checked) {
     if (isNew && matcher.refusedCovering(compiled, route) !== null) {
       throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+    }
+    // A path new or changed in this save is judged for its style: one already listed keeps working.
+    if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
+      const problem = customStyleProblem(listed.style, subject.baseUrl);
+      if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
+    }
+    // As on a built-in connection (5a): a plain path newly listed on a known provider's host may not take
+    // one of that provider's declared operations, which would pass it through unmetered.
+    if (isNew && listed.style === undefined && ownerMatcher !== null && ownerRoute !== null) {
+      const declared = ownerMatcher.overlappingOperation(compiled, ownerRoute);
+      if (declared !== null) {
+        const style = owner!.operations.find((operation) => operation.name === declared)?.style;
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          style !== undefined && isCustomStyle(style)
+            ? `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation; list it with the style ${style}, which meters and prices it`
+            : `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation, which a custom path cannot meter; use a ${owner!.label} connection for it`,
+        );
+      }
     }
     if (listed.style !== undefined && isCustomStyle(listed.style)) {
       // Its own operation aside, no other style's path may take its requests.
@@ -410,7 +436,7 @@ function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
 
 export function providerView(row: ConnectionRow) {
   const passthrough = passthroughView(row.passthrough_json);
-  const auth = row.type === CUSTOM_TYPE ? readCustomAuth(row.passthrough_json) : null;
+  const auth = row.type === CUSTOM_PROVIDER_TYPE ? readCustomAuth(row.passthrough_json) : null;
   return {
     id: row.id,
     type: row.type,
@@ -489,12 +515,18 @@ function keyNeeded(): GatewayError {
  * which reaches every provider: a built-in connection's own setting goes
  * there instead, with that provider's refused paths.
  */
-function checkedCustom(baseUrl: string | null, auth: z.output<typeof CustomAuthSchema> | undefined | null): { baseUrl: string; auth: ProviderAuth } {
+function checkedCustom(
+  baseUrl: string | null,
+  auth: z.output<typeof CustomAuthSchema> | undefined | null,
+  stored: { readonly baseUrl: string | null; readonly auth: ProviderAuth | null } | null = null,
+): { baseUrl: string; auth: ProviderAuth } {
   if (baseUrl === null) throw new GatewayError(400, "invalid_request", "baseUrl: a custom provider needs its base URL");
   if (auth === undefined || auth === null) throw new GatewayError(400, "invalid_request", "auth: a custom provider needs the header its key is sent in");
-  const problem = customAuthProblem(auth);
+  // Only what this save sets or changes is judged: a stricter rule in a later release never stops a save that keeps them.
+  const sameAuth = stored?.auth !== null && stored?.auth !== undefined && stored.auth.header === auth.header && stored.auth.format === auth.format;
+  const problem = sameAuth ? null : customAuthProblem(auth);
   if (problem !== null) throw new GatewayError(400, "invalid_request", problem);
-  if (new URL(baseUrl).hostname === CLOUDFLARE_AI_GATEWAY_HOST) {
+  if (baseUrl !== stored?.baseUrl && new URL(baseUrl).hostname === CLOUDFLARE_AI_GATEWAY_HOST) {
     throw new GatewayError(
       400,
       "invalid_request",
@@ -509,7 +541,7 @@ function assertFieldsFit(
   type: string,
   body: { readonly auth?: unknown; readonly cloudflareGateway?: unknown; readonly servingProviders?: unknown },
 ): void {
-  if (type === CUSTOM_TYPE) {
+  if (type === CUSTOM_PROVIDER_TYPE) {
     if (body.cloudflareGateway !== undefined && body.cloudflareGateway !== null) {
       throw new GatewayError(400, "invalid_request", "cloudflareGateway: a custom provider is reached at its base URL only");
     }
@@ -579,7 +611,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, ProviderCreateRequestSchema);
-  const custom = body.type === CUSTOM_TYPE;
+  const custom = body.type === CUSTOM_PROVIDER_TYPE;
   const builtIn = builtInProvider(body.type);
   if (builtIn === null && !custom) {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
@@ -662,12 +694,12 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, ProviderUpdateRequestSchema);
   const current = await connectionRow(c.env.DB, actor.accountId, c.req.param("id")!);
-  const custom = current.type === CUSTOM_TYPE;
+  const custom = current.type === CUSTOM_PROVIDER_TYPE;
   const description = builtInProvider(current.type);
   assertFieldsFit(current.type, body);
   const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl, current.base_url);
   const storedAuth = custom ? readCustomAuth(current.passthrough_json) : null;
-  const customSetting = custom ? checkedCustom(baseUrl, body.auth ?? storedAuth) : null;
+  const customSetting = custom ? checkedCustom(baseUrl, body.auth ?? storedAuth, { baseUrl: current.base_url, auth: storedAuth }) : null;
 
   // Cloudflare AI Gateway: kept, removed, or set. A new account or gateway needs a token for it.
   const storedCloudflareSetting = readCloudflareGateway(current.cloudflare_gateway_json);
@@ -783,27 +815,19 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   }
   const newRates =
     body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type, operationsDescription?.operations ?? []);
-  if (operationsDescription !== null && body.pricing !== undefined) {
-    const stored = (() => {
-      try {
-        return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
-      } catch {
-        return null;
-      }
-    })();
-    assertModesSelectable(operationsDescription, baseUrl, newRates, stored);
-  }
+  // The stored rates, read once: unreadable ones count as none.
+  const oldRates = (() => {
+    try {
+      return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
+    } catch {
+      return null;
+    }
+  })();
+  if (operationsDescription !== null && body.pricing !== undefined) assertModesSelectable(operationsDescription, baseUrl, newRates, oldRates);
   // Every change that affects which calls the connection serves, or their price, is judged against the
   // apps that route to it, by one rule (`checkConnectionChange`): its rates (a replacement, a deletion
   // inside it, or `null`), its paths and a custom provider's API styles, its base URL.
   if (body.pricing !== undefined || askedPaths !== undefined || baseUrl !== current.base_url) {
-    const oldRates = (() => {
-      try {
-        return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
-      } catch {
-        return null;
-      }
-    })();
     const finalRates = body.pricing === undefined ? oldRates : newRates;
     if (oldDescription !== null && operationsDescription !== null) {
       await checkConnectionChange(
@@ -861,7 +885,7 @@ export async function deleteProvider(c: AdminContext): Promise<Response> {
 export async function testProvider(c: AdminContext): Promise<Response> {
   requireManage(c.get("actor"));
   const body = await parseBody(c, ProviderTestRequestSchema);
-  if (body.type === CUSTOM_TYPE) {
+  if (body.type === CUSTOM_PROVIDER_TYPE) {
     // A custom provider has no call known to be free: nothing is sent. Its base URL and key header are still checked.
     assertFieldsFit(body.type, body);
     checkedCustom(body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl), body.auth ?? { header: "authorization", format: "Bearer {key}" });

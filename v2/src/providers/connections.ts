@@ -19,7 +19,7 @@ import type { CustomerRates } from "../pricing/prices.ts";
 import { openSecret } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
-import { CUSTOM_TYPE, customDescription } from "./custom.ts";
+import { CUSTOM_PROVIDER_TYPE, customDescription } from "./custom.ts";
 import type { ProviderAuth, ProviderDescription } from "./operation.ts";
 import { readCustomAuth, readPassthrough } from "./passthrough.ts";
 
@@ -138,14 +138,14 @@ export function describeConnection(connection: {
   readonly passthrough?: readonly PassthroughPath[];
   readonly customAuth?: ProviderAuth | null;
 }): ProviderDescription | null {
-  if (connection.type !== CUSTOM_TYPE) return builtInProvider(connection.type);
+  if (connection.type !== CUSTOM_PROVIDER_TYPE) return builtInProvider(connection.type);
   if (connection.baseUrl === null || connection.customAuth === undefined || connection.customAuth === null) return null;
   return customDescription({ baseUrl: connection.baseUrl, auth: connection.customAuth, paths: connection.passthrough ?? [] });
 }
 
 /** A loaded connection's description (`describeConnection`), built once per loaded record. */
 export function connectionDescription(connection: ConnectionRecord): ProviderDescription | null {
-  if (connection.type !== CUSTOM_TYPE) return builtInProvider(connection.type);
+  if (connection.type !== CUSTOM_PROVIDER_TYPE) return builtInProvider(connection.type);
   const cached = CUSTOM_DESCRIPTIONS.get(connection);
   if (cached !== undefined) return cached;
   const description = describeConnection(connection);

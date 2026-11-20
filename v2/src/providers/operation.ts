@@ -499,8 +499,10 @@ export interface OperationDescription {
    */
   readonly uploads?: true;
   /**
-   * Saving needs a rate for every way its answers can come out
-   * (`meterCases`), not one: a custom provider's path, which has no list
+   * Any model's answer may come with no usage (a plain audio answer, an
+   * answer that reports only a cost), beside the way it reports: each of its
+   * ways holds that answer too (`meterCases`), so a price must bill it as
+   * well, at save and at serve. A custom provider's path, which has no list
    * price or provider report to fall back on (`../providers/custom.ts`).
    */
   readonly pricedEveryWay?: true;

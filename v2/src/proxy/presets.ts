@@ -89,8 +89,7 @@ export function deepMerge(base: Record<string, unknown>, overlay: Record<string,
 /** The request as read once: a JSON body with the preset's parameters in, or an upload. */
 type PresetBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
 
-/** Whether an operation's API takes an upload besides JSON: an image edit. Only these accept a form (transcription always takes one). */
-/** Whether the operation's request may be an upload (`uploads`), as an image edit is. */
+/** Whether the operation's request may be an upload besides JSON (`uploads`), as an image edit is. Transcription always takes one. */
 function takesUpload(operation: OperationDescription): boolean {
   return operation.uploads === true;
 }

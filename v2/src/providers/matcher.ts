@@ -280,13 +280,10 @@ export class ProviderMatcher {
   /**
    * Compiles every template once. Throws on a broken description, so a test
    * that builds every provider's matcher catches it before deploy.
-   *
-   * `extraRefused` adds another provider's refused paths, for a custom
-   * provider whose host belongs to a built-in one.
    */
-  constructor(provider: ProviderDescription, extraRefused: ProviderDescription["refused"] = []) {
+  constructor(provider: ProviderDescription) {
     this.provider = provider;
-    this.refused = [...provider.refused, ...extraRefused].map((entry) =>
+    this.refused = provider.refused.map((entry) =>
       typeof entry === "string"
         ? { template: parseTemplate(entry, { rest: true }), methods: null }
         : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods) },

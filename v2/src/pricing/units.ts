@@ -114,7 +114,12 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
         ...units.map((unit) => [withEstimate({ ...SOME_TOKENS, units: { [unit]: sample(unit) } }, estimate)]),
       ];
       // No usage at all, from an answer with no report (`costOnly`), or one that reports none besides the request's own measure.
-      if (estimate !== undefined || meter.costOnly === true) ways.push([withEstimate(NO_TOKENS, estimate)]);
+      const unreported = estimate !== undefined || meter.costOnly === true ? [withEstimate(NO_TOKENS, estimate)] : null;
+      if (unreported === null) return ways;
+      // On a custom provider's path, any model's answer may come with no usage, beside the way it reports:
+      // each way then holds that answer too (`pricedEveryWay`).
+      if (operation.pricedEveryWay === true) return ways.map((way) => [...way, ...unreported]);
+      ways.push(unreported);
       return ways;
     }
     case "response_header": {

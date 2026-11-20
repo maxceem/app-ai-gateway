@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { CUSTOM_TYPE } from "../src/providers/custom.ts";
+import { CUSTOM_PROVIDER_TYPE } from "../src/providers/custom.ts";
 
 const sources = (import.meta as ImportMeta & {
   glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
@@ -31,7 +31,7 @@ function code(text: string): string {
 
 describe("serving is provider-neutral", () => {
   it("names no provider id, and does not test for a custom provider, in serving code", () => {
-    const ids = [...Object.keys(BUILT_IN_PROVIDERS), CUSTOM_TYPE];
+    const ids = [...Object.keys(BUILT_IN_PROVIDERS), CUSTOM_PROVIDER_TYPE];
     const literal = new RegExp(`["'\`](${ids.join("|")})["'\`]`, "u");
     const offenders: string[] = [];
     for (const [file, text] of Object.entries(sources)) {
@@ -39,7 +39,7 @@ describe("serving is provider-neutral", () => {
       const body = code(text);
       const found = literal.exec(body);
       if (found !== null) offenders.push(`${file}: ${found[0]}`);
-      if (/\bCUSTOM_TYPE\b/u.test(body)) offenders.push(`${file}: CUSTOM_TYPE`);
+      if (/\bCUSTOM_TYPE\b/u.test(body)) offenders.push(`${file}: CUSTOM_PROVIDER_TYPE`);
     }
     expect(Object.keys(sources).some((file) => file === "../src/proxy/meter.ts")).toBe(true);
     expect(offenders).toEqual([]);

@@ -46,7 +46,7 @@ import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
 import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
-import { CUSTOM_TYPE } from "../providers/custom.ts";
+import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
@@ -304,7 +304,7 @@ export async function getHandoff(c: PageContext): Promise<Response> {
   const destinations =
     cloudflare !== null
       ? [keyOrigin({ baseUrl: null, cloudflareGateway: cloudflare })]
-      : review.type === CUSTOM_TYPE
+      : review.type === CUSTOM_PROVIDER_TYPE
         ? baseUrl === null
           ? []
           : [baseUrl]
