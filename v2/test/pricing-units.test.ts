@@ -137,11 +137,15 @@ describe("price keys", () => {
   });
 
   it("searches an unpriced mode with the same rule: a reported measure before any estimate, however cheap", () => {
-    // Standard bills only the estimated characters, dearly; priority's own rate bills the reported credits.
+    // Standard bills only the estimated characters, dearly; priority's own rate bills the reported credits, cheaply.
     const price = priced({ per_million_characters: 1_000_000_000_000 }, { modes: { priority: { per_credit: 0.000001 } } });
     const usage = { ...counted({ credits: 5_000, characters: 100 }), estimatedUnits: ["characters" as const] };
     const fast = parseServiceModeName("fast")!;
-    expect(priceInServedMode(price, usage, fast)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
+    // The search picks priority's reported credits; then the floor, the model's own standard charge for the same usage, wins.
+    expect(priceInServedMode(price, usage, fast)).toMatchObject({ unit: "characters", measured: "estimated", estimated: true, cost: 100_000_000 });
+    // Where the standard price is the cheaper, the reported credits bill.
+    const cheap = priced({ per_million_characters: 1 }, { modes: { priority: { per_credit: 1 } } });
+    expect(priceInServedMode(cheap, usage, fast)).toMatchObject({ unit: "credits", measured: "complete", estimated: true });
   });
 
   it("falls back to the model's own standard price when no candidate can bill the measure", () => {

@@ -23,7 +23,6 @@ export type NanoDollars = number & { readonly [nanoDollars]: true };
 export type RateNanoPerMillion = number & { readonly [nanoDollars]: "rate" };
 
 export const NANO_PER_DOLLAR = 1_000_000_000;
-const MILLION = 1_000_000n;
 
 export class MoneyError extends Error {
   constructor(message: string) {
@@ -76,12 +75,7 @@ export function rateFromDollarsPerMillion(dollarsPerMillion: number): RateNanoPe
  * division).
  */
 export function priceUnits(units: number, ratePerMillion: RateNanoPerMillion): NanoDollars {
-  assertSafeInteger(units, "A count of units");
-  if (units < 0) throw new MoneyError(`A count of units cannot be negative, got ${units}`);
-  const product = BigInt(units) * BigInt(ratePerMillion);
-  const cost = (product + MILLION - 1n) / MILLION;
-  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
-  return Number(cost) as NanoDollars;
+  return priceUnitsMixed([[units, ratePerMillion, 1_000_000]]);
 }
 
 /**
@@ -97,18 +91,11 @@ export function priceUnitsSum(parts: readonly (readonly [units: number, rate: Ra
  * The cost of `units` at a rate per `per` units, rounded up: units × rate ÷
  * per. For a rate per minute applied to milliseconds of audio, `per` is
  * 60,000, so the measure is never a fraction (plan section 4.2: priced once
- * per charge as nano-dollars per minute × seconds ÷ 60). In BigInt, as
- * {@link priceUnits}.
+ * per charge as nano-dollars per minute × seconds ÷ 60). Through the one
+ * rounding code, `priceUnitsMixed`.
  */
 export function priceUnitsPer(units: number, ratePerUnit: RateNanoPerMillion, per: number): NanoDollars {
-  assertSafeInteger(units, "A count of units");
-  assertSafeInteger(per, "A unit divisor");
-  if (units < 0) throw new MoneyError(`A count of units cannot be negative, got ${units}`);
-  if (per <= 0) throw new MoneyError(`A unit divisor must be positive, got ${per}`);
-  const divisor = BigInt(per);
-  const cost = (BigInt(units) * BigInt(ratePerUnit) + divisor - 1n) / divisor;
-  if (cost > BigInt(Number.MAX_SAFE_INTEGER)) throw new MoneyError("The cost is too large to store");
-  return Number(cost) as NanoDollars;
+  return priceUnitsMixed([[units, ratePerUnit, per]]);
 }
 
 /** A cost before rounding: `numerator ÷ denominator` nano-dollars, exactly. */

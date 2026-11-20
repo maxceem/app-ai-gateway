@@ -258,9 +258,9 @@ function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | 
   for (const unitRate of stated) {
     for (const unit of unitRate.units) {
       const count = unitCount(usage, unit);
-      if (count === undefined) continue;
-      const option = isolated(() => atUnitRate(price, unitRate, unit, count, usage), { rate: unitRate.field, unit });
-      if (option !== null) options.push(option);
+      // Not isolated per option: a rate whose cost cannot be stored refuses the whole candidate (`isolated` in
+      // `priceInServedMode`), so the charge never falls to a cheaper measure as if exact.
+      if (count !== undefined) options.push(atUnitRate(price, unitRate, unit, count, usage));
     }
   }
   const chosen = preferred(options);
@@ -286,22 +286,6 @@ function usageCandidate(price: ModelPrice, usage: UsageObservation): Candidate |
   if (unit !== undefined) return unit;
   if (usage.noTokens === true) return null;
   return tokenCandidate(price, usage);
-}
-
-/**
- * A usage priced on one given unit only, or null when the price has no rate
- * for it or the usage does not report it: the standard floor is worked out on
- * the same measure the chosen price billed.
- */
-function priceOnUnit(price: ModelPrice, usage: UsageObservation, unit: Unit | "tokens"): Candidate | null {
-  if (unit === "tokens") return usage.noTokens === true ? null : tokenCandidate(price, usage);
-  const count = unitCount(usage, unit);
-  if (count === undefined) return null;
-  // Not isolated: the floor is a minimum, so one that cannot be stored throws, and the caller leaves the charge unresolved.
-  const options = UNIT_RATES.filter((candidate) => candidate.units.includes(unit) && price.rates[candidate.field] !== undefined).map((unitRate) =>
-    atUnitRate(price, unitRate, unit, count, usage),
-  );
-  return preferred(options);
 }
 
 /**
@@ -355,7 +339,11 @@ export type ChargePricing = Pricing & {
  * 3. An estimate (a mode or key value with no price, a missing report, or
  *    `doubt`: a mode value the gateway does not know, a served model it
  *    cannot tell, ...) is floored at the model's own standard price, before
- *    any key value or mode, worked out on the same measure (`AGENTS.md`).
+ *    any key value or mode: that price's own charge for the same usage,
+ *    chosen by the same selection, whatever unit wins (`AGENTS.md`).
+ *
+ * A candidate whose cost cannot be stored is skipped and logged; a floor that
+ * cannot be stored leaves the usage unpriced, never billed below it.
  * 4. When no candidate can bill, the model's own standard price bills, as an
  *    estimate, if it can. Only otherwise is the usage unpriced (null).
  */
@@ -383,18 +371,19 @@ export function priceInServedMode(
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
   if (!estimated) return withCost({ ...chosen, estimated: false, measured });
-  // The one floor: at least the model's own standard price on the same measure.
+  // The one floor: at least the model's own standard price for the same usage, by the same selection.
   // A floor that cannot be stored is never dropped for the lower estimate: the charge is left unresolved.
   let floor: Candidate | null;
   try {
-    floor = priceOnUnit(standardPrice, usage, chosen.unit);
+    floor = usageCandidate(standardPrice, usage);
   } catch (error) {
     if (!(error instanceof MoneyError)) throw error;
-    log("error", "price_floor_too_large", { unit: chosen.unit, error: error.message });
+    log("error", "price_floor_too_large", { error: error.message });
     return null;
   }
   const billed = floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? floor : chosen;
-  return withCost({ ...billed, estimated: true, measured });
+  // The label follows the measure actually billed: the floor may bill the request's estimate.
+  return withCost({ ...billed, estimated: true, measured: billed.fromEstimate ? "estimated" : measured });
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Candidate & { readonly estimated: boolean }) | null {

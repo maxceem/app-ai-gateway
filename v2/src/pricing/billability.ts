@@ -124,8 +124,12 @@ function resolve(connection: PriceSources, model: string): ResolvedPrice | null 
  */
 export type BillingCheck = "serve" | "save";
 
+/** How many times the checks have run the charge function: tests read it to count work, never time. */
+export const CHECK_PROBES = { count: 0 };
+
 /** Whether the charge function prices one usage; a rate too large once a mode scales it prices nothing. */
 function pricesUsage(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): boolean {
+  CHECK_PROBES.count += 1;
   try {
     return priceInServedMode(price, usage, mode) !== null;
   } catch (error) {
@@ -145,9 +149,8 @@ function keysRead(operation: OperationDescription, values: Readonly<Record<strin
   return Object.fromEntries(Object.entries(values).filter(([name]) => names.includes(name)));
 }
 
-/** Whether one of an operation's ways prices every usage in it, at known key values if given. */
-function someWayPrices(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, values?: Readonly<Record<string, string>>): boolean {
-  const keys = values === undefined ? undefined : keysRead(operation, values);
+/** Whether one of an operation's ways prices every usage in it, at the key values it reads (`keysRead`), if any. */
+function someWayPrices(operation: OperationDescription, price: ModelPrice, mode: ServiceMode, keys?: Readonly<Record<string, string>>): boolean {
   return meterCases(operation).some((way) => way.every((usage) => pricesUsage(price, keys === undefined ? usage : { ...usage, priceKeys: keys }, mode)));
 }
 
@@ -157,9 +160,18 @@ function someWayPrices(operation: OperationDescription, price: ModelPrice, mode:
  */
 function firstGap(operations: readonly OperationDescription[], price: ModelPrice): { readonly values: Readonly<Record<string, string>>; readonly mode: string } | null {
   const modes = servedModes(price);
+  // An operation sees only the keys it reads, so many combinations are the same check: each is run once.
+  const known = new Map<string, boolean>();
+  const prices = (operation: OperationDescription, mode: ServiceMode, values: Readonly<Record<string, string>>): boolean => {
+    const keys = keysRead(operation, values);
+    const id = `${operation.name}\u0000${serviceModeName(mode)}\u0000${keys === undefined ? "" : JSON.stringify(Object.entries(keys).sort())}`;
+    let answer = known.get(id);
+    if (answer === undefined) known.set(id, (answer = someWayPrices(operation, price, mode, keys)));
+    return answer;
+  };
   for (const candidate of keyCandidates(price).candidates) {
     for (const mode of modes) {
-      if (!operations.some((operation) => someWayPrices(operation, price, mode, candidate.values))) {
+      if (!operations.some((operation) => prices(operation, mode, candidate.values))) {
         return { values: candidate.values, mode: serviceModeName(mode) };
       }
     }
@@ -306,8 +318,11 @@ export function savedPriceProblem(
     if (error instanceof MoneyError) return { kind: "too_large" };
     throw error;
   }
-  // A connection type with no operations has nothing to charge against.
-  if (operations.length === 0) return null;
+  // A connection type with no operations has nothing to charge against, but a price with no rate at all bills nothing anywhere.
+  if (operations.length === 0) {
+    const empty = effectivePrices(price).find((one) => Object.keys(one.price.rates).length === 0);
+    return empty === undefined ? null : { kind: "bills_nothing", values: empty.values, mode: empty.mode };
+  }
   const gap = firstGap(operations, price);
   return gap === null ? null : { kind: "bills_nothing", values: gap.values, mode: gap.mode };
 }

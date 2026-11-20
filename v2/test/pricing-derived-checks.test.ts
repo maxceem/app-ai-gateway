@@ -5,8 +5,8 @@
  * step 4a). These tests hold the three side by side.
  */
 import { describe, expect, it } from "vitest";
-import { priceUnitsMixed, priceUnitsSum, rate } from "../src/money.ts";
-import { billing, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { priceUnits, priceUnitsMixed, priceUnitsPer, priceUnitsSum, rate } from "../src/money.ts";
+import { billing, CHECK_PROBES, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { customerPrice, keyCandidates, servedModes, type CustomerRates } from "../src/pricing/prices.ts";
 import { costAtRate, costOfRates, priceInServedMode } from "../src/pricing/tokens.ts";
 import { meterCases } from "../src/pricing/units.ts";
@@ -191,7 +191,8 @@ describe("Sol's review of the derived checks", () => {
   });
 
   it("skips a candidate whose cost is too large to store, and the others still compete", () => {
-    const price = customerPrice({ m: { per_minute: 9_000_000_000_000_000, per_second: 1 } }, "m")!;
+    // Voice a's rate cannot be stored for an hour; voice b's can, and bills.
+    const price = customerPrice({ m: { by: { voice: { a: { per_minute: 9_000_000_000_000_000 }, b: { per_second: 1 } } } } }, "m")!;
     expect(priceInServedMode(price, MINUTE, STANDARD_MODE)).toMatchObject({ rates: { per_second: 1 }, cost: 3_600 });
   });
 
@@ -203,7 +204,7 @@ describe("Sol's review of the derived checks", () => {
 
   it("covers tokens and a reported unit together, where the reported unit bills first", () => {
     const transcription = openai.operations.find((op) => op.name === "openai.transcription")!;
-    expect(meterCases(transcription).flat()).toContainEqual(expect.objectContaining({ inputTokens: 1, units: { audio_seconds: 1 } }));
+    expect(meterCases(transcription).flat()).toContainEqual(expect.objectContaining({ inputTokens: 1, units: { audio_seconds: 1_000 } }));
     // A model priced both ways bills the duration it reported, not its tokens.
     const price = customerPrice({ m: { input: 1_000_000_000, output: 1_000_000_000, per_minute: 6_000_000 } }, "m")!;
     const both: UsageObservation = { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 10, units: { audio_seconds: 60_000 } };
@@ -229,5 +230,59 @@ describe("Sol's review of the derived checks", () => {
       const parts = Array.from({ length: 1 + Math.floor(next() * 4) }, () => [Math.floor(next() * 1_000_000), rate(Math.floor(next() * 1_000_000_000))] as const);
       expect(priceUnitsSum(parts)).toBe(priceUnitsMixed(parts.map(([units, value]) => [units, value, 1_000_000] as const)));
     }
+  });
+});
+
+describe("Fable's review of the derived checks", () => {
+  const chat = openai.operations.find((op) => op.name === "openai.chat")!;
+  const NO = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+
+  it("checks each key combination an operation can tell apart once, however many there are", () => {
+    // 256 combinations of two keys chat never reads: chat sees one request shape, so it is checked once per mode.
+    const values = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`v${i}`, { input: 1_000_000_000, output: 1_000_000_000 }]));
+    const sources = priceSources({ type: "openai", rates: { m: { input: 1, output: 1, by: { a: values, b: values } } } });
+    const before = CHECK_PROBES.count;
+    expect(billing(chat, sources, "m", undefined, "save").problem).toBeNull();
+    // One mode (standard), one way, one usage: one run of the charge function, not 256.
+    expect(CHECK_PROBES.count - before).toBe(1);
+  });
+
+  it("refuses a whole candidate when one of its unit rates cannot be stored, never falling to a cheaper exact price", () => {
+    const price = customerPrice({ m: { input: 1, output: 1, per_minute: 9_000_000_000_000_000 } }, "m")!;
+    const usage: UsageObservation = { ...NO, inputTokens: 100, outputTokens: 10, units: { audio_seconds: 3_600_000 } };
+    expect(priceInServedMode(price, usage, STANDARD_MODE)).toBeNull();
+  });
+
+  it("floors an estimate at the standard price's own charge for the usage, whatever unit the estimate billed", () => {
+    // An unknown quality bills one image at a nano-dollar; the model's own price bills the same answer's tokens at more.
+    const price = customerPrice({ m: { input: 1_000_000_000, output: 1_000_000_000, by: { quality: { a: { per_image: 1 } } } } }, "m")!;
+    const usage: UsageObservation = { ...NO, inputTokens: 1_000, outputTokens: 100, units: { images: 1 } };
+    expect(priceInServedMode(price, usage, STANDARD_MODE)).toMatchObject({ unit: "tokens", cost: 1_100_000, estimated: true });
+  });
+
+  it("leaves a charge unresolved when the floor cannot be stored, as a candidate that cannot is skipped", () => {
+    const price = customerPrice({ m: { input: 1, output: 1, per_minute: 9_000_000_000_000_000, by: { quality: { a: { per_second: 1 } } } } }, "m")!;
+    expect(priceInServedMode(price, { ...NO, noTokens: true, units: { audio_seconds: 3_600_000 } }, STANDARD_MODE)).toBeNull();
+  });
+
+  it("probes a fractional unit with one whole unit", () => {
+    const transcription = openai.operations.find((op) => op.name === "openai.transcription")!;
+    expect(meterCases(transcription).flat()).toContainEqual(expect.objectContaining({ noTokens: true, units: { audio_seconds: 1_000 } }));
+  });
+
+  it("prices every money helper through the one rounding code", () => {
+    const next = random(5);
+    for (let round = 0; round < 200; round += 1) {
+      const units = Math.floor(next() * 10_000_000);
+      const value = rate(Math.floor(next() * 1_000_000_000));
+      const per = 1 + Math.floor(next() * 3_600_000);
+      expect(priceUnits(units, value)).toBe(priceUnitsMixed([[units, value, 1_000_000]]));
+      expect(priceUnitsPer(units, value, per)).toBe(priceUnitsMixed([[units, value, per]]));
+    }
+  });
+
+  it("refuses a price with no rate at all on a connection type with no operations", () => {
+    expect(savedPriceProblem({ m: {} }, "m", "custom", [])).toMatchObject({ kind: "bills_nothing" });
+    expect(savedPriceProblem({ m: { input: 1, output: 1 } }, "m", "custom", [])).toBeNull();
   });
 });

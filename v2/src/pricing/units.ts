@@ -10,7 +10,7 @@
  * billable units, credits) is stored at `MILLI_SCALE`, so 2.7 seconds is 2700.
  * A rate is integer nano-dollars per stated amount: per minute, per image,
  * per million characters. The cost is `count × rate ÷ per`, rounded up once
- * (`priceUnitsPer`).
+ * (`costOfRates` in `./tokens.ts`, over `priceUnitsMixed`).
  */
 import { MILLI_SCALE } from "../money.ts";
 import type { OperationDescription, Unit } from "../providers/operation.ts";
@@ -42,8 +42,9 @@ export interface UnitRate {
 const TIME_UNITS: readonly Unit[] = ["audio_seconds", "video_seconds", "session_seconds"];
 
 /**
- * Every unit rate, in the order a price is read: a price with more than one
- * bills the first its usage reports.
+ * Every unit rate. A price with more than one bills, among the units its
+ * usage reports, one the provider reported before one worked out from the
+ * request, and among those the dearest (`preferred` in `./tokens.ts`).
  */
 export const UNIT_RATES: readonly UnitRate[] = [
   { field: "per_minute", units: TIME_UNITS, per: 60 * MILLI_SCALE },
@@ -62,18 +63,18 @@ export const UNIT_RATES: readonly UnitRate[] = [
 export const UNIT_RATE_FIELDS: readonly string[] = UNIT_RATES.map((rate) => rate.field);
 
 /**
- * A sample count: the smallest a stored count can be (one unit, or one
- * thousandth of a fractional one). A case only asks whether a price can bill
- * it, so a probe never overflows where one real unit would not.
+ * A sample count: one whole unit, at the unit's scale (1000 for a fractional
+ * unit, `unitScale`). A case only asks whether a price can bill it, so a probe
+ * never overflows where one real unit would not.
  */
-const SAMPLE = 1;
+const sample = (unit: Unit): number => unitScale(unit);
 const NO_TOKENS = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true } as const;
-const SOME_TOKENS = { inputTokens: SAMPLE, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: SAMPLE } as const;
+const SOME_TOKENS = { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 } as const;
 
 /** `usage` with the request's own measure beside it, as every meter keeps it (`src/proxy/meter.ts`). */
 function withEstimate(usage: UsageObservation, estimate: Unit | undefined): UsageObservation {
   if (estimate === undefined || usage.units?.[estimate] !== undefined) return usage;
-  return { ...usage, units: { ...usage.units, [estimate]: SAMPLE }, estimatedUnits: [estimate] };
+  return { ...usage, units: { ...usage.units, [estimate]: sample(estimate) }, estimatedUnits: [estimate] };
 }
 
 /**
@@ -100,7 +101,7 @@ function withEstimate(usage: UsageObservation, estimate: Unit | undefined): Usag
  */
 export function meterCases(operation: OperationDescription): readonly (readonly UsageObservation[])[] {
   const { meter } = operation;
-  const reported = (unit: Unit): UsageObservation => ({ ...NO_TOKENS, units: { [unit]: SAMPLE } });
+  const reported = (unit: Unit): UsageObservation => ({ ...NO_TOKENS, units: { [unit]: sample(unit) } });
   switch (meter.kind) {
     case "response_json": {
       const estimate = meter.requestMeasure?.unit;
@@ -108,7 +109,7 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
       const ways: UsageObservation[][] = [
         [withEstimate(SOME_TOKENS, estimate)],
         ...units.map((unit) => [withEstimate(reported(unit), estimate)]),
-        ...units.map((unit) => [withEstimate({ ...SOME_TOKENS, units: { [unit]: SAMPLE } }, estimate)]),
+        ...units.map((unit) => [withEstimate({ ...SOME_TOKENS, units: { [unit]: sample(unit) } }, estimate)]),
       ];
       if (estimate !== undefined) ways.push([withEstimate(NO_TOKENS, estimate)]);
       return ways;
