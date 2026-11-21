@@ -315,7 +315,7 @@ export class ProviderMatcher {
       template: parseTemplate(entry.path, { rest: true }),
       methods: null,
       entry,
-      mint: parseTemplate(entry.path.endsWith("/*") ? entry.path.slice(0, -2) : entry.path),
+      mint: parseTemplate(entry.mint ?? (entry.path.endsWith("/*") ? entry.path.slice(0, -2) : entry.path)),
     }));
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
@@ -389,7 +389,7 @@ export class ProviderMatcher {
       const sent = upstreamTargets(route, "main", segments.map(literal));
       const refused = this.refusedAt(method, sent);
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
-      const token = gatewayToken ?? firstRule(this.liveTokens, method, sent);
+      const token = this.tokenRule(method, atGateway, sent);
       // The opt-in reaches only the mint itself; anything else under a token path stays refused.
       if (token !== null && (listed.listed.liveToken !== true || !(mints(token, method, atGateway) || mints(token, method, sent)))) {
         tokenRefusal ??= ruleSource(token);
@@ -438,6 +438,22 @@ export class ProviderMatcher {
     return rule === null ? null : ruleSource(rule);
   }
 
+  /**
+   * The live-session token path that takes a request at the gateway or where
+   * it is sent: the first whose mint it is, else the first that takes it, or
+   * null. Several token paths may share one namespace, each with its own mint.
+   */
+  private tokenRule(method: string, atGateway: UpstreamTargets | null, sent: UpstreamTargets | null): CompiledLiveToken | null {
+    let first: CompiledLiveToken | null = null;
+    for (const targets of [atGateway, sent]) {
+      for (const rule of everyRule(this.liveTokens, method, targets)) {
+        if (mints(rule, method, atGateway) || mints(rule, method, sent)) return rule;
+        first ??= rule;
+      }
+    }
+    return first;
+  }
+
   /** The first live-session token path that takes every path of one of `targets`, as `refusedAt`, or null. */
   private liveTokenAt(method: string, targets: UpstreamTargets | null): string | null {
     const rule = firstRule(this.liveTokens, method, targets);
@@ -470,7 +486,7 @@ export class ProviderMatcher {
     const { method } = listed.listed;
     const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
     const sent = upstreamTargets(route, "main", listed.template.segments);
-    const rule = firstRule(this.liveTokens, method, atGateway) ?? firstRule(this.liveTokens, method, sent);
+    const rule = this.tokenRule(method, atGateway, sent);
     // Only a listing of the mint itself may opt in: its method, on exactly the token path.
     if (rule === null || !(mints(rule, method, atGateway) || mints(rule, method, sent))) return null;
     return rule.entry;
@@ -566,6 +582,18 @@ function targetSegments(path: UpstreamTargets["paths"][number]): string[] {
   return path.map((segment) =>
     segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
   );
+}
+
+/** Every rule that takes every path of one of `targets`, in order, as `firstRule` finds them. */
+function* everyRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Generator<Rule> {
+  if (targets === null || targets.host !== "main") return;
+  for (const path of targets.paths) {
+    const segments = targetSegments(path);
+    for (const rule of rules) {
+      if (rule.methods !== null && !rule.methods.has(method)) continue;
+      if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) yield rule;
+    }
+  }
 }
 
 function firstRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Rule | null {

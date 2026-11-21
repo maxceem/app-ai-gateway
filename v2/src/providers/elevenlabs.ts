@@ -94,6 +94,10 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/agents/{agent_id}/avatar", methods: ["POST"] },
     { path: "v1/convai/agents/{agent_id}/hold-audio", methods: ["POST", "DELETE"] },
     { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
+    // An agent's link answers with a shareable token that may never expire
+    // (`expiration_time_unix_secs` can be null): open-ended access, which no
+    // opt-in reaches (plan D4).
+    "v1/convai/agents/{agent_id}/link",
   ],
   // Tokens and signed URLs for live sessions, reached only by a listed path
   // that opts in, and only the mint itself: its method on the exact path
@@ -101,18 +105,18 @@ export const elevenlabs = defineProvider({
   // last as ElevenLabs sets them (about 15 minutes, T13). A signed URL is
   // single use only with `include_conversation_id=true` (T13), so the
   // gateway sets it, replacing whatever the client sent.
-  // An agent's link answers with a conversation token. Agent reads may hold
-  // a `shareable_token` too; they stay allowed, since passthrough never
-  // changes a body and the customer turns sharing on themselves.
+  // Agent reads may hold a `shareable_token`; they stay allowed, since
+  // passthrough never changes a body and the customer turns sharing on
+  // themselves.
   liveTokens: [
     { path: "v1/convai/conversation/token/*", method: "GET" },
     { path: "v1/convai/conversation/get-signed-url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
     { path: "v1/convai/conversation/get_signed_url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
     { path: "v1/convai/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
-    // Only the types that start a live session: `batch_scribe` is refused.
-    { path: "v1/single-use-token/realtime_scribe", method: "POST" },
-    { path: "v1/single-use-token/tts_websocket", method: "POST" },
-    { path: "v1/convai/agents/{agent_id}/link", method: "GET" },
+    // Everything under `v1/single-use-token` stays refused, opt-in or not,
+    // except the mints of the types that start a live session.
+    { path: "v1/single-use-token/*", mint: "v1/single-use-token/realtime_scribe", method: "POST" },
+    { path: "v1/single-use-token/*", mint: "v1/single-use-token/tts_websocket", method: "POST" },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

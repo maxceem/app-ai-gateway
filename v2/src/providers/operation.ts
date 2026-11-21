@@ -597,6 +597,12 @@ export interface LiveTokenPath {
   readonly path: string;
   /** The one method that mints. */
   readonly method: HttpMethod;
+  /**
+   * The mint's exact path, when `path` is a wider namespace that stays
+   * refused around it, such as one token type of several. By default, `path`
+   * without its trailing `*`.
+   */
+  readonly mint?: string;
   /** What the gateway sets in the mint, where the provider lets the request set it. */
   readonly forced?: LiveTokenForced;
 }

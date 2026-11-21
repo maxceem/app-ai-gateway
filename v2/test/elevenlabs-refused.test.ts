@@ -52,6 +52,8 @@ function refusedBySet(method: string, path: string, tags: readonly string[], sen
   if (["POST", "DELETE"].includes(method) && is(`/v1/convai/agents/${PARAM}/hold-audio`)) return true;
   if (["PUT", "PATCH", "DELETE"].includes(method) && is(`/v1/convai/agents/${PARAM}`)) return true;
   if (method === "PATCH" && is(`/v1/reception/customer-facing-agents/${PARAM}`)) return true;
+  // An agent's link answers with a shareable token that may never expire.
+  if (method === "GET" && is(`/v1/convai/agents/${PARAM}/link`)) return true;
   return false;
 }
 
@@ -60,14 +62,15 @@ const LIVE_TOKEN_TYPES = ["realtime_scribe", "tts_websocket"];
 
 /**
  * Whether a request mints a secret for a live session (plan D4): its live
- * single-use tokens, and an agent's link, which answers with one. `sent` is
- * the request path, for the operations whose enum decides it.
+ * single-use tokens, the agent conversation token and signed URL, and its
+ * Realtime client secret. `sent` is the request path, for the operations
+ * whose enum decides it.
  */
 function liveTokenBySet(method: string, path: string, tags: readonly string[], sent: string): boolean {
   const is = (pattern: string) => new RegExp(`^${pattern}$`, "u").test(path);
-  if (tags.includes("Single Use Token")) return LIVE_TOKEN_TYPES.some((type) => sent.endsWith(`/${type}`));
-  if (["/v1/convai/conversation/token", "/v1/convai/conversation/get-signed-url", "/v1/convai/conversation/get_signed_url", "/v1/convai/realtime/client_secrets"].some(is)) return true;
-  return method === "GET" && is(`/v1/convai/agents/${PARAM}/link`);
+  if (tags.includes("Single Use Token")) return method === "POST" && LIVE_TOKEN_TYPES.some((type) => sent.endsWith(`/${type}`));
+  if (method === "POST") return is("/v1/convai/realtime/client_secrets");
+  return method === "GET" && ["/v1/convai/conversation/token", "/v1/convai/conversation/get-signed-url", "/v1/convai/conversation/get_signed_url"].some(is);
 }
 
 /**
@@ -89,19 +92,27 @@ function requestPaths(path: string, enums: Readonly<Record<string, readonly stri
   return paths;
 }
 
-type Rule = { readonly path: string; readonly methods: readonly string[] | null; readonly token: boolean; readonly method?: HttpMethod };
+type Rule = { readonly path: string; readonly methods: readonly string[] | null; readonly token: boolean; readonly method?: HttpMethod; readonly mint?: string };
 /** A description's refused and live-session token paths, as one list of rules. */
 const rulesOf = (description: ProviderDescription): Rule[] => [
   ...description.refused.map((entry) =>
     typeof entry === "string" ? { path: entry, methods: null, token: false } : { path: entry.path, methods: entry.methods, token: false },
   ),
-  ...(description.liveTokens ?? []).map((entry) => ({ path: entry.path, methods: null, token: true, method: entry.method })),
+  ...(description.liveTokens ?? []).map((entry) => ({
+    path: entry.path,
+    methods: null,
+    token: true,
+    method: entry.method,
+    ...(entry.mint === undefined ? {} : { mint: entry.mint }),
+  })),
 ];
 /** The description with its refused and live-session token paths replaced by `rules`. */
 const withRules = (description: ProviderDescription, rules: readonly Rule[]): ProviderDescription => ({
   ...description,
   refused: rules.filter((rule) => !rule.token).map((rule) => (rule.methods === null ? rule.path : { path: rule.path, methods: rule.methods as HttpMethod[] })),
-  liveTokens: rules.filter((rule) => rule.token).map((rule) => ({ path: rule.path, method: rule.method ?? "POST" })),
+  liveTokens: rules
+    .filter((rule) => rule.token)
+    .map((rule) => ({ path: rule.path, method: rule.method ?? "POST", ...(rule.mint === undefined ? {} : { mint: rule.mint }) })),
 });
 
 /**
@@ -165,9 +176,12 @@ function judge(description: ProviderDescription): { wrong: string[]; dead: strin
       }
     }
   }
+  // A token path is dead when it reaches no operation, or when its own mint does not.
+  const mintOf = (rule: Rule): Rule => ({ path: rule.mint ?? rule.path.replace(/\/\*$/u, ""), methods: [rule.method ?? "POST"], token: true });
+  const reaches = (rule: Rule) => OPERATIONS.some(([method, path, , enums]) => ruleReaches(rule, method, path, enums));
   const dead = rulesOf(description)
-    .filter((rule) => !OPERATIONS.some(([method, path, , enums]) => ruleReaches(rule, method, path, enums)))
-    .map((rule) => `${rule.methods?.join(",") ?? "*"} ${rule.path}`);
+    .filter((rule) => !reaches(rule) || (rule.token && !reaches(mintOf(rule))))
+    .map((rule) => `${rule.methods?.join(",") ?? "*"} ${rule.path}${rule.mint === undefined ? "" : ` (mint ${rule.mint})`}`);
   return { wrong, dead };
 }
 
@@ -188,9 +202,21 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
   });
 
   it.each([
-    ["a rule narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/single-use-token/realtime_scribe" ? { ...rule, path: "v1/single-use-token/p1" } : rule))],
-    ["the batch transcription token let through", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/single-use-token/batch_scribe")],
-    ["every single-use token type treated as live", (rules: Rule[]) => [...rules.filter((rule) => !rule.path.startsWith("v1/single-use-token/")), { path: "v1/single-use-token/*", methods: null, token: true, method: "POST" as const }]],
+    ["a mint narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.mint === "v1/single-use-token/realtime_scribe" ? { ...rule, mint: "v1/single-use-token/p1" } : rule))],
+    [
+      "the single-use token namespace narrowed to its two mints",
+      (rules: Rule[]) =>
+        rules
+          .filter((rule) => rule.path !== "v1/single-use-token/batch_scribe")
+          .map((rule) => (rule.mint?.startsWith("v1/single-use-token/") === true ? { path: rule.mint, methods: null, token: true, method: "POST" as const } : rule)),
+    ],
+    [
+      "every single-use token type treated as live",
+      (rules: Rule[]) => [
+        ...rules.filter((rule) => !rule.path.startsWith("v1/single-use-token/")),
+        { path: "v1/single-use-token/*", methods: null, token: true, method: "POST" as const, mint: "v1/single-use-token/{token_type}" },
+      ],
+    ],
     ["voice deletion widened to collections and samples", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/*" } : rule))],
     ["an agent's link left out", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/convai/agents/{agent_id}/link")],
     ["voice deletion narrowed to ids with a prefix", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/p{voice_id}" } : rule))],
@@ -238,5 +264,28 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
       const passthrough = compilePassthrough([{ method: "POST", path: listed, liveToken: true }]);
       expect(matcher.match("POST", "v1/single-use-token/batch_scribe", { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
     }
+  });
+
+  // Requests the spec does not list, so the walk above cannot see them.
+  it.each([
+    ["GET", "v1/single-use-token/batch_scribe"],
+    ["GET", "v1/single-use-token/realtime_scribe"],
+    ["DELETE", "v1/single-use-token/tts_websocket"],
+    ["POST", "v1/single-use-token/other_kind"],
+    ["POST", "v1/single-use-token/realtime_scribe/extra"],
+  ] as const)("keeps %s %s refused, listed or opted in, and on save", (method, path) => {
+    for (const liveToken of [false, true]) {
+      const passthrough = compilePassthrough([{ method, path, ...(liveToken ? { liveToken: true as const } : {}) }]);
+      expect(matcher.match(method, path, { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+      expect(matcher.liveTokenCovering(passthrough[0]!)).toBeNull();
+    }
+    expect(matcher.refusedCovering(compilePassthrough([{ method, path }])[0]!)).not.toBeNull();
+  });
+
+  it("refuses an agent's link even when the listing opts in", () => {
+    const path = "v1/convai/agents/a1/link";
+    const passthrough = compilePassthrough([{ method: "GET", path, liveToken: true }]);
+    expect(matcher.match("GET", path, { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    expect(matcher.liveTokenCovering(passthrough[0]!)).toBeNull();
   });
 });

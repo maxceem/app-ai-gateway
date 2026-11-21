@@ -46,8 +46,8 @@ const TOKEN_ENDPOINTS: readonly (readonly [type: string, method: HttpMethod, pat
   ["elevenlabs", "POST", "v1/single-use-token/tts_websocket"],
   ["elevenlabs", "GET", "v1/convai/conversation/token"],
   ["elevenlabs", "GET", "v1/convai/conversation/get-signed-url"],
+  ["elevenlabs", "POST", "v1/single-use-token/realtime_scribe"],
   ["elevenlabs", "POST", "v1/convai/realtime/client_secrets"],
-  ["elevenlabs", "GET", "v1/convai/agents/agent_1/link"],
 ];
 
 const describedAs = (type: string) => BUILT_IN_PROVIDERS[type]!;
@@ -73,11 +73,24 @@ describe("matching a live-session token path", () => {
     ["openai", "GET", "v1/chatkit/sessions"],
     ["openai", "DELETE", "v1/realtime/client_secrets"],
     ["elevenlabs", "POST", "v1/convai/agents/agent_1/link"],
+    // An agent's link answers with a shareable token that may never expire.
+    ["elevenlabs", "GET", "v1/convai/agents/agent_1/link"],
+    // The single-use token namespace stays refused around its two mints.
+    ["elevenlabs", "GET", "v1/single-use-token/batch_scribe"],
+    ["elevenlabs", "POST", "v1/single-use-token/batch_scribe"],
+    ["elevenlabs", "GET", "v1/single-use-token/realtime_scribe"],
+    // Anything under another token path that is not its mint.
+    ["openai", "POST", "v1/realtime/client_secrets/cs_1"],
+    ["xai", "GET", "v1/realtime/client_secrets"],
+    ["gemini", "GET", "v1alpha/auth_tokens"],
+    ["elevenlabs", "POST", "v1/convai/conversation/token"],
     ["elevenlabs", "GET", "v1/user"],
     ["elevenlabs", "DELETE", "v1/voices/v1"],
   ] as const)("keeps %s %s %s refused, opt-in or not", (type, method, path) => {
     const matcher = new ProviderMatcher(describedAs(type));
-    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path, liveToken: true }]) })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    for (const passthrough of [compilePassthrough([{ method, path }]), compilePassthrough([{ method, path, liveToken: true }])]) {
+      expect(matcher.match(method, path, { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    }
   });
 
   it("lets an opted-in mint through behind a broader listing that does not opt in, in either order", () => {
