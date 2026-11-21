@@ -5,7 +5,7 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
@@ -19,7 +19,7 @@ import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -1922,6 +1922,9 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
 });
 
 describe("cancels, unlisted and video models (step 6b)", () => {
+  // The job list is a management route: its code loads once, here, not inside a test's time.
+  beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+
   /** Submits one job for `model` with `body`, and answers its gateway job id. */
   async function submitModel(appId: string, slug: string, key: string, model: string, body: Record<string, unknown>) {
     const { response, json } = await call("POST", `/v2/apps/${appId}/proxy/${slug}/queue/${model}`, key, { body: JSON.stringify(body) });
