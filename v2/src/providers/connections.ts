@@ -100,11 +100,7 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
  * copy: for work that must see a status another isolate just changed (the
  * sweep, before it opens a key). Throws when D1 cannot answer.
  */
-export function loadConnectionFresh(env: Env, accountId: string, slug: string): Promise<ConnectionRecord | null> {
-  return readConnection(env, accountId, slug);
-}
-
-async function readConnection(env: Env, accountId: string, slug: string): Promise<ConnectionRecord | null> {
+export async function readConnection(env: Env, accountId: string, slug: string): Promise<ConnectionRecord | null> {
   const startedAt = Date.now();
   const row = await database(env.DB).query.providerConnection.findFirst({
     where: and(eq(providerConnection.accountId, accountId), eq(providerConnection.slug, slug)),

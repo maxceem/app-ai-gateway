@@ -15,73 +15,16 @@
  *   keep either answer (`Cache-Control: no-store`).
  */
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
+import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobStatusQuery, readResultFacts, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, boundedJson, fetchJob, gatewayLinks, jobContext, jobStatusQuery, readResultFacts, withGatewayLinks } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
-
-/** Bytes read as JSON, or null when they are not JSON. */
-function jsonOf(bytes: Uint8Array): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-/** The most of a status answer the gateway reads to rewrite its links. A bigger one is passed through as a stream. */
-export const STATUS_READ_LIMIT = 1024 * 1024;
-
-/**
- * A body read up to `limit` bytes, counted as they arrive: whole when it fits,
- * else a stream that gives the bytes already read and then the rest, so a
- * large answer is never held in memory.
- */
-async function readUpTo(
-  body: ReadableStream<Uint8Array>,
-  limit: number,
-): Promise<{ readonly kind: "whole"; readonly bytes: Uint8Array } | { readonly kind: "stream"; readonly stream: ReadableStream<Uint8Array> }> {
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-    if (size > limit) {
-      let next = 0;
-      const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          if (next < chunks.length) {
-            controller.enqueue(chunks[next]!);
-            chunks[next++] = new Uint8Array(0);
-            return;
-          }
-          const part = await reader.read();
-          if (part.done) controller.close();
-          else controller.enqueue(part.value);
-        },
-        cancel(reason) {
-          return reader.cancel(reason);
-        },
-      });
-      return { kind: "stream", stream };
-    }
-  }
-  const bytes = new Uint8Array(new ArrayBuffer(size));
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return { kind: "whole", bytes };
-}
 
 function unknownJob(): GatewayError {
   return new GatewayError(404, "job_not_found", "No such job for this app");
@@ -136,9 +79,9 @@ export function jobPollHandler(which: "status" | "result") {
         if (which === "result") {
           if (context.spec.finalStatuses.includes(response.status)) {
             // When the operation counts outputs, a copy of the body is read to count
-            // them, at most OUTPUTS_READ_LIMIT bytes, in the background: the app gets
+            // them, at most BODY_READ_LIMIT bytes, in the background: the app gets
             // the body itself, untouched, and never waits on the count.
-            const copy = !bodiless && countNeedsBody(context.spec) ? response.clone() : null;
+            const copy = !bodiless && context.spec.outputsField !== undefined ? response.clone() : null;
             const ref = { job: claims.job, accountId: claims.accountId, appId: claims.appId };
             const now = Date.now();
             c.executionCtx.waitUntil(
@@ -155,10 +98,11 @@ export function jobPollHandler(which: "status" | "result") {
         }
         // A status answer's links point at the gateway, as the submit answer's do. One past the
         // read limit is passed through as it came, as a stream: never held whole.
-        const read = bodiless || response.body === null ? null : await readUpTo(response.body, STATUS_READ_LIMIT);
-        if (read !== null && read.kind === "stream") return new Response(read.stream, { status: response.status, headers });
-        const bytes = read === null ? null : read.bytes;
-        const body = bytes === null ? null : jsonOf(bytes);
+        const read = bodiless || response.body === null ? null : await readBounded(response.body);
+        if (read !== null && read.kind === "too_large") return new Response(read.stream, { status: response.status, headers });
+        if (read !== null && read.kind === "read_error") throw read.error;
+        const bytes = read !== null && read.kind === "whole" ? read.bytes : null;
+        const body = bytes === null ? null : (parseJson(bytes) ?? null);
         if (typeof body === "object" && body !== null && !Array.isArray(body)) {
           const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
           headers.set("content-type", "application/json");
@@ -167,7 +111,7 @@ export function jobPollHandler(which: "status" | "result") {
             headers,
           });
         }
-        return new Response(bytes as Uint8Array<ArrayBuffer> | null, { status: response.status, headers });
+        return new Response(bytes, { status: response.status, headers });
       },
     );
   };

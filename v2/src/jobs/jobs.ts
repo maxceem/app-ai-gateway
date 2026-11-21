@@ -28,17 +28,18 @@ import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { settleJob, type FinalFigure } from "../ledger/corrections.ts";
+import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
-import { chargeFromRow, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
-import { connectionCredentials, connectionDescription, loadConnection, loadConnectionFresh, type ConnectionRecord } from "../providers/connections.ts";
+import { parseJson, readBounded } from "../core/bounded-body.ts";
+import { connectionCredentials, connectionDescription, loadConnection, readConnection, type ConnectionRecord } from "../providers/connections.ts";
 import type { JobRequest, JobSpec, OperationDescription, ProviderDescription, Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
-import { callCharge, type CallAttempt } from "../proxy/call-charge.ts";
+import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
 import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
 
@@ -98,7 +99,8 @@ export function jobEstimate(
   );
   // The request's measure is the estimate itself, not a report that went missing.
   const usage = measured === null ? null : (({ reportMissing: _missing, ...rest }) => rest)(measured);
-  const call = callCharge(
+  // Priced as any charge is: a pricing failure still writes it, unpriced and logged, never failing the job.
+  const call = safeCharge(
     attempt,
     { status: input.status, httpStatus: input.httpStatus, errorCode: null, usage, cut: false, latencyMs: input.latencyMs },
     input.now,
@@ -122,7 +124,7 @@ export function jobEstimate(
       ownerType: "job",
       ownerId: job,
       chargeId: charge.id,
-      detail: { providerType: attempt.providerType, jobId: input.signedId, ...checkPace(operation.job) },
+      detail: { jobId: input.signedId, ...checkPace(operation.job) },
       dueAt: input.now + JOB_FIRST_CHECK_MS,
       createdAt: input.now,
     });
@@ -192,7 +194,7 @@ export interface JobContext {
  * throws when D1 cannot answer.
  */
 export async function jobContext(env: Env, claims: JobClaims, options: { readonly fresh?: boolean } = {}): Promise<JobContext | null> {
-  const connection = options.fresh === true ? await loadConnectionFresh(env, claims.accountId, claims.slug) : await loadConnection(env, claims.accountId, claims.slug);
+  const connection = options.fresh === true ? await readConnection(env, claims.accountId, claims.slug) : await loadConnection(env, claims.accountId, claims.slug);
   // A connection made again under the same slug is another key: its jobs are not this one's.
   if (connection === null || connection.id !== claims.connectionId) return null;
   // A connection that now points somewhere else may have another job under the same request id.
@@ -234,24 +236,21 @@ export async function fetchJob(
   // headers arrive. After that the answer is in hand, and its body is bounded by
   // the reader's own deadline: an item that runs out of time never cuts off a
   // final result it already has.
+  // So does the poll's own time limit: a slow body read is never cut off by it.
+  // Opening the key can take long enough for the item's time to run out.
+  signal?.throwIfAborted();
   const untilHeaders = new AbortController();
   const stop = () => untilHeaders.abort(signal?.reason);
   signal?.addEventListener("abort", stop, { once: true });
-  // Opening the key can take long enough for the item's time to run out, and
-  // the listener above only sees an abort that happens after it was added.
-  signal?.throwIfAborted();
+  const timer = setTimeout(() => untilHeaders.abort(new Error("job poll timed out")), JOB_POLL_TIMEOUT_MS);
   try {
-    const response = await fetch(target.url, {
-      method: request.method,
-      headers: target.headers,
-      redirect: "manual",
-      signal: AbortSignal.any([untilHeaders.signal, AbortSignal.timeout(JOB_POLL_TIMEOUT_MS)]),
-    });
+    const response = await fetch(target.url, { method: request.method, headers: target.headers, redirect: "manual", signal: untilHeaders.signal });
     return { response, keyHeader: target.keyHeader };
   } catch (error) {
     log("warn", "job_poll_failed", { app: claims.appId, providerSlug: claims.slug, which, error: errorFacts(error) });
     throw new GatewayError(502, "provider_error", "Provider request failed");
   } finally {
+    clearTimeout(timer);
     signal?.removeEventListener("abort", stop);
   }
 }
@@ -277,14 +276,6 @@ export function jobDone(spec: JobSpec, body: unknown): boolean {
   return typeof value === "string" && spec.doneWhen.values.includes(value);
 }
 
-/** What a result call answered, as settlement reads it. */
-export interface JobResult {
-  readonly status: number;
-  readonly headers: Headers;
-  /** The parsed JSON body, or null. */
-  readonly body: unknown;
-}
-
 /** How many outputs a result names, or null when it names none the gateway can count. */
 function outputCount(spec: JobSpec, body: unknown): number | null {
   if (spec.outputsField === undefined || typeof body !== "object" || body === null) return null;
@@ -303,38 +294,10 @@ export interface JobResultFacts {
   /**
    * True when the body had to be read to count outputs, but could not be: cut
    * off, empty, or not whole JSON. Then a missing output count says nothing.
-   * Whether to read the result again is decided with the estimate's rate
-   * (`bodyCouldHelp`). Never saved on a figure row.
+   * Never saved on a figure row.
    */
   readonly unread?: true;
 }
-
-/** The facts of a result call, or null when its status is not final. */
-export function jobResultFacts(spec: JobSpec, result: JobResult): JobResultFacts | null {
-  if (!spec.finalStatuses.includes(result.status)) return null;
-  return {
-    status: result.status,
-    units: spec.unitsHeader === undefined ? null : headerNumber(result.headers.get(spec.unitsHeader)),
-    outputs: outputCount(spec, result.body),
-  };
-}
-
-/** The most of a result body read to count its outputs. A bigger body is not counted: the estimate stays. */
-export const OUTPUTS_READ_LIMIT = 1024 * 1024;
-
-/**
- * Whether the result's body is read to count its outputs: whenever the
- * provider's operation counts them. The gateway does not know at fetch time
- * which unit the estimate bills, and an estimate per output needs the count
- * even when a units header is there (that header gives billed units, which a
- * rate per image cannot use). The read is bounded and never holds the app's
- * answer; an estimate per billed unit is settled from the header either way.
- */
-export function countNeedsBody(spec: JobSpec): boolean {
-  return spec.outputsField !== undefined;
-}
-
-const STOPPED = Symbol("stopped");
 
 /**
  * How long the sweep reads a result body for counting: well under the
@@ -352,117 +315,50 @@ export type BodyRead =
   | { readonly kind: "unparseable" };
 
 /**
- * A body read as JSON, at most `limit` bytes. Reading stops (and the stream
- * is cancelled) at the limit, so counting never holds a large result in
- * memory. One that fails while it is read is a read error, one with no bytes
- * is empty, and one that is not whole JSON (truncated JSON that closed
- * normally, for one) is unparseable. All three leave the outputs unread.
+ * A body read as JSON, at most `limit` bytes (`BODY_READ_LIMIT` by default),
+ * so counting never holds a large result in memory. A read error, an empty
+ * body and one that is not whole JSON all leave the outputs unread.
  */
 export async function boundedJson(
   response: Response,
-  limit: number = OUTPUTS_READ_LIMIT,
-  options: { readonly deadlineMs?: number; readonly signal?: AbortSignal } = {},
+  options: { readonly limit?: number; readonly deadlineMs?: number; readonly signal?: AbortSignal } = {},
 ): Promise<BodyRead> {
   if (response.body === null) return { kind: "empty" };
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  // A body that stalls past the deadline, or once the caller gives up, is a read error: read again later.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const stopped = new Promise<typeof STOPPED>((resolve) => {
-    if (options.deadlineMs !== undefined) timer = setTimeout(() => resolve(STOPPED), options.deadlineMs);
-    if (options.signal !== undefined) {
-      if (options.signal.aborted) resolve(STOPPED);
-      else options.signal.addEventListener("abort", () => resolve(STOPPED), { once: true });
+  const read = await readBounded(response.body, options);
+  switch (read.kind) {
+    case "whole": {
+      if (read.bytes.byteLength === 0) return { kind: "empty" };
+      const value = parseJson(read.bytes);
+      return value === undefined ? { kind: "unparseable" } : { kind: "parsed", value };
     }
-  });
-  try {
-    for (;;) {
-      const next = await Promise.race([reader.read(), stopped]);
-      if (next === STOPPED) {
-        void reader.cancel().catch(() => undefined);
-        return { kind: "read_error" };
-      }
-      const { done, value } = next;
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) {
-        void reader.cancel().catch(() => undefined);
-        return { kind: "too_large" };
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return { kind: "read_error" };
-  } finally {
-    clearTimeout(timer);
-  }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  if (size === 0) return { kind: "empty" };
-  try {
-    return { kind: "parsed", value: JSON.parse(new TextDecoder().decode(bytes)) as unknown };
-  } catch {
-    return { kind: "unparseable" };
+    case "too_large":
+      void read.stream.cancel().catch(() => undefined);
+      return { kind: "too_large" };
+    default:
+      return { kind: "read_error" };
   }
 }
 
 /**
- * The facts of a final result, from its status, its headers and the body read
- * done to count outputs (null when the body is not needed). A body that could
- * not be read marks the facts `unread`; the units header is read either way,
- * so a header that settles the estimate's rate is never lost to a broken body.
+ * The facts of a final result, or null when its status is not final: from
+ * its status, its headers and the body read done to count outputs (null when
+ * the body was not read). A body that could not be read marks the facts
+ * `unread`; the units header is read either way, so a header that settles the
+ * estimate's rate is never lost to a broken body.
  */
 export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
-  const body = read !== null && read.kind === "parsed" ? read.value : null;
-  const facts = jobResultFacts(spec, { status: response.status, headers: response.headers, body });
-  if (facts === null) return null;
+  if (!spec.finalStatuses.includes(response.status)) return null;
+  const facts: JobResultFacts = {
+    status: response.status,
+    units: spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader)),
+    outputs: read !== null && read.kind === "parsed" ? outputCount(spec, read.value) : null,
+  };
   const unread = read !== null && (read.kind === "read_error" || read.kind === "empty" || read.kind === "unparseable");
   return unread ? { ...facts, unread: true } : facts;
 }
 
-/** A success whose body could not be read: its outputs are unknown. A failure's outputs are never counted. */
-function unreadSuccess(facts: JobResultFacts): boolean {
-  return facts.unread === true && facts.status >= 200 && facts.status < 300;
-}
-
-/**
- * Whether reading the result again could settle the job: the body was not
- * read on a success, and with an output count the estimate's rate would get
- * every count it needs. When the rate bills units and no units header came, a
- * whole body cannot help, so there is nothing to read again.
- */
-function bodyCouldHelp(estimate: ChargeRow, facts: JobResultFacts): boolean {
-  return unreadSuccess(facts) && jobFinalFigure(estimate, { ...facts, outputs: facts.outputs ?? 1 }) !== null;
-}
-
-/**
- * Whether the sweep should read a result's body before deciding: when the
- * estimate is not in the ledger yet (its rate is not known), or when its rate
- * needs an output count the headers do not give. A rate per billed unit with
- * no units header gets nothing from the body, so it is not read at all.
- */
-async function bodyNeeded(env: Env, job: string, headerFacts: JobResultFacts): Promise<boolean> {
-  let estimate: ChargeRow | null = null;
-  try {
-    estimate = await withDeadline(jobEstimateCharge(env.DB, job), FIGURE_D1_DEADLINE_MS, "reading the estimate");
-  } catch {
-    return true;
-  }
-  if (estimate === null) return true;
-  const succeeded = headerFacts.status >= 200 && headerFacts.status < 300;
-  if (!succeeded || jobFinalFigure(estimate, headerFacts) !== null) return false;
-  return jobFinalFigure(estimate, { ...headerFacts, outputs: 1 }) !== null;
-}
-
-/** Whether a result gives any count at all. One with none is never saved: it can never settle. */
-export function hasCount(facts: JobResultFacts): boolean {
-  return facts.units !== null || facts.outputs !== null;
-}
+const succeeded = (facts: JobResultFacts) => facts.status >= 200 && facts.status < 300;
+const counted = (facts: JobResultFacts) => facts.units !== null || facts.outputs !== null;
 
 /** Saved facts read back, or null when they are not facts. */
 function factsOf(value: unknown): JobResultFacts | null {
@@ -474,50 +370,74 @@ function factsOf(value: unknown): JobResultFacts | null {
   return { status: facts.status, units: facts.units as number | null, outputs: facts.outputs as number | null };
 }
 
-/**
- * The final figure of a job from its result's facts, priced with the rates
- * stored on the estimate, or null when the result gives none and the estimate
- * stays. Every rate the estimate stored must get a count:
- *
- * - billed units from the units header (fal's megapixels), never a missing
- *   header read as 0;
- * - the outputs in the result, for a rate per output, on a success only;
- * - a failure is free only when the provider reports 0 billed units. A failure
- *   with no units report keeps the estimate (T15: fal's units expire).
- */
-export function jobFinalFigure(estimate: ChargeRow, facts: JobResultFacts): FinalFigure | null {
-  const succeeded = facts.status >= 200 && facts.status < 300;
+/** The counts a result gives, by unit. A failure is free only when the provider reports 0 billed units. */
+function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   const counts: Partial<Record<Unit, number>> = {};
   if (facts.units !== null) {
     const scaled = scaledCount("model_units", facts.units);
     if (Number.isSafeInteger(scaled)) counts.model_units = scaled;
   }
-  if (succeeded) {
+  if (succeeded(facts)) {
     if (facts.outputs !== null) counts.images = facts.outputs;
   } else if (facts.units === 0) {
     // The provider says the failure billed nothing: every count is 0.
     counts.images = 0;
   }
+  return counts;
+}
+
+/** The estimate's rate fields with their counts, and the fields no count fills; null when it stored no rates. */
+function rateBuckets(estimate: ChargeRow, counts: Partial<Record<Unit, number>>): { buckets: Record<string, number>; missing: string[] } | null {
   const rates = estimate.rates;
   if (rates === null || Object.keys(rates).length === 0) return null;
   const buckets: Record<string, number> = {};
+  const missing: string[] = [];
   for (const field of Object.keys(rates)) {
-    const unitRate = UNIT_RATES.find((one) => one.field === field);
-    const unit = unitRate?.units.find((one) => counts[one] !== undefined);
-    if (unit === undefined) return null;
-    buckets[field] = counts[unit]!;
+    const unit = UNIT_RATES.find((one) => one.field === field)?.units.find((one) => counts[one] !== undefined);
+    if (unit === undefined) missing.push(field);
+    else buckets[field] = counts[unit]!;
   }
-  const units = estimate.unit === null ? undefined : counts[estimate.unit as Unit];
-  return { kind: "units", buckets, ...(units !== undefined ? { units } : {}) };
+  return { buckets, missing };
 }
 
-/** A job's estimate charge, or null while it is not in the ledger (the settlement barrier). */
-async function jobEstimateCharge(db: D1Database, job: string): Promise<ChargeRow | null> {
-  const row = await db
-    .prepare("SELECT * FROM charge WHERE owner_type = 'job' AND owner_id = ? AND kind = 'estimate' ORDER BY seq LIMIT 1")
-    .bind(job)
-    .first<Record<string, unknown>>();
-  return row === null ? null : chargeFromRow(row);
+/**
+ * The final figure of a job from its result's facts, priced with the rates
+ * stored on the estimate, or null when the result gives none and the estimate
+ * stays. Every rate the estimate stored must get a count: billed units from
+ * the units header (fal's megapixels), never a missing header read as 0; the
+ * outputs in the result, for a rate per output, on a success only; a failure
+ * is free only when the provider reports 0 billed units (T15: fal's units
+ * expire).
+ */
+export function jobFinalFigure(estimate: ChargeRow, facts: JobResultFacts): FinalFigure | null {
+  const counts = countsOf(facts);
+  const parts = rateBuckets(estimate, counts);
+  if (parts === null || parts.missing.length > 0) return null;
+  const units = estimate.unit === null ? undefined : counts[estimate.unit as Unit];
+  return { kind: "units", buckets: parts.buckets, ...(units !== undefined ? { units } : {}) };
+}
+
+/** What a result means for a job, given its estimate's rates. */
+export type FigureDecision =
+  /** Every rate gets a count: settle. */
+  | { readonly kind: "settle"; readonly final: FinalFigure }
+  /** A success that lacks only an output count: reading its body may settle it. */
+  | { readonly kind: "needs_outputs" }
+  /** Nothing this result can give settles it: the estimate stays. */
+  | { readonly kind: "never" };
+
+/**
+ * The one decision over a job's estimate and a result's facts. A rate per
+ * billed unit with no units header gets nothing from a body, so only a
+ * success whose missing counts are all outputs is `needs_outputs`.
+ */
+export function decideFigure(estimate: ChargeRow, facts: JobResultFacts): FigureDecision {
+  const final = jobFinalFigure(estimate, facts);
+  if (final !== null) return { kind: "settle", final };
+  if (!succeeded(facts) || facts.outputs !== null) return { kind: "never" };
+  const parts = rateBuckets(estimate, countsOf(facts));
+  const onlyOutputs = parts !== null && parts.missing.every((field) => UNIT_RATES.find((one) => one.field === field)?.units.includes("images") === true);
+  return onlyOutputs ? { kind: "needs_outputs" } : { kind: "never" };
 }
 
 /** A job as its rows know it: enough to save and settle a figure, with no key and no connection. */
@@ -567,42 +487,45 @@ export type FigureSettlement =
   /** The estimate's rate needs the outputs, and the body could not be read: read the result again. */
   | "needs_body";
 
+/** The estimate stays: logged, from this one place, so the monitor sees each job whose figure never came. */
+function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
+  log("warn", "job_units_missing", { app: ref.appId, job: ref.job, status: facts.status });
+  return "estimate_kept";
+}
+
 /**
  * Settles a job from a final figure. The one settle function: a client poll,
  * the sweep's live check and the sweep's figure rows all call it, in any
  * order, at once or again. It reads only what never changes (the estimate
  * and the figure itself), and its only deletes come after the correction
  * exists, or remove its own figure row, which can never become usable. So no
- * caller can act on a stale read. Throws when D1 cannot answer.
+ * caller can act on a stale read. `estimate` is the job's estimate already
+ * read (null: not in the ledger); when left out it is read here. Throws when
+ * D1 cannot answer.
  */
-export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<FigureSettlement> {
-  const tags = { app: ref.appId, job: ref.job };
-  const estimate = await jobEstimateCharge(env.DB, ref.job);
-  if (estimate === null) return "waiting";
+export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
+  const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
+  // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
+  const countless = !counted(facts) && facts.unread !== true;
+  if (known === null && !countless) return "waiting";
+  const decision: FigureDecision = known === null ? { kind: "never" } : decideFigure(known, facts);
   // Only a result with a count has a figure row of its own.
   const dropFigure = async () => {
-    if (hasCount(facts)) await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
+    if (counted(facts)) await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
   };
-  const final = jobFinalFigure(estimate, facts);
-  if (final === null) {
-    if (bodyCouldHelp(estimate, facts)) return "needs_body";
-    // Never read as 0: the estimate stays, already labelled an estimate.
-    log("warn", "job_units_missing", { ...tags, status: facts.status });
+  if (decision.kind === "settle" && known !== null) {
+    const settled = await settleJobFrom(env.DB, known, decision.final, now);
+    if (settled.status !== "no_rate") return "settled";
+    log("error", "job_settle_no_rate", { app: ref.appId, job: ref.job, bucket: settled.bucket });
     await dropFigure();
     return "estimate_kept";
   }
-  const settled = await settleJob(env.DB, { jobId: ref.job, final, now });
-  switch (settled.status) {
-    case "settled":
-    case "already":
-      return "settled";
-    case "charge_missing":
-      return "waiting";
-    case "no_rate":
-      log("error", "job_settle_no_rate", { ...tags, bucket: settled.bucket });
-      await dropFigure();
-      return "estimate_kept";
-  }
+  // A job settled earlier (a result read again after its units header expired) is quietly done.
+  if (await jobSettled(env.DB, ref.job)) return "settled";
+  if (decision.kind === "needs_outputs" && facts.unread === true) return "needs_body";
+  // Never read as 0: the estimate stays, already labelled an estimate.
+  await dropFigure();
+  return keepEstimate(ref, facts);
 }
 
 /**
@@ -666,10 +589,10 @@ export type FinalResultOutcome =
  * the check stays open while the body may still be needed, so the sweep
  * decides once the estimate lands. Never throws.
  */
-export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<FinalResultOutcome> {
+export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FinalResultOutcome> {
   let settled: FigureSettlement | null = null;
   try {
-    settled = await withDeadline(settleFigure(env, ref, facts, now), FIGURE_D1_DEADLINE_MS, "settling the figure");
+    settled = await withDeadline(settleFigure(env, ref, facts, now, estimate), FIGURE_D1_DEADLINE_MS, "settling the figure");
   } catch (error) {
     log("warn", "job_settle_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
@@ -677,23 +600,12 @@ export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFa
   if (settled === "estimate_kept") return "estimate_kept";
   if (settled === "needs_body") return "retry";
   // The rate is not known yet: keep what was read, and keep checking while the body may matter.
-  const kept = hasCount(facts) ? await keepFigure(env, ref, facts, now) : true;
-  if (unreadSuccess(facts)) return "retry";
-  if (!hasCount(facts)) {
-    // A whole result with no count at all: no rate can settle it, now or later.
-    log("warn", "job_units_missing", { app: ref.appId, job: ref.job, status: facts.status });
-    return "estimate_kept";
+  if (facts.unread === true && succeeded(facts)) {
+    if (counted(facts)) await keepFigure(env, ref, facts, now);
+    return "retry";
   }
-  return kept ? "done" : "not_kept";
-}
-
-/** The JSON body of an answer, or null. */
-export async function jsonOf(response: Response): Promise<unknown> {
-  try {
-    return (await response.json()) as unknown;
-  } catch {
-    return null;
-  }
+  if (!counted(facts)) return keepEstimate(ref, facts);
+  return (await keepFigure(env, ref, facts, now)) ? "done" : "not_kept";
 }
 
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
@@ -733,9 +645,6 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
     return (await settling) === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
   }
 
-  // A check whose job was settled meanwhile (by a poll, or a figure row) asks the provider nothing.
-  const still = await env.DB.prepare("SELECT 1 FROM open_work WHERE id = ?").bind(item.id).first();
-  if (still === null) return { done: true };
   if (!jobSigningReady(env.JWT_SECRET)) return retry("JWT_SECRET cannot verify job ids");
   const jobId = typeof detail.jobId === "string" ? detail.jobId : null;
   const claims = jobId === null ? null : await readJobId(env.JWT_SECRET, jobId);
@@ -751,7 +660,7 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   }
   if (context.connection.status === "disabled") return retry("the job's connection is disabled");
   const status = await fetchJob(env, context, "status", claims, null, signal);
-  const statusRead = await boundedJson(status.response, OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS, ...(signal ? { signal } : {}) });
+  const statusRead = await boundedJson(status.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS, ...(signal ? { signal } : {}) });
   const statusBody = statusRead.kind === "parsed" ? statusRead.value : null;
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   const result = await fetchJob(env, context, "result", claims, null, signal);
@@ -763,15 +672,21 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   // From here the provider's final answer is in hand: finish deciding even if the item's time runs out.
   // A final decision also ends this check itself, so it holds even when the sweep has moved on.
   const applying = (async () => {
-    // The body is read only when the decision may need it, and never for longer than its deadline.
-    let read: BodyRead | null = null;
-    if (countNeedsBody(context.spec) && (await bodyNeeded(env, ref.job, headerFacts))) {
-      read = await boundedJson(result.response, OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
-    } else {
-      void result.response.body?.cancel().catch(() => undefined);
+    // The estimate is read once: it decides whether the body is read at all, then settles.
+    // Unknown (undefined) when D1 cannot answer in time: then the body is read, and settling reads it again.
+    let estimate: ChargeRow | null | undefined;
+    try {
+      estimate = await withDeadline(jobEstimateCharge(env.DB, ref.job), FIGURE_D1_DEADLINE_MS, "reading the estimate");
+    } catch {
+      estimate = undefined;
     }
+    // The body is read only when the decision may need it, and never for longer than its deadline.
+    const bodyNeeded = context.spec.outputsField !== undefined && (estimate == null || decideFigure(estimate, headerFacts).kind === "needs_outputs");
+    let read: BodyRead | null = null;
+    if (bodyNeeded) read = await boundedJson(result.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
+    else void result.response.body?.cancel().catch(() => undefined);
     const facts = read === null ? headerFacts : readResultFacts(context.spec, result.response, read)!;
-    const outcome = await applyFinalResult(env, ref, facts, now);
+    const outcome = await applyFinalResult(env, ref, facts, now, estimate);
     if (outcome === "done" || outcome === "estimate_kept") {
       await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run().catch(() => undefined);
     }

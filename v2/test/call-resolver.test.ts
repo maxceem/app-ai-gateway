@@ -84,21 +84,29 @@ describe("resolveCall and callGap", () => {
   it("never saves a call it admits unless every way its answers come out is charged", () => {
     const random = seeded(4_242);
     let admitted = 0;
+    // Many providers declare the same operation shape (the OpenAI-compatible ones, above all). Each shape
+    // is checked once per round: names and paths aside, with any code it carries, so no shape is skipped.
+    const shapes = new Map<string, { type: string; operation: OperationDescription }>();
+    for (const [type, description] of Object.entries(BUILT_IN_PROVIDERS)) {
+      for (const operation of description.operations) {
+        const { name: _name, match: _match, ...rest } = operation;
+        const key = JSON.stringify(rest, (_field, value: unknown) => (typeof value === "function" ? String(value) : value));
+        if (!shapes.has(key)) shapes.set(key, { type, operation });
+      }
+    }
     for (let round = 0; round < 45; round += 1) {
       const stored = { m: randomRates(random) } as CustomerRates;
-      for (const [type, description] of Object.entries(BUILT_IN_PROVIDERS)) {
+      for (const { type, operation } of shapes.values()) {
         const sources = priceSources({ type, rates: stored });
-        for (const operation of description.operations) {
-          const call = resolveCall({ models: ["m"] }, undefined, sources, operation, "m");
-          if (call.kind !== "admitted") continue;
-          admitted += 1;
-          const gap = callGap(call);
-          if (gap === null && call.bill.price !== null) {
-            expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(true);
-          }
-          if (gap !== null && call.bill.price !== null) {
-            expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(false);
-          }
+        const call = resolveCall({ models: ["m"] }, undefined, sources, operation, "m");
+        if (call.kind !== "admitted") continue;
+        admitted += 1;
+        const gap = callGap(call);
+        if (gap === null && call.bill.price !== null) {
+          expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(true);
+        }
+        if (gap !== null && call.bill.price !== null) {
+          expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(false);
         }
       }
     }

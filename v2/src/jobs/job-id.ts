@@ -46,7 +46,6 @@ export interface JobClaims {
   readonly userDigest: string | null;
   /** The connection's upstream route when the job was sent (`routeDigest`). */
   readonly route: string;
-  readonly issuedAt: number;
 }
 
 /** What signing takes: the claims, with the end user's own id, which is signed as its digest. */
@@ -63,7 +62,6 @@ interface WireClaims {
   readonly p: string;
   readonly u: string | null;
   readonly h: string;
-  readonly t: number;
 }
 
 const PREFIX = "j1";
@@ -173,7 +171,6 @@ export async function signJobId(secret: string, claims: JobClaimsInput): Promise
     p: claims.appId,
     u: await userDigest(claims.userId),
     h: claims.route,
-    t: claims.issuedAt,
   };
   const body = toBase64Url(encoder.encode(JSON.stringify(wire)));
   const signed = `${PREFIX}.${body}`;
@@ -212,7 +209,7 @@ export async function readJobId(secret: string | undefined, id: string): Promise
     return null;
   }
   if (![wire.k, wire.c, wire.s, wire.o, wire.m, wire.r, wire.a, wire.p, wire.h].every(text)) return null;
-  if (!(wire.u === null || text(wire.u)) || typeof wire.t !== "number") return null;
+  if (!(wire.u === null || text(wire.u))) return null;
   return {
     job: wire.k!,
     connectionId: wire.c!,
@@ -224,6 +221,5 @@ export async function readJobId(secret: string | undefined, id: string): Promise
     appId: wire.p!,
     userDigest: wire.u ?? null,
     route: wire.h!,
-    issuedAt: wire.t,
   };
 }

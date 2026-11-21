@@ -8,9 +8,8 @@ import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext }
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
-import { applyFinalResult, boundedJson, checkJob, countNeedsBody, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
-import { STATUS_READ_LIMIT } from "../src/jobs/poll.ts";
-import { JOB_SUBMIT_BODY_LIMIT } from "../src/proxy/serve.ts";
+import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
+import { applyFinalResult, boundedJson, checkJob, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, JOB_POLL_TIMEOUT_MS, jobCheckId, jobEstimate, jobFinalFigure, providerRequestId, readResultFacts, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
@@ -142,7 +141,6 @@ describe("job ids", () => {
     accountId: "acc",
     appId: "app",
     userId: null,
-    issuedAt: 1,
   };
 
   it("signs and reads nothing without a JWT_SECRET of at least 32 bytes, never a predictable key", async () => {
@@ -435,6 +433,17 @@ describe("the sweep and the four failure cases", () => {
     };
   }
 
+  it("writes an accepted job's estimate unpriced, and logs it, when pricing throws: the job is never failed for it", async () => {
+    const { appId } = await setup();
+    const broken = new Proxy({}, { get: () => { throw new Error("pricing broke"); } });
+    const entry = jobEstimate({ ...attempt(appId, `job_${crypto.randomUUID()}`), price: { price: broken as never, source: "list_rate" } }, QUEUE, {
+      status: "ok", httpStatus: 200, latencyMs: 1, signedId: "j1.x.y", now: 2_000,
+    });
+    expect(entry.charge.costNano).toBeNull();
+    expect(entry.openWork.map((row) => row.kind)).toContain("job_check");
+    expect(logged("usage_pricing_failed")).toBe(true);
+  });
+
   it("a lost ledger reply: the estimate written again is skipped, with its check, so nothing counts twice", async () => {
     const { appId } = await setup();
     const entry = jobEstimate(attempt(appId, `job_${crypto.randomUUID()}`), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "j1.x.y", now: 2_000 });
@@ -500,7 +509,7 @@ describe("the final figure", () => {
   const estimate = { rates: { per_unit: 25_000_000 }, unit: "model_units" } as unknown as ChargeRow;
 
   it("reads fal's fractional units at their stored scale, and gives none for a status that is not final", () => {
-    const facts = (status: number, headers: Record<string, string>, body: unknown = {}) => jobResultFacts(SPEC, { status, headers: new Headers(headers), body });
+    const facts = (status: number, headers: Record<string, string>, body: unknown = {}) => readResultFacts(SPEC, { status, headers: new Headers(headers) }, { kind: "parsed", value: body });
     expect(jobFinalFigure(estimate, facts(200, { "x-fal-billable-units": "2.7083333333333335" })!)).toEqual({
       kind: "units",
       buckets: { per_unit: 2709 },
@@ -512,7 +521,7 @@ describe("the final figure", () => {
 
   it("is never settled for a charge read from the ledger that names a rate the result cannot count", async () => {
     const tokens = { rates: { input: 1, output: 1 }, unit: "tokens" } as unknown as ChargeRow;
-    expect(jobFinalFigure(tokens, jobResultFacts(SPEC, { status: 200, headers: new Headers({ "x-fal-billable-units": "1" }), body: {} })!)).toBeNull();
+    expect(jobFinalFigure(tokens, readResultFacts(SPEC, { status: 200, headers: new Headers({ "x-fal-billable-units": "1" }) }, { kind: "parsed", value: {} })!)).toBeNull();
     expect(await readCharge(env.DB, "nothing")).toBeNull();
   });
 });
@@ -774,7 +783,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
   });
 
-  it("asks the provider nothing for a check whose job a figure already settled", async () => {
+  it("ends a late check whose job a figure already settled, with no second correction and no false warning", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     await submit(appId, slug, key);
@@ -800,7 +809,8 @@ describe("a figure is its own row, written once and never changed (review fixes,
       { now: Date.now(), lastTry: false },
     );
     expect(answer).toEqual({ done: true });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(logged("job_units_missing")).toBe(false);
   });
 
   it("stops resolving a job id once its connection points at another backend, or holds another key", async () => {
@@ -1066,8 +1076,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
   });
 
   it("counts outputs from never more than a bounded part of the body", async () => {
-    expect(countNeedsBody(SPEC)).toBe(true);
-    expect(await boundedJson(new Response('{"images":[1,2]}'), 64)).toEqual({ kind: "parsed", value: { images: [1, 2] } });
+    expect(await boundedJson(new Response('{"images":[1,2]}'), { limit: 64 })).toEqual({ kind: "parsed", value: { images: [1, 2] } });
     let cancelled = false;
     const big = new ReadableStream<Uint8Array>({
       pull: (controller) => controller.enqueue(new Uint8Array(1024)),
@@ -1075,14 +1084,14 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
         cancelled = true;
       },
     });
-    expect(await boundedJson(new Response(big), 4096)).toEqual({ kind: "too_large" });
+    expect(await boundedJson(new Response(big), { limit: 4096 })).toEqual({ kind: "too_large" });
     expect(cancelled).toBe(true);
 
     const { appId, slug, key } = await setup();
     falAnswers({});
     const jobId = String((await submit(appId, slug, key)).json!.request_id);
     // No units header and a body over the limit: nothing is counted, so the estimate stays, and the app gets every byte.
-    const huge = JSON.stringify({ images: [{ url: "x".repeat(OUTPUTS_READ_LIMIT + 10) }] });
+    const huge = JSON.stringify({ images: [{ url: "x".repeat(BODY_READ_LIMIT + 10) }] });
     falAnswers({ result: () => new Response(huge, { headers: { "content-type": "application/json" } }) });
     const { text } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     expect(text).toBe(huge);
@@ -1394,7 +1403,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
 
   it("stops reading a body that stalls past its deadline: a read error, to read again later", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const reading = boundedJson(new Response(stalling()), OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
+    const reading = boundedJson(new Response(stalling()), { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
     await vi.advanceTimersByTimeAsync(JOB_BODY_READ_DEADLINE_MS + 1);
     expect(await reading).toEqual({ kind: "read_error" });
   });
@@ -1439,7 +1448,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
 
   it("treats an accepted submission whose answer is over the read limit as lost: the estimate stays", async () => {
     const { appId, slug, key } = await setup();
-    falAnswers({ submit: () => Response.json({ request_id: "req-1", status: "IN_QUEUE", padding: "x".repeat(JOB_SUBMIT_BODY_LIMIT) }) });
+    falAnswers({ submit: () => Response.json({ request_id: "req-1", status: "IN_QUEUE", padding: "x".repeat(BODY_READ_LIMIT) }) });
     const { response } = await submit(appId, slug, key);
     expect(response.status).toBe(502);
     expect(await charges(appId)).toMatchObject([{ kind: "estimate", cost_nano: 50_000_000 }]);
@@ -1451,7 +1460,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     const { appId, slug, key } = await setup();
     falAnswers({});
     const jobId = String((await submit(appId, slug, key)).json!.request_id);
-    const big = JSON.stringify({ status: "IN_PROGRESS", logs: "y".repeat(STATUS_READ_LIMIT) });
+    const big = JSON.stringify({ status: "IN_PROGRESS", logs: "y".repeat(BODY_READ_LIMIT) });
     falAnswers({ status: () => new Response(big, { status: 200, headers: { "content-type": "application/json" } }) });
     const { response, text } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
     expect(response.status).toBe(200);
@@ -1547,5 +1556,49 @@ describe("a final result's body after the sweep item's time, and the provider's 
     falAnswers({});
     await submit(appId, slug, key);
     expect(fetchSpy.mock.calls.map(([input]) => String(input))).toContain("https://proxy.example.net/fal/queue/fal-ai/flux/dev");
+  });
+});
+
+describe("Fable's review fixes", () => {
+  it("reads a settled job's result again quietly once fal's units header is gone: no false warning, no new charge", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({ result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    // Later the header has expired, but the result is still readable (T15), and the app reads it again.
+    falAnswers({ result: () => Response.json({ images: [{}] }) });
+    logs.length = 0;
+    const again = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(again.response.status).toBe(200);
+    expect(logged("job_units_missing")).toBe(false);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
+  });
+
+  it("ends a poll's own time limit once the headers arrive, so a slow body is never cut off by it", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const submitted = await submit(appId, slug, key);
+    const claims = (await readJobId(env.JWT_SECRET, String(submitted.json!.request_id)))!;
+    const context = (await jobContext(env, claims))!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Headers that never come: the poll gives up at its time limit.
+    let stalled: AbortSignal | null = null;
+    fetchSpy.mockImplementation((_input, init) => {
+      stalled = init?.signal ?? null;
+      return new Promise<Response>(() => undefined);
+    });
+    void fetchJob(env, context, "result", claims, null).catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS + 1);
+    expect(stalled!.aborted).toBe(true);
+    // Headers in time, then a body slower than the limit: nothing aborts it.
+    let sent: AbortSignal | null = null;
+    fetchSpy.mockImplementation(async (_input, init) => {
+      sent = init?.signal ?? null;
+      return new Response(new ReadableStream<Uint8Array>(), { status: 200 });
+    });
+    await fetchJob(env, context, "result", claims, null);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS * 2);
+    expect(sent!.aborted).toBe(false);
   });
 });

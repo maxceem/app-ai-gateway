@@ -37,6 +37,7 @@ import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
+import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
@@ -58,7 +59,7 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
-import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
+import { safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
@@ -865,7 +866,7 @@ export async function sendAttempts(
 ): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController } | null = null;
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -878,9 +879,6 @@ export async function sendAttempts(
   // The header each connection's key is sent in belongs to the gateway alone: a client's value in any of
   // them, for any connection of the chain, never reaches any attempt. Its answers never pass it back
   // either (`clientResponseHeaders` in `answer`).
-  // A job's id is signed by the gateway: without a key that can sign, the job
-  // is never sent, so nothing is paid for that the app could not poll.
-  if (attempts.some((one) => one.operation.lifecycle === "job") && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
   const keyHeaders = [
     ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
     ...otherKeyHeaders,
@@ -894,7 +892,7 @@ export async function sendAttempts(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       }
       throw budgetExhausted(index);
     }
@@ -980,7 +978,7 @@ export async function sendAttempts(
         signal: controller.signal,
       });
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -1023,18 +1021,17 @@ export async function sendAttempts(
       clearTimeout(timer);
     }
     const latencyMs = Date.now() - providerStart;
-    fetchControllers.set(upstream, controller);
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs, keyHeader };
+      previous = { prepared, upstream, latencyMs, keyHeader, controller };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs, keyHeader);
+    return answer(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1073,11 +1070,19 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
-function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response | Promise<Response> {
+function answer(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  upstream: Response,
+  latencyMs: number,
+  keyHeader: string,
+  /** The attempt's fetch controller, so a job submit's body read that runs out of time can stop the fetch itself. */
+  controller?: AbortController,
+): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
   // A job the provider accepted: its answer carries the gateway's job id, and its estimate is charged.
   if (operation.lifecycle === "job" && upstream.status >= 200 && upstream.status < 300) {
-    return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader);
+    return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
   // A minted live-session credential is never kept by a cache between the gateway and the app:
@@ -1161,11 +1166,18 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
  * written after the answer is sent. An answer with no request id the gateway
  * can use is a lost submission: the estimate stays, and the app gets an error.
  */
-async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Promise<Response> {
+async function answerJobSubmit(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  upstream: Response,
+  latencyMs: number,
+  keyHeader: string,
+  controller: AbortController | undefined,
+): Promise<Response> {
   const { operation, attempt, connection } = prepared;
   const spec = operation.job!;
   // The provider has accepted the job by now, so a body that stalls must not hold the app or the estimate.
-  const body = await jsonWithin(upstream, JOB_SUBMIT_BODY_TIMEOUT_MS, fetchControllers.get(upstream));
+  const body = await submitBody(upstream, controller);
   const requestId = providerRequestId(spec, body);
   if (requestId === null) {
     recordLostSubmission(c, prepared, "ok", latencyMs, "no_request_id", upstream.status);
@@ -1183,7 +1195,6 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
     appId: attempt.appId,
     userId: attempt.identity.userId,
     route: await routeDigest(connection),
-    issuedAt: now,
   });
   const entry = jobEstimate(attempt, operation, { status: "ok", httpStatus: upstream.status, latencyMs, signedId: jobId, now });
   c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
@@ -1195,63 +1206,20 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
   return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
 }
 
-/** Each upstream answer's fetch controller, so a body read that runs out of time can stop the fetch itself. */
-const fetchControllers = new WeakMap<Response, AbortController>();
-
 /** How long the body of an accepted job submission may take to arrive. */
 export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
 
-/** The most of an accepted job submission's answer the gateway reads. A bigger one is a lost submission: its estimate stays. */
-export const JOB_SUBMIT_BODY_LIMIT = 1024 * 1024;
-
 /**
- * A response's JSON body, or null when it does not parse, fails, is larger
- * than `JOB_SUBMIT_BODY_LIMIT`, or does not arrive in time. At the deadline the fetch is aborted and the answer returns
- * at once: nothing waits on the stream's own cleanup, which can hang.
+ * An accepted job submission's JSON body, or null when it does not parse,
+ * fails, is larger than `BODY_READ_LIMIT`, or does not arrive in time. At the
+ * deadline the fetch is aborted and the answer returns at once.
  */
-async function jsonWithin(response: Response, ms: number, fetchController: AbortController | undefined): Promise<unknown> {
+async function submitBody(response: Response, controller: AbortController | undefined): Promise<unknown> {
   if (response.body === null) return null;
-  const reader = response.body.getReader();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<typeof LATE>((resolve) => {
-    timer = setTimeout(() => resolve(LATE), ms);
-  });
-  const reading = (async (): Promise<Uint8Array[] | typeof LATE | null> => {
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return chunks;
-      size += value.byteLength;
-      // Bytes are counted as they arrive: an answer past the limit is never held whole.
-      if (size > JOB_SUBMIT_BODY_LIMIT) return LATE;
-      chunks.push(value);
-    }
-  })().catch(() => null);
-  try {
-    const chunks = await Promise.race([reading, late]);
-    if (chunks === LATE) {
-      fetchController?.abort();
-      void reader.cancel().catch(() => undefined);
-      return null;
-    }
-    if (chunks === null) return null;
-    const bytes = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.byteLength, 0));
-    let at = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, at);
-      at += chunk.byteLength;
-    }
-    const text = new TextDecoder().decode(bytes);
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const read = await readBounded(response.body, { deadlineMs: JOB_SUBMIT_BODY_TIMEOUT_MS, onStop: () => controller?.abort() });
+  if (read.kind === "too_large") void read.stream.cancel().catch(() => undefined);
+  return read.kind === "whole" ? (parseJson(read.bytes) ?? null) : null;
 }
-
-const LATE = Symbol("late");
 
 /**
  * A job submission whose answer was lost, or came with no request id: the
@@ -1276,26 +1244,6 @@ function recordLostSubmission(
 /** Writes the charge of an attempt that ended with no body to read, after the response. */
 function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome): void {
   c.executionCtx.waitUntil(recordLedgerEntry(c.env, safeCharge(attempt, outcome)));
-}
-
-/**
- * The attempt's charge. If pricing throws (a cost too large to store, say),
- * the charge is still written, unpriced, and the failure is logged: a charge
- * is never lost or silently miscounted. The retry carries neither the price
- * nor the provider's own figure, so it never meets the same throwing report.
- */
-function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
-  try {
-    return callCharge(attempt, outcome);
-  } catch (error) {
-    log("error", "usage_pricing_failed", {
-      app: attempt.appId,
-      providerSlug: attempt.providerSlug,
-      model: attempt.model,
-      error: errorFacts(error),
-    });
-    return callCharge({ ...attempt, price: null }, { ...outcome, providerCostUsd: null });
-  }
 }
 
 /** The identity of a request, for the type checker in tests. */
