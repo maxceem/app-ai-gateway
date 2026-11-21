@@ -687,6 +687,51 @@ describe("conversation storage through the gateway", () => {
     expect(order[0]).toBe("client-eof");
   });
 
+  it("keeps the answer's pieces by reference, so the app's reads are not held up by copying (Sol round 2)", async () => {
+    const { observeBody } = await import("../src/proxy/observe.ts");
+    const first = new TextEncoder().encode("Two ");
+    const second = new TextEncoder().encode("eggs");
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.enqueue(second);
+        controller.close();
+      },
+    });
+    const { stream, observed } = observeBody(source, { keepWhole: 1024 });
+    const reader = stream.getReader();
+    const got: Uint8Array[] = [];
+    for (let read = await reader.read(); !read.done; read = await reader.read()) got.push(read.value);
+    const body = await observed;
+    expect(got).toEqual([first, second]);
+    expect(body.whole![0]).toBe(got[0]);
+    expect(body.whole![1]).toBe(got[1]);
+  });
+
+  it("schedules the stored conversation apart from the charge, after it (Sol round 2)", async () => {
+    const { slug, appId, key } = await storingApp();
+    providerAnswers();
+    const ledger = await import("../src/ledger/write.ts");
+    const capture = await import("../src/conversations/capture.ts");
+    const order: string[] = [];
+    const realRecord = ledger.recordLedgerEntry;
+    vi.spyOn(ledger, "recordLedgerEntry").mockImplementation((...args) => {
+      order.push("charge");
+      return realRecord(...args);
+    });
+    // A capture that never ends must not hold the charge.
+    vi.spyOn(capture, "captureConversation").mockImplementation(() => {
+      order.push("capture");
+      return new Promise<void>(() => undefined);
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key)), env, ctx);
+    await response.text();
+    // The never-ending capture is the only work left: wait on the charge alone.
+    await vi.waitFor(async () => expect(await chargeIds(appId)).toHaveLength(1));
+    expect(order).toEqual(["charge", "capture"]);
+  });
+
   it("stores model calls alone: never a passthrough path", async () => {
     const slug = await connection();
     await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE slug = ?")

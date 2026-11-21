@@ -94,13 +94,14 @@ export function observeBody(
         const chunk = result.value;
         controller.enqueue(chunk);
         totalBytes += chunk.byteLength;
+        // Kept by reference, never copied here: the app's read is not held up by it.
         if (whole !== null) {
           if (totalBytes > (options.keepWhole ?? 0)) whole = null;
-          else whole.push(chunk.slice());
+          else whole.push(chunk);
         }
         if (options.keepHead === true && headBytes < ERROR_HEAD_BYTES) {
           const take = Math.min(chunk.byteLength, ERROR_HEAD_BYTES - headBytes);
-          head.push(chunk.slice(0, take));
+          head.push(chunk.subarray(0, take));
           headBytes += take;
         }
         if (onChunk !== undefined) {

@@ -1186,7 +1186,6 @@ function answer(
   const ok = upstream.status >= 200 && upstream.status < 300;
 
   if (upstream.body === null) {
-    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false });
     record(c, attempt, {
       status: ok ? "ok" : "provider_error",
       httpStatus: upstream.status,
@@ -1196,6 +1195,8 @@ function answer(
       cut: false,
       latencyMs,
     });
+    // After the charge is scheduled, and apart from it.
+    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false });
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
 
@@ -1211,14 +1212,6 @@ function answer(
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        storeConversation(c, prepared, sent, {
-          httpStatus: upstream.status,
-          latencyMs,
-          contentType,
-          whole: body.whole,
-          totalBytes: body.totalBytes,
-          aborted: body.clientAborted,
-        });
         const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
         const usage = ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, reading?.usage ?? null, upstream.headers) : null;
         // A stream is whole once its style's closing event arrived, even if the
@@ -1260,6 +1253,20 @@ function answer(
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),
   );
+  // The stored conversation is scheduled on its own, after the charge's: neither waits on the other.
+  if (prepared.conversation !== undefined) {
+    c.executionCtx.waitUntil(
+      observed.then((body) =>
+        storeConversation(c, prepared, sent, {
+          httpStatus: upstream.status,
+          latencyMs,
+          contentType,
+          whole: body.whole,
+          totalBytes: body.totalBytes,
+          aborted: body.clientAborted,
+        })),
+    );
+  }
   return new Response(stream, { status: upstream.status, headers: responseHeaders });
 }
 
