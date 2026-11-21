@@ -240,10 +240,17 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
   return { providerKey, cloudflareToken };
 }
 
-/** The origin a request is sent to, ending in `/`: the connection's own base URL, or the provider's host. */
+/**
+ * The origin a request is sent to, ending in `/`: the connection's own base
+ * URL, or the provider's host. A connection with a base URL sends every
+ * request there, never to the provider's own hosts, so its key goes only
+ * where the customer pointed it: the main host at the base URL itself, any
+ * other host (fal's `queue`) under a path named after it, such as
+ * `<base URL>queue/`.
+ */
 export function upstreamOrigin(connection: ConnectionRecord, description: ProviderDescription, hostKey: string): string {
-  if (connection.baseUrl !== null && hostKey === "main") return connection.baseUrl;
   const host = description.hosts[hostKey];
   if (host === undefined) throw new GatewayError(500, "internal_error", "The provider description names an unknown host");
+  if (connection.baseUrl !== null) return hostKey === "main" ? connection.baseUrl : `${connection.baseUrl}${hostKey}/`;
   return `https://${host}/`;
 }

@@ -78,14 +78,17 @@ function toBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 
+/** The bytes of a base64url text, or null. Only the one canonical spelling is read, so each job has one id. */
 function fromBase64Url(text: string): Uint8Array | null {
   if (!/^[A-Za-z0-9_-]*$/u.test(text)) return null;
+  let bytes: Uint8Array;
   try {
     const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"));
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   } catch {
     return null;
   }
+  return toBase64Url(bytes) === text ? bytes : null;
 }
 
 /** A signed job id for `claims`. */

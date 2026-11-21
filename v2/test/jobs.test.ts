@@ -21,18 +21,19 @@ const SECRET = "sk-test-fal-key-4321";
 const QUEUE = fal.operations.find((one) => one.name === "fal.queue")!;
 const SPEC = QUEUE.job!;
 
-async function setup(rates: Record<string, unknown> | null = null) {
+async function setup(rates: Record<string, unknown> | null = null, baseUrl: string | null = null) {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `fal-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "fal", ""], SECRET);
+  // The key is sealed to where it is sent: the base URL, or the provider's own hosts.
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "fal", baseUrl ?? ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
       (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
-     VALUES (?, ?, 'fal', ?, 'fal', 'active', ?, '4321', NULL, ?, 1, 'usr_test', ?, ?)`,
+     VALUES (?, ?, 'fal', ?, 'fal', 'active', ?, '4321', ?, ?, 1, 'usr_test', ?, ?)`,
   )
-    .bind(id, ACCOUNT_ID, slug, blob, rates === null ? null : JSON.stringify(rates), now, now)
+    .bind(id, ACCOUNT_ID, slug, blob, baseUrl, rates === null ? null : JSON.stringify(rates), now, now)
     .run();
   const appId = await seedRoutedApp(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
@@ -148,7 +149,12 @@ describe("job ids", () => {
       .replaceAll("/", "_")
       .replace(/=+$/u, "");
     expect(await readJobId(env.JWT_SECRET, `${prefix}.${changed}.${signature}`)).toBeNull();
-    expect(await readJobId(env.JWT_SECRET, `${prefix}.${body}.${signature!.slice(0, -2)}AA`)).toBeNull();
+    expect(await readJobId(env.JWT_SECRET, `${prefix}.${body}.${signature!.startsWith("A") ? "B" : "A"}${signature!.slice(1)}`)).toBeNull();
+    // The same signature spelled another way (its last character's unused bits set) is not read either.
+    const last = signature!.at(-1)!;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const respelled = alphabet[alphabet.indexOf(last) ^ 1]!;
+    expect(await readJobId(env.JWT_SECRET, `${prefix}.${body}.${signature!.slice(0, -1)}${respelled}`)).toBeNull();
     expect(await readJobId(env.JWT_SECRET, "j1.not.valid")).toBeNull();
   });
 });
@@ -185,6 +191,15 @@ describe("submitting a job", () => {
     expect(claims).toMatchObject({ requestId: "req-1", appId, userId: "user-1", job: estimate!.owner_id });
     // The job is checked within minutes, in the same batch as its estimate.
     expect(await openWork(appId)).toMatchObject([{ id: jobCheckId(claims.job), kind: "job_check", charge_id: estimate!.id }]);
+  });
+
+  it("sends every request of a connection with a base URL there, the queue under `queue/`, never to fal's own hosts", async () => {
+    const { appId, slug, key } = await setup(null, "https://fal-proxy.example.com/");
+    falAnswers({});
+    const { json } = await submit(appId, slug, key);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://fal-proxy.example.com/queue/fal-ai/flux/dev");
+    await call("GET", `/v2/apps/${appId}/jobs/${String(json!.request_id)}/status`, key);
+    expect(String(fetchSpy.mock.calls.at(-1)![0])).toBe("https://fal-proxy.example.com/queue/fal-ai/flux/requests/req-1/status");
   });
 
   it("removes fal's webhook, so a bill can never grow where the gateway cannot see it", async () => {
@@ -350,9 +365,11 @@ describe("polling a job", () => {
     const other = await setup();
     fetchSpy.mockClear();
     const [prefix, body, signature] = jobId.split(".");
+    // A signature with its first character changed, always to a different one.
+    const altered = `${signature!.startsWith("A") ? "B" : "A"}${signature!.slice(1)}`;
     for (const [path, user] of [
       [`/v2/apps/${appId}/jobs/j1.e30.AAAA`, "user-1"],
-      [`/v2/apps/${appId}/jobs/${prefix}.${body}.${signature!.slice(0, -1)}A`, "user-1"],
+      [`/v2/apps/${appId}/jobs/${prefix}.${body}.${altered}`, "user-1"],
       [`/v2/apps/${other.appId}/jobs/${jobId}`, "user-1"],
       [`/v2/apps/${appId}/jobs/${jobId}`, "user-2"],
     ] as const) {
