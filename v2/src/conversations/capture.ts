@@ -163,6 +163,10 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   const keep = await readSavedConversations(env, input.accountId, input.appId);
   if (keep === null) return;
   // A secret shorter than this would match ordinary text: it is not looked for.
+  // That leaves no provider key unchecked: saving refuses a provider key under 8
+  // characters, and one with a character JSON would escape, so a stored key is
+  // always long enough here and always appears verbatim when echoed
+  // (`providerSecretAccepted` in contracts/admin.ts).
   const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
   const field = (name: string, value: string | null) => metadataWithoutCredentials(input, secrets, name, value);
   const sentRequest = await sentBody(input.sent);

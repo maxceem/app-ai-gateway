@@ -125,6 +125,20 @@ describe("adding a provider connection through a person", () => {
     expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
   });
 
+  it("refuses a provider key that conversation history could not recognise, and keeps the step open", async () => {
+    const { caller } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "openai-short" });
+    expect(opened.status).toBe(201);
+    const proof = proofOf(opened.body.url);
+    for (const secret of ["sk-1234", 'sk-live"secret', "sk-live\\secret"]) {
+      const refused = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret });
+      expect(refused.status, refused.text).toBe(400);
+      expect(refused.text).toContain("at least 8 characters");
+    }
+    expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
+    expect((await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret: KEY })).body).toEqual({ state: "completed" });
+  });
+
   it("names every host a provider sends the key to", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "fal", name: "fal" });
