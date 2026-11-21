@@ -54,6 +54,9 @@ function jobState(settled: boolean, work: WorkRow | undefined): JobState {
   return "estimate_kept";
 }
 
+// Every query is bound to the caller's account as well as the app: an app id
+// may be reused after another account deleted its app, and the ledger keeps
+// that account's rows.
 export async function listAppJobs(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const appId = c.req.param("app")!;
@@ -64,14 +67,16 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
   if (app === null) throw new GatewayError(404, "app_not_found", "App is not registered");
 
   const [total, page] = await c.env.DB.batch([
-    c.env.DB.prepare("SELECT COUNT(*) AS value FROM charge WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'").bind(appId),
+    c.env.DB.prepare(
+      "SELECT COUNT(*) AS value FROM charge WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'",
+    ).bind(actor.accountId, appId),
     c.env.DB.prepare(
       `SELECT owner_id, provider_connection_id, operation, model, end_user_id, used_at, cost_nano, measured, price_source
          FROM charge
-        WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'
+        WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'
         ORDER BY used_at DESC, owner_id
         LIMIT ? OFFSET ?`,
-    ).bind(appId, query.limit, query.offset),
+    ).bind(actor.accountId, appId, query.limit, query.offset),
   ]);
   const estimates = (page?.results ?? []) as EstimateRow[];
   const ids = JSON.stringify(estimates.map((row) => row.owner_id));
@@ -84,15 +89,15 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
           `SELECT owner_id, SUM(cost_nano) AS cost_nano,
                   MAX(CASE WHEN id = 'settle:job:' || owner_id THEN written_at END) AS settled_at
              FROM charge
-            WHERE app_id = ? AND owner_type = 'job' AND kind = 'correction' AND owner_id IN (SELECT value FROM json_each(?))
+            WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'correction' AND owner_id IN (SELECT value FROM json_each(?))
             GROUP BY owner_id`,
-        ).bind(appId, ids),
+        ).bind(actor.accountId, appId, ids),
         c.env.DB.prepare(
           `SELECT owner_id, SUM(gave_up_at IS NULL) AS open, SUM(gave_up_at IS NOT NULL) AS gave_up
              FROM open_work
-            WHERE app_id = ? AND owner_type = 'job' AND owner_id IN (SELECT value FROM json_each(?))
+            WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND owner_id IN (SELECT value FROM json_each(?))
             GROUP BY owner_id`,
-        ).bind(appId, ids),
+        ).bind(actor.accountId, appId, ids),
         c.env.DB.prepare("SELECT id, slug FROM provider_connection WHERE account_id = ? AND id IN (SELECT value FROM json_each(?))").bind(
           actor.accountId,
           connections,

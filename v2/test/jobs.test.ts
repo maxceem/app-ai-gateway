@@ -2183,6 +2183,36 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(byState.checking).toMatchObject({ estimate_nano: 25_000_000, correction_nano: null, total_nano: 25_000_000, settled_at: null });
   });
 
+  it("lists only the caller's account's jobs when another account's deleted app left rows under the same app id", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
+    // Another account once owned this app id: its ledger rows stay after the app is deleted.
+    const own = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'").bind(appId).first<Record<string, unknown>>();
+    const copy: Record<string, unknown> = { ...own!, id: `other:${String(own!.id)}`, account_id: "acc_other_account", owner_id: "other-job", end_user_id: "someone-else" };
+    const columns = Object.keys(copy);
+    await env.DB.prepare(`INSERT INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+      .bind(...columns.map((column) => copy[column] ?? null))
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, created_at)
+       VALUES ('other:work', 'job_check', 'acc_other_account', ?, 'job', 'other-job', 0, 0)`,
+    ).bind(appId).run();
+    const management = await seedManagementKey({ grant: "read" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/jobs`, { headers: { authorization: `Bearer ${management}` } }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await response.json()) as { total: number; jobs: Record<string, unknown>[] };
+    expect(body.total).toBe(1);
+    expect(body.jobs.map((job) => job.end_user_id)).not.toContain("someone-else");
+    expect(body.jobs.map((job) => job.id)).not.toContain("other-job");
+    await env.DB.prepare("DELETE FROM open_work WHERE id = 'other:work'").run();
+  });
+
   it("reads fal's confirmed cancel as final, with its units when fal reports them, and nothing else", () => {
     const headers = new Headers({ "x-fal-error-type": "client_cancelled" });
     expect(readResultFacts(SPEC, { status: 499, headers }, null)).toEqual({ status: 499, units: null, outputs: null, cancelled: true });
