@@ -245,6 +245,8 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
   readonly passthrough?: readonly CompiledPassthrough[];
+  /** The connection's route (`upstreamRoute`): which provider path a listing reaches, for its suggestion. */
+  readonly route?: UpstreamRoute;
 }
 
 export class ProviderMatcher {
@@ -323,7 +325,7 @@ export class ProviderMatcher {
         listed: listed.listed,
         parts,
         upstream: { host: "main", path: joinSegments(segments) },
-        suggested: this.suggestionFor(listed),
+        suggested: this.suggestionFor(listed, context.route),
       };
     }
 
@@ -339,9 +341,22 @@ export class ProviderMatcher {
     return { kind: "refused", reason: "not_declared" };
   }
 
-  /** The provider's suggested path a listing is (`SuggestedPath`): the same method and the same requests. Null for none. */
-  suggestionFor(listed: CompiledPassthrough): SuggestedPath | null {
-    return this.suggested.get(listingShape(listed.listed.method, listed.template)) ?? null;
+  /**
+   * The provider's suggested path a listing is (`SuggestedPath`): the same
+   * method and the same requests, as the provider reads the path. Null for
+   * none. The one mapping between a listed path and the provider's is
+   * Cloudflare AI Gateway's prefix (`upstreamTargets`), so through OpenAI's
+   * Cloudflare endpoint `realtime/client_secrets` is the same mint as
+   * `v1/realtime/client_secrets`. A base URL maps nothing: on a provider's
+   * own host it is the plain address.
+   */
+  suggestionFor(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): SuggestedPath | null {
+    const reads = upstreamTargets({ basePath: null, cloudflarePrefix: route.cloudflarePrefix }, "main", listed.template.segments)?.paths ?? [];
+    for (const segments of reads) {
+      const found = this.suggested.get(listingShape(listed.listed.method, { source: "", segments }));
+      if (found !== undefined) return found;
+    }
+    return null;
   }
 
   /**
@@ -438,6 +453,16 @@ export function namedPartProblem(template: Template): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Whether two listed paths of one method could match the same request.
+ * Listed paths are tried in order, so saving refuses such a pair: which one
+ * serves a request, with its price and field settings, never depends on the
+ * order (plan section 4.5).
+ */
+export function listingsOverlap(a: CompiledPassthrough, b: CompiledPassthrough): boolean {
+  return a.listed.method === b.listed.method && templatesMeet(a.template.segments as readonly SegmentPattern[], b.template.segments, {});
 }
 
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */

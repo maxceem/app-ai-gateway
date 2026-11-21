@@ -365,6 +365,15 @@ describe("saving a custom provider", () => {
     expect(JSON.stringify(moved.body)).toContain("OpenAI's built-in openai.chat endpoint");
   });
 
+  it("judges its paths again when its base URL moves onto a known provider's host with the same path", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
+    expect(created.status).toBe(201);
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://api.openai.com/", secret: SECRET });
+    expect(moved.status).toBe(400);
+    expect(JSON.stringify(moved.body)).toContain("OpenAI's built-in openai.chat endpoint");
+  });
+
   it("saves an admin path or a token mint on a known provider's host: the customer decides", async () => {
     const key = await seedManagementKey();
     const created = await createCustom(key, {

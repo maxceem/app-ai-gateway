@@ -72,7 +72,9 @@ import {
 import { builtInProvider } from "../providers/index.ts";
 import {
   compilePassthrough,
+  DIRECT_ROUTE,
   listingShape,
+  listingsOverlap,
   namedPartProblem,
   ProviderMatcher,
   upstreamRoute,
@@ -240,14 +242,18 @@ function pricingFromRates(rates: CustomerRates): DollarPricing {
  * reason and suggested value, read from the description now, never stored,
  * so every console, CLI and MCP answer says why it is there.
  */
-function passthroughView(stored: string | null, description: ProviderDescription | null = null): z.output<typeof PassthroughPathSchema>[] | undefined {
+function passthroughView(
+  stored: string | null,
+  description: ProviderDescription | null = null,
+  route: UpstreamRoute = DIRECT_ROUTE,
+): z.output<typeof PassthroughPathSchema>[] | undefined {
   const paths = readPassthrough(stored);
   if (paths.length === 0) return undefined;
   const matcher = description === null ? null : new ProviderMatcher(description);
   return paths.map((listed) => {
     let suggested: SuggestedPath | null = null;
     try {
-      suggested = matcher?.suggestionFor(compilePassthrough([listed])[0]!) ?? null;
+      suggested = matcher?.suggestionFor(compilePassthrough([listed])[0]!, route) ?? null;
     } catch {
       // A path that no longer compiles still shows as stored.
     }
@@ -289,18 +295,41 @@ function settingOf(field: FieldSetting): FieldSetting {
 const MAX_SECONDS_FROM_NOW = 30 * 24 * 60 * 60;
 
 /** A listing's field settings, checked: each names a field once, and its value fits where it goes. */
-function checkedFields(asked: readonly z.output<typeof FieldSettingSchema>[] | undefined, where: string): FieldSetting[] | undefined {
+function checkedFields(
+  asked: readonly z.output<typeof FieldSettingSchema>[] | undefined,
+  where: string,
+  method: string,
+): FieldSetting[] | undefined {
   if (asked === undefined) return undefined;
   const seen = new Set<string>();
+  // Every body field name set so far, with its settings index: a parent and its child would overwrite each other.
+  const bodyNames: { readonly path: readonly string[]; readonly name: string }[] = [];
   return asked.map((field, index) => {
     const at = `${where}.set_fields.${index}`;
     if (!Object.hasOwn(field, "value") || field.value === undefined) throw new GatewayError(400, "invalid_request", `${at}.value: a value is needed`);
+    // A GET is sent with no body, so a body field could never reach the provider.
+    if (field.in === "body" && (method === "GET" || method === "HEAD")) {
+      throw new GatewayError(400, "invalid_request", `${at}.in: a ${method} request has no body; set a query parameter instead`);
+    }
     const names = [field.name, ...(field.aliases ?? [])];
     for (const name of names) {
       const key = `${field.in}:${name}`;
       if (seen.has(key)) throw new GatewayError(400, "invalid_request", `${at}: ${name} is set twice`);
       seen.add(key);
       if (field.in === "body" && name.split(".").includes("")) throw new GatewayError(400, "invalid_request", `${at}: ${name} is not a field name`);
+    }
+    if (field.in === "body") {
+      for (const name of names) {
+        const path = name.split(".");
+        const clash = bodyNames.find((other) => {
+          const shorter = Math.min(other.path.length, path.length);
+          return other.path.slice(0, shorter).every((piece, depth) => piece === path[depth]);
+        });
+        if (clash !== undefined) {
+          throw new GatewayError(400, "invalid_request", `${at}: ${name} and ${clash.name} are the same field or one holds the other; set one of them`);
+        }
+      }
+      for (const name of names) bodyNames.push({ path: name.split("."), name });
     }
     if (field.as === "time_from_now") {
       if (!Number.isSafeInteger(field.value) || (field.value as number) < 0 || (field.value as number) > MAX_SECONDS_FROM_NOW) {
@@ -366,6 +395,8 @@ function passthroughJson(
   const known = shapesOf(before);
   const kept = shapesOf(stored);
   const builtInMatcher = subject.kind === "builtIn" ? new ProviderMatcher(subject.description) : null;
+  // Which provider path a listing reaches decides its suggestion: through Cloudflare, the setting's prefix.
+  const builtInRoute = subject.kind === "builtIn" ? upstreamRoute(subject.description, subject) : DIRECT_ROUTE;
   const seen = new Set<string>();
   const styles = new Set<string>();
   const checked = asked.map((entry, index) => {
@@ -392,7 +423,7 @@ function passthroughJson(
         throw new GatewayError(400, "invalid_request", `${where}.per_request: the price is too large`);
       }
     }
-    const setFields = checkedFields(entry.set_fields, where);
+    const setFields = checkedFields(entry.set_fields, where, entry.method);
     const bare: PassthroughPath = {
       method: entry.method,
       path: entry.path,
@@ -420,11 +451,23 @@ function passthroughJson(
     }
     // First listed with no settings of its own: the provider's safe defaults, written in so the customer sees them.
     const suggested =
-      setFields === undefined && !kept.has(listingKey(compiled)) ? (builtInMatcher?.suggestionFor(compiled)?.fields.map(settingOf) ?? []) : [];
+      setFields === undefined && !kept.has(listingKey(compiled)) ? (builtInMatcher?.suggestionFor(compiled, builtInRoute)?.fields.map(settingOf) ?? []) : [];
     const fields = setFields ?? suggested;
     const listed: PassthroughPath = { ...bare, ...(fields.length > 0 ? { setFields: fields } : {}) };
     return { where, key, listed, compiled: { listed, template: compiled.template }, isNew };
   });
+  // Listed paths are tried in order: two that could match the same request would let the order decide
+  // which price and field settings apply. A pair is judged when either is new, so a stored pair keeps working.
+  for (let later = 0; later < checked.length; later++) {
+    for (let earlier = 0; earlier < later; earlier++) {
+      const [a, b] = [checked[earlier]!, checked[later]!];
+      if (!a.isNew && !b.isNew) continue;
+      if (a.listed.style !== undefined || b.listed.style !== undefined) continue;
+      if (listingsOverlap(a.compiled, b.compiled)) {
+        throw new GatewayError(400, "invalid_request", `${b.where}.path: ${b.key} can match the same requests as ${a.key}; list exact paths that do not overlap`);
+      }
+    }
+  }
   const paths = checked.map((one) => one.listed);
   const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;
   const route = upstreamRoute(description, subject.kind === "custom" ? { baseUrl: subject.baseUrl, cloudflareGateway: null } : subject);
@@ -536,7 +579,12 @@ function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
 }
 
 export function providerView(row: ConnectionRow) {
-  const passthrough = passthroughView(row.passthrough_json, builtInProvider(row.type));
+  const builtIn = builtInProvider(row.type);
+  const passthrough = passthroughView(
+    row.passthrough_json,
+    builtIn,
+    builtIn === null ? DIRECT_ROUTE : upstreamRoute(builtIn, { baseUrl: row.base_url, cloudflareGateway: readCloudflareGateway(row.cloudflare_gateway_json) }),
+  );
   const auth = row.type === CUSTOM_PROVIDER_TYPE ? readCustomAuth(row.passthrough_json) : null;
   return {
     id: row.id,
@@ -612,6 +660,11 @@ function baseUrlProblem(description: ProviderDescription, baseUrl: string): stri
   const host = url.hostname.toLowerCase();
   if (host === CLOUDFLARE_AI_GATEWAY_HOST) {
     return "Cloudflare AI Gateway is reached through the connection's cloudflareGateway setting, not a base URL";
+  }
+  // Another built-in provider's host: its endpoints would be reached under this provider's rules and prices.
+  const owner = knownHostOwner(baseUrl);
+  if (owner !== null && owner.type !== description.type) {
+    return `${host} is ${owner.label}'s host; connect it as the ${owner.type} provider type, or as a custom provider`;
   }
   const declared = Object.values(description.hosts).find((entry) => entry.split("/")[0]!.toLowerCase() === host);
   const plain = declared !== undefined ? `/${declared.slice(declared.split("/")[0]!.length + 1)}`.replace(/\/?$/u, "/") : "/";
@@ -938,14 +991,17 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       upstreamRoute(oldDescription, { baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting }),
       upstreamRoute(newDescription, { baseUrl, cloudflareGateway: cloudflare }),
     );
+  // Another known provider's host behind the same path: its declared endpoints are judged against every listing again.
+  const ownerOf = (url: string | null) => (url === null ? null : (knownHostOwner(url)?.type ?? null));
+  const ownerMoved = ownerOf(current.base_url) !== ownerOf(baseUrl);
   const authMoved = customSetting !== null && (storedAuth?.header !== customSetting.auth.header || storedAuth?.format !== customSetting.auth.format);
-  const kept = body.passthrough === undefined && (routeMoved || authMoved) ? (passthroughView(current.passthrough_json, description) ?? []) : undefined;
+  const kept = body.passthrough === undefined && (routeMoved || ownerMoved || authMoved) ? (passthroughView(current.passthrough_json, description) ?? []) : undefined;
   const askedPaths = body.passthrough === null ? (custom ? [] : null) : (body.passthrough ?? kept);
   // The description the connection has once saved: its paths decide a custom provider's operations.
   let operationsDescription: ProviderDescription | null = custom ? newDescription : description;
   if (askedPaths === null) passthroughStored = null;
   else if (askedPaths !== undefined) {
-    const priorPaths = routeMoved ? [] : storedPaths;
+    const priorPaths = routeMoved || ownerMoved ? [] : storedPaths;
     let checked: CheckedListing;
     if (customSetting !== null) checked = passthroughJson({ kind: "custom", ...customSetting }, askedPaths, priorPaths, storedPaths);
     else {

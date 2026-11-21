@@ -302,6 +302,63 @@ describe("saving a listing", () => {
   it("keeps any path on a host that is not the provider's own", async () => {
     expect((await create({ type: "openai", baseUrl: "https://llm.example.net/openai/v1/" })).status).toBe(201);
   });
+  it("refuses a built-in connection on another provider's host: its endpoints would get this provider's rules and prices", async () => {
+    const { status, body } = await create({ type: "xai", baseUrl: "https://api.openai.com/" });
+    expect(status).toBe(400);
+    expect(body.error.message).toBe("baseUrl: api.openai.com is OpenAI's host; connect it as the openai provider type, or as a custom provider");
+  });
+
+  it.each([
+    [[{ method: "POST", path: "v1/realtime/{action}" }, { method: "POST", path: "v1/realtime/client_secrets" }]],
+    [[{ method: "POST", path: "v1/realtime/client_secrets" }, { method: "POST", path: "v1/realtime/{action}" }]],
+  ])("refuses two listings that could match the same request, in either order: %j", async (passthrough) => {
+    const { status, body } = await create({ type: "openai", passthrough });
+    expect(status).toBe(400);
+    expect(body.error.message).toContain("can match the same requests as");
+    // Other methods never meet.
+    expect((await create({ type: "openai", passthrough: [{ method: "GET", path: "v1/realtime/{action}" }, { method: "POST", path: "v1/realtime/client_secrets" }] })).status).toBe(201);
+  });
+
+  it.each([
+    [[{ in: "body", name: "options.enabled", value: true }, { in: "body", name: "options", value: { mode: "standard" } }], "one holds the other"],
+    [[{ in: "body", name: "options", value: {} }, { in: "body", name: "other", value: 1, aliases: ["options.enabled"] }], "one holds the other"],
+  ])("refuses a field and a field inside it, aliases included: %j", async (set_fields, says) => {
+    const { status, body } = await create({ type: "openai", passthrough: [{ method: "POST", path: "v1/echo", set_fields }] });
+    expect(status).toBe(400);
+    expect(body.error.message).toContain(says);
+  });
+
+  it("refuses a body field on a GET listing, which is sent with no body, and keeps a query parameter there", async () => {
+    const refused = await create({ type: "openai", passthrough: [{ method: "GET", path: "v1/echo", set_fields: [{ in: "body", name: "a", value: 1 }] }] });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.message).toContain("has no body");
+    expect((await create({ type: "openai", passthrough: [{ method: "GET", path: "v1/echo", set_fields: [{ in: "query", name: "a", value: "1" }] }] })).status).toBe(201);
+  });
+
+  it("keeps Gemini's key test: it lists the models", () => {
+    expect(describedAs("gemini").probe).toEqual({ path: "v1beta/models" });
+  });
+});
+
+describe("a mint reached through the Cloudflare AI Gateway setting", () => {
+  const CLOUDFLARE = { cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-test" } };
+
+  it("is the same mint whichever way the path is spelled: the setting's prefix is read back", async () => {
+    const saved = await create({ type: "openai", ...CLOUDFLARE, passthrough: [{ method: "POST", path: "realtime/client_secrets" }] });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(201);
+    expect(saved.body.provider.passthrough[0].set_fields).toEqual([{ ...CLIENT_SECRET_EXPIRY, label: "Token expiry", reason: expect.any(String), suggested_value: CLIENT_SECRET_EXPIRY.value }]);
+
+    const { appId, slug, key } = await connected({ type: "openai", ...CLOUDFLARE, passthrough: [{ method: "POST", path: "realtime/client_secrets" }] });
+    fetchSpy.mockImplementation(async () => Response.json({ value: "ek" }, { headers: { "cache-control": "public, max-age=300" } }));
+    const minted = await send("POST", `/v2/apps/${appId}/proxy/${slug}/realtime/client_secrets`, key, JSON.stringify({ expires_after: { seconds: 7200 } }), { "cf-aig-cache-ttl": "300" });
+    expect(minted.status, minted.text).toBe(200);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/realtime/client_secrets");
+    expect(sentBody(0).expires_after).toEqual({ anchor: "created_at", seconds: 60 });
+    expect(new Headers(init!.headers).get("cf-aig-skip-cache")).toBe("true");
+    expect(minted.headers.get("cache-control")).toBe("no-store");
+    expect((await chargesOf(appId))[0]).toMatchObject({ operation: "live_token" });
+  });
 });
 
 describe("serving a listing with field settings", () => {

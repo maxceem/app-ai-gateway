@@ -52,7 +52,7 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "../providers/connections.ts";
-import { ProviderMatcher, type PassthroughPath, type UpstreamTarget } from "../providers/matcher.ts";
+import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarget } from "../providers/matcher.ts";
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
@@ -261,7 +261,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // A connection's listed paths are reached only by an app that enables
       // passthrough on this route (plan section 4.5).
       const passthrough = routing.operations.includes(PASSTHROUGH) ? compiledPassthrough(connection.passthrough ?? []) : [];
-      const match = matcher.match(c.req.method, target.path, { passthrough });
+      const match = matcher.match(c.req.method, target.path, { passthrough, route: upstreamRoute(description, connection) });
       if (match.kind === "passthrough") {
         return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.suggested?.liveToken === true, upstream: match.upstream, url, startedAt });
       }
