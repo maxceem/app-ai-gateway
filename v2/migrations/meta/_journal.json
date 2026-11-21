@@ -50,6 +50,13 @@
       "when": 1795162571529,
       "tag": "0006_serving_providers",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795267239417,
+      "tag": "0007_job_list_index",
+      "breakpoints": true
     }
   ]
 }
