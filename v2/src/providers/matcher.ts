@@ -249,6 +249,16 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
   return { host: "main", paths };
 }
 
+/**
+ * Every path the provider may read for a path sent on `route`: the base URL's
+ * path joined in front, and the Cloudflare setting's prefix (`upstreamTargets`).
+ * The one place that decides which known path, such as a live-token mint, a
+ * request or listing is; saving and serving both use it.
+ */
+function providerReads(route: UpstreamRoute, path: readonly TemplateSegment[]): readonly (readonly TemplateSegment[])[] {
+  return upstreamTargets(route, "main", path)?.paths ?? [path];
+}
+
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
   readonly passthrough?: readonly CompiledPassthrough[];
@@ -355,15 +365,14 @@ export class ProviderMatcher {
   /**
    * The provider's suggested path a listing is (`SuggestedPath`): the same
    * method and the same requests, as the provider reads the path. Null for
-   * none. The one mapping between a listed path and the provider's is
-   * Cloudflare AI Gateway's prefix (`upstreamTargets`), so through OpenAI's
-   * Cloudflare endpoint `realtime/client_secrets` is the same mint as
-   * `v1/realtime/client_secrets`. A base URL maps nothing: on a provider's
-   * own host it is the plain address.
+   * none. Judged on every path the provider may read for the listing
+   * (`providerReads`), so through OpenAI's Cloudflare endpoint
+   * `realtime/client_secrets` is the same mint as
+   * `v1/realtime/client_secrets`, and on a proxy whose base URL has a path
+   * that path counts too.
    */
   suggestionFor(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): SuggestedPath | null {
-    const reads = upstreamTargets({ basePath: null, cloudflarePrefix: route.cloudflarePrefix }, "main", listed.template.segments)?.paths ?? [];
-    for (const segments of reads) {
+    for (const segments of providerReads(route, listed.template.segments)) {
       const found = this.suggested.get(listingShape(listed.listed.method, { source: "", segments }));
       if (found !== undefined) return found;
     }
@@ -372,15 +381,15 @@ export class ProviderMatcher {
 
   /**
    * Whether a request is one of the provider's live-session token mints,
-   * judged on every path the provider may read for it (`upstreamTargets`,
-   * through the Cloudflare setting's prefix), so a listing such as
-   * `v1/realtime/{resource}` serving `v1/realtime/client_secrets` still gets
-   * the mint's cache rules.
+   * judged on every path the provider may read for it (`providerReads`),
+   * so a listing such as `v1/realtime/{resource}` serving
+   * `v1/realtime/client_secrets` still gets the mint's cache rules, and so
+   * does `get-signed-url` behind a base URL ending in
+   * `v1/convai/conversation/`.
    */
   isLiveTokenMint(method: string, segments: readonly string[], route: UpstreamRoute = DIRECT_ROUTE): boolean {
     if (this.mints.length === 0) return false;
-    const reads = upstreamTargets({ basePath: null, cloudflarePrefix: route.cloudflarePrefix }, "main", segments.map(literal))?.paths ?? [];
-    return reads.some((read) => {
+    return providerReads(route, segments.map(literal)).some((read) => {
       const path = read.map((segment) => (segment.kind === "literal" ? segment.value : ""));
       return this.mints.some((mint) => mint.method === method && matchTemplate(mint.template, path) !== null);
     });

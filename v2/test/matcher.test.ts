@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, ProviderDescriptionError, ProviderMatcher } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderDescriptionError, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { defineOperation, defineProvider } from "../src/providers/operation.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { fal } from "../src/providers/fal.ts";
@@ -186,5 +186,17 @@ describe("broken descriptions are caught when compiled", () => {
     const op = defineOperation({ ...base, name: "t.dup", match: { method: "GET", path: "v1/x" }, model: { in: "fixed", model: "m" } });
     const twice = defineProvider({ type: "test", label: "Test", serviceModes: [], hosts: { main: "example.com" }, auth: { header: "x", format: "{key}" }, refused: [], operations: [op, op] });
     expect(() => new ProviderMatcher(twice)).toThrow(/declared twice/);
+  });
+});
+
+describe("known paths behind a base URL with a path", () => {
+  const matcher = new ProviderMatcher(elevenlabs);
+  const route = upstreamRoute(elevenlabs, { baseUrl: "https://voice-proxy.example.net/v1/convai/conversation/", cloudflareGateway: null });
+
+  it("finds the signed-URL mint the provider reads, for cache rules and for its suggested defaults", () => {
+    expect(matcher.isLiveTokenMint("GET", ["get-signed-url"], route)).toBe(true);
+    expect(matcher.isLiveTokenMint("GET", ["get-signed-url"])).toBe(false);
+    const [listed] = compilePassthrough([{ method: "GET", path: "get-signed-url" }]);
+    expect(matcher.suggestionFor(listed!, route)?.path).toBe("v1/convai/conversation/get-signed-url");
   });
 });
