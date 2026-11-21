@@ -1117,17 +1117,29 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
  */
 function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
+  // The version the draft was made from: it is saved at that revision, never at a newer one the list
+  // loaded since, so another admin's change is never quietly overwritten.
+  const [revision, setRevision] = useState(provider?.revision ?? 0);
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
+  const [conflict, setConflict] = useState(false);
   const parsed = parsePricesText(text);
+
+  /** Starts again from the provider as it is now, dropping the draft. */
+  const reload = () => {
+    setRevision(provider?.revision ?? 0);
+    setText(pricesText(provider?.pricing ?? null));
+    setConflict(false);
+  };
 
   const submit = async () => {
     if (!provider || "problem" in parsed) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, pricing: parsed.pricing } });
+      await update.mutateAsync({ id: provider.id, body: { revision, pricing: parsed.pricing } });
       toast.success(parsed.pricing === null ? "Your prices removed" : "Your prices saved");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save the prices");
+      if (error instanceof ApiError && error.status === 409) setConflict(true);
+      else toast.error(error instanceof Error ? error.message : "Could not save the prices");
     } finally {
       update.reset();
     }
@@ -1143,9 +1155,21 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       description="Your own prices for this connection's models, in dollars. Use them for a model our price list does not have, or to replace a listed price."
       submitLabel="Save prices"
       pending={update.isPending}
-      disabled={"problem" in parsed}
+      disabled={conflict || "problem" in parsed}
       onSubmit={() => void submit()}
     >
+      {conflict ? (
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>These prices changed since you opened them</AlertTitle>
+          <AlertDescription>
+            <p>Someone else saved this provider. Reload to see their prices, then make your change again.</p>
+            <Button type="button" variant="outline" size="sm" onClick={reload}>
+              Reload prices
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <Field
         label="Prices by model"
         htmlFor="provider-prices"

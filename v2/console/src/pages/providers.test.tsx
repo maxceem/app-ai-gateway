@@ -381,6 +381,43 @@ describe("PathsDialog after a conflict", () => {
   });
 });
 
+describe("PricesDialog after a conflict", () => {
+  it("keeps the revision it was opened at, shows the conflict, and saves only after a reload", async () => {
+    const opened = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+    const changed = { ...opened, revision: 4, pricing: { "fal-ai/old": { per_unit: 0.01 }, "fal-ai/theirs": { per_request: 0.05 } } };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? opened : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const puts_ = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/mine": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    expect(await screen.findByText(/these prices changed since you opened them/i)).toBeTruthy();
+    expect(puts_()[0]).toMatchObject({ revision: 3 });
+    // The list has reloaded at revision 4 by now; the draft is still from 3, so saving it is held back.
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    expect(((await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs");
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() => expect(puts_()[1]).toMatchObject({ revision: 4, pricing: changed.pricing }));
+  });
+});
+
 describe("safe defaults on listed paths", () => {
   const EXPIRY = { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: 60 } };
 
