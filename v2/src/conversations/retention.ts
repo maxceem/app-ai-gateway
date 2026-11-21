@@ -2,7 +2,10 @@
  * Retention for stored conversations (v1's `src/conversations/retention.ts`):
  * every day folder older than its app's `conversations.retention_days` is
  * deleted, with the media inside it. An app that no longer exists keeps
- * nothing.
+ * nothing. Folders are `<account>~<app>` (`./storage.ts`): an app is looked up
+ * with its account, so an app id another account uses again never extends or
+ * ends the first account's history. A folder without an account in its name
+ * (written before that layout, on a test deployment only) is left alone.
  *
  * Batches and media sit under days, and every batch holds one UTC day's
  * records only (v1's batches that ran past midnight are split by day when the
@@ -19,7 +22,7 @@
  * Runs once a day, from the hourly cron (`../index.ts`).
  */
 import { CONVERSATION_RETENTION_DAYS } from "../contracts/app-config.ts";
-import { appPrefix, CONVERSATIONS_ROOT, dayBefore } from "./storage.ts";
+import { appFolderName, CONVERSATIONS_ROOT, dayBefore, parseAppFolderName } from "./storage.ts";
 
 const DAY_FOLDER = /^(\d{4}-\d{2}-\d{2})\/$/;
 const R2_PAGE = 1000;
@@ -57,7 +60,6 @@ export class CallBudget {
   }
 }
 
-/** Retention days per existing app, read in one statement. A config this cannot read keeps the default. */
 /** An app's retention in days from its stored settings; unreadable settings give the default, rather than losing everything. */
 function retentionOf(configJson: string): number {
   try {
@@ -69,10 +71,19 @@ function retentionOf(configJson: string): number {
   return CONVERSATION_RETENTION_DAYS.default;
 }
 
+/** Retention days per existing app, keyed by its folder name (account and app), read in one statement. */
 async function appRetention(db: D1Database): Promise<Map<string, number>> {
-  const { results } = await db.prepare("SELECT id, config_json FROM app").all<{ id: string; config_json: string }>();
+  const { results } = await db
+    .prepare("SELECT id, account_id, config_json FROM app")
+    .all<{ id: string; account_id: string; config_json: string }>();
   const days = new Map<string, number>();
-  for (const row of results) days.set(row.id, retentionOf(row.config_json));
+  for (const row of results) {
+    try {
+      days.set(appFolderName(row.account_id, row.id), retentionOf(row.config_json));
+    } catch {
+      // An id no folder can be named after holds no records.
+    }
+  }
   return days;
 }
 
@@ -80,9 +91,12 @@ async function appRetention(db: D1Database): Promise<Map<string, number>> {
  * The app's retention as stored right now, read just before a folder is deleted, so a retention raised
  * while the sweep runs is honoured. `null` when it can't be read or the app is gone: the folder waits.
  */
-async function currentRetention(db: D1Database, appId: string): Promise<number | null> {
+async function currentRetention(db: D1Database, accountId: string, appId: string): Promise<number | null> {
   try {
-    const row = await db.prepare("SELECT config_json FROM app WHERE id = ?").bind(appId).first<{ config_json: string }>();
+    const row = await db
+      .prepare("SELECT config_json FROM app WHERE id = ? AND account_id = ?")
+      .bind(appId, accountId)
+      .first<{ config_json: string }>();
     return row === null ? null : retentionOf(row.config_json);
   } catch {
     return null;
@@ -93,9 +107,12 @@ async function currentRetention(db: D1Database, appId: string): Promise<number |
  * Whether the app is still gone, read just before a removed app's page is deleted, so an app made
  * while the sweep runs keeps its records. False when it exists or the read fails: the folder waits.
  */
-async function appStillAbsent(db: D1Database, appId: string): Promise<boolean> {
+async function appStillAbsent(db: D1Database, accountId: string, appId: string): Promise<boolean> {
   try {
-    const row = await db.prepare("SELECT 1 AS present FROM app WHERE id = ?").bind(appId).first<{ present: number }>();
+    const row = await db
+      .prepare("SELECT 1 AS present FROM app WHERE id = ? AND account_id = ?")
+      .bind(appId, accountId)
+      .first<{ present: number }>();
     return row === null;
   } catch {
     return false;
@@ -179,17 +196,23 @@ export async function runConversationRetention(
           }
           // `startAfter` names the folder, whose own keys sort after it: it comes back first.
           if (!wrapped && last !== null && folder <= last) continue;
-          const appId = folder.slice(CONVERSATIONS_ROOT.length, -1);
+          const owner = parseAppFolderName(folder.slice(CONVERSATIONS_ROOT.length, -1));
+          if (owner === null) {
+            // Written before folders named their account: never served, never touched.
+            finished = folder;
+            continue;
+          }
+          const { accountId, appId } = owner;
           current = folder;
-          const days = retention.get(appId);
+          const days = retention.get(appFolderName(accountId, appId));
           if (days === undefined) {
             // The app was missing when the sweep began; it is looked up again before each page,
             // so an app made since then keeps what it has written.
-            const outcome = await deleteAll(bucket, folder, work, pageSize, () => appStillAbsent(db, appId));
+            const outcome = await deleteAll(bucket, folder, work, pageSize, () => appStillAbsent(db, accountId, appId));
             result.deletedObjects += outcome.deleted;
             if (!outcome.stopped) result.removedApps += 1;
           } else {
-            const prefix = appPrefix(appId);
+            const prefix = folder;
             for (const day of await folders(bucket, prefix, work, pageSize)) {
               const match = DAY_FOLDER.exec(day.slice(prefix.length));
               // Day folders sort oldest first, so the first one kept ends the app.
@@ -199,7 +222,7 @@ export async function runConversationRetention(
               // for a later run.
               const dayName = match[1]!;
               const outcome = await deleteAll(bucket, day, work, pageSize, async () => {
-                const fresh = await currentRetention(db, appId);
+                const fresh = await currentRetention(db, accountId, appId);
                 return fresh !== null && dayName < dayBefore(now, fresh);
               });
               result.deletedObjects += outcome.deleted;

@@ -10,6 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { conversationRecord, type ConversationCapture } from "../src/conversations/record.ts";
 import { CallBudget, RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
+import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
 import { planIncludes } from "../src/billing/access.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
@@ -41,6 +42,7 @@ function capture(overrides: Partial<ConversationCapture> = {}): ConversationCapt
   return {
     eventId: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
+    accountId: ACCOUNT_ID,
     appId: "conversation-unit",
     userId: "user-1",
     installId: null,
@@ -70,7 +72,7 @@ async function gunzip(bytes: ArrayBuffer): Promise<string> {
 }
 
 async function storedRecords(appId: string): Promise<Record<string, any>[]> {
-  const listing = await bucket().list({ prefix: `conversations/${appId}/` });
+  const listing = await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` });
   const records: Record<string, any>[] = [];
   for (const object of listing.objects) {
     if (!object.key.endsWith(".jsonl.gz")) continue;
@@ -666,7 +668,7 @@ describe("conversation records", () => {
 describe("ConversationLog", () => {
   it("holds records until a batch is written, then writes them as one gzipped file", async () => {
     const appId = `log-${crypto.randomUUID().slice(0, 8)}`;
-    const log = env.CONVERSATION_LOG.getByName(appId);
+    const log = env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId));
     await log.append(capture({ appId, eventId: "event-1" }));
     await log.append(capture({ appId, eventId: "event-2" }));
     expect(await log.pendingCount()).toBe(2);
@@ -675,24 +677,24 @@ describe("ConversationLog", () => {
     // The alarm the first append set is what writes the batch.
     expect(await runDurableObjectAlarm(log)).toBe(true);
     expect(await log.pendingCount()).toBe(0);
-    const listing = await bucket().list({ prefix: `conversations/${appId}/` });
+    const listing = await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` });
     expect(listing.objects).toHaveLength(1);
     expect(listing.objects[0]!.key).toMatch(
-      new RegExp(`^conversations/${appId}/\\d{4}-\\d{2}-\\d{2}/\\d{6}-[a-f0-9]{16}\\.jsonl\\.gz$`),
+      new RegExp(`^conversations/${ACCOUNT_ID}~${appId}/\\d{4}-\\d{2}-\\d{2}/\\d{6}-[a-f0-9]{16}\\.jsonl\\.gz$`),
     );
     expect((await storedRecords(appId)).map((record) => record.event_id)).toEqual(["event-1", "event-2"]);
 
     // A batch holds one UTC day's records, named from the earliest, whatever order they arrived in (Sol round 1).
     const late = `log-${crypto.randomUUID().slice(0, 8)}`;
-    const lateLog = env.CONVERSATION_LOG.getByName(late);
+    const lateLog = env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, late));
     await lateLog.append(capture({ appId: late, eventId: "after", createdAt: "2026-11-02T00:00:01.000Z" }));
     await lateLog.append(capture({ appId: late, eventId: "before", createdAt: "2026-11-01T23:59:59.000Z" }));
     await lateLog.append(capture({ appId: late, eventId: "earlier", createdAt: "2026-11-01T23:58:00.000Z" }));
     await lateLog.flush();
-    const lateKeys = (await bucket().list({ prefix: `conversations/${late}/` })).objects.map((object) => object.key).sort();
+    const lateKeys = (await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, late)}` })).objects.map((object) => object.key).sort();
     expect(lateKeys).toEqual([
-      expect.stringMatching(new RegExp(`^conversations/${late}/2026-11-01/235800-`)),
-      expect.stringMatching(new RegExp(`^conversations/${late}/2026-11-02/000001-`)),
+      expect.stringMatching(new RegExp(`^conversations/${ACCOUNT_ID}~${late}/2026-11-01/235800-`)),
+      expect.stringMatching(new RegExp(`^conversations/${ACCOUNT_ID}~${late}/2026-11-02/000001-`)),
     ]);
     const byKey = async (key: string) => (await gunzip(await (await bucket().get(key))!.arrayBuffer())).split("\n").filter(Boolean).map((line) => JSON.parse(line).event_id);
     expect(await byKey(lateKeys[0]!)).toEqual(["before", "earlier"]);
@@ -700,7 +702,7 @@ describe("ConversationLog", () => {
 
     // Nothing pending writes nothing.
     await log.flush();
-    expect((await bucket().list({ prefix: `conversations/${appId}/` })).objects).toHaveLength(1);
+    expect((await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects).toHaveLength(1);
   });
 });
 
@@ -712,7 +714,7 @@ describe("ConversationLog retries a failed write (Sol round 8)", () => {
     expect(retryDelay(30)).toBe(MAX_RETRY_MS);
 
     const appId = `log-${crypto.randomUUID().slice(0, 8)}`;
-    const log = env.CONVERSATION_LOG.getByName(appId);
+    const log = env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId));
     await log.append(capture({ appId, eventId: "held" }));
     let failing = true;
     await runInDurableObject(log, (object) => {
@@ -743,7 +745,7 @@ describe("conversation storage through the gateway", () => {
     const { response, text } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key, { "x-client-trace-id": "message-42" }));
     expect(response.status).toBe(200);
     expect(JSON.parse(text)).toMatchObject({ output_text: "Logged." });
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
 
     const [record] = await storedRecords(appId);
     expect(record).toMatchObject({
@@ -775,13 +777,13 @@ describe("conversation storage through the gateway", () => {
       });
       const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
       expect(response.status).toBe(200);
-      await env.CONVERSATION_LOG.getByName(appId).flush();
+      await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     } finally {
       vi.useRealTimers();
     }
     const [record] = await storedRecords(appId);
     expect(record!.created_at.slice(0, 10)).toBe("2026-11-21");
-    const keys = (await bucket().list({ prefix: `conversations/${appId}/` })).objects.map((object) => object.key);
+    const keys = (await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects.map((object) => object.key);
     expect(keys.filter((key) => key.endsWith(".jsonl.gz")).every((key) => key.includes("/2026-11-21/"))).toBe(true);
     const charge = await env.DB.prepare("SELECT usage_day FROM charge WHERE id = ?").bind(record!.event_id).first<{ usage_day: string }>();
     expect(charge!.usage_day).toBe("2026-11-21");
@@ -804,7 +806,7 @@ describe("conversation storage through the gateway", () => {
     });
     expect(response.status).toBe(200);
     expect(text).toContain("eggs");
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(record!.response.kind).toBe("text");
     expect(record!.response.text).toContain('"content":"eggs"');
@@ -828,7 +830,7 @@ describe("conversation storage through the gateway", () => {
       body: JSON.stringify({ messages: [{ role: "user", content: "two eggs" }], temperature: 1 }),
     });
     expect(response.status).toBe(200);
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(record).toMatchObject({ endpoint: "meal", model: "gpt-4o-mini" });
     expect(record!.request.value).toMatchObject({ model: "gpt-4o-mini", temperature: 0 });
@@ -839,12 +841,12 @@ describe("conversation storage through the gateway", () => {
     providerAnswers();
     const optedOut = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key, { "x-conversation-storage": "off" }));
     expect(optedOut.response.status).toBe(200);
-    expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(0);
+    expect(await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).pendingCount()).toBe(0);
 
     const plain = await storingApp({ store: false });
     const served = await call(`/v2/apps/${plain.appId}/proxy/${plain.slug}/v1/responses`, responsesRequest(plain.key));
     expect(served.response.status).toBe(200);
-    expect(await env.CONVERSATION_LOG.getByName(plain.appId).pendingCount()).toBe(0);
+    expect(await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, plain.appId)).pendingCount()).toBe(0);
   });
 
   it("stores nothing once storage is turned off, even through an isolate that cached the app with it on (Sol round 5)", async () => {
@@ -852,12 +854,12 @@ describe("conversation storage through the gateway", () => {
     providerAnswers();
     // The first call warms this isolate's app cache with storage on.
     await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
-    const before = await env.CONVERSATION_LOG.getByName(appId).pendingCount();
+    const before = await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).pendingCount();
     // Another isolate saves storage off: this one's cache still says on.
     await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.store', json('false')) WHERE id = ?").bind(appId).run();
     const served = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
     expect(served.response.status).toBe(200);
-    expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(before);
+    expect(await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).pendingCount()).toBe(before);
   });
 
   it("refuses a storage header it cannot read", async () => {
@@ -897,7 +899,7 @@ describe("conversation storage through the gateway", () => {
       body: JSON.stringify({ model: "gpt-4o-mini", input: `my key is ${key}` }),
     });
     expect(response.status).toBe(401);
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     const stored = JSON.stringify(record);
     expect(stored).not.toContain("sk-test-provider-key-5678");
@@ -938,7 +940,7 @@ describe("conversation storage through the gateway", () => {
       body: JSON.stringify({ model: "gpt-4o-mini", input: `my token is ${token}` }),
     });
     expect(response.status).toBe(200);
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(JSON.stringify(record)).not.toContain(token);
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
@@ -949,7 +951,7 @@ describe("conversation storage through the gateway", () => {
     providerAnswers();
     const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key, { "x-client-trace-id": key }));
     expect(response.status).toBe(200);
-    await env.CONVERSATION_LOG.getByName(appId).flush();
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(JSON.stringify(record)).not.toContain(key);
     expect(record!.trace_id).toBeNull();
@@ -1041,7 +1043,7 @@ describe("conversation storage through the gateway", () => {
       headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1" },
     });
     expect(response.status, text).toBe(200);
-    expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(0);
+    expect(await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).pendingCount()).toBe(0);
   });
 });
 
@@ -1146,7 +1148,7 @@ describe("reading stored conversations", () => {
   async function storedFiles(): Promise<string> {
     const { appId } = await appWith({});
     const put = (name: string, body: string, contentType: string, records?: number) =>
-      bucket().put(`conversations/${appId}/${name}`, body, {
+      bucket().put(`${appPrefix(ACCOUNT_ID, appId)}${name}`, body, {
         httpMetadata: { contentType },
         ...(records === undefined ? {} : { customMetadata: { records: String(records) } }),
       });
@@ -1202,12 +1204,40 @@ describe("reading stored conversations", () => {
       env.DB.prepare("INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, '{}', 1, 'active', ?, ?)")
         .bind(otherApp, otherAccount, otherApp, now, now),
     ]);
-    await bucket().put(`conversations/${otherApp}/2026-11-01/010203-aaaaaaaa.jsonl.gz`, "theirs");
+    await bucket().put(`${appPrefix(otherAccount, otherApp)}2026-11-01/010203-aaaaaaaa.jsonl.gz`, "theirs");
     const list = await get(`/v2/admin/apps/${otherApp}/conversations`);
     expect(list.response.status).toBe(404);
     const file = await get(`/v2/admin/apps/${otherApp}/conversations/file?name=${encodeURIComponent("2026-11-01/010203-aaaaaaaa.jsonl.gz")}`);
     expect(file.response.status).toBe(404);
     expect(json(file.bytes)).toMatchObject({ error: { code: "app_not_found" } });
+  });
+
+  it("never shows another account's history to an app that reuses its id (Sol round 10)", async () => {
+    await seedAccount();
+    const now = Date.now();
+    const formerAccount = `org_${crypto.randomUUID().slice(0, 8)}`;
+    const reused = `app-reused-${crypto.randomUUID().slice(0, 8)}`;
+    // The former account's app is gone; its records are still in the bucket, under its own folder.
+    await env.DB.prepare("INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Former', 'usr_test', ?, ?)")
+      .bind(formerAccount, new Date(now).toISOString(), new Date(now).toISOString())
+      .run();
+    await bucket().put(`${appPrefix(formerAccount, reused)}2026-11-01/010203-aaaaaaaa.jsonl.gz`, "theirs");
+    await bucket().put(`${appPrefix(formerAccount, reused)}2026-11-01/media/${"a".repeat(64)}.png`, "their image");
+    // This account now has an app with the same id.
+    await env.DB.prepare("INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, '{}', 1, 'active', ?, ?)")
+      .bind(reused, ACCOUNT_ID, reused, now, now)
+      .run();
+    const list = await get(`/v2/admin/apps/${reused}/conversations?to=2026-11-30`);
+    expect(list.response.status).toBe(200);
+    expect(json(list.bytes)).toEqual({ app_id: reused, files: [], next_cursor: null });
+    for (const name of ["2026-11-01/010203-aaaaaaaa.jsonl.gz", `2026-11-01/media/${"a".repeat(64)}.png`]) {
+      const file = await get(`/v2/admin/apps/${reused}/conversations/file?name=${encodeURIComponent(name)}`);
+      expect(file.response.status).toBe(404);
+    }
+    // A folder written before folders named their account is never served either.
+    await bucket().put(`conversations/${reused}/2026-11-01/010203-bbbbbbbb.jsonl.gz`, "legacy");
+    const again = await get(`/v2/admin/apps/${reused}/conversations?to=2026-11-30`);
+    expect(json(again.bytes)).toEqual({ app_id: reused, files: [], next_cursor: null });
   });
 
   it("lets owners and admins read stored conversations, and refuses a member, as v1 did", async () => {
@@ -1244,30 +1274,30 @@ describe("conversation retention", () => {
     const { appId } = await storingApp({ store: true, retention_days: 30 });
     const store = bucket();
     const today = new Date().toISOString().slice(0, 10);
-    await store.put(`conversations/${appId}/2020-01-01/000000-aaaaaaaa.jsonl.gz`, "old");
-    await store.put(`conversations/${appId}/${today}/000000-bbbbbbbb.jsonl.gz`, "new");
-    await store.put(`conversations/${appId}/2020-01-01/media/${"c".repeat(64)}.png`, "old image");
-    await store.put(`conversations/${appId}/${today}/media/${"c".repeat(64)}.png`, "image");
-    await store.put("conversations/conversation-deleted-app/2020-01-01/000000-dddddddd.jsonl.gz", "orphan");
+    await store.put(`${appPrefix(ACCOUNT_ID, appId)}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "old");
+    await store.put(`${appPrefix(ACCOUNT_ID, appId)}${today}/000000-bbbbbbbb.jsonl.gz`, "new");
+    await store.put(`${appPrefix(ACCOUNT_ID, appId)}2020-01-01/media/${"c".repeat(64)}.png`, "old image");
+    await store.put(`${appPrefix(ACCOUNT_ID, appId)}${today}/media/${"c".repeat(64)}.png`, "image");
+    await store.put(`${appPrefix(ACCOUNT_ID, "conversation-deleted-app")}2020-01-01/000000-dddddddd.jsonl.gz`, "orphan");
 
     // Other tests in this file may have left batches of their own, so only these keys are asserted.
     const result = await runConversationRetention(store, env.DB, Date.now(), new CallBudget(500));
     expect(result.deletedObjects).toBeGreaterThanOrEqual(2);
     expect(result.removedApps).toBeGreaterThanOrEqual(1);
     const left = (await store.list({ prefix: "conversations/" })).objects.map((object) => object.key);
-    expect(left).toContain(`conversations/${appId}/${today}/media/${"c".repeat(64)}.png`);
-    expect(left).not.toContain(`conversations/${appId}/2020-01-01/media/${"c".repeat(64)}.png`);
-    expect(left).toContain(`conversations/${appId}/${today}/000000-bbbbbbbb.jsonl.gz`);
-    expect(left).not.toContain(`conversations/${appId}/2020-01-01/000000-aaaaaaaa.jsonl.gz`);
-    expect(left.some((key) => key.startsWith("conversations/conversation-deleted-app/"))).toBe(false);
+    expect(left).toContain(`${appPrefix(ACCOUNT_ID, appId)}${today}/media/${"c".repeat(64)}.png`);
+    expect(left).not.toContain(`${appPrefix(ACCOUNT_ID, appId)}2020-01-01/media/${"c".repeat(64)}.png`);
+    expect(left).toContain(`${appPrefix(ACCOUNT_ID, appId)}${today}/000000-bbbbbbbb.jsonl.gz`);
+    expect(left).not.toContain(`${appPrefix(ACCOUNT_ID, appId)}2020-01-01/000000-aaaaaaaa.jsonl.gz`);
+    expect(left.some((key) => key.startsWith(appPrefix(ACCOUNT_ID, "conversation-deleted-app")))).toBe(false);
   });
 
   it("keeps the records of an app made while the sweep runs, and of one it cannot look up (Sol round 9)", async () => {
     const store = bucket();
     const late = "conversation-late-app";
     const unreadable = "conversation-unreadable-app";
-    await store.put(`conversations/${late}/2020-01-01/000000-aaaaaaaa.jsonl.gz`, "made late");
-    await store.put(`conversations/${unreadable}/2020-01-01/000000-bbbbbbbb.jsonl.gz`, "lookup fails");
+    await store.put(`${appPrefix(ACCOUNT_ID, late)}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "made late");
+    await store.put(`${appPrefix(ACCOUNT_ID, unreadable)}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "lookup fails");
     // The sweep's first read sees neither app; looked up again before deleting, one now exists
     // and the other cannot be read.
     const db = {
@@ -1291,9 +1321,9 @@ describe("conversation retention", () => {
     } as unknown as D1Database;
 
     await runConversationRetention(store, db, Date.now(), new CallBudget(500));
-    const left = (await store.list({ prefix: "conversations/conversation-" })).objects.map((object) => object.key);
-    expect(left).toContain(`conversations/${late}/2020-01-01/000000-aaaaaaaa.jsonl.gz`);
-    expect(left).toContain(`conversations/${unreadable}/2020-01-01/000000-bbbbbbbb.jsonl.gz`);
+    const left = (await store.list({ prefix: `conversations/${ACCOUNT_ID}~conversation-` })).objects.map((object) => object.key);
+    expect(left).toContain(`${appPrefix(ACCOUNT_ID, late)}2020-01-01/000000-aaaaaaaa.jsonl.gz`);
+    expect(left).toContain(`${appPrefix(ACCOUNT_ID, unreadable)}2020-01-01/000000-bbbbbbbb.jsonl.gz`);
   });
 
   it("deletes a whole expired day folder in bulk, unread, across runs within each run's allowance (Sol round 3)", async () => {
@@ -1302,24 +1332,24 @@ describe("conversation retention", () => {
     // Leave only this app's folder, so each run's allowance goes to it.
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     const now = Date.parse("2026-11-22T04:00:00.000Z");
-    const expired = Array.from({ length: 150 }, (_, index) => `conversations/${appId}/2026-11-20/${String(index).padStart(6, "0")}-${index.toString(16).padStart(16, "0")}.jsonl.gz`);
+    const expired = Array.from({ length: 150 }, (_, index) => `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/${String(index).padStart(6, "0")}-${index.toString(16).padStart(16, "0")}.jsonl.gz`);
     await Promise.all(expired.map((key) => store.put(key, "unread")));
     // Still inside one day's retention on Nov 22: never touched.
-    const kept = [`conversations/${appId}/2026-11-21/235900-0123456789abcdef.jsonl.gz`, `conversations/${appId}/2026-11-21/media/${"d".repeat(64)}.png`];
+    const kept = [`${appPrefix(ACCOUNT_ID, appId)}2026-11-21/235900-0123456789abcdef.jsonl.gz`, `${appPrefix(ACCOUNT_ID, appId)}2026-11-21/media/${"d".repeat(64)}.png`];
     await Promise.all(kept.map((key) => store.put(key, "kept")));
     const reads = vi.spyOn(store, "get");
     let runs = 0;
-    while ((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects.length > 0 && runs < 10) {
+    while ((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects.length > 0 && runs < 10) {
       // Pages of 50 keys. A run that comes round to the app again lists the apps twice, so each run pays for:
       // the cursor read, two app lists, the day list, one page's list and delete, and the cursor write.
       await runConversationRetention(store, env.DB, now, new CallBudget(7), 50);
       runs += 1;
     }
-    expect((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects).toHaveLength(0);
+    expect((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects).toHaveLength(0);
     expect(runs).toBe(3);
     // Only the cursor was read, never a batch.
     expect(reads.mock.calls.every(([key]) => key === RETENTION_CURSOR)).toBe(true);
-    const left = (await store.list({ prefix: `conversations/${appId}/` })).objects.map((object) => object.key).sort();
+    const left = (await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects.map((object) => object.key).sort();
     expect(left).toEqual([...kept].sort());
   });
 
@@ -1328,12 +1358,12 @@ describe("conversation retention", () => {
     const store = bucket();
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     const now = Date.parse("2026-11-22T04:00:00.000Z");
-    const key = `conversations/${appId}/2026-11-20/000000-0123456789abcdef.jsonl.gz`;
+    const key = `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/000000-0123456789abcdef.jsonl.gz`;
     await store.put(key, "inside the new window");
     // The owner raises retention to 30 days after the sweep read the settings and while it lists the app's days.
     const list = store.list.bind(store);
     const listed = vi.spyOn(store, "list").mockImplementation(async (options) => {
-      if (options?.prefix === `conversations/${appId}/` && options.delimiter === "/") {
+      if (options?.prefix === `${appPrefix(ACCOUNT_ID, appId)}` && options.delimiter === "/") {
         await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.retention_days', 30) WHERE id = ?").bind(appId).run();
       }
       return list(options);
@@ -1351,13 +1381,13 @@ describe("conversation retention", () => {
     const store = bucket();
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     const now = Date.parse("2026-11-22T04:00:00.000Z");
-    const key = `conversations/${appId}/2026-11-20/000000-0123456789abcdef.jsonl.gz`;
+    const key = `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/000000-0123456789abcdef.jsonl.gz`;
     await store.put(key, "inside the new window");
     // The owner raises retention to 30 days while R2 lists the day folder's objects.
     const list = store.list.bind(store);
     const listed = vi.spyOn(store, "list").mockImplementation(async (options) => {
       const page = await list(options);
-      if (options?.prefix === `conversations/${appId}/2026-11-20/` && options.delimiter === undefined) {
+      if (options?.prefix === `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` && options.delimiter === undefined) {
         await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.retention_days', 30) WHERE id = ?").bind(appId).run();
       }
       return page;
@@ -1374,14 +1404,14 @@ describe("conversation retention", () => {
     const store = bucket();
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     for (let index = 0; index < 20; index += 1) {
-      await store.put(`conversations/busy-a/2020-01-01/${String(index).padStart(6, "0")}-aaaaaaaaaaaaaaa${index.toString(16)}.jsonl.gz`, "orphan");
+      await store.put(`${appPrefix(ACCOUNT_ID, "busy-a")}2020-01-01/${String(index).padStart(6, "0")}-aaaaaaaaaaaaaaa${index.toString(16)}.jsonl.gz`, "orphan");
     }
-    await store.put("conversations/busy-b/2020-01-01/000000-bbbbbbbb.jsonl.gz", "orphan");
+    await store.put(`${appPrefix(ACCOUNT_ID, "busy-b")}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "orphan");
     // Enough for the cursor, the app list and one app's list, not its delete.
     await runConversationRetention(store, env.DB, Date.now(), new CallBudget(3));
-    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe("conversations/busy-a/");
+    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe(appPrefix(ACCOUNT_ID, "busy-a"));
     await runConversationRetention(store, env.DB, Date.now(), new CallBudget(5));
-    expect((await store.list({ prefix: "conversations/busy-b/" })).objects).toHaveLength(0);
+    expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "busy-b") })).objects).toHaveLength(0);
   });
 
   it("works through more app folders than one run can list, a page at a time (Sol round 1)", async () => {
@@ -1389,8 +1419,8 @@ describe("conversation retention", () => {
     // Leave only these folders, so the run's pages are predictable.
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     const apps = ["page-a", "page-b", "page-c", "page-d", "page-e", "page-f"];
-    for (const app of apps) await store.put(`conversations/${app}/2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
-    const left = async () => (await store.list({ prefix: "conversations/page-" })).objects.length;
+    for (const app of apps) await store.put(`${appPrefix(ACCOUNT_ID, app)}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
+    const left = async () => (await store.list({ prefix: `conversations/${ACCOUNT_ID}~page-` })).objects.length;
     // One page of two folders per list: each run reads the cursor, lists a page, deletes two apps, then saves where it stopped.
     let runs = 0;
     while ((await left()) > 0 && runs < 10) {
@@ -1403,23 +1433,23 @@ describe("conversation retention", () => {
 
   it("stops when the run's allowance runs out", async () => {
     const store = bucket();
-    await store.put("conversations/conversation-budget-gone/2020-01-01/000000-eeeeeeee.jsonl.gz", "orphan");
+    await store.put(`${appPrefix(ACCOUNT_ID, "conversation-budget-gone")}2020-01-01/000000-eeeeeeee.jsonl.gz`, "orphan");
     const budget = new CallBudget(2);
     await expect(runConversationRetention(store, env.DB, Date.now(), budget)).resolves.toBeDefined();
     expect(budget.remaining).toBeLessThanOrEqual(1);
-    expect((await store.list({ prefix: "conversations/conversation-budget-gone/" })).objects).toHaveLength(1);
+    expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "conversation-budget-gone") })).objects).toHaveLength(1);
   });
 
   it("starts each run after the app the last one finished", async () => {
     const store = bucket();
-    await store.put("conversations/cursor-a/2020-01-01/000000-aaaaaaaa.jsonl.gz", "orphan");
-    await store.put("conversations/cursor-b/2020-01-01/000000-bbbbbbbb.jsonl.gz", "orphan");
-    await store.put(RETENTION_CURSOR, "conversations/cursor-a/");
+    await store.put(`${appPrefix(ACCOUNT_ID, "cursor-a")}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
+    await store.put(`${appPrefix(ACCOUNT_ID, "cursor-b")}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "orphan");
+    await store.put(RETENTION_CURSOR, appPrefix(ACCOUNT_ID, "cursor-a"));
     // The cursor read, the list of apps, one app's list and delete, and the cursor write.
     const budget = new CallBudget(5);
     await runConversationRetention(store, env.DB, Date.now(), budget);
-    expect((await store.list({ prefix: "conversations/cursor-b/" })).objects).toHaveLength(0);
-    expect((await store.list({ prefix: "conversations/cursor-a/" })).objects).toHaveLength(1);
-    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe("conversations/cursor-b/");
+    expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-b") })).objects).toHaveLength(0);
+    expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-a") })).objects).toHaveLength(1);
+    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe(appPrefix(ACCOUNT_ID, "cursor-b"));
   });
 });

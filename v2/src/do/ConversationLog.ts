@@ -15,11 +15,12 @@ export const FLUSH_CHARS = 4 * 1024 * 1024;
 export const MAX_BATCH_CHARS = 16 * 1024 * 1024;
 
 /**
- * One application's conversation inbox (ported from v1 unchanged): it takes each served request as a
+ * One application's conversation inbox (ported from v1): it takes each served request as a
  * record, keeps it in its own SQLite until a batch is due, and writes the batch
  * to R2 as one gzipped JSON-lines file.
  *
- * There is one per application, so an app's records arrive in one place and
+ * There is one per application of one account (named by `appFolderName`, so an app id used again by
+ * another account gets its own log), so an app's records arrive in one place and
  * leave as a few files an hour rather than one object per request, and a busy
  * app never waits on another. Nothing here is on the request path: the gateway
  * hands a capture over after the client already has its answer.
@@ -44,6 +45,7 @@ export class ConversationLog extends DurableObject<Env> {
         CREATE TABLE IF NOT EXISTS pending (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           app_id TEXT NOT NULL,
+          account_id TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           line TEXT NOT NULL
         );
@@ -68,13 +70,14 @@ export class ConversationLog extends DurableObject<Env> {
     if (bucket === null) return;
     const { line, media } = await conversationRecord(capture);
     for (const item of media) {
-      await bucket.put(`${appPrefix(capture.appId)}${item.name}`, item.bytes, {
+      await bucket.put(`${appPrefix(capture.accountId, capture.appId)}${item.name}`, item.bytes, {
         httpMetadata: { contentType: item.mime },
       });
     }
     this.ctx.storage.sql.exec(
-      "INSERT INTO pending (app_id, created_at, line) VALUES (?, ?, ?)",
+      "INSERT INTO pending (app_id, account_id, created_at, line) VALUES (?, ?, ?, ?)",
       capture.appId,
+      capture.accountId,
       capture.createdAt,
       line,
     );
@@ -133,10 +136,10 @@ export class ConversationLog extends DurableObject<Env> {
    * The rows of the next batch: the earliest UTC day's records, in arrival
    * order, up to `MAX_BATCH_CHARS`. Null where nothing is pending.
    */
-  private nextBatch(): { ids: number[]; earliest: string; appId: string } | null {
+  private nextBatch(): { ids: number[]; earliest: string; appId: string; accountId: string } | null {
     const rows = this.ctx.storage.sql
-      .exec<{ id: number; app_id: string; created_at: string; chars: number }>(
-        "SELECT id, app_id, created_at, LENGTH(line) AS chars FROM pending ORDER BY id",
+      .exec<{ id: number; app_id: string; account_id: string; created_at: string; chars: number }>(
+        "SELECT id, app_id, account_id, created_at, LENGTH(line) AS chars FROM pending ORDER BY id",
       )
       .toArray();
     if (rows.length === 0) return null;
@@ -155,7 +158,7 @@ export class ConversationLog extends DurableObject<Env> {
       chars += row.chars;
       if (earliest === null || new Date(row.created_at).getTime() < new Date(earliest).getTime()) earliest = row.created_at;
     }
-    return { ids, earliest: earliest!, appId: rows[0]!.app_id };
+    return { ids, earliest: earliest!, appId: rows[0]!.app_id, accountId: rows[0]!.account_id };
   }
 
   /** Writes the next batch, if there is one, and answers whether it wrote. */
@@ -169,7 +172,7 @@ export class ConversationLog extends DurableObject<Env> {
       if (next === null) return false;
       const batchId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
       // Named from its earliest record: every record in it shares that record's UTC day.
-      batch = { key: batchKey(next.appId, next.earliest, batchId), last_id: Math.max(...next.ids) };
+      batch = { key: batchKey(next.accountId, next.appId, next.earliest, batchId), last_id: Math.max(...next.ids) };
       const named = batch;
       this.ctx.storage.transactionSync(() => {
         sql.exec("INSERT INTO batch (id, key, last_id) VALUES (1, ?, ?)", named.key, named.last_id);

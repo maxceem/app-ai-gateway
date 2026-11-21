@@ -28,6 +28,8 @@ export interface ConversationCapture {
   /** The usage event's own id, so the two always name the same request. */
   eventId: string;
   createdAt: string;
+  /** The app's account: its records are kept under the account's own folder for it. */
+  accountId: string;
   appId: string;
   userId: string | null;
   installId: string | null;

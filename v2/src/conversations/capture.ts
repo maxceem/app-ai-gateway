@@ -21,7 +21,7 @@ import { log } from "../core/log.ts";
 import { wholeBody } from "../proxy/observe.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ConversationCapture } from "./record.ts";
-import { conversationsBucket } from "./storage.ts";
+import { appFolderName, conversationsBucket } from "./storage.ts";
 
 /** A request or response body larger than this is recorded by its size alone (v1). */
 export const CAPTURE_MAX_BYTES = 8 * 1024 * 1024;
@@ -137,7 +137,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   if (!planIncludes(await getBillingAccess(env, input.accountId), "conversationStorage")) return;
   // The app's saved setting, read fresh: an isolate that cached the app before
   // storage was turned off must not store. Its media policy is the one used.
-  const keep = await readSavedConversations(env, input.appId);
+  const keep = await readSavedConversations(env, input.accountId, input.appId);
   if (keep === null) return;
   const sentRequest = await sentBytes(input.sent);
   const requestBytes = sentRequest.bytes.byteLength > CAPTURE_MAX_BYTES ? null : sentRequest.bytes;
@@ -149,6 +149,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   const record: ConversationCapture = {
     eventId: input.chargeId,
     createdAt: new Date(input.startedAt).toISOString(),
+    accountId: input.accountId,
     appId: input.appId,
     userId: metadataWithoutCredentials(input, "user_id", input.identity.userId),
     installId: metadataWithoutCredentials(input, "install_id", input.identity.installId),
@@ -179,7 +180,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
       aborted: input.response.aborted,
     },
   };
-  await env.CONVERSATION_LOG.getByName(input.appId).append(record);
+  await env.CONVERSATION_LOG.getByName(appFolderName(input.accountId, input.appId)).append(record);
 }
 
 /** Stores one call's conversation, within `CAPTURE_DEADLINE_MS`. Never throws. */
