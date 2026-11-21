@@ -114,6 +114,31 @@ function attribution(description: ProviderDescription, input: UpstreamRequestInp
   return { ...(description.attributionHeaders?.({ appId: input.appId, userId: input.userId }) ?? {}) };
 }
 
+/**
+ * The URL of one request to a connection's provider, without credentials: the
+ * same place `upstreamRequest` sends it. Throws as `upstreamRequest` does for
+ * a request Cloudflare AI Gateway cannot carry.
+ */
+export function upstreamUrl(
+  connection: ConnectionRecord,
+  description: ProviderDescription,
+  input: Pick<UpstreamRequestInput, "hostKey" | "path" | "query" | "passthrough">,
+): string {
+  const gateway = connection.cloudflareGateway;
+  if (gateway === null) return `${upstreamOrigin(connection, description, input.hostKey, input.passthrough === true)}${input.path}${input.query}`;
+  const route = description.cloudflareGateway;
+  if (route === undefined) {
+    throw new GatewayError(502, "provider_unavailable", `${description.label} cannot be reached through Cloudflare AI Gateway`);
+  }
+  // Cloudflare serves a provider's main API only.
+  if (input.hostKey !== "main") {
+    throw new GatewayError(502, "provider_unavailable", "This operation cannot be sent through Cloudflare AI Gateway");
+  }
+  const prefix = route.stripPathPrefix;
+  const path = prefix !== undefined && input.path.startsWith(prefix) ? input.path.slice(prefix.length) : input.path;
+  return `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`;
+}
+
 /** The URL and headers of one request to a connection's provider. */
 export function upstreamRequest(
   connection: ConnectionRecord,
@@ -125,28 +150,21 @@ export function upstreamRequest(
     if (input.credentials.providerKey === null) {
       throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
     }
-    const url = `${upstreamOrigin(connection, description, input.hostKey, input.passthrough === true)}${input.path}${input.query}`;
+    const url = upstreamUrl(connection, description, input);
     return {
       url,
       headers: { ...attribution(description, input), ...providerAuth(description.auth, input.credentials.providerKey) },
       keyHeader: description.auth.header.toLowerCase(),
     };
   }
-  const route = description.cloudflareGateway;
-  if (route === undefined || input.credentials.cloudflareToken === null) {
+  if (input.credentials.cloudflareToken === null) {
     throw new GatewayError(502, "provider_unavailable", `${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
-  // Cloudflare serves a provider's main API only.
-  if (input.hostKey !== "main") {
-    throw new GatewayError(502, "provider_unavailable", "This operation cannot be sent through Cloudflare AI Gateway");
-  }
-  const prefix = route.stripPathPrefix;
-  const path = prefix !== undefined && input.path.startsWith(prefix) ? input.path.slice(prefix.length) : input.path;
+  const url = upstreamUrl(connection, description, input);
   const headers: Record<string, string> = {};
   input.client?.forEach((value, name) => {
     if (CLOUDFLARE_CLIENT_HEADERS.includes(name.toLowerCase())) headers[name.toLowerCase()] = value;
   });
-  const url = `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`;
   Object.assign(headers, attribution(description, input), {
     "cf-aig-authorization": `Bearer ${input.credentials.cloudflareToken}`,
     // Cloudflare's own logs, under the real app and user: set here alone.

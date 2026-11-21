@@ -1808,3 +1808,59 @@ describe("disconnects, stalled retries and redirects (review fixes, Astra round 
   });
 });
 
+
+describe("one rule for provider redirects on every job route (review fixes, Astra round 3)", () => {
+  it("refuses a status redirect to another host with this job's exact path", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    falAnswers({
+      status: () => new Response(null, { status: 303, headers: { location: "https://elsewhere.example.com/fal-ai/flux/requests/req-1" } }),
+    });
+    const refused = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    expect(refused.response.status).toBe(502);
+    expect(refused.response.headers.get("location")).toBeNull();
+    expect(logged("job_poll_redirect_refused")).toBe(true);
+  });
+
+  it("never passes a 300 Multiple Choices' Location to the app", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    falAnswers({ result: () => new Response("pick one", { status: 300, headers: { location: "https://elsewhere.example.com/x" } }) });
+    const refused = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(refused.response.status).toBe(502);
+    expect(refused.response.headers.get("location")).toBeNull();
+    expect(logged("job_poll_redirect_refused")).toBe(true);
+  });
+
+  it("refuses a redirected submit: no Location for the app, and nothing charged", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({ submit: () => new Response(null, { status: 307, headers: { location: "https://elsewhere.example.com/submit" } }) });
+    const refused = await submit(appId, slug, key);
+    expect(refused.response.status).toBe(502);
+    expect(refused.response.headers.get("location")).toBeNull();
+    expect(logged("job_submit_redirect_refused")).toBe(true);
+    const rows = await charges(appId);
+    expect(rows.filter((row) => row.kind === "estimate")).toEqual([]);
+    expect(rows.every((row) => row.cost_nano === null)).toBe(true);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("settles from the result when the app never polls and the status redirects to this job's result", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    falAnswers({
+      status: () => new Response(null, { status: 303, headers: { location: "https://queue.fal.run/fal-ai/flux/requests/req-1" } }),
+      result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "1" } }),
+    });
+    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    // 1 unit: the $0.05 estimate comes down to $0.025.
+    expect(rows[1]).toMatchObject({ cost_nano: -25_000_000 });
+    expect(await openWork(appId)).toEqual([]);
+  });
+});

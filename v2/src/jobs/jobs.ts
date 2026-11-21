@@ -38,7 +38,7 @@ import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { connectionCredentials, connectionDescription, loadConnection, readConnection, type ConnectionRecord } from "../providers/connections.ts";
 import type { JobRequest, JobSpec, OperationDescription, ProviderDescription, Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
-import { upstreamRequest } from "../providers/route.ts";
+import { upstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
 import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
@@ -168,23 +168,35 @@ export function withGatewayLinks(body: Record<string, unknown>, spec: JobSpec, l
   return out;
 }
 
-/** Statuses that carry a redirect in `Location`. */
-const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+/** A job's own follow-up endpoints. */
+export type JobEndpoint = "status" | "result";
 
 /**
- * A provider redirect, made safe to pass on: a `Location` that names this
- * job's status or result endpoint becomes the gateway's own link, so the app
- * never follows a provider URL. Null when the answer is not a redirect.
- * Throws a provider error for a redirect anywhere else.
+ * The upstream URL of one of a job's endpoints, without a query: where
+ * `fetchJob` sends that request, built from the signed claims alone.
  */
-export function gatewayRedirect(
+export function jobEndpointUrl(context: JobContext, which: JobEndpoint, claims: Pick<JobClaims, "model" | "requestId">): string {
+  const request = context.spec[which];
+  return upstreamUrl(context.connection, context.description, { hostKey: request.host ?? "main", path: jobRequestPath(request, claims), query: "" });
+}
+
+/**
+ * The one rule for a provider's redirect on any job route (submit, status,
+ * result). A provider's `Location` never reaches the app, for any 3xx status.
+ * A redirect whose destination is exactly one of `allowed` (the same origin and
+ * path) names that endpoint; any other redirect, a missing or unreadable
+ * `Location` included, is logged as `event` and refused with a provider
+ * error. Null when the answer is not a redirect.
+ */
+export function providerRedirect(
   response: Response,
   requestUrl: string,
-  spec: JobSpec,
-  claims: Pick<JobClaims, "model" | "requestId" | "appId" | "slug">,
-  links: GatewayLinks,
-): string | null {
-  if (!REDIRECT_STATUSES.has(response.status)) return null;
+  allowed: ReadonlyArray<readonly [JobEndpoint, string]>,
+  event: "job_poll_redirect_refused" | "job_submit_redirect_refused",
+  facts: Readonly<Record<string, unknown>>,
+): JobEndpoint | null {
+  if (response.status < 300 || response.status > 399) return null;
+  void response.body?.cancel().catch(() => undefined);
   const location = response.headers.get("location");
   let target: URL | null = null;
   try {
@@ -193,16 +205,31 @@ export function gatewayRedirect(
     target = null;
   }
   if (target !== null) {
-    const known: ReadonlyArray<readonly ["status" | "result", string]> = [
-      ["status", jobRequestPath(spec.status, claims)],
-      ["result", jobRequestPath(spec.result, claims)],
-    ];
-    for (const [which, path] of known) {
-      if (target.pathname === `/${path}` || target.pathname.endsWith(`/${path}`)) return links[which];
+    const where = `${target.origin}${target.pathname}`;
+    for (const [which, url] of allowed) {
+      const expected = new URL(url);
+      if (where === `${expected.origin}${expected.pathname}`) return which;
     }
   }
-  log("warn", "job_poll_redirect_refused", { app: claims.appId, providerSlug: claims.slug, status: response.status });
+  log("warn", event, { ...facts, status: response.status });
   throw new GatewayError(502, "provider_error", "The provider answered with a redirect the gateway cannot follow");
+}
+
+/** This job's status and result URLs, the only places a poll's redirect may point. */
+export function jobRedirectTargets(context: JobContext, claims: JobClaims): ReadonlyArray<readonly [JobEndpoint, string]> {
+  return (["status", "result"] as const).map((which) => [which, jobEndpointUrl(context, which, claims)] as const);
+}
+
+/**
+ * A poll's provider redirect turned into the gateway's own link for the same
+ * endpoint; null when the answer is not a redirect. Any other redirect throws.
+ */
+export function gatewayRedirect(response: Response, requestUrl: string, context: JobContext, claims: JobClaims, links: GatewayLinks): string | null {
+  const which = providerRedirect(response, requestUrl, jobRedirectTargets(context, claims), "job_poll_redirect_refused", {
+    app: claims.appId,
+    providerSlug: claims.slug,
+  });
+  return which === null ? null : links[which];
 }
 
 /** The provider-relative path of a follow-up request, built from the signed claims alone. */
@@ -697,9 +724,23 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   }
   if (context.connection.status === "disabled") return retry("the job's connection is disabled");
   const status = await fetchJob(env, context, "status", claims, null, signal);
-  const statusRead = await boundedJson(status.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS, ...(signal ? { signal } : {}) });
-  const statusBody = statusRead.kind === "parsed" ? statusRead.value : null;
-  if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
+  // A status that redirects to this job's own result means the job is done; any
+  // other redirect is refused (logged), and the job is checked again later.
+  let moved: JobEndpoint | null;
+  try {
+    moved = providerRedirect(status.response, status.url, jobRedirectTargets(context, claims), "job_poll_redirect_refused", {
+      app: claims.appId,
+      providerSlug: claims.slug,
+    });
+  } catch {
+    return retry(`status redirect refused (${status.response.status})`);
+  }
+  if (moved === "status") return retry(`job not done (${status.response.status})`);
+  if (moved === null) {
+    const statusRead = await boundedJson(status.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS, ...(signal ? { signal } : {}) });
+    const statusBody = statusRead.kind === "parsed" ? statusRead.value : null;
+    if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
+  }
   const result = await fetchJob(env, context, "result", claims, null, signal);
   const headerFacts = readResultFacts(context.spec, result.response, null);
   if (headerFacts === null) {

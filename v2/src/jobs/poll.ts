@@ -95,7 +95,7 @@ export function jobPollHandler(which: "status" | "result") {
         headers.delete("content-encoding");
         // A job's answer is the caller's own: no cache may keep it.
         noStore(headers);
-        const redirect = redirectTo(response, url, context.spec, claims, links, headers);
+        const redirect = redirectTo(response, url, context, claims, links, headers);
         if (redirect !== null) return redirect;
         const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
@@ -134,7 +134,7 @@ export function jobPollHandler(which: "status" | "result") {
           answerHeaders.delete("content-length");
           answerHeaders.delete("content-encoding");
           noStore(answerHeaders);
-          const moved = redirectTo(answer, again.url, context.spec, claims, links, answerHeaders);
+          const moved = redirectTo(answer, again.url, context, claims, links, answerHeaders);
           if (moved !== null) return moved;
           answerHeaders.set("x-agw-status-trimmed", "query");
           // A retry whose body stalls ends at the poll's own limit, never holding the app.
@@ -178,14 +178,13 @@ export function jobPollHandler(which: "status" | "result") {
 function redirectTo(
   response: Response,
   requestUrl: string,
-  spec: Parameters<typeof gatewayRedirect>[2],
+  context: Parameters<typeof gatewayRedirect>[2],
   claims: Parameters<typeof gatewayRedirect>[3],
   links: Parameters<typeof gatewayRedirect>[4],
   headers: Headers,
 ): Response | null {
-  const location = gatewayRedirect(response, requestUrl, spec, claims, links);
+  const location = gatewayRedirect(response, requestUrl, context, claims, links);
   if (location === null) return null;
-  void response.body?.cancel().catch(() => undefined);
   headers.set("location", location);
   headers.delete("content-type");
   return new Response(null, { status: response.status, headers });

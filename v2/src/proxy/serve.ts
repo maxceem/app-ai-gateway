@@ -67,7 +67,7 @@ import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, ser
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 import { jobSigningReady, jobSigningUnavailable, routeDigest, signJobId } from "../jobs/job-id.ts";
-import { gatewayLinks, jobEstimate, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
+import { gatewayLinks, jobEstimate, providerRedirect, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -1102,6 +1102,13 @@ function answer(
   controller?: AbortController,
 ): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
+  // A job submit the provider redirected was not accepted: nothing is charged, and its
+  // `Location` never reaches the app (a client following it would resend the job's body,
+  // and any token header the app signs in with, to another host).
+  if (operation.lifecycle === "job" && upstream.status >= 300 && upstream.status <= 399) {
+    record(c, attempt, { status: "provider_error", httpStatus: upstream.status, errorCode: null, usage: null, providerCostUsd: null, cut: false, latencyMs });
+    providerRedirect(upstream, "", [], "job_submit_redirect_refused", { app: attempt.appId, providerSlug: attempt.providerSlug });
+  }
   // A job the provider accepted: its answer carries the gateway's job id, and its estimate is charged.
   if (operation.lifecycle === "job" && upstream.status >= 200 && upstream.status < 300) {
     return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
