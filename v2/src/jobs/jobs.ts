@@ -168,6 +168,43 @@ export function withGatewayLinks(body: Record<string, unknown>, spec: JobSpec, l
   return out;
 }
 
+/** Statuses that carry a redirect in `Location`. */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * A provider redirect, made safe to pass on: a `Location` that names this
+ * job's status or result endpoint becomes the gateway's own link, so the app
+ * never follows a provider URL. Null when the answer is not a redirect.
+ * Throws a provider error for a redirect anywhere else.
+ */
+export function gatewayRedirect(
+  response: Response,
+  requestUrl: string,
+  spec: JobSpec,
+  claims: Pick<JobClaims, "model" | "requestId" | "appId" | "slug">,
+  links: GatewayLinks,
+): string | null {
+  if (!REDIRECT_STATUSES.has(response.status)) return null;
+  const location = response.headers.get("location");
+  let target: URL | null = null;
+  try {
+    target = location === null ? null : new URL(location, requestUrl);
+  } catch {
+    target = null;
+  }
+  if (target !== null) {
+    const known: ReadonlyArray<readonly ["status" | "result", string]> = [
+      ["status", jobRequestPath(spec.status, claims)],
+      ["result", jobRequestPath(spec.result, claims)],
+    ];
+    for (const [which, path] of known) {
+      if (target.pathname === `/${path}` || target.pathname.endsWith(`/${path}`)) return links[which];
+    }
+  }
+  log("warn", "job_poll_redirect_refused", { app: claims.appId, providerSlug: claims.slug, status: response.status });
+  throw new GatewayError(502, "provider_error", "The provider answered with a redirect the gateway cannot follow");
+}
+
 /** The provider-relative path of a follow-up request, built from the signed claims alone. */
 export function jobRequestPath(request: JobRequest, claims: Pick<JobClaims, "model" | "requestId">): string {
   const modelSegments = claims.model.split("/").map((segment) => encodeURIComponent(segment));
@@ -218,7 +255,7 @@ export async function fetchJob(
   userId: string | null,
   signal?: AbortSignal,
   query = "",
-): Promise<{ readonly response: Response; readonly keyHeader: string }> {
+): Promise<{ readonly response: Response; readonly keyHeader: string; readonly url: string }> {
   const request = context.spec[which];
   // Once the sweep's time for the item is up, no more provider calls start.
   signal?.throwIfAborted();
@@ -245,7 +282,7 @@ export async function fetchJob(
   const timer = setTimeout(() => untilHeaders.abort(new Error("job poll timed out")), JOB_POLL_TIMEOUT_MS);
   try {
     const response = await fetch(target.url, { method: request.method, headers: target.headers, redirect: "manual", signal: untilHeaders.signal });
-    return { response, keyHeader: target.keyHeader };
+    return { response, keyHeader: target.keyHeader, url: target.url };
   } catch (error) {
     log("warn", "job_poll_failed", { app: claims.appId, providerSlug: claims.slug, which, error: errorFacts(error) });
     throw new GatewayError(502, "provider_error", "Provider request failed");

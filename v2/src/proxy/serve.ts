@@ -995,7 +995,10 @@ async function sendAttemptsKeptFor(
         redirect: "manual",
         signal: controller.signal,
       });
-      if (prepared.operation.lifecycle === "job") keepAliveUntilReleased(c, job);
+      if (prepared.operation.lifecycle === "job") {
+        keepAliveUntilReleased(c, job);
+        cutOnDisconnect(c, controller);
+      }
     } catch (error) {
       if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       throw error;
@@ -1243,6 +1246,30 @@ function keepAliveUntilReleased(c: ProxyContext, job: { release: () => void }): 
   c.executionCtx.waitUntil(kept);
 }
 
+/**
+ * How long a job submit still waits for the provider once the app has gone
+ * away. The request is kept alive (`waitUntil`) only for a limited time after
+ * the app leaves, about 30 s, so the wait is cut well before that: the
+ * submission then takes the lost-submission path, and its estimate is written
+ * in time.
+ */
+export const JOB_DISCONNECT_GRACE_MS = 20_000;
+
+/**
+ * Aborts a job submit's fetch `JOB_DISCONNECT_GRACE_MS` after the app goes
+ * away, unless its own deadline comes first. Aborting it also ends a body
+ * read in progress.
+ */
+function cutOnDisconnect(c: ProxyContext, controller: AbortController): void {
+  const signal = c.req.raw.signal;
+  if (signal === undefined || signal === null) return;
+  const cut = (): void => {
+    setTimeout(() => controller.abort(new Error("the app went away")), JOB_DISCONNECT_GRACE_MS);
+  };
+  if (signal.aborted) cut();
+  else signal.addEventListener("abort", cut, { once: true });
+}
+
 /** How long the body of an accepted job submission may take to arrive. */
 export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
 
@@ -1253,7 +1280,11 @@ export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
  */
 async function submitBody(response: Response, controller: AbortController | undefined): Promise<unknown> {
   if (response.body === null) return null;
-  const read = await readBounded(response.body, { deadlineMs: JOB_SUBMIT_BODY_TIMEOUT_MS, onStop: () => controller?.abort() });
+  const read = await readBounded(response.body, {
+    deadlineMs: JOB_SUBMIT_BODY_TIMEOUT_MS,
+    ...(controller === undefined ? {} : { signal: controller.signal }),
+    onStop: () => controller?.abort(),
+  });
   if (read.kind === "too_large") void read.stream.cancel().catch(() => undefined);
   return read.kind === "whole" ? (parseJson(read.bytes) ?? null) : null;
 }

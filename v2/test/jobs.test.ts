@@ -17,6 +17,7 @@ import { chargeFromRow, readCharge, writeToLedger, type ChargeRow } from "../src
 import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
+import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
 
@@ -1712,3 +1713,98 @@ describe("disconnects, stalled bodies and oversized status answers (review fixes
     expect(without.text).not.toContain("queue.fal.run");
   });
 });
+
+describe("disconnects, stalled retries and redirects (review fixes, Astra round 2)", () => {
+  const encoder = new TextEncoder();
+
+  it("writes an accepted job's estimate when the app leaves before fal answers and fal answers too late", async () => {
+    const { appId, slug, key } = await setup();
+    // fal never answers on its own: only the gateway's cut ends the wait.
+    let sent: AbortSignal | null = null;
+    fetchSpy.mockImplementation((_input, init) => {
+      sent = init?.signal ?? null;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = new AbortController();
+    const ctx = createExecutionContext();
+    const answer = worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/queue/fal-ai/flux/dev`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "a cat", num_images: 2 }),
+        signal: app.signal,
+      }),
+      env,
+      ctx,
+    );
+    await vi.waitFor(() => expect(sent).not.toBeNull());
+    app.abort();
+    await vi.advanceTimersByTimeAsync(JOB_DISCONNECT_GRACE_MS + 1);
+    expect(sent!.aborted).toBe(true);
+    vi.useRealTimers();
+    expect((await answer).status).toBe(504);
+    await waitOnExecutionContext(ctx);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate"]);
+    expect(logged("job_submission_lost")).toBe(true);
+  });
+
+  it("answers with its own links when the status retry without logs stalls", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    const huge = { status: "IN_PROGRESS", logs: [{ message: "x".repeat(BODY_READ_LIMIT + 10) }] };
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) =>
+      String(input).includes("logs=1")
+        ? Response.json(huge)
+        : new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(encoder.encode('{"status":"IN_'));
+              },
+            }),
+            { status: 200 },
+          ),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const ctx = createExecutionContext();
+    const pending = worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status?logs=1`, { headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1" } }),
+      env,
+      ctx,
+    );
+    await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS + 1);
+    vi.useRealTimers();
+    const response = await pending;
+    expect(response.headers.get("x-agw-status-trimmed")).toBe("stalled");
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      request_id: jobId,
+      status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
+      response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+    });
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("turns a redirect to this job's result into the gateway's link, and refuses any other redirect", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    falAnswers({
+      status: () => new Response(null, { status: 303, headers: { location: "https://queue.fal.run/fal-ai/flux/requests/req-1" } }),
+    });
+    const moved = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    expect(moved.response.status).toBe(303);
+    expect(moved.response.headers.get("location")).toBe(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`);
+
+    falAnswers({ result: () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example.com/x" } }) });
+    const refused = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(refused.response.status).toBe(502);
+    expect(refused.response.headers.get("location")).toBeNull();
+    expect(logged("job_poll_redirect_refused")).toBe(true);
+  });
+});
+

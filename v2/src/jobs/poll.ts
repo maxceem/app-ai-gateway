@@ -15,8 +15,11 @@
  *   keep either answer (`Cache-Control: no-store`).
  * - A status answer too large to rewrite is never passed on as it came, since
  *   its links point at the provider: it is asked for again without the
- *   optional query fields (fal's `logs`), and if that is still too large the
- *   gateway answers with its own links only (`x-agw-status-trimmed`).
+ *   optional query fields (fal's `logs`), and if that is still too large, or
+ *   its body stalls, the gateway answers with its own links only
+ *   (`x-agw-status-trimmed`).
+ * - A provider redirect is never passed on: one to this job's status or
+ *   result becomes the gateway's own link, and any other is a provider error.
  */
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
@@ -30,7 +33,9 @@ import {
   boundedJson,
   fetchJob,
   gatewayLinks,
+  gatewayRedirect,
   JOB_BODY_READ_DEADLINE_MS,
+  JOB_POLL_TIMEOUT_MS,
   jobContext,
   jobStatusQuery,
   readResultFacts,
@@ -83,12 +88,15 @@ export function jobPollHandler(which: "status" | "result") {
         }
         // Only the query fields the operation lists go upstream, and only on a status poll.
         const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
-        const { response, keyHeader } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
+        const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
+        const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         headers.delete("content-length");
         headers.delete("content-encoding");
         // A job's answer is the caller's own: no cache may keep it.
         noStore(headers);
+        const redirect = redirectTo(response, url, context.spec, claims, links, headers);
+        if (redirect !== null) return redirect;
         const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
           if (context.spec.finalStatuses.includes(response.status)) {
@@ -113,10 +121,9 @@ export function jobPollHandler(which: "status" | "result") {
           return new Response(bodiless ? null : response.body, { status: response.status, headers });
         }
         // A status answer's links point at the gateway, as the submit answer's do.
-        const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
         let answer = response;
         let answerHeaders = headers;
-        let read = bodiless || response.body === null ? null : await readBounded(response.body);
+        let read = bodiless || response.body === null ? null : await readBounded(response.body, { deadlineMs: JOB_POLL_TIMEOUT_MS });
         if (read !== null && read.kind === "too_large" && query !== "") {
           // Too large to rewrite, so never passed on with the provider's links in it.
           // Asked once more without the optional query fields (fal's `logs`).
@@ -127,14 +134,20 @@ export function jobPollHandler(which: "status" | "result") {
           answerHeaders.delete("content-length");
           answerHeaders.delete("content-encoding");
           noStore(answerHeaders);
+          const moved = redirectTo(answer, again.url, context.spec, claims, links, answerHeaders);
+          if (moved !== null) return moved;
           answerHeaders.set("x-agw-status-trimmed", "query");
-          read = NULL_BODY_STATUSES.has(answer.status) || answer.body === null ? null : await readBounded(answer.body);
+          // A retry whose body stalls ends at the poll's own limit, never holding the app.
+          read =
+            NULL_BODY_STATUSES.has(answer.status) || answer.body === null
+              ? null
+              : await readBounded(answer.body, { deadlineMs: JOB_POLL_TIMEOUT_MS });
         }
-        if (read !== null && read.kind === "too_large") {
-          // Still too large: the gateway answers with its own links and the job id only.
-          void read.stream.cancel().catch(() => undefined);
+        if (read !== null && (read.kind === "too_large" || read.kind === "stopped")) {
+          // Still too large, or stalled: the gateway answers with its own links and the job id only.
+          if (read.kind === "too_large") void read.stream.cancel().catch(() => undefined);
           answerHeaders.set("content-type", "application/json");
-          answerHeaders.set("x-agw-status-trimmed", "body");
+          answerHeaders.set("x-agw-status-trimmed", read.kind === "too_large" ? "body" : "stalled");
           const named = context.spec.links ?? {};
           const minimal: Record<string, unknown> = { [context.spec.requestIdField]: jobId };
           if (named.status !== undefined) minimal[named.status] = links.status;
@@ -155,6 +168,27 @@ export function jobPollHandler(which: "status" | "result") {
       },
     );
   };
+}
+
+/**
+ * A provider redirect turned into the gateway's own link, as an answer with
+ * no body; null when the answer is not a redirect. A redirect anywhere other
+ * than this job's status or result throws a provider error.
+ */
+function redirectTo(
+  response: Response,
+  requestUrl: string,
+  spec: Parameters<typeof gatewayRedirect>[2],
+  claims: Parameters<typeof gatewayRedirect>[3],
+  links: Parameters<typeof gatewayRedirect>[4],
+  headers: Headers,
+): Response | null {
+  const location = gatewayRedirect(response, requestUrl, spec, claims, links);
+  if (location === null) return null;
+  void response.body?.cancel().catch(() => undefined);
+  headers.set("location", location);
+  headers.delete("content-type");
+  return new Response(null, { status: response.status, headers });
 }
 
 /**
