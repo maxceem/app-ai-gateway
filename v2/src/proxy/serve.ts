@@ -1220,7 +1220,7 @@ function answer(
       latencyMs,
     });
     // After the charge is scheduled, and apart from it.
-    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false, upstreamFailed: false });
+    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false, providerCut: false });
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
 
@@ -1233,17 +1233,23 @@ function answer(
     keepHead: !ok,
     ...(prepared.storesConversation === true ? { keepWhole: CAPTURE_MAX_BYTES } : {}),
   });
+  // The meter reads the finished answer once. The charge and the stored
+  // conversation both take what it decided, so they never disagree on
+  // whether the answer was whole.
+  const metered = observed.then((body) => {
+    const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
+    // A stream is whole once its style's closing event arrived, even if the
+    // app went away right after. One that ended without it was cut short,
+    // however it ended. A style with no closing event, and an answer that
+    // is not a stream, are whole when they were read to the end.
+    const closed = reading?.closed ?? null;
+    const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
+    return { body, reading, cut };
+  });
   c.executionCtx.waitUntil(
-    observed.then(
-      (body) => {
-        const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
+    metered.then(
+      ({ body, reading, cut }) => {
         const usage = ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, reading?.usage ?? null, upstream.headers) : null;
-        // A stream is whole once its style's closing event arrived, even if the
-        // app went away right after. One that ended without it was cut short,
-        // however it ended. A style with no closing event, and an answer that
-        // is not a stream, are whole when they were read to the end.
-        const closed = reading?.closed ?? null;
-        const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
         // Charged as the model that served it, when the request named another it could be served with:
         // its price, and the mode the request asked of its provider, which the served mode starts from.
         const charged = ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt;
@@ -1280,7 +1286,7 @@ function answer(
   // The stored conversation is scheduled on its own, after the charge's: neither waits on the other.
   if (prepared.storesConversation === true) {
     c.executionCtx.waitUntil(
-      observed.then((body) =>
+      metered.then(({ body, cut }) =>
         storeConversation(c, prepared, sent, {
           httpStatus: upstream.status,
           latencyMs,
@@ -1288,7 +1294,9 @@ function answer(
           whole: body.whole,
           totalBytes: body.totalBytes,
           aborted: body.clientAborted,
-          upstreamFailed: body.upstreamFailed,
+          // Cut short by the provider, not by the app: the meter's own decision,
+          // so a stream that ended without its closing event counts too.
+          providerCut: cut && !body.clientAborted,
         })),
     );
   }
@@ -1304,7 +1312,7 @@ function storeConversation(
   c: ProxyContext,
   prepared: PreparedAttempt,
   sentAttempt: SentAttempt | undefined,
-  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean; upstreamFailed: boolean },
+  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean; providerCut: boolean },
 ): void {
   if (prepared.storesConversation !== true || sentAttempt === undefined) return;
   const { attempt } = prepared;
@@ -1325,9 +1333,9 @@ function storeConversation(
       route: `${attempt.providerSlug}/${prepared.path.replace(/^\//u, "")}`,
       provider: attempt.providerType,
       model: attempt.model,
-      // A stream the provider broke off after a good status is a provider error, not
-      // a success: the stored answer is only its first part (Astra round 3).
-      status: answer.httpStatus >= 200 && answer.httpStatus < 300 && !answer.upstreamFailed ? "ok" : "provider_error",
+      // An answer the provider broke off, or ended without its closing event, after a
+      // good status is a provider error, not a success: the stored answer is only its first part.
+      status: answer.httpStatus >= 200 && answer.httpStatus < 300 && !answer.providerCut ? "ok" : "provider_error",
       httpStatus: answer.httpStatus,
       latencyMs: answer.latencyMs,
       sent,

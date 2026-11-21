@@ -515,6 +515,31 @@ describe("conversation records", () => {
     expect(JSON.parse(error.line).response).toMatchObject({ kind: "json", value: { error: "bad" } });
   });
 
+  it("keeps a broken-off speech answer as audio: its format follows the HTTP status, not the record's (Astra round 4)", async () => {
+    // A 200 speech answer the provider broke off: the record says provider_error,
+    // but the part that arrived is still the declared recording, so audio off drops it.
+    const pcm = new Uint8Array([1, 2, 3, 4]);
+    const noAudio = { images: true, audio: false, files: true };
+    const broken = await conversationRecord(capture({
+      keep: noAudio,
+      rawAudioResponse: true,
+      status: "provider_error",
+      httpStatus: 200,
+      response: { contentType: "application/octet-stream", bytes: pcm, totalBytes: pcm.byteLength, aborted: false },
+    }));
+    expect(broken.media).toHaveLength(0);
+    expect(JSON.parse(broken.line)).toMatchObject({ status: "provider_error", http_status: 200, response: { kind: "media", content: "agw-omitted:audio;4" } });
+    // An error status is still one JSON document, never a recording.
+    const error = await conversationRecord(capture({
+      keep: noAudio,
+      rawAudioResponse: true,
+      status: "provider_error",
+      httpStatus: 422,
+      response: { contentType: "application/octet-stream", bytes: encoder.encode('{"error":"bad"}'), totalBytes: 15, aborted: false },
+    }));
+    expect(JSON.parse(error.line).response).toMatchObject({ kind: "json", value: { error: "bad" } });
+  });
+
   it("stores ElevenLabs' timestamped audio with the type its output_format names (Sol round 6)", async () => {
     const { storedAudioType } = await import("../src/providers/operation.ts");
     const { elevenlabs } = await import("../src/providers/elevenlabs.ts");
@@ -978,6 +1003,28 @@ describe("conversation storage through the gateway", () => {
     await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(record).toMatchObject({ status: "provider_error", http_status: 200, client_aborted: false });
+  });
+
+  it("stores a stream that ended without its closing event as a provider error, as the meter decides (Astra round 4)", async () => {
+    const { slug, appId, key } = await storingApp();
+    // One delta, then a clean end with no `[DONE]`: the meter calls this cut short.
+    const first = `data: ${JSON.stringify({ choices: [{ delta: { content: "Two " } }] })}\n\n`;
+    fetchSpy.mockImplementation(async () => new Response(first, { headers: { "content-type": "text/event-stream" } }));
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "user-1" },
+      body: JSON.stringify({ model: "gpt-4o-mini", stream: true, messages: [{ role: "user", content: "breakfast" }] }),
+    }), env, ctx);
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    expect(record).toMatchObject({ status: "provider_error", http_status: 200, client_aborted: false });
+    // The charge took the same decision.
+    const charge = await env.DB.prepare("SELECT status FROM charge WHERE id = ?").bind(record!.event_id).first<{ status: string }>();
+    expect(charge!.status).toBe("network_error");
   });
 
   it("stores a preset's call as the provider received it, naming the preset", async () => {

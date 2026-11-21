@@ -597,10 +597,12 @@ export async function conversationRecord(
     jsonLines: false,
     failed: false,
   });
-  // The answer's status is read here, once. What the operation declares for its
-  // answers holds for a successful one only: an error (a 422 with a pretty-printed
-  // `detail`) is one JSON document, never a recording or JSON lines.
-  const ok = capture.status === "ok";
+  // What the operation declares for its answers holds for a successful HTTP status
+  // only: an error (a 422 with a pretty-printed `detail`) is one JSON document,
+  // never a recording or JSON lines. A good status the provider broke off later is
+  // still read as its declared format, so a partial recording stays a recording;
+  // the break is kept in the record's `status` alone.
+  const ok = capture.httpStatus >= 200 && capture.httpStatus < 300;
   let response = await storedBody(capture.response, shelf, {
     keep: capture.keep,
     ...(hints.audio ? { audio: hints.audio } : {}),
