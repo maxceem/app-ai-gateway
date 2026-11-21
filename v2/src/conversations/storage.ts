@@ -34,6 +34,18 @@ export function recordDay(createdAt: string): string {
   return instant(createdAt).slice(0, 10);
 }
 
+/**
+ * How the id of a batch that holds one UTC day only ends: every batch v2 writes.
+ * Retention deletes such a batch without reading it. v1's batch ids are 16 hex
+ * characters, so never end with it.
+ */
+export const ONE_DAY_BATCH = "day";
+
+/** Whether `key` names a batch that holds one UTC day only (`ONE_DAY_BATCH`). */
+export function isOneDayBatch(key: string): boolean {
+  return key.endsWith(`${ONE_DAY_BATCH}.jsonl.gz`);
+}
+
 /** The key of one batch, named from the UTC instant of its earliest record. */
 export function batchKey(appId: string, firstRecordAt: string, batchId: string): string {
   const iso = instant(firstRecordAt);

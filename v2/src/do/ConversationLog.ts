@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { conversationRecord, type ConversationCapture } from "../conversations/record.ts";
-import { appPrefix, batchKey, conversationsBucket, recordDay } from "../conversations/storage.ts";
+import { appPrefix, batchKey, conversationsBucket, ONE_DAY_BATCH, recordDay } from "../conversations/storage.ts";
 
 /** How long a record waits for its batch to fill before it is written anyway. */
 export const FLUSH_INTERVAL_MS = 5 * 60_000;
@@ -148,7 +148,8 @@ export class ConversationLog extends DurableObject<Env> {
     if (batch === undefined) {
       const next = this.nextBatch();
       if (next === null) return false;
-      const batchId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+      // Marked as one day's: retention deletes it without reading it.
+      const batchId = `${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}${ONE_DAY_BATCH}`;
       // Named from its earliest record: every record in it shares that record's UTC day.
       batch = { key: batchKey(next.appId, next.earliest, batchId), last_id: Math.max(...next.ids) };
       const named = batch;

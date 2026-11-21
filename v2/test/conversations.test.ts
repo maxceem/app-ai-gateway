@@ -905,6 +905,74 @@ describe("conversation retention", () => {
     expect(lines.map((line) => JSON.parse(line).event_id)).toEqual(["after-midnight"]);
   });
 
+  it("deletes a busy day of one-day batches in bulk, unread, within the run's allowance (Sol round 2)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const keys = Array.from({ length: 150 }, (_, index) => `conversations/${appId}/2026-11-20/${String(index).padStart(6, "0")}-${index.toString(16).padStart(16, "0")}day.jsonl.gz`);
+    await Promise.all(keys.map((key) => store.put(key, "unread")));
+    const reads = vi.spyOn(store, "get");
+    let runs = 0;
+    while ((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects.length > 0 && runs < 5) {
+      await runConversationRetention(store, env.DB, now, new CallBudget(500));
+      runs += 1;
+    }
+    expect((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects).toHaveLength(0);
+    expect(runs).toBe(1);
+    // Only the cursor was read, never a batch.
+    expect(reads.mock.calls.every(([key]) => key === RETENTION_CURSOR)).toBe(true);
+  });
+
+  it("works through a busy day of older batches across runs, each batch read once (Sol round 2)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const line = JSON.stringify({ v: 1, event_id: "e", created_at: "2026-11-20T10:00:00.000Z" }) + "\n";
+    const gzipped = await new Response(new Blob([line]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+    for (let index = 0; index < 30; index += 1) {
+      await store.put(`conversations/${appId}/2026-11-20/${String(index).padStart(6, "0")}-${index.toString(16).padStart(16, "0")}.jsonl.gz`, gzipped);
+    }
+    const reads = vi.spyOn(store, "get");
+    let runs = 0;
+    while ((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects.length > 0 && runs < 10) {
+      await runConversationRetention(store, env.DB, now, new CallBudget(15));
+      runs += 1;
+    }
+    expect((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects).toHaveLength(0);
+    expect(runs).toBeGreaterThan(1);
+    const batchReads = reads.mock.calls.filter(([key]) => key !== RETENTION_CURSOR);
+    expect(batchReads).toHaveLength(30);
+  });
+
+  it("keeps an older batch it could not read, and tries again later (Sol round 2)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const kept = `conversations/${appId}/2026-11-20/235900-abcdef0123456789.jsonl.gz`;
+    await store.put(kept, "not gzip: a read that fails");
+    await store.put(`conversations/${appId}/2026-11-20/000000-0123456789abcdefday.jsonl.gz`, "unread");
+    await runConversationRetention(store, env.DB, now, new CallBudget(500));
+    const left = (await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects.map((object) => object.key);
+    expect(left).toEqual([kept]);
+    // A week past the folder's expiry, it is given up on.
+    await runConversationRetention(store, env.DB, now + 8 * 86_400_000, new CallBudget(500));
+    expect((await store.list({ prefix: `conversations/${appId}/2026-11-20/` })).objects).toHaveLength(0);
+  });
+
+  it("starts the next run after an app it ran out in, so the apps after it progress (Sol round 2)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    for (let index = 0; index < 20; index += 1) {
+      await store.put(`conversations/busy-a/2020-01-01/${String(index).padStart(6, "0")}-aaaaaaaaaaaaaaa${index.toString(16)}.jsonl.gz`, "orphan");
+    }
+    await store.put("conversations/busy-b/2020-01-01/000000-bbbbbbbb.jsonl.gz", "orphan");
+    // Enough for the cursor, the app list and one app's list, not its delete.
+    await runConversationRetention(store, env.DB, Date.now(), new CallBudget(3));
+    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe("conversations/busy-a/");
+    await runConversationRetention(store, env.DB, Date.now(), new CallBudget(5));
+    expect((await store.list({ prefix: "conversations/busy-b/" })).objects).toHaveLength(0);
+  });
+
   it("works through more app folders than one run can list, a page at a time (Sol round 1)", async () => {
     const store = bucket();
     // Leave only these folders, so the run's pages are predictable.
