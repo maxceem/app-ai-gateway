@@ -102,7 +102,7 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/conversation/token/*" },
     { path: "v1/convai/conversation/get-signed-url/*" },
     { path: "v1/convai/conversation/get_signed_url/*" },
-    { path: "v1/convai/realtime/client_secrets/*", expiry: { method: "POST", field: "expires_after", as: "expires_after", anchor: true } },
+    { path: "v1/convai/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
     { path: "v1/single-use-token/*" },
     { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
   ],

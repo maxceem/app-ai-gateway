@@ -542,21 +542,39 @@ export interface RefusedPath {
 export const LIVE_TOKEN_WINDOW_SECONDS = 60;
 
 /**
- * Where a mint request sets how long its secret may start a call. The
- * gateway writes it into the JSON body, whatever the client sent, so the
- * window is always `LIVE_TOKEN_WINDOW_SECONDS`.
- * - `seconds`: the field holds a number of seconds.
- * - `expires_after`: the field holds `{ seconds }`, with `anchor:
- *   "created_at"` when `anchor` is set.
- * - `time`: the field holds an RFC 3339 time, the window from now.
+ * The value the gateway writes into one forced field of a mint's body.
+ * - `{ window: "seconds" }`: the window, as a number of seconds.
+ * - `{ window: "expires_after" }`: `{ seconds }` holding the window, with
+ *   `anchor: "created_at"` when `anchor` is set.
+ * - `{ window: "time" }`: an RFC 3339 time, the window from now.
+ * - `{ fixed }`: that value as it is, such as `uses: 1`.
  */
-export interface LiveTokenExpiry {
+export type LiveTokenValue =
+  | { readonly window: "seconds" }
+  | { readonly window: "expires_after"; readonly anchor?: true }
+  | { readonly window: "time" }
+  | { readonly fixed: number | string | boolean };
+
+/**
+ * One top-level field of a mint's JSON body that the gateway sets, whatever
+ * the client sent. `names` holds every spelling the provider reads, the one
+ * the gateway writes first: each is removed, and only the first is written.
+ */
+export interface LiveTokenField {
+  readonly names: readonly [string, ...string[]];
+  readonly value: LiveTokenValue;
+}
+
+/**
+ * What the gateway forces in a mint request so its secret can start a call
+ * only within `LIVE_TOKEN_WINDOW_SECONDS` (plan D4): the window, and any
+ * field that would let one secret start more calls, where the provider
+ * lets the request set them.
+ */
+export interface LiveTokenForced {
   /** Only requests of this method mint; others are sent as they are. */
   readonly method: HttpMethod;
-  /** A top-level field of the JSON body. */
-  readonly field: string;
-  readonly as: "seconds" | "expires_after" | "time";
-  readonly anchor?: true;
+  readonly fields: readonly [LiveTokenField, ...LiveTokenField[]];
 }
 
 /**
@@ -569,8 +587,8 @@ export interface LiveTokenPath {
   readonly path: string;
   /** The methods it covers; every method when left out. */
   readonly methods?: readonly HttpMethod[];
-  /** Where the request sets its window, if the provider lets it. */
-  readonly expiry?: LiveTokenExpiry;
+  /** The body fields the gateway sets, where the provider lets the request set them. */
+  readonly forced?: LiveTokenForced;
 }
 
 /** How the provider's key is sent. */

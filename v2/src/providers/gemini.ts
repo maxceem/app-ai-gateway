@@ -59,7 +59,21 @@ export const gemini = defineProvider({
   // Ephemeral tokens for the Live API, reached only by a listed path that
   // opts in (plan D4). `newSessionExpireTime` is the window for starting a
   // session; `expireTime` caps the session itself and is left as sent.
-  liveTokens: [{ path: "{version}/auth_tokens/*", expiry: { method: "POST", field: "newSessionExpireTime", as: "time" } }],
+  // A token may start new sessions only within the window, and only one:
+  // `uses: 0` would mean any number. Gemini's REST surface reads both
+  // spellings of a field, so both are removed and one is written.
+  liveTokens: [
+    {
+      path: "{version}/auth_tokens/*",
+      forced: {
+        method: "POST",
+        fields: [
+          { names: ["newSessionExpireTime", "new_session_expire_time"], value: { window: "time" } },
+          { names: ["uses"], value: { fixed: 1 } },
+        ],
+      },
+    },
+  ],
   probe: { path: "v1beta/models" },
   // The Files API's resumable uploads (`upload/v1beta/files`), once listed.
   passthroughHeaders: ["x-goog-upload-"],

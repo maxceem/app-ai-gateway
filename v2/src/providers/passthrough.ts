@@ -25,7 +25,7 @@
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { compilePassthrough, type CompiledPassthrough, type PassthroughPath } from "./matcher.ts";
-import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenExpiry, type OperationDescription, type ProviderAuth } from "./operation.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced, type LiveTokenValue, type OperationDescription, type ProviderAuth } from "./operation.ts";
 
 /** The operation name an app's route enables passthrough with, and the one its charges carry. */
 export const PASSTHROUGH = "passthrough";
@@ -146,20 +146,21 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
 }
 
 /**
- * A live-session mint's body with its window locked (plan D4): the field
- * `expiry` names, set to `LIVE_TOKEN_WINDOW_SECONDS` from `now`, whatever
- * the client sent. A request of another method is left as it is (`same`).
- * An empty body becomes an object holding only the field. A body that is not
- * a JSON object cannot carry it, so it is `unreadable`, and the gateway
- * refuses to send it rather than mint a secret it could not limit.
+ * The body of a live-session mint, with every field `forced` names set as it
+ * says, whatever the client sent. Every spelling of a field is removed and
+ * only its first is written, so the provider reads one value. A request of
+ * another method is left as it is (`same`). An empty body becomes an object
+ * holding only the forced fields. A body that is not a JSON object cannot
+ * carry them, so it is `unreadable`, and the gateway refuses to send it
+ * rather than mint a secret it could not limit.
  */
 export function lockedLiveTokenBody(
-  expiry: LiveTokenExpiry,
+  forced: LiveTokenForced,
   method: string,
   bytes: Uint8Array,
   now: number,
 ): { readonly kind: "same" } | { readonly kind: "locked"; readonly bytes: Uint8Array } | { readonly kind: "unreadable" } {
-  if (method !== expiry.method) return { kind: "same" };
+  if (method !== forced.method) return { kind: "same" };
   let body: unknown = {};
   if (bytes.byteLength > 0) {
     try {
@@ -169,11 +170,17 @@ export function lockedLiveTokenBody(
     }
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { kind: "unreadable" };
-  const value =
-    expiry.as === "seconds"
-      ? LIVE_TOKEN_WINDOW_SECONDS
-      : expiry.as === "expires_after"
-        ? { ...(expiry.anchor === true ? { anchor: "created_at" } : {}), seconds: LIVE_TOKEN_WINDOW_SECONDS }
-        : new Date(now + LIVE_TOKEN_WINDOW_SECONDS * 1000).toISOString();
-  return { kind: "locked", bytes: new TextEncoder().encode(JSON.stringify({ ...(body as Record<string, unknown>), [expiry.field]: value })) };
+  const locked: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+  for (const field of forced.fields) {
+    for (const name of field.names) delete locked[name];
+    locked[field.names[0]] = forcedValue(field.value, now);
+  }
+  return { kind: "locked", bytes: new TextEncoder().encode(JSON.stringify(locked)) };
+}
+
+function forcedValue(value: LiveTokenValue, now: number): unknown {
+  if ("fixed" in value) return value.fixed;
+  if (value.window === "seconds") return LIVE_TOKEN_WINDOW_SECONDS;
+  if (value.window === "expires_after") return { ...(value.anchor === true ? { anchor: "created_at" } : {}), seconds: LIVE_TOKEN_WINDOW_SECONDS };
+  return new Date(now + LIVE_TOKEN_WINDOW_SECONDS * 1000).toISOString();
 }

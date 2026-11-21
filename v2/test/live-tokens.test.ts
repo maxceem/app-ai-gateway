@@ -12,7 +12,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderMatcher } from "../src/providers/matcher.ts";
-import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenExpiry } from "../src/providers/operation.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced } from "../src/providers/operation.ts";
 import { lockedLiveTokenBody, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
@@ -100,27 +100,52 @@ describe("locking a mint's window", () => {
   const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
   const decode = (result: ReturnType<typeof lockedLiveTokenBody>) => (result.kind === "locked" ? JSON.parse(new TextDecoder().decode(result.bytes)) : result);
   const NOW = Date.parse("2026-11-21T10:00:00.000Z");
+  const one = (name: string, value: LiveTokenForced["fields"][0]["value"]): LiveTokenForced => ({ method: "POST", fields: [{ names: [name], value }] });
 
   it.each([
-    [{ method: "POST", field: "expires_after", as: "expires_after", anchor: true }, { anchor: "created_at", seconds: 60 }],
-    [{ method: "POST", field: "expires_after", as: "expires_after" }, { seconds: 60 }],
-    [{ method: "POST", field: "ttl_seconds", as: "seconds" }, 60],
-    [{ method: "POST", field: "newSessionExpireTime", as: "time" }, "2026-11-21T10:01:00.000Z"],
-  ] as const)("writes %j as 60 seconds, over whatever the client sent", (expiry, value) => {
+    [one("expires_after", { window: "expires_after", anchor: true }), "expires_after", { anchor: "created_at", seconds: 60 }],
+    [one("expires_after", { window: "expires_after" }), "expires_after", { seconds: 60 }],
+    [one("ttl_seconds", { window: "seconds" }), "ttl_seconds", 60],
+    [one("newSessionExpireTime", { window: "time" }), "newSessionExpireTime", "2026-11-21T10:01:00.000Z"],
+    [one("uses", { fixed: 1 }), "uses", 1],
+  ] as const)("writes %j over whatever the client sent", (forced, field, value) => {
     expect(LIVE_TOKEN_WINDOW_SECONDS).toBe(60);
-    const sent = { session: { model: "m" }, [expiry.field]: expiry.as === "time" ? "2026-11-22T10:00:00Z" : 7200 };
-    expect(decode(lockedLiveTokenBody(expiry as LiveTokenExpiry, "POST", encode(sent), NOW))).toEqual({ session: { model: "m" }, [expiry.field]: value });
+    const sent = { session: { model: "m" }, [field]: 7200 };
+    expect(decode(lockedLiveTokenBody(forced, "POST", encode(sent), NOW))).toEqual({ session: { model: "m" }, [field]: value });
     // Set when the client sent nothing.
-    expect(decode(lockedLiveTokenBody(expiry as LiveTokenExpiry, "POST", new Uint8Array(), NOW))).toEqual({ [expiry.field]: value });
+    expect(decode(lockedLiveTokenBody(forced, "POST", new Uint8Array(), NOW))).toEqual({ [field]: value });
+  });
+
+  it("removes every spelling of a forced field and writes only the first, so the provider reads one value", () => {
+    const forced: LiveTokenForced = {
+      method: "POST",
+      fields: [
+        { names: ["newSessionExpireTime", "new_session_expire_time"], value: { window: "time" } },
+        { names: ["uses"], value: { fixed: 1 } },
+      ],
+    };
+    const sent = { new_session_expire_time: "2026-11-22T10:00:00Z", newSessionExpireTime: "2026-11-22T10:00:00Z", uses: 0, expireTime: "2026-11-21T10:30:00Z" };
+    expect(decode(lockedLiveTokenBody(forced, "POST", encode(sent), NOW))).toEqual({
+      newSessionExpireTime: "2026-11-21T10:01:00.000Z",
+      uses: 1,
+      expireTime: "2026-11-21T10:30:00Z",
+    });
+    // Only the snake_case spelling sent: it is gone too.
+    expect(decode(lockedLiveTokenBody(forced, "POST", encode({ new_session_expire_time: "2027-01-01T00:00:00Z" }), NOW))).toEqual({
+      newSessionExpireTime: "2026-11-21T10:01:00.000Z",
+      uses: 1,
+    });
+    // A key sent twice in the text is one key once read.
+    expect(decode(lockedLiveTokenBody(forced, "POST", new TextEncoder().encode('{"uses":0,"uses":0}'), NOW))).toEqual({ newSessionExpireTime: "2026-11-21T10:01:00.000Z", uses: 1 });
   });
 
   it("leaves another method's request as it is, and calls a body that is not a JSON object unreadable", () => {
-    const expiry: LiveTokenExpiry = { method: "POST", field: "ttl_seconds", as: "seconds" };
-    expect(lockedLiveTokenBody(expiry, "GET", new Uint8Array(), 0)).toEqual({ kind: "same" });
+    const forced = one("ttl_seconds", { window: "seconds" });
+    expect(lockedLiveTokenBody(forced, "GET", new Uint8Array(), 0)).toEqual({ kind: "same" });
     for (const body of ["[1]", "null", "7", "not json", "\"text\""]) {
-      expect(lockedLiveTokenBody(expiry, "POST", new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
+      expect(lockedLiveTokenBody(forced, "POST", new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
     }
-    expect(lockedLiveTokenBody(expiry, "POST", new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
+    expect(lockedLiveTokenBody(forced, "POST", new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
   });
 });
 
@@ -293,12 +318,23 @@ describe("serving a live-session mint", () => {
     [
       "gemini",
       "v1alpha/auth_tokens",
-      { uses: 1, expireTime: "2026-11-21T12:00:00Z", newSessionExpireTime: "2026-11-21T12:00:00Z" },
+      // `uses: 0` would start any number of sessions; both spellings of the window are sent.
+      { uses: 0, expireTime: "2026-11-21T12:00:00Z", newSessionExpireTime: "2026-11-21T12:00:00Z", new_session_expire_time: "2026-11-21T12:00:00Z" },
       (body: Record<string, unknown>, now: number) => {
         expect(body.newSessionExpireTime).toBe(new Date(now + 60_000).toISOString());
+        expect(body).not.toHaveProperty("new_session_expire_time");
         // The session's own cap is the customer's to set.
         expect(body.expireTime).toBe("2026-11-21T12:00:00Z");
         expect(body.uses).toBe(1);
+      },
+    ],
+    [
+      "openai",
+      "v1/chatkit/sessions",
+      { user: "u1", workflow: { id: "wf_1" }, expires_after: { anchor: "created_at", seconds: 600 } },
+      (body: Record<string, unknown>) => {
+        expect(body.expires_after).toEqual({ anchor: "created_at", seconds: 60 });
+        expect(body.workflow).toEqual({ id: "wf_1" });
       },
     ],
     ["elevenlabs", "v1/convai/realtime/client_secrets", { expires_after: { seconds: 900 } }, (body: Record<string, unknown>) => expect(body.expires_after).toEqual({ anchor: "created_at", seconds: 60 })],

@@ -454,11 +454,12 @@ async function servePassthrough(
   // Never read: the body goes as the client's own bytes. One with no type is sent with none.
   let sent: OutgoingBody = { bytes, contentType: contentType === "" ? null : contentType };
   // A live-session mint's window is locked where the request sets it, whatever the client sent (plan D4).
-  const expiry = input.liveToken?.expiry;
-  if (expiry !== undefined) {
-    const locked = lockedLiveTokenBody(expiry, c.req.method, bytes, startedAt);
+  const forced = input.liveToken?.forced;
+  if (forced !== undefined) {
+    const locked = lockedLiveTokenBody(forced, c.req.method, bytes, startedAt);
     if (locked.kind === "unreadable") {
-      throw new GatewayError(400, "invalid_request", `This request mints a live-session secret, so its body must be a JSON object: the gateway sets ${expiry.field} in it`);
+      const names = forced.fields.map((field) => field.names[0]).join(", ");
+      throw new GatewayError(400, "invalid_request", `This request mints a live-session secret, so its body must be a JSON object: the gateway sets ${names} in it`);
     }
     if (locked.kind === "locked") sent = { bytes: locked.bytes, contentType: "application/json" };
   }

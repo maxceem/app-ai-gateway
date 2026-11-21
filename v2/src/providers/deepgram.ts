@@ -80,7 +80,7 @@ export const deepgram = defineProvider({
   // `v1/auth/grant` grants short-lived tokens, reached only by a listed path
   // that opts in (plan D4). `ttl_seconds` (1 to 3600) is how long the token
   // may start a call; an open socket outlives it.
-  liveTokens: [{ path: "v1/auth/*", expiry: { method: "POST", field: "ttl_seconds", as: "seconds" } }],
+  liveTokens: [{ path: "v1/auth/*", forced: { method: "POST", fields: [{ names: ["ttl_seconds"], value: { window: "seconds" } }] } }],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },
   operations: [

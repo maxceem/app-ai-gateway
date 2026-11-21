@@ -22,13 +22,14 @@ export const openai = defineProvider({
   // Short-lived secrets for live sessions and ChatKit, reached only by a
   // listed path that opts in (plan D4). A client secret's `expires_after`
   // only limits when calls can start (T18), so it is locked to that window.
-  // The older Realtime sessions and ChatKit sessions are sent as they are:
-  // their expiry field is not checked against OpenAI's reference here.
+  // The older Realtime sessions are sent as they are: their window sits
+  // inside a nested `client_secret`, not checked against OpenAI's reference
+  // here. ChatKit sessions take `expires_after` as client secrets do.
   liveTokens: [
-    { path: "v1/realtime/client_secrets/*", expiry: { method: "POST", field: "expires_after", as: "expires_after", anchor: true } },
+    { path: "v1/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
     { path: "v1/realtime/sessions/*" },
     { path: "v1/realtime/transcription_sessions/*" },
-    { path: "v1/chatkit/sessions/*" },
+    { path: "v1/chatkit/sessions/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
   ],
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },
