@@ -1125,6 +1125,16 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   const [conflict, setConflict] = useState(false);
   const [reloading, setReloading] = useState(false);
   const parsed = parsePricesText(text);
+  // A save or reload that ends after this dialog closed must not touch the page: closing it
+  // remounts the dialog, so a late answer would otherwise close the next provider's dialog
+  // and throw away its draft.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   /**
    * Starts again from the provider as the server has it now, read fresh, not
@@ -1136,6 +1146,7 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
     setReloading(true);
     try {
       const latest = await fresh(provider.id);
+      if (!mounted.current) return;
       if (latest === null) {
         toast.error("This provider was deleted");
         onClose();
@@ -1156,8 +1167,9 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
     try {
       await update.mutateAsync({ id: provider.id, body: { revision, pricing: parsed.pricing } });
       toast.success(parsed.pricing === null ? "Your prices removed" : "Your prices saved");
-      onClose();
+      if (mounted.current) onClose();
     } catch (error) {
+      if (!mounted.current) return;
       if (error instanceof ApiError && error.status === 409) setConflict(true);
       else toast.error(error instanceof Error ? error.message : "Could not save the prices");
     } finally {

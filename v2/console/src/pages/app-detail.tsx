@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -711,7 +711,11 @@ function JobsTab({ app }: { app: App }) {
   const jobs = useAppJobs(app.id, { limit: PAGE, offset });
   const now = useNow(JOBS_REFRESH_MS);
   const list = jobs.data?.jobs ?? [];
-  const total = jobs.data?.total ?? 0;
+  // The last total seen stays while another page loads or fails, so the pager, and with it the
+  // way back to a page already seen, never disappears.
+  const lastTotal = useRef(0);
+  if (jobs.data !== undefined) lastTotal.current = jobs.data.total;
+  const total = jobs.data?.total ?? lastTotal.current;
 
   return (
     <div className="space-y-4">
@@ -785,15 +789,20 @@ function JobsTab({ app }: { app: App }) {
           </TableBody>
         </Table>
       </Card>
-      {total > PAGE ? (
+      {total > PAGE || offset > 0 ? (
         <div className="flex items-center justify-end gap-2 text-sm">
           <span className="text-muted-foreground">
-            {offset + 1}–{Math.min(offset + PAGE, total)} of {total}
+            {offset + 1}–{Math.min(offset + PAGE, Math.max(total, offset + 1))} of {total}
           </span>
           <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
             Previous
           </Button>
-          <Button size="sm" variant="outline" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={jobs.data === undefined || offset + PAGE >= total}
+            onClick={() => setOffset(offset + PAGE)}
+          >
             Next
           </Button>
         </div>

@@ -254,6 +254,25 @@ describe("AppDetailPage", () => {
     }
   });
 
+  it("keeps Previous while the next page loads or fails", async () => {
+    const job = (id: string) => ({ id, provider_slug: "fal", operation: "fal.queue", model: `model-${id}`, end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "settled", settled_at: "2026-11-01T12:00:00.000Z" });
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: { app_id: "my-app", total: 51, limit: 50, offset: 0, jobs: Array.from({ length: 50 }, (_, i) => job(`j${i}`)) },
+      },
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=50": { status: 503, body: { error: { code: "unavailable", message: "Try again" } } },
+    });
+    renderTab("jobs");
+    await screen.findByText("model-j0");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(screen.getByText(/could not load the jobs/i)).toBeTruthy());
+    const previous = screen.getByRole("button", { name: "Previous" }) as HTMLButtonElement;
+    expect(previous.disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(previous);
+    expect(await screen.findByText("model-j0")).toBeTruthy();
+  });
+
   it("calls a check overdue only once it is more than five minutes late", () => {
     const due = Date.parse("2026-11-01T00:00:00.000Z");
     const job = { state: "checking" as const, next_check_at: new Date(due).toISOString() };

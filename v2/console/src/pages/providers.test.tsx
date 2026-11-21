@@ -513,6 +513,48 @@ describe("PricesDialog reload after a conflict", () => {
   });
 });
 
+describe("PricesDialog closed while its save is pending", () => {
+  it("lets a late save close nothing, so another provider's open dialog keeps its draft", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: null };
+    const other = { ...PROVIDER, id: "prov-other", type: "fal", slug: "fal-two", name: "fal-two", pricing: null };
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          // The first provider's save is held until the test lets it go.
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return new Response(JSON.stringify({ provider: fal }));
+        }
+        return new Response(JSON.stringify({ providers: [fal, other] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const first = await screen.findByLabelText(/prices by model/i);
+    await userEvent.click(first);
+    await userEvent.paste('{"fal-ai/a": {"per_request": 0.01}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByLabelText(/prices by model/i)).toBeNull());
+
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal-two" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const second = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    await userEvent.click(second);
+    await userEvent.paste('{"fal-ai/b": {"per_request": 0.02}}');
+    release!();
+    // The first provider's save has finished; the second dialog is still open with its draft.
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/b"));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/b");
+  });
+});
+
 describe("safe defaults on listed paths", () => {
   const EXPIRY = { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: 60 } };
 
