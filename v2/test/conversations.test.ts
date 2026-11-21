@@ -463,7 +463,8 @@ describe("ConversationLog", () => {
     const listing = await bucket().list({ prefix: `conversations/${appId}/` });
     expect(listing.objects).toHaveLength(1);
     expect(listing.objects[0]!.key).toMatch(
-      new RegExp(`^conversations/${appId}/\\d{4}-\\d{2}-\\d{2}/\\d{6}-[a-f0-9]{16}\\.jsonl\\.gz$`),
+      // Marked as one day's (`ONE_DAY_BATCH`), so retention deletes it unread.
+      new RegExp(`^conversations/${appId}/\\d{4}-\\d{2}-\\d{2}/\\d{6}-[a-f0-9]{16}day\\.jsonl\\.gz$`),
     );
     expect((await storedRecords(appId)).map((record) => record.event_id)).toEqual(["event-1", "event-2"]);
 
@@ -986,6 +987,8 @@ describe("conversation retention", () => {
   it("works through a busy day of older batches across runs, each batch read once (Sol round 2)", async () => {
     const { appId } = await storingApp({ store: true, retention_days: 1 });
     const store = bucket();
+    // Leave only this app's folder, so each run's allowance goes to it.
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
     const now = Date.parse("2026-11-22T04:00:00.000Z");
     const line = JSON.stringify({ v: 1, event_id: "e", created_at: "2026-11-20T10:00:00.000Z" }) + "\n";
     const gzipped = await new Response(new Blob([line]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
