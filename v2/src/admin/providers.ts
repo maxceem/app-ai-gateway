@@ -555,6 +555,24 @@ function checkBaseUrlOwner(description: ProviderDescription, baseUrl: string): v
   if (problem !== null) throw new GatewayError(400, "invalid_request", `baseUrl: ${problem}`);
 }
 
+/**
+ * Where a built-in connection's requests go, judged the one way every write
+ * of a type and base URL goes through: direct create, update, the key test,
+ * and a provider handoff both when it is opened and when it is approved.
+ * The route (a base URL or Cloudflare AI Gateway, not both) is always checked;
+ * the base URL's owner only when it is new or changed (`stored`), so one
+ * stored before keeps working.
+ */
+export function checkDestination(
+  description: ProviderDescription,
+  baseUrl: string | null,
+  cloudflare: { accountId: string; gatewayId: string } | null,
+  stored: string | null = null,
+): void {
+  checkRoute(description, baseUrl, cloudflare);
+  if (baseUrl !== null && baseUrl !== stored) checkBaseUrlOwner(description, baseUrl);
+}
+
 /** Pinned serving providers, for a provider type that has the field (`servingProvidersField`) only. */
 function servingProvidersJson(description: ProviderDescription, list: readonly string[] | null | undefined): string | null {
   if (list === undefined || list === null) return null;
@@ -681,8 +699,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
   const customSetting = custom ? checkedCustom(baseUrl, body.auth) : null;
-  if (builtIn !== null) checkRoute(builtIn, baseUrl, cloudflare);
-  if (builtIn !== null && baseUrl !== null) checkBaseUrlOwner(builtIn, baseUrl);
+  if (builtIn !== null) checkDestination(builtIn, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   const id = newConnectionId();
   const origin = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
@@ -777,9 +794,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       : asked === null
         ? null
         : { accountId: asked.accountId, gatewayId: asked.gatewayId };
-  if (description !== null) checkRoute(description, baseUrl, cloudflare);
   // A base URL is judged when new or changed: one stored before keeps working.
-  if (description !== null && baseUrl !== null && baseUrl !== current.base_url) checkBaseUrlOwner(description, baseUrl);
+  if (description !== null) checkDestination(description, baseUrl, cloudflare, current.base_url);
   const cloudflareJson =
     asked === undefined
       ? current.cloudflare_gateway_json
@@ -960,8 +976,7 @@ export async function testProvider(c: AdminContext): Promise<Response> {
   assertFieldsFit(body.type, body);
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
-  checkRoute(description, baseUrl, cloudflare);
-  if (baseUrl !== null) checkBaseUrlOwner(description, baseUrl);
+  checkDestination(description, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   // The probe is built as a live request would be: same host, same credentials.
   const probe =

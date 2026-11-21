@@ -1074,6 +1074,9 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
 function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
   const { description, operation, attempt } = prepared;
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
+  // A minted live-session credential is never kept by a cache between the gateway and the app,
+  // whatever the provider said: a cache could hand one caller's signed URL to another.
+  if (prepared.liveTokenMint === true) responseHeaders.set("cache-control", "no-store");
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 

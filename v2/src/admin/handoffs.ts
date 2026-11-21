@@ -53,6 +53,7 @@ import { requireConsoleSession, requireManage, type AdminVariables } from "./act
 import { appRow, checkAppConfig, checkNewConnection, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
+  checkDestination,
   checkedBaseUrl,
   connectionRow,
   newConnectionId,
@@ -215,6 +216,7 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
   }
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
+  checkDestination(builtInProvider(body.type)!, baseUrl, null);
   if (body.pricing !== undefined) assertModesSelectable(builtInProvider(body.type)!, baseUrl, ratesFromPricing(body.pricing, body.type), null);
   await refuseTakenSlug(c.env.DB, actor.accountId, slug);
   await (await planCap(c.env, c.env.DB, actor.accountId, "provider")).assertNotReached();
@@ -406,6 +408,8 @@ async function providerAddWrite(
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   const description = builtInProvider(review.type);
+  // Judged again at approval, so a handoff opened before a check existed is covered too.
+  if (description !== null) checkDestination(description, review.baseUrl ?? null, null);
   if (description !== null) assertModesSelectable(description, review.baseUrl ?? null, rates, null);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
   await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type, baseUrl: review.baseUrl ?? null }, rates);

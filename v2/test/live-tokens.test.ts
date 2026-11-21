@@ -639,6 +639,48 @@ describe("serving a live-session mint", () => {
       expect(sentBody(0).expires_after).toEqual({ anchor: "created_at", seconds: 60 });
     });
 
+    it.each([
+      ["a minted credential", 200],
+      ["a refusal", 429],
+    ] as const)("tells every cache after the gateway not to keep %s", async (_what, upstreamStatus) => {
+      const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
+      fetchSpy.mockImplementation(async () =>
+        Response.json({ value: "ek_minted", expires_at: 1 }, { status: upstreamStatus, headers: { "cache-control": "public, max-age=300" } }),
+      );
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
+          body: JSON.stringify({ session: { type: "realtime" } }),
+        }),
+        env,
+        ctx,
+      );
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(upstreamStatus);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    });
+
+    it("leaves a provider's cache header on an answer that is not a mint", async () => {
+      const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/echo" }] });
+      fetchSpy.mockImplementation(async () => Response.json({ ok: true }, { headers: { "cache-control": "public, max-age=300" } }));
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/echo`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
+          body: "{}",
+        }),
+        env,
+        ctx,
+      );
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+    });
+
     it("leaves a request that is not a mint as it was", async () => {
       const { appId, slug, key } = await connected({
         type: "openai",
