@@ -335,7 +335,7 @@ export class Context {
     const target = origin(url);
     const server = await discover(this.transport, target);
     const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-    const login = useBrowser ? await this.browserLogin(target, server, again) : await this.deviceSignIn(target, server);
+    const login = useBrowser ? await this.browserLogin(target, server, again) : await this.deviceSignIn(target, server, again);
     const who = await this.whoAmI(target, login.accessToken);
     const { state } = await this.store.update((disk) => {
       disk.active = { url: target, login, account: who.account };
@@ -360,7 +360,7 @@ export class Context {
         // Only a browser here could finish this one, so a code takes its place.
         this.say("The browser could not be opened, so sign in with a code instead.");
         await loopback.close();
-        return await this.deviceSignIn(url, server);
+        return await this.deviceSignIn(url, server, again);
       }
       this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
       const deadline = this.io.loginDeadline(LOGIN_TIMEOUT_MS);
@@ -385,7 +385,7 @@ export class Context {
         fail("login_failed", "The sign-in came back from another issuer than this gateway.", `Run ${again} again.`, 3);
       }
       try {
-        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now());
+        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now(), again);
         loopback.answer(true);
         return login;
       } catch (error) {
@@ -398,7 +398,7 @@ export class Context {
   }
 
   /** The device flow, with its code shown on stderr. */
-  private deviceSignIn(url: string, server: OAuthServer): Promise<OAuthLogin> {
+  private deviceSignIn(url: string, server: OAuthServer, again: string): Promise<OAuthLogin> {
     const style = styleFor(this.io.stderr);
     return deviceLogin(
       this.transport,
@@ -416,6 +416,7 @@ export class Context {
         );
       },
       this.io.clock,
+      again,
     );
   }
 
@@ -425,7 +426,7 @@ export class Context {
    */
   async connect(url: string): Promise<LoginResult> {
     const target = origin(url);
-    if (!this.environmentKey) return this.login(target, target === CLOUD ? "agw deployment connect --cloud" : `agw deployment connect --url ${target}`);
+    if (!this.environmentKey) return this.login(target, target === CLOUD ? "agw deployment connect --cloud" : `agw deployment connect --url ${shellQuoted(target)}`);
     const who = await this.whoAmI(target, this.environmentKey);
     const { state } = await this.store.update((disk) => {
       // A sign-in already stored for this gateway is kept: the environment's
@@ -510,4 +511,13 @@ export function openBrowser(url: string): Promise<boolean> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   return launch(command, args);
+}
+
+/**
+ * A value pasted into a shell as one word: left as it is when it holds only
+ * characters no shell treats specially, single-quoted otherwise. A URL such as
+ * `http://[::1]:8787` would otherwise be read as a glob by zsh.
+ */
+export function shellQuoted(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }

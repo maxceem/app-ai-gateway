@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { CliError } from "../src/common.ts";
-import { Context, launch } from "../src/context.ts";
+import { Context, launch, shellQuoted } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
 import type { FormResponse } from "../src/transport.ts";
@@ -222,6 +222,27 @@ test("a browser sign-in nobody approves exits 5 and says to rerun the command th
   const viaLogin = expired(await login.ctx.login(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
   assert.match(viaLogin.nextAction, /Run agw account login again, or add --device/);
   assert.equal(cancelled, 2);
+});
+
+test("a token exchange refused after the browser answered says to rerun the command that started it", async () => {
+  const browser = () => handLoopback(() => ({ code: "c", iss: null }));
+  const refused = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 400, data: { error: "invalid_grant" } }));
+  const viaConnect = await contextFor(refused, browser()).ctx.connect(URL_).then(() => assert.fail("expected a refusal"), (error) => error);
+  assert.ok(viaConnect instanceof CliError);
+  assert.equal(viaConnect.code, "login_failed");
+  assert.match(viaConnect.nextAction, new RegExp(`Run agw deployment connect --url ${URL_.replace(/[.]/g, "\\.")} again`));
+  assert.doesNotMatch(viaConnect.nextAction, /agw account login/);
+  const unusable = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 200, data: { access_token: "" } }));
+  const invalid = await contextFor(unusable, browser()).ctx.connect(URL_).then(() => assert.fail("expected an unusable answer"), (error) => error);
+  assert.ok(invalid instanceof CliError);
+  assert.equal(invalid.code, "invalid_response");
+  assert.doesNotMatch(invalid.nextAction, /agw account login/);
+});
+
+test("a retry command quotes a URL a shell would read as a pattern", () => {
+  assert.equal(shellQuoted("https://gateway.example.com"), "https://gateway.example.com");
+  assert.equal(shellQuoted("http://[::1]:8787"), "'http://[::1]:8787'");
+  assert.equal(shellQuoted("https://x.example/a'b"), "'https://x.example/a'\\''b'");
 });
 
 test("without a browser, sign-in uses the device flow and shows its code on stderr", async () => {

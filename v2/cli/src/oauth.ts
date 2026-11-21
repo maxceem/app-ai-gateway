@@ -138,7 +138,7 @@ const GRANTS = new Set(["read", "manage"]);
 const newLoginId = (): string => randomBytes(12).toString("base64url");
 
 /** A token endpoint's success, as a stored sign-in; anything else is refused. */
-function loginFrom(answer: FormResponse, now: number, id: string): OAuthLogin {
+function loginFrom(answer: FormResponse, now: number, id: string, again = DEFAULT_AGAIN): OAuthLogin {
   const data = answer.data;
   const access = data["access_token"];
   const refresh = data["refresh_token"];
@@ -153,7 +153,7 @@ function loginFrom(answer: FormResponse, now: number, id: string): OAuthLogin {
     typeof expiresIn !== "number" ||
     !(expiresIn > 0)
   )
-    fail("invalid_response", "The gateway answered the sign-in with an unusable token response.", "Run agw account login again.", 3);
+    fail("invalid_response", "The gateway answered the sign-in with an unusable token response.", `Run ${again} again.`, 3);
   return {
     id,
     clientId: CLI_CLIENT_ID,
@@ -164,14 +164,22 @@ function loginFrom(answer: FormResponse, now: number, id: string): OAuthLogin {
   };
 }
 
+/**
+ * The command a failed sign-in tells the person to run again. A sign-in
+ * started by `agw deployment connect` passes its own command: until a sign-in
+ * succeeds its target gateway is not stored, so `agw account login` could
+ * reach another gateway.
+ */
+const DEFAULT_AGAIN = "agw account login";
+
 /** A refusal from the token endpoint, with its OAuth error code. */
-function tokenRefusal(answer: FormResponse, what: string): never {
+function tokenRefusal(answer: FormResponse, what: string, again = DEFAULT_AGAIN): never {
   const code = typeof answer.data["error"] === "string" ? (answer.data["error"] as string) : `http_${answer.status}`;
   const description = typeof answer.data["error_description"] === "string" ? (answer.data["error_description"] as string) : "";
   fail(
     code === "invalid_grant" ? "login_failed" : code,
     `${what} was refused (${code})${description ? `: ${description.replace(/\p{C}/gu, " ").slice(0, 300)}` : "."}`,
-    "Run agw account login again.",
+    `Run ${again} again.`,
     3,
     { status: answer.status },
   );
@@ -184,6 +192,7 @@ export async function exchangeCode(
   server: OAuthServer,
   input: { code: string; redirect: string; verifier: string },
   now: () => number = Date.now,
+  again = DEFAULT_AGAIN,
 ): Promise<OAuthLogin> {
   const answer = await transport.postForm(url, server.token, {
     grant_type: "authorization_code",
@@ -193,8 +202,8 @@ export async function exchangeCode(
     code_verifier: input.verifier,
     resource: server.issuer,
   });
-  if (answer.status !== 200) tokenRefusal(answer, "The sign-in");
-  return loginFrom(answer, now(), newLoginId());
+  if (answer.status !== 200) tokenRefusal(answer, "The sign-in", again);
+  return loginFrom(answer, now(), newLoginId(), again);
 }
 
 /** What the device flow shows the person. */
@@ -224,15 +233,16 @@ export async function deviceLogin(
   grant: "read" | "manage",
   show: (prompt: DevicePrompt) => void,
   clock: DeviceClock = realClock,
+  again = DEFAULT_AGAIN,
 ): Promise<OAuthLogin> {
   if (!server.device)
-    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", "Run agw account login on a machine with a browser.", 3);
+    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", `Run ${again} on a machine with a browser.`, 3);
   const opened = await transport.postForm(url, server.device, { client_id: CLI_CLIENT_ID, scope: grant, resource: server.issuer });
   const data = opened.data;
   const deviceCode = data["device_code"];
   const userCode = data["user_code"];
   const verification = data["verification_uri"];
-  if (opened.status !== 200) tokenRefusal(opened, "Starting the sign-in");
+  if (opened.status !== 200) tokenRefusal(opened, "Starting the sign-in", again);
   if (typeof deviceCode !== "string" || typeof userCode !== "string" || typeof verification !== "string")
     fail("invalid_response", "The gateway answered the sign-in request with an unusable body.", undefined, 3);
   // The person opens these, so they too must be on the gateway's own origin.
@@ -250,7 +260,7 @@ export async function deviceLogin(
       device_code: deviceCode,
       client_id: CLI_CLIENT_ID,
     });
-    if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId());
+    if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId(), again);
     const error = answer.data["error"];
     if (error === "authorization_pending") continue;
     // RFC 8628 §3.5: every slow_down adds five seconds to the interval.
@@ -258,11 +268,11 @@ export async function deviceLogin(
       interval += 5;
       continue;
     }
-    if (error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", "Run agw account login again to start over.", 4);
+    if (error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", `Run ${again} again to start over.`, 4);
     if (error === "expired_token") break;
-    tokenRefusal(answer, "The sign-in");
+    tokenRefusal(answer, "The sign-in", again);
   }
-  fail("login_expired", "The sign-in code expired before it was approved.", "Run agw account login again for a new code.", 4);
+  fail("login_expired", "The sign-in code expired before it was approved.", `Run ${again} again for a new code.`, 4);
 }
 
 /**
