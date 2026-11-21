@@ -1,9 +1,11 @@
 /**
  * Passthrough paths through a live v2 deployment (plan step 5, section 4.5):
  * paths a connection lists are forwarded as they are to an app that enables
- * `passthrough`, charged at a flat price per request or not priced. Refused
- * paths stay refused even when listed. Everything is made through the
- * management API and removed afterwards.
+ * `passthrough`, charged at a flat price per request or not priced. Since
+ * step 5d there are no refused paths: an admin path works once listed. A
+ * `{name}` part stands only where an id is, and a built-in endpoint is never
+ * a listing. Everything is made through the management API and removed
+ * afterwards.
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \
@@ -166,19 +168,49 @@ test("an app that does not enable passthrough cannot reach a listed path", { ski
   assert.equal(((await response.json()) as { error: { code: string } }).error.code, "path_not_allowed");
 });
 
-test("an admin or key path is refused when listed, and stays refused under case and encoding tricks", { skip }, async () => {
-  for (const passthrough of [[{ method: "POST", path: "v1/organization/admin_api_keys" }], [{ method: "POST", path: "v1/realtime/client_secrets" }]]) {
-    const refused = await admin("PUT", `/v2/admin/providers/${providerIds[0]}`, { revision: 1, passthrough: [...LISTED, ...passthrough] });
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+test("an admin path is forwarded once listed: there are no refused paths", { skip }, async () => {
+  const adminSlug = `smoke-pass-admin-${run}`;
+  const created = await admin("POST", "/v2/admin/providers", {
+    type: "openai",
+    name: "Smoke admin path",
+    slug: adminSlug,
+    secret: "sk-mock-smoke-key",
+    baseUrl: mockUrl,
+    passthrough: [{ method: "GET", path: "v1/organization/users" }],
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  providerIds.push(created.body.provider.id);
+  const app = await admin("POST", "/v2/admin/apps", {
+    name: "Smoke admin path",
+    config: { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers: { [adminSlug]: { operations: ["passthrough"] } } } },
+  });
+  assert.equal(app.status, 201, JSON.stringify(app.body));
+  appIds.push(app.body.app.id);
+  const response = await fetch(new URL(`/v2/apps/${app.body.app.id}/proxy/${adminSlug}/v1/organization/users`, base), {
+    headers: { authorization: `Bearer ${app.body.api_key.key}`, "x-end-user-id": `smoke-pass-admin-${run}` },
+  });
+  const text = await response.text();
+  // Whatever the mock answers, the gateway forwarded it rather than refusing it.
+  assert.ok(!text.includes("path_not_allowed"), text);
+});
+
+test("a {name} part stands only where an id is", { skip }, async () => {
+  for (const path of ["v1/{endpoint}", "v1/echo/{a}/{b}"]) {
+    const refused = await admin("PUT", `/v2/admin/providers/${providerIds[0]}`, { revision: 1, passthrough: [...LISTED, { method: "GET", path }] });
+    assert.equal(refused.status, 400, path);
   }
-  for (const path of ["v1/organization/admin_api_keys", "V1/ORGANIZATION/admin_api_keys", "v1/%6frganization/admin_api_keys", "v1/echo/../organization/admin_api_keys", "v1/echo/a%2F..%2Forganization"]) {
-    const response = await call("POST", path, `smoke-pass-refused-${run}`, { body: "{}", headers: { "content-type": "application/json" } });
-    assert.equal(response.status, 403, path);
+});
+
+test("a base URL on the provider's own host is its plain address, and Cloudflare is reached only through its setting", { skip }, async () => {
+  for (const baseUrl of ["https://api.openai.com/v1/", "https://gateway.ai.cloudflare.com/v1/acct/gw/openai/"]) {
+    const refused = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke base URL", slug: `smoke-pass-base-${run}`, secret: "sk-mock-smoke-key", baseUrl });
+    if (refused.status === 201) providerIds.push(refused.body.provider.id);
+    assert.equal(refused.status, 400, baseUrl);
   }
 });
 
 test("a declared operation's path is not taken as a passthrough path", { skip }, async () => {
   const refused = await admin("PUT", `/v2/admin/providers/${providerIds[0]}`, { revision: 1, passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
   assert.equal(refused.status, 400);
-  assert.match(JSON.stringify(refused.body), /openai\.chat/u);
+  assert.match(JSON.stringify(refused.body), /built in as the openai\.chat operation/u);
 });

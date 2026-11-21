@@ -3,8 +3,8 @@
  * a provider the gateway does not know, at a base URL with the key in the
  * header its connection names. A path with an API style is metered by that
  * style at the connection's rates; a plain path is passed through. Saving
- * refuses a known provider's refused paths and an address the origin guard
- * does not allow. Everything is made through the management API and removed
+ * refuses a `{name}` part where an endpoint's name is, and an address the
+ * origin guard does not allow. Everything is made through the management API and removed
  * afterwards.
  *
  *   V2_BASE_URL=https://gateway.example.com \
@@ -135,7 +135,7 @@ test("a path the custom provider does not list is refused, and nothing is sent",
   assert.equal(response.status, 403, await response.text());
 });
 
-test("saving refuses a known provider's refused paths, and addresses the origin guard does not allow", { skip }, async () => {
+test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip }, async () => {
   const attempt = (fields: Record<string, unknown>) =>
     admin("POST", "/v2/admin/providers", { type: "custom", name: "Smoke refused", slug: `smoke-custom-no-${run}`, secret: "sk-mock-smoke-custom-key", auth: AUTH, ...fields });
   for (const fields of [
