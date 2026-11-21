@@ -1,11 +1,20 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
+import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 describe("the v2 Worker", () => {
   it("answers the health check", async () => {
     const response = await exports.default.fetch("https://gateway.test/v2/healthz");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2" });
+    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
+  });
+
+  it("reports a key vault that is not set up as misconfigured, and still answers", async () => {
+    const { default: worker } = await import("../src/index.ts");
+    const broken = { ...env, SECRET_VAULT_MODE: "neither" } as unknown as Env;
+    const response = await worker.fetch(new Request("https://gateway.test/v2/healthz"), broken, createExecutionContext());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, vault: "misconfigured" });
   });
 
   it.each(["/v2", "/v2/", "/v2/apps/a/nothing", "/v1/healthz", "/"])(

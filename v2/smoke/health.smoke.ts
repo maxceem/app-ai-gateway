@@ -12,7 +12,7 @@ if (base === undefined || base === "") throw new Error("Set V2_BASE_URL to the d
 test("the health check answers", async () => {
   const response = await fetch(new URL("/v2/healthz", base));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, service: "app-ai-gateway", api: "v2" });
+  assert.deepEqual(await response.json(), { ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
 });
 
 test("a path v2 does not declare is a JSON 404", async () => {
