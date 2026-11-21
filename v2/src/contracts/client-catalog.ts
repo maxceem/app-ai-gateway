@@ -1,5 +1,5 @@
 /**
- * The operations an app calls: health, app sign-in and `/me`. Kept apart from
+ * The operations an app calls: health, app sign-in, `/me` and job polls. Kept apart from
  * the management operations so the Worker's entry module can mount these
  * without evaluating the management schemas (they are loaded on first use,
  * with the rest of the management code). `./catalog.ts` joins both.
@@ -33,6 +33,19 @@ const SIGN_IN_ERRORS = {
 const ISSUER_ERRORS = {
   403: "The proof or the issuer token was rejected, the challenge is invalid or used, the user is blocked, or the app does not support this sign-in method.",
   503: "The issuer's keys cannot be fetched, or the gateway could not finish the check in time. Retry shortly.",
+} as const;
+
+/** A provider's own answer about a job, passed on as it is. */
+const JobAnswerSchema = z
+  .record(z.string(), z.unknown())
+  .meta({ id: "JobAnswer", description: "The provider's own answer, with its links pointing at the gateway." });
+
+const JOB_ERRORS = {
+  401: "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+  403: "The App Attest proof was rejected or replayed, the user is blocked, or the app is disabled.",
+  404: "The app does not exist, or no job with this id belongs to this app and user.",
+  502: "The provider could not be reached, or its connection is disabled.",
+  503: "The gateway could not finish the check in time. Retry shortly.",
 } as const;
 
 export const CLIENT_CATALOG = {
@@ -118,6 +131,34 @@ export const CLIENT_CATALOG = {
       404: "The app does not exist, or identifies no end users.",
       503: "The gateway could not finish the check in time. Retry shortly.",
     },
+  },
+
+  getJobStatus: {
+    method: "GET",
+    path: "/v2/apps/{app}/jobs/{job}/status",
+    params: { ...APP_PARAM, job: { description: "The job id the gateway returned when the job was submitted." } },
+    tags: ["Jobs"],
+    summary: "Get a job's status",
+    description:
+      "The provider's own status answer for a job submitted through the gateway, such as a fal queue job. Its polling links point at the gateway, and its request id is the gateway's job id. Polls are free: they use no request limit and no plan allowance.",
+    security: "gateway",
+    response: JobAnswerSchema,
+    responseDescription: "The provider's status answer, passed on with its status code.",
+    errors: JOB_ERRORS,
+  },
+
+  getJobResult: {
+    method: "GET",
+    path: "/v2/apps/{app}/jobs/{job}",
+    params: { ...APP_PARAM, job: { description: "The job id the gateway returned when the job was submitted." } },
+    tags: ["Jobs"],
+    summary: "Get a job's result",
+    description:
+      "The provider's own result answer, passed on as it is. A final result settles the job's charge to what the provider billed. Polls are free: they use no request limit and no plan allowance.",
+    security: "gateway",
+    response: JobAnswerSchema,
+    responseDescription: "The provider's result answer, passed on with its status code.",
+    errors: JOB_ERRORS,
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
 

@@ -391,9 +391,14 @@ export interface RouteModels {
   readonly models?: readonly string[] | undefined;
 }
 
-/** Whether this build can serve an operation: a call measured from its response or its request. */
+/**
+ * Whether this build can serve an operation: a call measured from its
+ * response or its request, or a job whose final units come in a response
+ * header (`../jobs/`).
+ */
 export function servedNow(operation: OperationDescription): boolean {
   const { kind } = operation.meter;
+  if (operation.lifecycle === "job") return operation.job !== undefined && kind === "response_header";
   return (
     operation.lifecycle === "call" &&
     (kind === "response_json" || kind === "response_header" || kind === "request_measure" || kind === "request_count")

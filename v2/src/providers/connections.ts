@@ -92,31 +92,38 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
   const key = cacheKey(accountId, slug);
   const cached = connectionCache.get(key);
   if (cached !== undefined) return cached;
-  return readOrKnown("provider_connection", connectionCache.peek(key), async () => {
-    const startedAt = Date.now();
-    const row = await database(env.DB).query.providerConnection.findFirst({
-      where: and(eq(providerConnection.accountId, accountId), eq(providerConnection.slug, slug)),
-    });
-    const value: ConnectionRecord | null =
-      row === undefined
-        ? null
-        : {
-            id: row.id,
-            accountId: row.accountId,
-            type: row.type,
-            slug: row.slug,
-            status: row.status,
-            baseUrl: row.baseUrl,
-            secretBlob: row.secretBlob,
-            rates: (row.rates as CustomerRates | null) ?? null,
-            cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
-            servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
-            passthrough: readPassthrough(row.passthrough),
-            customAuth: readCustomAuth(row.passthrough),
-          };
-    connectionCache.set(key, value, { storedAt: startedAt });
-    return value;
+  return readOrKnown("provider_connection", connectionCache.peek(key), () => readConnection(env, accountId, slug));
+}
+
+/**
+ * A connection read from D1 now, never from this isolate's cache or a stale
+ * copy: for work that must see a status another isolate just changed (the
+ * sweep, before it opens a key). Throws when D1 cannot answer.
+ */
+export async function readConnection(env: Env, accountId: string, slug: string): Promise<ConnectionRecord | null> {
+  const startedAt = Date.now();
+  const row = await database(env.DB).query.providerConnection.findFirst({
+    where: and(eq(providerConnection.accountId, accountId), eq(providerConnection.slug, slug)),
   });
+  const value: ConnectionRecord | null =
+    row === undefined
+      ? null
+      : {
+          id: row.id,
+          accountId: row.accountId,
+          type: row.type,
+          slug: row.slug,
+          status: row.status,
+          baseUrl: row.baseUrl,
+          secretBlob: row.secretBlob,
+          rates: (row.rates as CustomerRates | null) ?? null,
+          cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
+          servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
+          passthrough: readPassthrough(row.passthrough),
+          customAuth: readCustomAuth(row.passthrough),
+        };
+  connectionCache.set(cacheKey(accountId, slug), value, { storedAt: startedAt });
+  return value;
 }
 
 /** Forgets a connection after a management write, in this isolate. Others catch up within the cache time. */
@@ -240,10 +247,38 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
   return { providerKey, cloudflareToken };
 }
 
-/** The origin a request is sent to, ending in `/`: the connection's own base URL, or the provider's host. */
-export function upstreamOrigin(connection: ConnectionRecord, description: ProviderDescription, hostKey: string): string {
-  if (connection.baseUrl !== null && hostKey === "main") return connection.baseUrl;
+/**
+ * The origin a request is sent to, ending in `/`: the connection's own base
+ * URL, or the provider's host. A connection with a base URL sends every
+ * request there, never to the provider's own hosts, so its key goes only
+ * where the customer pointed it: the main host at the base URL itself, any
+ * other host (fal's `queue`) under a path named after it, such as
+ * `<base URL>queue/`. For a declared operation, a base URL that is one of
+ * the provider's own declared hosts (fal's `https://queue.fal.run/`) is the
+ * same as none: the operation goes to its own declared host. A listed
+ * passthrough path always goes to the base URL the customer set.
+ */
+export function upstreamOrigin(
+  connection: ConnectionRecord,
+  description: ProviderDescription,
+  hostKey: string,
+  passthrough = false,
+): string {
   const host = description.hosts[hostKey];
   if (host === undefined) throw new GatewayError(500, "internal_error", "The provider description names an unknown host");
+  if (connection.baseUrl !== null && (passthrough || !isDeclaredHost(description, connection.baseUrl))) {
+    return hostKey === "main" ? connection.baseUrl : `${connection.baseUrl}${hostKey}/`;
+  }
   return `https://${host}/`;
+}
+
+/** Whether `baseUrl` is exactly one of the provider's declared hosts, as its default routing would address it. */
+function isDeclaredHost(description: ProviderDescription, baseUrl: string): boolean {
+  let href: string;
+  try {
+    href = new URL(baseUrl).href;
+  } catch {
+    return false;
+  }
+  return Object.values(description.hosts).some((declared) => new URL(`https://${declared}/`).href === href);
 }

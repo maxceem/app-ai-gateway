@@ -123,6 +123,9 @@ const OPERATIONS: readonly OperationDescription[] = [
   }),
 ];
 
+/** Each operation's meter cases, worked out once: they depend only on the operation, not on the price. */
+const CASES = new Map(OPERATIONS.map((operation) => [operation, meterCases(operation)] as const));
+
 function randomRates(next: () => number): Record<string, number> {
   const rates: Record<string, number> = {};
   for (const field of FIELDS) if (next() < 0.35) rates[field] = 1 + Math.floor(next() * 1_000_000_000);
@@ -154,8 +157,10 @@ describe("property: the checks are the charge function, run", () => {
       const stored = randomStored(next);
       const price = customerPrice(stored, "m")!;
       const sources = priceSources({ type: "openai", rates: stored });
+      const modes = servedModes(price);
       for (const operation of OPERATIONS) {
-        const expected = servedModes(price).some((mode) => meterCases(operation).flat().some((usage) => charged(stored, usage, mode)));
+        const usages = CASES.get(operation)!.flat();
+        const expected = modes.some((mode) => usages.some((usage) => charged(stored, usage, mode)));
         expect(billing(operation, sources, "m").problem === null, `${operation.name} ${JSON.stringify(stored)}`).toBe(expected);
       }
     }
@@ -167,16 +172,18 @@ describe("property: the checks are the charge function, run", () => {
       const stored = randomStored(next);
       const price = customerPrice(stored, "m")!;
       const sources = priceSources({ type: "openai", rates: stored });
+      const modes = servedModes(price);
+      const { candidates } = keyCandidates(price);
       for (const operation of OPERATIONS) {
         // A request carries only the keys the operation reads; the rest stay unknown.
         const read = (operation.priceKeys ?? []).map((key) => key.name);
         const keysFor = (values: Readonly<Record<string, string>>) =>
           read.length === 0 ? undefined : Object.fromEntries(Object.entries(values).filter(([name]) => read.includes(name)));
-        const expected = keyCandidates(price).candidates.every(({ values }) =>
-          servedModes(price).every((mode) =>
-            meterCases(operation).some((way) => way.every((usage) => charged(stored, { ...usage, priceKeys: keysFor(values) }, mode))),
-          ),
-        );
+        const ways = CASES.get(operation)!;
+        const expected = candidates.every(({ values }) => {
+          const keys = keysFor(values);
+          return modes.every((mode) => ways.some((way) => way.every((usage) => charged(stored, { ...usage, priceKeys: keys }, mode))));
+        });
         expect(billing(operation, sources, "m", undefined, "save").problem === null, `${operation.name} ${JSON.stringify(stored)}`).toBe(expected);
         // Whatever saving accepts, serving accepts too.
         if (expected) expect(billing(operation, sources, "m").problem).toBeNull();

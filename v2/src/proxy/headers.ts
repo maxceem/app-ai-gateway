@@ -107,3 +107,18 @@ export function clientResponseHeaders(upstream: Headers, keyHeader: string): Hea
   headers.delete(keyHeader);
   return headers;
 }
+
+/** Cache directives aimed at CDNs alone, which some follow instead of `Cache-Control`. */
+const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"] as const;
+
+/**
+ * Makes an answer one no cache between the gateway and the app may keep,
+ * whatever the provider said: a minted credential, or a job's private result
+ * (a cache could serve it to another caller, or after the app's key is
+ * revoked). A CDN may follow its own targeted directive over `Cache-Control`,
+ * so those are dropped too.
+ */
+export function noStore(headers: Headers): void {
+  for (const name of CDN_CACHE_HEADERS) headers.delete(name);
+  headers.set("cache-control", "no-store");
+}

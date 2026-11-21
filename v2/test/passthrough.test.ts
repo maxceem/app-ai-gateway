@@ -428,6 +428,17 @@ async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
 }
 
 describe("serving a listed path", () => {
+  it("sends a listed path to the base URL the customer set, even when it is one of the provider's own hosts", async () => {
+    const { appId, slug, key } = await setup([{ method: "GET", path: "fal-ai/flux/requests/{id}/status" }], ["passthrough"], {
+      type: "fal",
+      baseUrl: "https://queue.fal.run/",
+    });
+    fetchSpy.mockResolvedValueOnce(Response.json({ status: "COMPLETED" }));
+    const { response } = await send("GET", `/v2/apps/${appId}/proxy/${slug}/fal-ai/flux/requests/req-1/status`, key);
+    expect(response.status).toBe(200);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://queue.fal.run/fal-ai/flux/requests/req-1/status");
+  });
+
   it("forwards a listed GET as it is, with the provider's key in its header only, and charges it `not_priced`", async () => {
     const { appId, slug, key } = await setup([{ method: "GET", path: "v1/files/{file_id}" }]);
     fetchSpy.mockResolvedValueOnce(Response.json({ id: "file-abc", object: "file" }, { headers: { "x-request-id": "r1" } }));

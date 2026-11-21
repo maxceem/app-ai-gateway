@@ -10,7 +10,7 @@
  *   units on the result call (plan D9, T15).
  *
  * The gateway path names the host: `run/...` goes to `fal.run`, `queue/...`
- * to `queue.fal.run`. Steps 4 and 6 complete and test them.
+ * to `queue.fal.run`. The job lifecycle is in `../jobs/`.
  */
 import { defineOperation, defineProvider } from "./operation.ts";
 
@@ -87,8 +87,18 @@ export const fal = defineProvider({
         status: { method: "GET", host: "queue", path: "{model_base}/requests/{request_id}/status" },
         result: { method: "GET", host: "queue", path: "{model_base}/requests/{request_id}" },
         cancel: { method: "PUT", host: "queue", path: "{model_base}/requests/{request_id}/cancel" },
-        linkFields: ["status_url", "response_url", "cancel_url"],
+        // fal says COMPLETED even for a job that failed: the result call tells (T15).
+        doneWhen: { field: "status", values: ["COMPLETED"] },
+        // A success, or a failure fal reports `0` billed units with (T15).
+        finalStatuses: [200, 422],
+        links: { status: "status_url", result: "response_url", cancel: "cancel_url" },
         unitsHeader: UNITS_HEADER,
+        outputsField: "images",
+        // `?logs=1` asks fal for the runner's logs on a status poll.
+        statusQuery: ["logs"],
+        // Results go after an hour, large ones after 6 minutes (T15): check every minute, for an hour.
+        checkEveryMs: 60_000,
+        maxChecks: 60,
       },
     }),
   ],

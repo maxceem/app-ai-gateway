@@ -176,6 +176,7 @@ async function writeCorrection(
   finalCost: NanoDollars,
   doneWork: string | null,
   unlessSettled = false,
+  doneJob: string | null = null,
 ): Promise<ChargeRow | null> {
   const correctedId = correction.correctsChargeId!;
   const statements = [
@@ -198,6 +199,8 @@ async function writeCorrection(
     ),
   ];
   if (doneWork !== null) statements.push(db.prepare("DELETE FROM open_work WHERE id = ?").bind(doneWork));
+  // A settled job needs no more work: its check and every figure saved for it go, once the correction exists.
+  if (doneJob !== null) statements.push(db.prepare("DELETE FROM open_work WHERE owner_type = 'job' AND owner_id = ?").bind(doneJob));
   const [inserted] = await db.batch(statements);
   if ((inserted?.meta.changes ?? 0) === 0) return null;
   return readCharge(db, correction.id);
@@ -226,20 +229,42 @@ export async function settleCharge(
  * estimate must already be in the ledger. While it is still in the
  * failed-write store, this answers `charge_missing` and the caller tries
  * again later. A client poll and the sweep may both call it: one row results.
+ * The same batch removes every open-work row of the job.
  */
 export async function settleJob(
   db: D1Database,
-  input: { readonly jobId: string; readonly final: FinalFigure; readonly now: number; readonly doneWork?: string },
+  input: { readonly jobId: string; readonly final: FinalFigure; readonly now: number },
 ): Promise<SettleResult> {
+  const estimate = await jobEstimateCharge(db, input.jobId);
+  if (estimate === null) return { status: "charge_missing" };
+  return settleJobFrom(db, estimate, input.final, input.now);
+}
+
+/** A job's estimate charge, or null while it is not in the ledger (the settlement barrier). */
+export async function jobEstimateCharge(db: D1Database, jobId: string): Promise<ChargeRow | null> {
   const row = await db
     .prepare("SELECT * FROM charge WHERE owner_type = 'job' AND owner_id = ? AND kind = 'estimate' ORDER BY seq LIMIT 1")
-    .bind(input.jobId)
+    .bind(jobId)
     .first<Record<string, unknown>>();
-  if (row === null) return { status: "charge_missing" };
-  const estimate = chargeFromRow(row);
-  const built = correctionFor(estimate, input.final, jobSettlementId(input.jobId), input.now);
+  return row === null ? null : chargeFromRow(row);
+}
+
+/** Whether a job's settlement correction is in the ledger. */
+export async function jobSettled(db: D1Database, jobId: string): Promise<boolean> {
+  return (await db.prepare("SELECT 1 FROM charge WHERE id = ?").bind(jobSettlementId(jobId)).first()) !== null;
+}
+
+/** Settles a job from its estimate, already read. */
+export async function settleJobFrom(
+  db: D1Database,
+  estimate: ChargeRow,
+  final: FinalFigure,
+  now: number,
+): Promise<Exclude<SettleResult, { readonly status: "charge_missing" }>> {
+  const jobId = estimate.ownerId;
+  const built = correctionFor(estimate, final, jobSettlementId(jobId), now);
   if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
-  const written = await writeCorrection(db, built.correction, built.finalCost, input.doneWork ?? null);
+  const written = await writeCorrection(db, built.correction, built.finalCost, null, false, jobId);
   return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 

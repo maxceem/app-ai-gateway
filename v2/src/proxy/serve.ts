@@ -37,6 +37,7 @@ import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
+import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
 import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
@@ -58,13 +59,15 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
-import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
+import { safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
+import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
+import { jobSigningReady, jobSigningUnavailable, routeDigest, signJobId } from "../jobs/job-id.ts";
+import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRedirect, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -355,6 +358,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges, formRemoved), contentType: null }
             : // A raw body the client named no type for is sent with none, never an empty one.
               { bytes, contentType: contentType === "" ? null : contentType };
+
+      // A job's id is signed by the gateway: without a key that can sign, the
+      // job is refused here, before its key is opened or anything is spent.
+      if (operation.lifecycle === "job" && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
 
       // The credentials are opened before admission: a request that cannot be sent must not spend anything.
       const credentials = await connectionCredentials(c.env, connection);
@@ -857,9 +864,27 @@ export async function sendAttempts(
   /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
   otherKeyHeaders: readonly string[] = [],
 ): Promise<Response> {
+  // A job the provider may accept is accounted for even if the app goes away: from the
+  // moment its submit is sent, the request is kept alive (`waitUntil`) until its answer
+  // is built, by then with its estimate written or its loss recorded.
+  const job = { release: (): void => undefined };
+  try {
+    return await sendAttemptsKeptFor(c, stripped, attempts, otherKeyHeaders, job);
+  } finally {
+    job.release();
+  }
+}
+
+async function sendAttemptsKeptFor(
+  c: ProxyContext,
+  stripped: readonly string[],
+  attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
+  otherKeyHeaders: readonly string[],
+  job: { release: () => void },
+): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController } | null = null;
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -885,7 +910,7 @@ export async function sendAttempts(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       }
       throw budgetExhausted(index);
     }
@@ -927,6 +952,7 @@ export async function sendAttempts(
       // Where it goes and what it carries: set last, so nothing a client sent can override it.
       const target = upstreamRequest(connection, description, {
         hostKey: prepared.hostKey,
+        passthrough: isPassthrough(prepared.operation),
         path: prepared.path.replace(/^\//u, ""),
         query: prepared.query,
         ...(prepared.operation.style !== undefined ? { style: prepared.operation.style } : {}),
@@ -969,8 +995,12 @@ export async function sendAttempts(
         redirect: "manual",
         signal: controller.signal,
       });
+      if (prepared.operation.lifecycle === "job") {
+        keepAliveUntilReleased(c, job);
+        cutOnDisconnect(c, controller);
+      }
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -990,14 +1020,20 @@ export async function sendAttempts(
         ...(attempts.length > 1 ? { attempt: attempt.seq } : {}),
         error: errorFacts(error),
       });
-      record(c, attempt, {
-        status: timedOut ? "timeout" : "network_error",
-        httpStatus: null,
-        errorCode: null,
-        usage: null,
-        cut: false,
-        latencyMs: Date.now() - providerStart,
-      });
+      if (prepared.operation.lifecycle === "job") {
+        // A submission whose answer was lost may have been accepted and paid:
+        // it is never sent again, and keeps its estimate (T15).
+        recordLostSubmission(c, prepared, timedOut ? "timeout" : "network_error", Date.now() - providerStart, "no_answer");
+      } else {
+        record(c, attempt, {
+          status: timedOut ? "timeout" : "network_error",
+          httpStatus: null,
+          errorCode: null,
+          usage: null,
+          cut: false,
+          latencyMs: Date.now() - providerStart,
+        });
+      }
       failure = timedOut
         ? new GatewayError(504, "provider_error", "Provider did not respond in time")
         : new GatewayError(502, "provider_error", "Provider request failed");
@@ -1010,14 +1046,14 @@ export async function sendAttempts(
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs, keyHeader };
+      previous = { prepared, upstream, latencyMs, keyHeader, controller };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs, keyHeader);
+    return answer(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1054,21 +1090,37 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
   );
 }
 
-/** Cache directives aimed at CDNs alone, which some follow instead of `Cache-Control`. */
-const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"] as const;
-
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
-function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
+function answer(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  upstream: Response,
+  latencyMs: number,
+  keyHeader: string,
+  /** The attempt's fetch controller, so a job submit's body read that runs out of time can stop the fetch itself. */
+  controller?: AbortController,
+): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
-  const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
-  // A minted live-session credential is never kept by a cache between the gateway and the app,
-  // whatever the provider said: a cache could hand one caller's signed URL to another. A CDN may
-  // follow its own targeted directive over `Cache-Control`, so those are dropped too.
-  if (prepared.liveTokenMint === true) {
-    for (const name of CDN_CACHE_HEADERS) responseHeaders.delete(name);
-    responseHeaders.set("cache-control", "no-store");
+  // A job submit the provider redirected was not accepted: nothing is charged, and its
+  // `Location` never reaches the app (a client following it would resend the job's body,
+  // and any token header the app signs in with, to another host).
+  if (operation.lifecycle === "job" && upstream.status >= 300 && upstream.status <= 399) {
+    record(c, attempt, { status: "provider_error", httpStatus: upstream.status, errorCode: null, usage: null, providerCostUsd: null, cut: false, latencyMs });
+    providerRedirect(upstream, "", [], "job_submit_redirect_refused", { app: attempt.appId, providerSlug: attempt.providerSlug });
   }
+  // A job the provider accepted: its answer carries the gateway's job id, and its estimate is charged.
+  if (operation.lifecycle === "job" && upstream.status >= 200 && upstream.status < 300) {
+    return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
+  }
+  const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
+  // A job submit the provider refused (a 409 pointing at an existing provider job, say) has no
+  // gateway job, so there is no gateway link to give: the provider's `Location` is dropped, and
+  // its status and body go on as they are.
+  if (operation.lifecycle === "job") responseHeaders.delete("location");
+  // A minted live-session credential is never kept by a cache between the gateway and the app:
+  // a cache could hand one caller's signed URL to another.
+  if (prepared.liveTokenMint === true) noStore(responseHeaders);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 
@@ -1140,29 +1192,141 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
   return new Response(stream, { status: upstream.status, headers: responseHeaders });
 }
 
-/** Writes the charge of an attempt that ended with no body to read, after the response. */
-function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome): void {
-  c.executionCtx.waitUntil(recordLedgerEntry(c.env, safeCharge(attempt, outcome)));
+/**
+ * The answer to a job the provider accepted (plan D9): the provider's own
+ * answer, with its request id replaced by a job id the gateway signs and its
+ * links pointing at the gateway. The job's estimate and its check are
+ * written after the answer is sent. An answer with no request id the gateway
+ * can use is a lost submission: the estimate stays, and the app gets an error.
+ */
+async function answerJobSubmit(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  upstream: Response,
+  latencyMs: number,
+  keyHeader: string,
+  controller: AbortController | undefined,
+): Promise<Response> {
+  const { operation, attempt, connection } = prepared;
+  const spec = operation.job!;
+  // The provider has accepted the job by now, so a body that stalls must not hold the app or the estimate.
+  const body = await submitBody(upstream, controller);
+  const requestId = providerRequestId(spec, body);
+  if (requestId === null) {
+    recordLostSubmission(c, prepared, "ok", latencyMs, "no_request_id", upstream.status);
+    throw new GatewayError(502, "provider_error", "The provider accepted the job but sent no job id");
+  }
+  const now = Date.now();
+  const jobId = await signJobId(c.env.JWT_SECRET, {
+    job: attempt.requestId,
+    connectionId: connection.id,
+    slug: connection.slug,
+    operation: operation.name,
+    model: attempt.model,
+    requestId,
+    accountId: attempt.accountId,
+    appId: attempt.appId,
+    userId: attempt.identity.userId,
+    route: await routeDigest(connection),
+  });
+  const entry = jobEstimate(attempt, operation, { status: "ok", httpStatus: upstream.status, latencyMs, signedId: jobId, now });
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
+  const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
+  const headers = clientResponseHeaders(upstream.headers, keyHeader);
+  // The provider's own `Location` (fal can send one with a 202) never reaches the app: when it
+  // points exactly at this job's status or result, the gateway's link takes its place.
+  const targets = jobRedirectTargets({ connection, description: prepared.description, operation, spec }, { model: attempt.model, requestId });
+  jobLocation(headers, upstream.headers, upstream.url, targets, links);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("content-type", "application/json");
+  return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
 }
 
 /**
- * The attempt's charge. If pricing throws (a cost too large to store, say),
- * the charge is still written, unpriced, and the failure is logged: a charge
- * is never lost or silently miscounted. The retry carries neither the price
- * nor the provider's own figure, so it never meets the same throwing report.
+ * Keeps the request alive (`waitUntil`) until `job.release` runs: a job
+ * submit's answer, its estimate and its check are then written even when the
+ * app went away while the provider's answer was on its way.
  */
-function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome) {
-  try {
-    return callCharge(attempt, outcome);
-  } catch (error) {
-    log("error", "usage_pricing_failed", {
-      app: attempt.appId,
-      providerSlug: attempt.providerSlug,
-      model: attempt.model,
-      error: errorFacts(error),
-    });
-    return callCharge({ ...attempt, price: null }, { ...outcome, providerCostUsd: null });
-  }
+function keepAliveUntilReleased(c: ProxyContext, job: { release: () => void }): void {
+  const before = job.release;
+  let release!: () => void;
+  const kept = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  job.release = () => {
+    before();
+    release();
+  };
+  c.executionCtx.waitUntil(kept);
+}
+
+/**
+ * How long a job submit still waits for the provider once the app has gone
+ * away. The request is kept alive (`waitUntil`) only for a limited time after
+ * the app leaves, about 30 s, so the wait is cut well before that: the
+ * submission then takes the lost-submission path, and its estimate is written
+ * in time.
+ */
+export const JOB_DISCONNECT_GRACE_MS = 20_000;
+
+/**
+ * Aborts a job submit's fetch `JOB_DISCONNECT_GRACE_MS` after the app goes
+ * away, unless its own deadline comes first. Aborting it also ends a body
+ * read in progress.
+ */
+function cutOnDisconnect(c: ProxyContext, controller: AbortController): void {
+  const signal = c.req.raw.signal;
+  if (signal === undefined || signal === null) return;
+  const cut = (): void => {
+    setTimeout(() => controller.abort(new Error("the app went away")), JOB_DISCONNECT_GRACE_MS);
+  };
+  if (signal.aborted) cut();
+  else signal.addEventListener("abort", cut, { once: true });
+}
+
+/** How long the body of an accepted job submission may take to arrive. */
+export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
+
+/**
+ * An accepted job submission's JSON body, or null when it does not parse,
+ * fails, is larger than `BODY_READ_LIMIT`, or does not arrive in time. At the
+ * deadline the fetch is aborted and the answer returns at once.
+ */
+async function submitBody(response: Response, controller: AbortController | undefined): Promise<unknown> {
+  if (response.body === null) return null;
+  const read = await readBounded(response.body, {
+    deadlineMs: JOB_SUBMIT_BODY_TIMEOUT_MS,
+    ...(controller === undefined ? {} : { signal: controller.signal }),
+    onStop: () => controller?.abort(),
+  });
+  if (read.kind === "too_large") void read.stream.cancel().catch(() => undefined);
+  return read.kind === "whole" ? (parseJson(read.bytes) ?? null) : null;
+}
+
+/**
+ * A job submission whose answer was lost, or came with no request id: the
+ * provider may have accepted and billed it, and the gateway cannot find it
+ * again. It keeps its estimate, marked `estimated`, with nothing to check
+ * later, and is logged. Never sent again.
+ */
+function recordLostSubmission(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  status: "ok" | "timeout" | "network_error",
+  latencyMs: number,
+  reason: "no_answer" | "no_request_id",
+  httpStatus: number | null = null,
+): void {
+  const { attempt, operation } = prepared;
+  log("error", "job_submission_lost", { app: attempt.appId, providerSlug: attempt.providerSlug, model: attempt.model, reason });
+  const entry = jobEstimate(attempt, operation, { status, httpStatus, latencyMs, signedId: null, now: Date.now() });
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
+}
+
+/** Writes the charge of an attempt that ended with no body to read, after the response. */
+function record(c: ProxyContext, attempt: CallAttempt, outcome: AttemptOutcome): void {
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, safeCharge(attempt, outcome)));
 }
 
 /** The identity of a request, for the type checker in tests. */

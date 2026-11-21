@@ -29,6 +29,7 @@
  * (stored in milliseconds) or images for a model priced by time or per image.
  */
 import { storedAppVersion } from "../core/app-version.ts";
+import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
@@ -350,4 +351,24 @@ function servedModelInDoubt(attempt: CallAttempt, usage: UsageObservation, facts
   if (reported.length > 0 && reported.every((names) => names.some(isBilled))) return false;
   log("warn", reported.length === 0 ? "served_model_unknown" : "served_model_unexpected", facts);
   return true;
+}
+
+/**
+ * The attempt's charge. If pricing throws (a cost too large to store, say),
+ * the charge is still written, unpriced, and the failure is logged: a charge
+ * is never lost or silently miscounted. The retry carries neither the price
+ * nor the provider's own figure, so it never meets the same throwing report.
+ */
+export function safeCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = Date.now()): LedgerEntry {
+  try {
+    return callCharge(attempt, outcome, now);
+  } catch (error) {
+    log("error", "usage_pricing_failed", {
+      app: attempt.appId,
+      providerSlug: attempt.providerSlug,
+      model: attempt.model,
+      error: errorFacts(error),
+    });
+    return callCharge({ ...attempt, price: null }, { ...outcome, providerCostUsd: null }, now);
+  }
 }

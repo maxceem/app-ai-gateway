@@ -84,21 +84,29 @@ describe("resolveCall and callGap", () => {
   it("never saves a call it admits unless every way its answers come out is charged", () => {
     const random = seeded(4_242);
     let admitted = 0;
+    // Many providers declare the same operation shape (the OpenAI-compatible ones, above all). Each shape
+    // is checked once per round: names and paths aside, with any code it carries, so no shape is skipped.
+    const shapes = new Map<string, { type: string; operation: OperationDescription }>();
+    for (const [type, description] of Object.entries(BUILT_IN_PROVIDERS)) {
+      for (const operation of description.operations) {
+        const { name: _name, match: _match, ...rest } = operation;
+        const key = JSON.stringify(rest, (_field, value: unknown) => (typeof value === "function" ? String(value) : value));
+        if (!shapes.has(key)) shapes.set(key, { type, operation });
+      }
+    }
     for (let round = 0; round < 45; round += 1) {
       const stored = { m: randomRates(random) } as CustomerRates;
-      for (const [type, description] of Object.entries(BUILT_IN_PROVIDERS)) {
+      for (const { type, operation } of shapes.values()) {
         const sources = priceSources({ type, rates: stored });
-        for (const operation of description.operations) {
-          const call = resolveCall({ models: ["m"] }, undefined, sources, operation, "m");
-          if (call.kind !== "admitted") continue;
-          admitted += 1;
-          const gap = callGap(call);
-          if (gap === null && call.bill.price !== null) {
-            expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(true);
-          }
-          if (gap !== null && call.bill.price !== null) {
-            expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(false);
-          }
+        const call = resolveCall({ models: ["m"] }, undefined, sources, operation, "m");
+        if (call.kind !== "admitted") continue;
+        admitted += 1;
+        const gap = callGap(call);
+        if (gap === null && call.bill.price !== null) {
+          expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(true);
+        }
+        if (gap !== null && call.bill.price !== null) {
+          expect(chargedEveryWay(operation, call.bill.price.price), `${type} ${operation.name} round ${round}`).toBe(false);
         }
       }
     }
@@ -125,7 +133,8 @@ describe("what serving reaches, and only that (PR #199 round 5)", () => {
   const op = (type: string, name: string) => BUILT_IN_PROVIDERS[type]!.operations.find((one) => one.name === name)!;
 
   it("refuses an operation not served yet, and a priced-models path naming a model with no price, in resolveCall (F6)", () => {
-    expect(resolveCall({}, undefined, falRates, op("fal", "fal.queue"), "fal-ai/flux/dev")).toMatchObject({ kind: "refused", reason: "not_served" });
+    // fal's queue is served since step 6a; a live session is not yet.
+    expect(resolveCall({}, undefined, falRates, op("fal", "fal.queue"), "fal-ai/flux/dev")).toMatchObject({ kind: "admitted" });
     expect(resolveCall({}, undefined, priceSources({ type: "openai", rates: null }), op("openai", "openai.realtime"), "gpt-4o-mini")).toMatchObject({
       kind: "refused",
       reason: "not_served",
@@ -140,7 +149,7 @@ describe("what serving reaches, and only that (PR #199 round 5)", () => {
     const falApp = { routing: { providers: { main: { operations: ["fal.run", "fal.queue"] } } } };
     const falCalls = reachableCalls(falApp, () => ({ sources: falRates, description: fal })).calls;
     expect(falCalls.map((call) => `${call.operation.name} ${call.requested}`)).toEqual(["fal.run fal-ai/flux/dev", "fal.queue fal-ai/flux/dev"]);
-    // Serving refuses the queue; saving judges it as if it were served.
+    // Saving judges an operation as if it were served; the queue is served anyway.
     expect(resolveCall({}, undefined, falRates, op("fal", "fal.queue"), "fal-ai/flux/dev", null, { asIfServed: true })).toMatchObject({ kind: "admitted" });
     // Text to speech with no model list: a request naming no model is sent with the default one.
     const elevenlabs = BUILT_IN_PROVIDERS.elevenlabs!;

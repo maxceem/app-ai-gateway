@@ -13,6 +13,7 @@
  * - The request is never failed or delayed by any of this: callers run it
  *   after the response is sent.
  */
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
@@ -140,32 +141,55 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
   VALUES (${CHARGE_COLUMNS.map(() => "?").join(", ")})
   ON CONFLICT(id) DO NOTHING`;
 
+/**
+ * An open-work row is written once: a row already there is never changed.
+ *
+ * - Work attached to a charge is written only with that charge's first
+ *   insert: its statement runs before the charge's, in the same batch, and
+ *   only while the charge is not there yet. So a replay of a batch that
+ *   committed (a lost reply, retried from the failed-write store) never
+ *   brings back work the sweep or a settlement has since ended.
+ * - A job's row is not written once the job is settled (its
+ *   `settle:job:<job>` correction exists).
+ */
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+  SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?
+  WHERE NOT (?5 = 'job' AND EXISTS (SELECT 1 FROM charge WHERE id = 'settle:job:' || ?6))
+    AND (?7 IS NULL OR NOT EXISTS (SELECT 1 FROM charge WHERE id = ?7))
   ON CONFLICT(id) DO NOTHING`;
+
+/** The statement that writes one open-work row, once: a row already there is never changed. */
+function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStatement {
+  return db
+    .prepare(INSERT_OPEN_WORK)
+    .bind(
+      work.id,
+      work.kind,
+      work.accountId,
+      work.appId,
+      work.ownerType,
+      work.ownerId,
+      work.chargeId,
+      work.detail === null ? null : JSON.stringify(work.detail),
+      work.dueAt,
+      work.createdAt,
+    );
+}
+
+/** Writes open-work rows that have no charge (a job's saved figure). Throws when D1 cannot take them. */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  await db.batch(rows.map((row) => openWorkStatement(db, row)));
+}
 
 /** The statements that write some entries, in one batch. */
 export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const { charge, openWork } of entries) {
+    // The work first: it is written only while its charge is not there yet (see INSERT_OPEN_WORK).
+    for (const work of openWork) statements.push(openWorkStatement(db, work));
     statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
-    for (const work of openWork) {
-      statements.push(
-        db.prepare(INSERT_OPEN_WORK).bind(
-          work.id,
-          work.kind,
-          work.accountId,
-          work.appId,
-          work.ownerType,
-          work.ownerId,
-          work.chargeId,
-          work.detail === null ? null : JSON.stringify(work.detail),
-          work.dueAt,
-          work.createdAt,
-        ),
-      );
-    }
   }
   return statements;
 }
@@ -175,6 +199,9 @@ export async function writeToLedger(db: D1Database, entries: readonly LedgerEntr
   if (entries.length === 0) return;
   await db.batch(ledgerStatements(db, entries));
 }
+
+/** How long `recordLedgerEntry` waits for D1 before the entry goes to the failed-write store. */
+export const LEDGER_D1_DEADLINE_MS = 5_000;
 
 /** The UTC day of a time, `YYYY-MM-DD`. */
 export function utcDay(at: number): string {
@@ -187,7 +214,10 @@ export function utcDay(at: number): string {
  */
 export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<void> {
   try {
-    await writeToLedger(env.DB, [entry]);
+    // A D1 write that stalls must not outlast the request's waitUntil window:
+    // past the deadline the entry (its charge and its open work, together) goes
+    // to the store too. Its ids are stable, so a late D1 commit is harmless.
+    await withDeadline(writeToLedger(env.DB, [entry]), LEDGER_D1_DEADLINE_MS, "writing the charge");
     return;
   } catch (error) {
     log("warn", "ledger_write_failed", { app: entry.charge.appId, charge: entry.charge.id, error: errorFacts(error) });

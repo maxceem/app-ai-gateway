@@ -27,6 +27,9 @@
  *   query names, and in French with `detect_language=true`.
  * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
  *   `x-fal-billable-units`, or none with `mock_no_units: true`.
+ * - `POST /queue/fal-ai/...`, then `GET .../requests/<id>/status` and
+ *   `GET .../requests/<id>`: fal's queue, stateless; `mock_fail: true` makes
+ *   the job fail with 422 and `0` units.
  *
  * Each reads the whole body, counting its bytes, and answers JSON, or a
  * stream when the body has `"stream": true` (Gemini: the streaming path). A
@@ -292,8 +295,42 @@ const falRun: Answer = ({ body }) => {
   return Response.json({ images: Array.from({ length: count }, (_, index) => ({ url: `https://fal.media/mock-${index}.png`, width: 1024, height: 1024 })) }, { headers });
 };
 
+/**
+ * fal's queue (step 6a), stateless: what the job will answer is written into
+ * its request id, `mock-<images>-<s|f|n>-<random>` (succeed, fail with 422 and
+ * `0` units, succeed with no units header). Reached under the connection's
+ * base URL at `queue/`, as the gateway sends a non-main host there.
+ */
+const falQueueSubmit: Answer = ({ body, path }) => {
+  const count = typeof body.num_images === "number" && Number.isSafeInteger(body.num_images) && body.num_images > 0 ? body.num_images : 1;
+  const outcome = body.mock_fail === true ? "f" : body.mock_no_units === true ? "n" : "s";
+  const requestId = `mock-${count}-${outcome}-${crypto.randomUUID().slice(0, 8)}`;
+  const model = path.replace(/^\/queue\//u, "").split("/").slice(0, 2).join("/");
+  // fal's own links, as fal sends them: the gateway replaces them with its own.
+  const base = `https://queue.fal.run/${model}/requests/${requestId}`;
+  return Response.json({ request_id: requestId, status: "IN_QUEUE", status_url: `${base}/status`, response_url: base, cancel_url: `${base}/cancel` });
+};
+
+const FAL_QUEUE_STATUS = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-[0-9]+-[sfn]-[0-9a-f]+)\/status$/u;
+const FAL_QUEUE_RESULT = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-([0-9]+)-([sfn])-[0-9a-f]+)$/u;
+
+/** A queue job's status or result, from what its request id says. Null for another path. */
+function falQueueFollowUp(request: Request, url: URL): Response | null {
+  if (request.method !== "GET") return null;
+  const status = FAL_QUEUE_STATUS.exec(url.pathname);
+  if (status !== null) return Response.json({ status: "COMPLETED", request_id: status[1], response_url: `https://queue.fal.run${url.pathname.replace(/^\/queue/u, "").replace(/\/status$/u, "")}` });
+  const result = FAL_QUEUE_RESULT.exec(url.pathname);
+  if (result === null) return null;
+  const count = Number(result[2]);
+  if (result[3] === "f") return Response.json({ detail: [{ msg: "mock failure" }] }, { status: 422, headers: { "x-fal-billable-units": "0" } });
+  const headers: Record<string, string> = {};
+  if (result[3] === "s") headers["x-fal-billable-units"] = String(count);
+  return Response.json({ images: Array.from({ length: count }, (_, index) => ({ url: `https://fal.media/mock-${index}.png` })) }, { headers });
+}
+
 /** Which answer a path gets. */
 function answerFor(path: string): Answer | null {
+  if (/^\/queue\/fal-ai\/[^/]+(?:\/[^/]+)*$/u.test(path) && !path.includes("/requests/")) return falQueueSubmit;
   if (/^\/v1\/text-to-speech\/[^/]+(?:\/stream)?(?:\/with-timestamps)?$/u.test(path)) return elevenTts;
   if (path === "/v1/speech-to-text") return elevenStt;
   if (path === "/v1/listen") return deepgramListen;
@@ -393,6 +430,8 @@ const mock = {
         { status: Number(failing[1]), headers: { "x-mock-received-bytes": String(bytes) } },
       );
     }
+    const followUp = falQueueFollowUp(request, url);
+    if (followUp !== null) return followUp;
     const answer = request.method === "POST" ? answerFor(url.pathname) : null;
     if (answer === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
     const { bytes, text, form } = await readCounting(request);
