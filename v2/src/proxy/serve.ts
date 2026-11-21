@@ -60,7 +60,7 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarg
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, storedAudioType, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -1292,8 +1292,11 @@ function storeConversation(
       accountId: attempt.accountId,
       appId: attempt.appId,
       keep,
-      ...(prepared.operation.storedAudio !== undefined ? { audio: prepared.operation.storedAudio } : {}),
+      ...(prepared.operation.storedAudio !== undefined
+        ? { audio: { fields: prepared.operation.storedAudio.fields, mime: storedAudioType(prepared.operation.storedAudio, prepared.query) } }
+        : {}),
       ...(prepared.operation.rawAudio === true ? { rawAudio: true } : {}),
+      ...(prepared.operation.rawAudioResponse === true ? { rawAudioResponse: true } : {}),
       ...(prepared.operation.audioFormFields !== undefined ? { audioFormFields: prepared.operation.audioFormFields } : {}),
       ...(prepared.operation.responseJsonLines === true ? { responseJsonLines: true } : {}),
       startedAt: attempt.startedAt,

@@ -181,6 +181,8 @@ export function speech(name: string, path: string): OperationDescription {
     background: DETACHED,
     // Its streamed events (`speech.audio.delta`) carry the recording under `audio`.
     storedAudio: { fields: ["audio"], mime: "audio/mpeg" },
+    // Without `stream_format: "sse"`, its answer is the recording itself.
+    rawAudioResponse: true,
     meter: { kind: "response_json", style: "openai-speech", requestMeasure: { measure: "characters", field: "input", unit: "characters" } },
   });
 }

@@ -135,6 +135,7 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   pricedEveryWay: "replaced",
   storedAudio: "kept",
   rawAudio: "kept",
+  rawAudioResponse: "kept",
   audioFormFields: "kept",
   responseJsonLines: "kept",
 };

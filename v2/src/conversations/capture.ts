@@ -43,6 +43,8 @@ export interface CaptureInput {
   readonly audio?: { readonly fields: readonly string[]; readonly mime: string };
   /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
   readonly rawAudio?: true;
+  /** A successful answer that is not JSON, events or JSON lines is a recording (`OperationDescription.rawAudioResponse`). */
+  readonly rawAudioResponse?: true;
   /** Request form fields that carry a recording (`OperationDescription.audioFormFields`). */
   readonly audioFormFields?: readonly string[];
   /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
@@ -147,6 +149,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     keep,
     ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
     ...(input.rawAudio === true ? { rawAudioRequest: true } : {}),
+    ...(input.rawAudioResponse === true && input.status === "ok" ? { rawAudioResponse: true } : {}),
     ...(input.audioFormFields !== undefined && input.audioFormFields.length > 0 ? { audioFormFields: [...input.audioFormFields] } : {}),
     ...(input.responseJsonLines === true ? { responseJsonLines: true } : {}),
     request: {

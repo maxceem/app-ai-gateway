@@ -552,13 +552,20 @@ export interface OperationDescription {
    * treats them as audio: kept as media, or left out where an app keeps no
    * audio (`../conversations/record.ts`).
    */
-  readonly storedAudio?: { readonly fields: readonly string[]; readonly mime: string };
+  readonly storedAudio?: StoredAudio;
   /**
    * Its request body is a recording sent as raw bytes (`rawBody`), such as
    * Deepgram's upload, whatever type the app named it: a stored conversation
    * treats it as audio, so it is left out where an app keeps no audio.
    */
   readonly rawAudio?: true;
+  /**
+   * A successful answer that is neither JSON, events nor JSON lines is a
+   * recording, whatever type it was sent with, such as speech returned as
+   * `application/octet-stream`: a stored conversation treats it as audio, so it
+   * is left out where an app keeps no audio.
+   */
+  readonly rawAudioResponse?: true;
   /**
    * Form fields of its request that carry a recording, such as a transcription's
    * `file`: a stored conversation treats them as audio whatever type or name the
@@ -912,4 +919,25 @@ export function requestMeasuresOf(meter: Meter): readonly (RequestMeasure & { re
   }
   if (meter.kind === "response_json") return meter.requestMeasure === undefined ? [] : [meter.requestMeasure];
   return [];
+}
+
+/**
+ * JSON fields of an answer that hold a recording in bare base64, and its
+ * media type. Where the request names the format in its query, such as
+ * ElevenLabs' `output_format=pcm_16000`, `format` gives the type for each
+ * format prefix, and `mime` is the type when the query names none.
+ */
+export interface StoredAudio {
+  readonly fields: readonly string[];
+  readonly mime: string;
+  readonly format?: { readonly query: string; readonly byPrefix: Readonly<Record<string, string>> };
+}
+
+/** The media type of a stored recording for a request sent with `query`. */
+export function storedAudioType(audio: StoredAudio, query: string): string {
+  if (audio.format === undefined) return audio.mime;
+  const named = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query).get(audio.format.query);
+  if (named === null || named === "") return audio.mime;
+  for (const [prefix, mime] of Object.entries(audio.format.byPrefix)) if (named.toLowerCase().startsWith(prefix)) return mime;
+  return audio.mime;
 }

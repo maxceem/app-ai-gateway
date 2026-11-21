@@ -413,6 +413,64 @@ describe("conversation records", () => {
     expect(file.media).toHaveLength(1);
   });
 
+  it("treats a declared raw upload as audio even when it is sent as text (Sol round 6)", async () => {
+    const pcm = new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]);
+    const request = { contentType: "text/plain", bytes: pcm, totalBytes: pcm.byteLength };
+    const left = await conversationRecord(capture({ keep: { images: true, audio: false, files: true }, rawAudioRequest: true, request }));
+    expect(left.media).toHaveLength(0);
+    expect(JSON.parse(left.line).request).toMatchObject({ kind: "media", content: "agw-omitted:audio;8" });
+    // A JSON body of the same operation (Deepgram's `{"url":…}`) stays JSON.
+    const json = await conversationRecord(capture({
+      keep: { images: true, audio: false, files: true },
+      rawAudioRequest: true,
+      request: { contentType: "application/json", bytes: encoder.encode('{"url":"https://example.com/a.wav"}'), totalBytes: 35 },
+    }));
+    expect(JSON.parse(json.line).request).toMatchObject({ kind: "json", value: { url: "https://example.com/a.wav" } });
+  });
+
+  it("treats a declared binary speech answer as audio, whatever its type (Sol round 6)", async () => {
+    const pcm = new Uint8Array([9, 8, 7, 6, 5, 4]);
+    const response = { contentType: "application/octet-stream", bytes: pcm, totalBytes: pcm.byteLength, aborted: false };
+    const noAudio = { images: true, audio: false, files: true };
+    const left = await conversationRecord(capture({ keep: noAudio, rawAudioResponse: true, response }));
+    expect(left.media).toHaveLength(0);
+    expect(JSON.parse(left.line).response).toMatchObject({ kind: "media", content: "agw-omitted:audio;6" });
+    // Without the declaration, the same bytes would be kept as a file.
+    const file = await conversationRecord(capture({ keep: noAudio, response }));
+    expect(file.media).toHaveLength(1);
+    // A JSON answer of the same operation, such as its events or an error, is not audio.
+    const error = await conversationRecord(capture({
+      keep: noAudio,
+      rawAudioResponse: true,
+      response: { contentType: "application/json", bytes: encoder.encode('{"error":"bad"}'), totalBytes: 15, aborted: false },
+    }));
+    expect(JSON.parse(error.line).response).toMatchObject({ kind: "json", value: { error: "bad" } });
+  });
+
+  it("stores ElevenLabs' timestamped audio with the type its output_format names (Sol round 6)", async () => {
+    const { storedAudioType } = await import("../src/providers/operation.ts");
+    const { elevenlabs } = await import("../src/providers/elevenlabs.ts");
+    const operation = elevenlabs.operations.find((op) => op.name === "elevenlabs.tts_timestamps")!;
+    const spec = operation.storedAudio!;
+    expect(storedAudioType(spec, "output_format=pcm_16000")).toBe("audio/pcm");
+    expect(storedAudioType(spec, "?output_format=mp3_44100_128")).toBe("audio/mpeg");
+    expect(storedAudioType(spec, "output_format=opus_48000_64")).toBe("audio/opus");
+    // No format named: ElevenLabs' default, MP3.
+    expect(storedAudioType(spec, "")).toBe("audio/mpeg");
+    const { media } = await conversationRecord(capture({
+      audio: { fields: [...spec.fields], mime: storedAudioType(spec, "output_format=pcm_16000") },
+      response: {
+        contentType: "application/json",
+        bytes: encoder.encode(JSON.stringify({ audio_base64: "AAEAAgADAAQ=", alignment: null })),
+        totalBytes: 40,
+        aborted: false,
+      },
+    }));
+    expect(media).toHaveLength(1);
+    expect(media[0]!.mime).toBe("audio/pcm");
+    expect(media[0]!.name.endsWith(".pcm")).toBe(true);
+  });
+
   it("notes an unreadable streamed event by its size where any media is kept out (Sol round 1)", async () => {
     const stream = ["data: {\"type\":\"response.output_audio.delta\",\"delta\":\"UklGRiQAAABX", "", "data: [DONE]", ""].join("\n");
     const record = async (keep: { images: boolean; audio: boolean; files: boolean }) => (JSON.parse((await conversationRecord(capture({

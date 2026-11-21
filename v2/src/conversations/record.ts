@@ -45,6 +45,8 @@ export interface ConversationCapture {
   audio?: { fields: readonly string[]; mime: string };
   /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
   rawAudioRequest?: boolean;
+  /** A successful answer that is not JSON, events or JSON lines is a recording (`OperationDescription.rawAudioResponse`). */
+  rawAudioResponse?: boolean;
   /** Form fields of the request that carry a recording (`OperationDescription.audioFormFields`). */
   audioFormFields?: readonly string[];
   /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
@@ -429,13 +431,13 @@ async function storedBody(
       return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
     }
   }
-  if (rawAudio && !type.startsWith("text/") && !isJson(type)) {
-    // A recording sent as raw bytes: audio, whatever type it was named.
+  // Declared newline-delimited JSON is read as such whatever type it was sent with.
+  const asJsonLines = isJsonLines(type) || jsonLines;
+  if (rawAudio && !isJson(type) && type !== "text/event-stream" && !asJsonLines) {
+    // A body the operation declares a recording: audio, whatever type it was named, even `text/plain`.
     const mime = type.startsWith("audio/") ? type : UNKNOWN_AUDIO;
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, mime) };
   }
-  // Declared newline-delimited JSON is read as such whatever type it was sent with.
-  const asJsonLines = isJsonLines(type) || jsonLines;
   if (type !== "" && !type.startsWith("text/") && !isJson(type) && !asJsonLines) {
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }
@@ -476,7 +478,7 @@ export async function conversationRecord(
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
   let request = await storedBody(capture.request, shelf, capture.keep, undefined, capture.rawAudioRequest === true, capture.audioFormFields ?? []);
-  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, false, [], capture.responseJsonLines === true);
+  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], capture.responseJsonLines === true);
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,

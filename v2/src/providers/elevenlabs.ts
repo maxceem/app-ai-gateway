@@ -19,7 +19,7 @@
  *
  * v1 never served ElevenLabs, so nothing here replaces anything v1 did.
  */
-import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry, type SuggestedField } from "./operation.ts";
+import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry, type StoredAudio, type SuggestedField } from "./operation.ts";
 
 /** ElevenLabs' default text-to-speech model, used when the request names none. */
 const DEFAULT_TTS_MODEL = "eleven_multilingual_v2";
@@ -55,6 +55,20 @@ const SINGLE_USE: SuggestedField = {
 };
 
 const ttsModel = { in: "body", field: "model_id", default: DEFAULT_TTS_MODEL } as const;
+
+
+/**
+ * The recording in a timestamped answer (`audio_base64`): its type follows the
+ * `output_format` the request named, MP3 when it named none, as ElevenLabs does.
+ */
+const TIMESTAMP_AUDIO: StoredAudio = {
+  fields: ["audio_base64"],
+  mime: "audio/mpeg",
+  format: {
+    query: "output_format",
+    byPrefix: { mp3_: "audio/mpeg", pcm_: "audio/pcm", opus_: "audio/opus", ulaw_: "audio/basic", alaw_: "audio/x-alaw-basic", wav_: "audio/wav" },
+  },
+};
 
 export const elevenlabs = defineProvider({
   type: "elevenlabs",
@@ -93,7 +107,7 @@ export const elevenlabs = defineProvider({
       model: ttsModel,
       modelKinds: ["speech"],
       // Its recording arrives in base64 inside JSON, beside the timestamps.
-      storedAudio: { fields: ["audio_base64"], mime: "audio/mpeg" },
+      storedAudio: TIMESTAMP_AUDIO,
       // A line of JSON at a time, even where it is sent as `application/json`.
       responseJsonLines: true,
       meter: ttsMeter,
@@ -105,6 +119,8 @@ export const elevenlabs = defineProvider({
       transport: "stream",
       model: ttsModel,
       modelKinds: ["speech"],
+      // Its answer is the recording itself.
+      rawAudioResponse: true,
       meter: ttsMeter,
     }),
     defineOperation({
@@ -115,7 +131,7 @@ export const elevenlabs = defineProvider({
       model: ttsModel,
       modelKinds: ["speech"],
       // Its recording arrives in base64 inside JSON, beside the timestamps.
-      storedAudio: { fields: ["audio_base64"], mime: "audio/mpeg" },
+      storedAudio: TIMESTAMP_AUDIO,
       meter: ttsMeter,
     }),
     defineOperation({
@@ -125,6 +141,8 @@ export const elevenlabs = defineProvider({
       transport: "binary",
       model: ttsModel,
       modelKinds: ["speech"],
+      // Its answer is the recording itself.
+      rawAudioResponse: true,
       meter: ttsMeter,
     }),
     defineOperation({
