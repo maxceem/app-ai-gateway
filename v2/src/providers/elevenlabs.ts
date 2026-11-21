@@ -62,6 +62,9 @@ export const elevenlabs = defineProvider({
   // `test/elevenlabs-refused.test.ts` checks every operation of ElevenLabs'
   // API against this set, both ways.
   refused: [
+    // A single-use token for a batch file transcription is not for a live
+    // session, so no opt-in reaches it (plan D4).
+    { path: "v1/single-use-token/batch_scribe", methods: ["POST"] },
     // The account and its admin: user, workspaces and their team, service
     // accounts and their API keys, usage, and billing actions.
     "v1/user/*",
@@ -103,7 +106,9 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/conversation/get-signed-url/*" },
     { path: "v1/convai/conversation/get_signed_url/*" },
     { path: "v1/convai/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
-    { path: "v1/single-use-token/*" },
+    // Only the types that start a live session: `batch_scribe` is refused.
+    { path: "v1/single-use-token/realtime_scribe" },
+    { path: "v1/single-use-token/tts_websocket" },
     { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
   ],
   // Lists the models; needs a valid key.

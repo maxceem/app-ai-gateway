@@ -347,11 +347,23 @@ describe("serving a live-session mint", () => {
     check(sentBody(0), now);
   });
 
+  it("refuses to save an opt-in on a template that also covers the batch transcription token", async () => {
+    const management = await seedManagementKey();
+    const created = await admin(management, "POST", "/v2/admin/providers", {
+      name: "elevenlabs",
+      slug: `elevenlabs-${crypto.randomUUID().slice(0, 6)}`,
+      secret: SECRET,
+      type: "elevenlabs",
+      passthrough: [{ method: "POST", path: "v1/single-use-token/{token_type}", live_token: true }],
+    });
+    expect(created.status).toBe(400);
+  });
+
   it("sends an ElevenLabs mint with no expiry field as it is", async () => {
     const { appId, slug, key } = await connected({
       type: "elevenlabs",
       passthrough: [
-        { method: "POST", path: "v1/single-use-token/{token_type}", live_token: true },
+        { method: "POST", path: "v1/single-use-token/realtime_scribe", live_token: true },
         { method: "GET", path: "v1/convai/conversation/get-signed-url", live_token: true },
       ],
     });

@@ -28,9 +28,11 @@ const REFUSED_TAGS = new Set(["workspace", "api-key", "speech-history"]);
 const PARAM = "\\{[^}/]+\\}";
 
 /** Whether an operation is in the closed set, worked out from the spec, not from the refused list. */
-function refusedBySet(method: string, path: string, tags: readonly string[]): boolean {
+function refusedBySet(method: string, path: string, tags: readonly string[], sent: string): boolean {
   if (tags.some((tag) => REFUSED_TAGS.has(tag))) return true;
-  if (liveTokenBySet(method, path, tags)) return false;
+  if (liveTokenBySet(method, path, tags, sent)) return false;
+  // A single-use token for a batch transcription is not for a live session.
+  if (tags.includes("Single Use Token")) return true;
   const is = (pattern: string) => new RegExp(`^${pattern}$`, "u").test(path);
   const under = (prefix: string) => is(`${prefix}(/.*)?`);
   // The account and its admin (the team of a workspace too), and billing actions.
@@ -53,10 +55,17 @@ function refusedBySet(method: string, path: string, tags: readonly string[]): bo
   return false;
 }
 
-/** Whether an operation mints a secret for a live session (plan D4): its single-use tokens, and an agent's link, which answers with one. */
-function liveTokenBySet(method: string, path: string, tags: readonly string[]): boolean {
+/** The single-use token types that start a live session; `batch_scribe` is for a file transcription. */
+const LIVE_TOKEN_TYPES = ["realtime_scribe", "tts_websocket"];
+
+/**
+ * Whether a request mints a secret for a live session (plan D4): its live
+ * single-use tokens, and an agent's link, which answers with one. `sent` is
+ * the request path, for the operations whose enum decides it.
+ */
+function liveTokenBySet(method: string, path: string, tags: readonly string[], sent: string): boolean {
   const is = (pattern: string) => new RegExp(`^${pattern}$`, "u").test(path);
-  if (tags.includes("Single Use Token")) return true;
+  if (tags.includes("Single Use Token")) return LIVE_TOKEN_TYPES.some((type) => sent.endsWith(`/${type}`));
   if (["/v1/convai/conversation/token", "/v1/convai/conversation/get-signed-url", "/v1/convai/conversation/get_signed_url", "/v1/convai/realtime/client_secrets"].some(is)) return true;
   return method === "GET" && is(`/v1/convai/agents/${PARAM}/link`);
 }
@@ -137,10 +146,10 @@ function judge(description: ProviderDescription): { wrong: string[]; dead: strin
   const matcher = new ProviderMatcher(description);
   const wrong: string[] = [];
   for (const [method, path, tags, enums] of OPERATIONS) {
-    const refused = refusedBySet(method, path, tags);
-    const token = liveTokenBySet(method, path, tags);
-    const expected = refused || token;
     for (const sent of requestPaths(path, enums)) {
+      const refused = refusedBySet(method, path, tags, sent);
+      const token = liveTokenBySet(method, path, tags, sent);
+      const expected = refused || token;
       const passthrough = compilePassthrough([{ method: method as HttpMethod, path: sent }]);
       const served = matcher.match(method, sent, { passthrough }).kind === "refused";
       const saved = matcher.refusedCovering(passthrough[0]!) !== null;
@@ -167,8 +176,9 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
 
   it("has the whole API to judge, with the values of enum parameters", () => {
     expect(OPERATIONS.length).toBeGreaterThan(500);
-    expect(requestPaths("/v1/single-use-token/{token_type}", { token_type: ["realtime_scribe", "tts_websocket"] })).toEqual([
+    expect(requestPaths("/v1/single-use-token/{token_type}", { token_type: ["realtime_scribe", "batch_scribe", "tts_websocket"] })).toEqual([
       "v1/single-use-token/realtime_scribe",
+      "v1/single-use-token/batch_scribe",
       "v1/single-use-token/tts_websocket",
     ]);
   });
@@ -178,7 +188,9 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
   });
 
   it.each([
-    ["a rule narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/single-use-token/*" ? { ...rule, path: "v1/single-use-token/p1" } : rule))],
+    ["a rule narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/single-use-token/realtime_scribe" ? { ...rule, path: "v1/single-use-token/p1" } : rule))],
+    ["the batch transcription token let through", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/single-use-token/batch_scribe")],
+    ["every single-use token type treated as live", (rules: Rule[]) => [...rules.filter((rule) => !rule.path.startsWith("v1/single-use-token/")), { path: "v1/single-use-token/*", methods: null, token: true }]],
     ["voice deletion widened to collections and samples", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/*" } : rule))],
     ["an agent's link left out", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/convai/agents/{agent_id}/link")],
     ["voice deletion narrowed to ids with a prefix", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/p{voice_id}" } : rule))],
@@ -215,5 +227,16 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
     ["POST", "v1/single-use-token/realtime_scribe"],
   ] as const)("refuses %s %s, even when listed", (method, path) => {
     expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ reason: "refused_path" });
+  });
+
+  it("reaches a live single-use token only with the opt-in, and never the batch transcription token", () => {
+    for (const type of ["realtime_scribe", "tts_websocket"]) {
+      const path = `v1/single-use-token/${type}`;
+      expect(matcher.match("POST", path, { passthrough: compilePassthrough([{ method: "POST", path, liveToken: true }]) })).toMatchObject({ kind: "passthrough" });
+    }
+    for (const listed of ["v1/single-use-token/batch_scribe", "v1/single-use-token/{token_type}"]) {
+      const passthrough = compilePassthrough([{ method: "POST", path: listed, liveToken: true }]);
+      expect(matcher.match("POST", "v1/single-use-token/batch_scribe", { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    }
   });
 });
