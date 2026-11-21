@@ -229,8 +229,9 @@ describe("conversation records", () => {
       response: { contentType, bytes: encoder.encode(text), totalBytes: text.length, aborted: false },
     }));
 
+    // Kept, the image is named by its own bytes (PIXEL is a PNG), not by the declared format.
     const kept = await reply(true, body, "application/json");
-    expect(kept.media.map((item) => item.mime)).toEqual(["image/webp"]);
+    expect(kept.media.map((item) => item.mime)).toEqual(["image/png"]);
     const left = await reply(false, body, "application/json");
     expect(left.media).toHaveLength(0);
     expect(left.line).not.toContain(PIXEL);
@@ -239,6 +240,19 @@ describe("conversation records", () => {
     expect(streamed.media).toHaveLength(0);
     expect(streamed.line).not.toContain(PIXEL);
     expect(streamed.line).toContain("agw-omitted:image/jpeg;");
+  });
+
+  it("names a generated image by its own bytes: a JPEG in b64_json is a JPEG (Astra round 2)", async () => {
+    // The first bytes of a JPEG file (SOI, APP0, "JFIF").
+    const jpeg = "/9j/4AAQSkZJRg==";
+    const body = JSON.stringify({ created: 1, data: [{ b64_json: jpeg }] });
+    const { media, line } = await conversationRecord(capture({
+      keep: { images: true, audio: true, files: true },
+      response: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length, aborted: false },
+    }));
+    expect(media.map((item) => item.mime)).toEqual(["image/jpeg"]);
+    expect(media[0]!.name).toMatch(/\.jpg$/);
+    expect(line).toContain(`agw-media:${media[0]!.name}`);
   });
 
   it("treats Anthropic's sources as attachments, plain-text documents included", async () => {
@@ -1053,6 +1067,44 @@ describe("conversation storage through the gateway", () => {
     await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(JSON.stringify(record)).not.toContain(token);
+    expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+  });
+
+  it("never stores a second token in a configured token header named like an identity header (Astra round 2)", async () => {
+    const slug = await connection();
+    const { appId } = await appWith({
+      authentication: {
+        type: "api_key",
+        end_user: {
+          source: "issuer",
+          issuer: {
+            jwks_url: "https://issuer.test/jwks.json",
+            issuer: "https://issuer.test/",
+            audience: "aud",
+            user_id_claim: "sub",
+            required_claims: [],
+            max_token_lifetime_seconds: 3600,
+            token_header: "x-end-user-id",
+          },
+        },
+      },
+      routing: { providers: { [slug]: { operations: ["openai.responses"], models: ["gpt-4o-mini"] } } },
+      conversations: { store: true },
+    });
+    const appKey = await seedAppKey(appId);
+    const { token } = await issueGatewayToken(env.JWT_SECRET, { appId, userId: "person-1", authMethod: "api_key", apiKeyId: appKey.id });
+    const other = "second-token-value-0042-abcdef";
+    providerAnswers();
+    // Authorization carries the verified token; the configured token header carries another one.
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "x-end-user-id": other, "x-app-version": "1.0", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", input: `the other token is ${other}` }),
+    });
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    expect(JSON.stringify(record)).not.toContain(other);
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 

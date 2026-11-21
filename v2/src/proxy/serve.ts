@@ -963,10 +963,16 @@ async function sendAttemptsKeptFor(
   // The credentials the app sent: the one authentication verified, whatever header
   // carried it, the values of the headers that carry the app's credentials, and any
   // value the client put in a provider key header (stripped above, never sent on).
-  // Never an end-user id. A stored conversation that contains one of them is never
-  // written with that body.
-  const secretHeaders = [...new Set([...client.credentialHeaders.map((name) => name.toLowerCase()), ...keyHeaders])]
-    .filter((name) => !client.identityHeaders.includes(name));
+  // A provider key header the gateway worked out is skipped when the app reads an
+  // end-user id from it; a header the app configured for its own credentials always
+  // counts, whatever its name. A stored conversation that contains one of them is
+  // never written with that body.
+  const secretHeaders = [
+    ...new Set([
+      ...keyHeaders.filter((name) => !client.identityHeaders.includes(name)),
+      ...client.credentialHeaders.map((name) => name.toLowerCase()),
+    ]),
+  ];
   const clientSecrets = [
     client.credential,
     ...secretHeaders.flatMap((name) => {

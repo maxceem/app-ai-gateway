@@ -204,6 +204,17 @@ class MediaShelf {
     return bytes === null ? `${OMITTED}${mime};${base64Bytes(text)}` : this.place(bytes, mime);
   }
 
+  /**
+   * A generated image in bare base64, whose type the body may not say truly:
+   * its first bytes name it, and `fallback` only where they say nothing.
+   */
+  async placeBase64Image(text: string, fallback: string): Promise<string> {
+    const bytes = this.keep.images ? decodeBase64(text) : null;
+    if (bytes === null) return `${OMITTED}${fallback};${base64Bytes(text)}`;
+    const sniffed = sniffedImage(bytes);
+    return this.place(bytes, sniffed === UNKNOWN_IMAGE ? fallback : sniffed);
+  }
+
   /** The text of an attached document written out inline: left as it is where files are kept. */
   attachedText(text: string): string {
     return this.keep.files ? text : `${OMITTED}text/plain;${new TextEncoder().encode(text).byteLength}`;
@@ -234,7 +245,7 @@ async function keptString(value: string, key: string | undefined, walk: Walk): P
   const dataUrl = DATA_URL.exec(value);
   if (dataUrl) return walk.shelf.placeBase64(value.slice(dataUrl[0].length), dataUrl[1]!.toLowerCase());
   // Generated images arrive as bare base64 under `b64_json`.
-  if (key === "b64_json") return walk.shelf.placeBase64(value, "image/png");
+  if (key === "b64_json") return walk.shelf.placeBase64Image(value, "image/png");
   if (value.length > MAX_STRING_CHARS) return `${OMITTED}text;${value.length}`;
   return value;
 }
@@ -332,7 +343,7 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
             ? walk.shelf.piece(item as string, media.mime)
             : await walk.shelf.placeBase64(item as string, media.mime);
       } else if (imageField !== null && name === imageField && typeof item === "string") {
-        out[name] = await walk.shelf.placeBase64(item, imageMime(object.output_format));
+        out[name] = await walk.shelf.placeBase64Image(item, imageMime(object.output_format));
       } else if (audioEvent && name === "delta" && typeof item === "string") {
         out[name] = walk.shelf.piece(item);
       } else {
