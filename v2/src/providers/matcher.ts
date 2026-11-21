@@ -502,6 +502,18 @@ export class ProviderMatcher {
     const token = this.tokenRule(method, atGateway, sent);
     // Only a listing of the mint itself may opt in: its method, on exactly the token path, wherever it is read.
     if (token === null || !token.mint) return null;
+    // Nor may any request it matches, for some value of its parts, land
+    // under a token path elsewhere than that path's mint: serving refuses
+    // those (`tokenRule`), so the listing would save and then not work.
+    for (const targets of [atGateway, sent]) {
+      if (targets === null || targets.host !== "main") continue;
+      for (const path of targets.paths) {
+        const reading: UpstreamTargets = { host: "main", paths: [path] };
+        const meets = this.liveTokens.some((rule) => (rule.methods === null || rule.methods.has(method)) && ruleMeets(path, rule.template));
+        // Token paths may share a namespace, each with its own mint.
+        if (meets && !this.liveTokens.some((rule) => mints(rule, method, reading))) return null;
+      }
+    }
     return token.rule.entry;
   }
 
@@ -588,6 +600,31 @@ interface CompiledLiveToken extends CompiledRule<LiveTokenPath> {
 function mints(rule: CompiledLiveToken, method: string, targets: UpstreamTargets | null): boolean {
   if (targets === null || targets.host !== "main" || method !== rule.entry.method) return false;
   return targets.paths.some((path) => matchTemplate(rule.mint, targetSegments(path), { ignoreCase: true }) !== null);
+}
+
+/**
+ * Whether some request path matches both `path` (a listing's reading, whose
+ * `{name}` parts take any value) and a refused or token rule's template,
+ * which may end in `*` and is compared ignoring case.
+ */
+function ruleMeets(path: readonly TemplateSegment[], template: Template): boolean {
+  const lower = (segment: TemplateSegment): TemplateSegment =>
+    segment.kind === "literal"
+      ? { kind: "literal", value: segment.value.toLowerCase() }
+      : segment.kind === "part"
+        ? { ...segment, prefix: segment.prefix.toLowerCase(), suffix: segment.suffix.toLowerCase() }
+        : segment;
+  const mine = path.map(lower);
+  const theirs = template.segments.map(lower);
+  const rest = theirs[theirs.length - 1]?.kind === "rest";
+  const fixed = rest ? theirs.slice(0, -1) : theirs;
+  if (rest ? mine.length < fixed.length : mine.length !== fixed.length) return false;
+  return fixed.every((segment, index) => {
+    const other = mine[index]!;
+    if (segment.kind !== "literal" && segment.kind !== "part") return false;
+    if (other.kind !== "literal" && other.kind !== "part") return true;
+    return segmentsMeet(other, segment);
+  });
 }
 
 /** A target path as literal segments, a `{name}` part standing for any value. */

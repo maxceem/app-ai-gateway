@@ -131,6 +131,45 @@ describe("matching a live-session token path", () => {
     expect(matcher.match("POST", "tts_websocket", { passthrough: relative, route })).toMatchObject({ kind: "passthrough", liveToken: { method: "POST" } });
   });
 
+  it("refuses an opt-in that some value of its parts would send under a token path but not to its mint", () => {
+    const description = describedAs("gemini");
+    const matcher = new ProviderMatcher(description);
+    const route = upstreamRoute(description, { baseUrl: "https://generativelanguage.googleapis.com/v1alpha/", cloudflareGateway: null });
+    // `{version}` as `auth_tokens` sends `v1alpha/auth_tokens/auth_tokens`, under the namespace and not its mint.
+    const wide = compilePassthrough([{ method: "POST", path: "{version}/auth_tokens", liveToken: true }]);
+    expect(matcher.liveTokenCovering(wide[0]!, route)).toBeNull();
+    expect(matcher.match("POST", "auth_tokens/auth_tokens", { passthrough: wide, route })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    // The relative listing is the mint itself, wherever it is read.
+    const relative = compilePassthrough([{ method: "POST", path: "auth_tokens", liveToken: true }]);
+    expect(matcher.liveTokenCovering(relative[0]!, route)).toMatchObject({ method: "POST" });
+    expect(matcher.match("POST", "auth_tokens", { passthrough: relative, route })).toMatchObject({ kind: "passthrough", liveToken: { method: "POST" } });
+    // Without a base path, the template is the mint for every version.
+    expect(matcher.liveTokenCovering(wide[0]!)).toMatchObject({ method: "POST" });
+    // Two token paths that share a namespace each keep their own mint.
+    const elevenlabs = new ProviderMatcher(describedAs("elevenlabs"));
+    for (const type of ["realtime_scribe", "tts_websocket"]) {
+      const listed = compilePassthrough([{ method: "POST", path: `v1/single-use-token/${type}`, liveToken: true }]);
+      expect(elevenlabs.liveTokenCovering(listed[0]!)).toMatchObject({ method: "POST" });
+    }
+  });
+
+  it("refuses on save a Gemini opt-in whose parts could land under the token path beside the mint", async () => {
+    const management = await seedManagementKey();
+    const save = (path: string) =>
+      admin(management, "POST", "/v2/admin/providers", {
+        name: "gemini",
+        slug: `gemini-${crypto.randomUUID().slice(0, 6)}`,
+        secret: SECRET,
+        type: "gemini",
+        baseUrl: "https://generativelanguage.googleapis.com/v1alpha/",
+        passthrough: [{ method: "POST", path, live_token: true }],
+      });
+    const wide = await save("{version}/auth_tokens");
+    expect(wide.status, JSON.stringify(wide.body)).toBe(400);
+    const relative = await save("auth_tokens");
+    expect(relative.status, JSON.stringify(relative.body)).toBe(201);
+  });
+
   it("gives a custom provider on a known host that provider's token paths, and none elsewhere", async () => {
     const { customDescription } = await import("../src/providers/custom.ts");
     const auth = { header: "authorization", format: "Bearer {key}" };
