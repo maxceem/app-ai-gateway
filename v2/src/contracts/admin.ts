@@ -182,7 +182,7 @@ export const FieldSettingSchema = z
     /** The field's name. A body name with dots is a nested field, such as `client_secret.expires_after`. */
     name: z.string().trim().min(1).max(200),
     /** The value set. A query parameter's is a string. With `as: "time_from_now"`, a whole number of seconds. */
-    value: z.unknown(),
+    value: z.unknown().nonoptional({ error: "value is required" }),
     /** `time_from_now`: the gateway writes the time `value` seconds after it sends the request, in RFC 3339. */
     as: z.enum(["time_from_now"]).optional(),
     /** Other spellings the provider reads for the same field, removed so it reads only this one. */

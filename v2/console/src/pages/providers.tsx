@@ -669,12 +669,15 @@ function SafeDefaults({
   isNew,
   fields,
   onChange,
+  onInvalid,
 }: {
   type: string;
   path: ListedPath;
   isNew: boolean;
   fields: readonly FieldSetting[] | undefined;
   onChange: (fields: FieldSetting[]) => void;
+  /** Says which values do not read as JSON yet, so saving can stop on them. */
+  onInvalid: (name: string, invalid: boolean) => void;
 }) {
   const suggested = suggestedPath(type, path.method, path.path);
   const shown: FieldSetting[] =
@@ -717,13 +720,17 @@ function SafeDefaults({
             aria-label={`Value of ${field.label ?? field.name}`}
             className="font-mono text-xs"
             defaultValue={JSON.stringify(field.value)}
-            onBlur={(event) => {
+            // The draft follows every keystroke, so pressing Enter saves the value shown, not the last one read on blur.
+            onChange={(event) => {
+              let value: unknown;
               try {
-                const value = JSON.parse(event.target.value) as unknown;
-                onChange(shown.map((other, at) => (at === index ? { ...other, value } : other)));
+                value = JSON.parse(event.target.value) as unknown;
               } catch {
-                toast.error("Write the value as JSON, such as 60 or \"true\".");
+                onInvalid(`${field.in}:${field.name}`, true);
+                return;
               }
+              onInvalid(`${field.in}:${field.name}`, false);
+              onChange(shown.map((other, at) => (at === index ? { ...other, value } : other)));
             }}
           />
           {field.suggested_value !== undefined && JSON.stringify(field.suggested_value) !== JSON.stringify(field.value) ? (
@@ -777,6 +784,8 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
   const [trusted, setTrusted] = useState(false);
   const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(base.listed));
   const [conflict, setConflict] = useState(false);
+  // Field values typed so far that do not read as JSON, by path and field.
+  const [invalid, setInvalid] = useState<Record<string, true>>({});
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
   const choosing = !custom && base.listed.length === 0;
@@ -796,6 +805,11 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
 
   const save = async () => {
     if (!provider || paths === null) return;
+    const live = new Set(paths.map(pathKey));
+    if (Object.keys(invalid).some((key) => live.has(key.slice(0, key.indexOf("|"))))) {
+      toast.error("Write each value as JSON, such as 60 or \"true\".");
+      return;
+    }
     try {
       await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
       toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
@@ -875,6 +889,16 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
           isNew={!saved.has(pathKey(path))}
           fields={fields[pathKey(path)]}
           onChange={(next) => setFields((current) => ({ ...current, [pathKey(path)]: next }))}
+          onInvalid={(name, bad) =>
+            setInvalid((current) => {
+              const key = `${pathKey(path)}|${name}`;
+              if (bad === (key in current)) return current;
+              const next = { ...current };
+              if (bad) next[key] = true;
+              else delete next[key];
+              return next;
+            })
+          }
         />
       ))}
       {anyTokens ? <LiveTokenNotice /> : null}

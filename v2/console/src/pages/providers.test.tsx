@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { parsePathLines, pathLine, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
@@ -427,6 +428,42 @@ describe("safe defaults on listed paths", () => {
         ],
       }),
     );
+  });
+
+  it("saves the value shown when Enter is pressed while the value is still focused", async () => {
+    const saved = { ...EXPIRY, value: { anchor: "created_at", seconds: 120 }, label: "Token expiry", reason: "A short expiry limits new calls.", suggested_value: EXPIRY.value };
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [saved] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const value = (await screen.findByRole("textbox", { name: /value of token expiry/i })) as HTMLInputElement;
+    await userEvent.clear(value);
+    await userEvent.click(value);
+    await userEvent.paste('{"anchor":"created_at","seconds":30}');
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [{ ...EXPIRY, value: { anchor: "created_at", seconds: 30 } }] }],
+      }),
+    );
+  });
+
+  it("does not save while a value shown is not JSON", async () => {
+    const saved = { ...EXPIRY, value: { anchor: "created_at", seconds: 120 }, label: "Token expiry", reason: "A short expiry limits new calls.", suggested_value: EXPIRY.value };
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [saved] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const value = (await screen.findByRole("textbox", { name: /value of token expiry/i })) as HTMLInputElement;
+    await userEvent.clear(value);
+    await userEvent.click(value);
+    const error = vi.spyOn(toast, "error");
+    await userEvent.paste("{seconds: 30");
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/write each value as json/i)));
+    expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toBeUndefined();
+    error.mockRestore();
   });
 });
 

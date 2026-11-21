@@ -2343,7 +2343,8 @@
         },
         "required": [
           "in",
-          "name"
+          "name",
+          "value"
         ],
         "additionalProperties": false
       },
