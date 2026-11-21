@@ -560,6 +560,12 @@ export interface OperationDescription {
    */
   readonly rawAudio?: true;
   /**
+   * Form fields of its request that carry a recording, such as a transcription's
+   * `file`: a stored conversation treats them as audio whatever type or name the
+   * upload gave them, so they are left out where an app keeps no audio.
+   */
+  readonly audioFormFields?: readonly string[];
+  /**
    * How this operation's requests and answers are read, over its provider's
    * (`readingRules`): a custom provider's path of an API style carries the
    * rules of the built-in provider its definition comes from (`./custom.ts`),

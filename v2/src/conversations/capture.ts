@@ -41,6 +41,10 @@ export interface CaptureInput {
   readonly audio?: { readonly fields: readonly string[]; readonly mime: string };
   /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
   readonly rawAudio?: true;
+  /** Request form fields that carry a recording (`OperationDescription.audioFormFields`). */
+  readonly audioFormFields?: readonly string[];
+  /** When the attempt started: a record's day is its charge's usage day, even for a stream that ends after midnight. */
+  readonly startedAt: number;
   /** The charge's own id, so a stored conversation and its charge always name each other. */
   readonly chargeId: string;
   readonly identity: GatewayIdentity;
@@ -119,7 +123,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   });
   const record: ConversationCapture = {
     eventId: input.chargeId,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(input.startedAt).toISOString(),
     appId: input.appId,
     userId: input.identity.userId,
     installId: input.identity.installId,
@@ -135,6 +139,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     keep: input.keep,
     ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
     ...(input.rawAudio === true ? { rawAudioRequest: true } : {}),
+    ...(input.audioFormFields !== undefined && input.audioFormFields.length > 0 ? { audioFormFields: [...input.audioFormFields] } : {}),
     request: {
       contentType: request.contentType,
       bytes: request.bytes === null ? null : new Uint8Array(request.bytes),

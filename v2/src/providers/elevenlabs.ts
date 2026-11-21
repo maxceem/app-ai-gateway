@@ -130,6 +130,7 @@ export const elevenlabs = defineProvider({
       match: { method: "POST", path: "v1/speech-to-text" },
       lifecycle: "call",
       transport: "upload",
+      audioFormFields: ["file"],
       model: { in: "body", field: "model_id" },
       modelKinds: ["transcription"],
       outbound: {

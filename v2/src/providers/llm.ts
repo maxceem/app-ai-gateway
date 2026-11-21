@@ -121,6 +121,7 @@ export function transcription(name: string, path: string, options: { readonly de
     transport: "upload",
     style: "openai-transcription",
     model: { in: "form", field: "model", ...(options.defaultModel !== undefined ? { default: options.defaultModel } : {}) },
+    audioFormFields: ["file"],
     meter: { kind: "response_json", style: "openai-transcription", units: ["audio_seconds"] },
   });
 }

@@ -135,6 +135,7 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   pricedEveryWay: "replaced",
   storedAudio: "kept",
   rawAudio: "kept",
+  audioFormFields: "kept",
 };
 
 /** A provider's own operation of `style`: the first that is a POST with its model in the body or a form field. */

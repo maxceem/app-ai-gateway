@@ -426,6 +426,51 @@ describe("conversation records", () => {
     expect(await record(KEEP_ALL)).toContain("UklGRiQAAABX");
   });
 
+  it("treats a declared audio upload field as audio, whatever its file was named or typed (Sol round 3)", async () => {
+    const form = new FormData();
+    form.append("model", "whisper-1");
+    form.append("file", new File([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])], "recording.mp4", { type: "application/octet-stream" }));
+    const sent = new Request("https://example.test", { method: "POST", body: form });
+    const bytes = new Uint8Array(await sent.arrayBuffer());
+    const request = { contentType: sent.headers.get("content-type")!, bytes, totalBytes: bytes.byteLength };
+    const noAudio = { images: true, audio: false, files: true };
+    const left = await conversationRecord(capture({ keep: noAudio, audioFormFields: ["file"], request }));
+    expect(left.media).toHaveLength(0);
+    expect(JSON.parse(left.line).request.fields.file).toMatchObject({ file: "recording.mp4", content: "agw-omitted:audio;8" });
+    // Without the declaration, the same upload is a file, kept as files are.
+    const file = await conversationRecord(capture({ keep: noAudio, request }));
+    expect(file.media).toHaveLength(1);
+  });
+
+  it("joins an event's data lines before reading it, so a multi-line text event is kept (Sol round 3)", async () => {
+    const stream = ["data: {\"type\":\"text\",", "data: \"text\":\"Hello\"}", "", "data: [DONE]", ""].join("\n");
+    const kept = (JSON.parse((await conversationRecord(capture({
+      keep: { images: true, audio: false, files: true },
+      response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false },
+    }))).line) as { response: { text: string } }).response.text;
+    expect(kept).toContain('"text":"Hello"');
+    expect(kept).not.toContain("agw-omitted");
+    expect(kept).toContain("data: [DONE]");
+  });
+
+  it("keeps the complete lines of a newline-delimited stream cut short, and notes the cut one (Sol round 3)", async () => {
+    const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
+    const lines = [
+      JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }),
+      JSON.stringify({ audio_base64: "SUQzBAAAAAAB", alignment: { characters: ["i"] } }),
+      '{"audio_base64":"SUQzBAAA',
+    ].join("\n");
+    const record = await conversationRecord(capture({
+      keep: { images: true, audio: false, files: true },
+      audio,
+      response: { contentType: "application/x-ndjson", bytes: encoder.encode(lines), totalBytes: lines.length, aborted: true },
+    }));
+    expect(record.line).not.toContain("SUQzBAAA");
+    const value = JSON.parse(record.line).response.value as unknown[];
+    expect(value.slice(0, 2)).toMatchObject([{ alignment: { characters: ["h"] } }, { alignment: { characters: ["i"] } }]);
+    expect(value[2]).toMatch(/^agw-omitted:unreadable;\d+$/);
+  });
+
   it("keeps a spoken reply as media", async () => {
     const speech = new Uint8Array([1, 2, 3, 4]);
     const { line, media } = await conversationRecord(capture({
@@ -514,6 +559,30 @@ describe("conversation storage through the gateway", () => {
     expect(image).toMatch(/^agw-media:\d{4}-\d{2}-\d{2}\/media\/[0-9a-f]{64}\.png$/);
     // The stored conversation and its charge name each other.
     expect(await chargeIds(appId)).toEqual([record!.event_id]);
+  });
+
+  it("files a stream that ends after midnight under the day it started, as its charge is (Sol round 3)", async () => {
+    const { slug, appId, key } = await storingApp();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-21T23:59:00.000Z"));
+      fetchSpy.mockImplementation(async () => {
+        // The answer ends two minutes later, after midnight.
+        vi.setSystemTime(new Date("2026-11-22T00:01:00.000Z"));
+        return Response.json({ id: "resp_1", output_text: "Logged.", usage: { input_tokens: 3, output_tokens: 2 } });
+      });
+      const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
+      expect(response.status).toBe(200);
+      await env.CONVERSATION_LOG.getByName(appId).flush();
+    } finally {
+      vi.useRealTimers();
+    }
+    const [record] = await storedRecords(appId);
+    expect(record!.created_at.slice(0, 10)).toBe("2026-11-21");
+    const keys = (await bucket().list({ prefix: `conversations/${appId}/` })).objects.map((object) => object.key);
+    expect(keys.filter((key) => key.endsWith(".jsonl.gz")).every((key) => key.includes("/2026-11-21/"))).toBe(true);
+    const charge = await env.DB.prepare("SELECT usage_day FROM charge WHERE id = ?").bind(record!.event_id).first<{ usage_day: string }>();
+    expect(charge!.usage_day).toBe("2026-11-21");
   });
 
   it("stores a streamed answer whole, as the app received it", async () => {
