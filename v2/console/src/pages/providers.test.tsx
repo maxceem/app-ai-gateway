@@ -354,6 +354,61 @@ describe("PathsDialog after a conflict", () => {
   });
 });
 
+describe("live-session token paths", () => {
+  it("opts a path in only with its own choice, naming what is not metered or capped", async () => {
+    const listed = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
+    const fetchMock = stub([listed]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    expect(screen.queryByText(/not metered, not capped/i)).toBeNull();
+    await userEvent.click(box);
+    await userEvent.paste("\nPOST v1/realtime/client_secrets live-token");
+    expect(await screen.findByText(/^live-session tokens are not metered, not capped$/i)).toBeTruthy();
+    expect(screen.getByText(/elevenlabs' token carries a link that can start more calls within about 15 minutes/i)).toBeTruthy();
+    expect(screen.getByText(/one openai client secret can start several calls before it expires/i)).toBeTruthy();
+    const save = screen.getByRole("button", { name: /save paths/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /live-session tokens are not metered, not capped/i }));
+    expect(save.disabled).toBe(false);
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [
+          { method: "GET", path: "v1/files" },
+          { method: "POST", path: "v1/realtime/client_secrets", live_token: true },
+        ],
+      }),
+    );
+  });
+
+  it("keeps a path opted in before without asking again, and sends no opt-in for other paths", async () => {
+    const listed = { ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] };
+    const fetchMock = stub([listed]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    expect(box.value).toBe("POST v1/realtime/client_secrets live-token");
+    expect(screen.getByText(/live-session tokens are not metered, not capped/i)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /live-session tokens/i })).toBeNull();
+    await userEvent.click(box);
+    await userEvent.paste("\nGET v1/files");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [
+          { method: "POST", path: "v1/realtime/client_secrets", live_token: true },
+          { method: "GET", path: "v1/files" },
+        ],
+      }),
+    );
+  });
+});
+
 describe("listed path lines", () => {
   it("read a method, a path, a price and, on a custom provider, an API style", () => {
     expect(parsePathLines("get v1/files/{id} $0.5\n\n  POST  chat/completions  openai-chat ", true)).toEqual({
@@ -370,8 +425,8 @@ describe("listed path lines", () => {
     ["GET", false, "add the path"],
     ["GET v1/files $", false, "a price is $"],
     ["GET v1/files $-1", false, "a price is $"],
-    ["POST chat openai-chat", false, "is not a price"],
-    ["POST chat speakers", true, "not a price or an API style"],
+    ["POST chat openai-chat", false, "is not a price or live-token"],
+    ["POST chat speakers", true, "not a price, live-token or an API style"],
   ])("say what is wrong with %j", (text, custom, problem) => {
     const parsed = parsePathLines(text, custom);
     expect("problem" in parsed && parsed.problem).toContain(problem);
@@ -381,6 +436,7 @@ describe("listed path lines", () => {
     for (const path of [
       { method: "GET" as const, path: "v1/files/{id}", per_request: 0.001 },
       { method: "POST" as const, path: "chat/completions", style: "openai-chat" as const },
+      { method: "POST" as const, path: "v1/realtime/client_secrets", live_token: true },
     ]) {
       expect(parsePathLines(pathLine(path), true)).toEqual({ paths: [path] });
     }

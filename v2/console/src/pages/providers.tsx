@@ -585,17 +585,27 @@ function CustomFields({ draft, onChange }: { draft: CustomDraft; onChange: (draf
 
 type ListedPath = NonNullable<ProviderConnection["passthrough"]>[number];
 
-/** One listed path as a line: method, path, then a price in dollars or an API style. */
+/** The word on a path's line that opts it in to a live-session token path (plan D4). */
+export const LIVE_TOKEN_WORD = "live-token";
+
+/** One listed path as a line: method, path, then a price in dollars, an API style, or `live-token`. */
 export function pathLine(path: ListedPath): string {
-  return [path.method, path.path, ...(path.per_request !== undefined ? [`$${path.per_request}`] : []), ...(path.style !== undefined ? [path.style] : [])].join(" ");
+  return [
+    path.method,
+    path.path,
+    ...(path.per_request !== undefined ? [`$${path.per_request}`] : []),
+    ...(path.style !== undefined ? [path.style] : []),
+    ...(path.live_token === true ? [LIVE_TOKEN_WORD] : []),
+  ].join(" ");
 }
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 /**
  * Lines back to listed paths. Each line is a method and a path, then
- * optionally `$<dollars>` per request, or, on a custom provider, an API
- * style. Returns the paths, or the first problem with its line number.
+ * optionally `$<dollars>` per request, `live-token` to opt in to a path that
+ * mints a live-session secret, or, on a custom provider, an API style.
+ * Returns the paths, or the first problem with its line number.
  */
 export function parsePathLines(text: string, custom: boolean): { paths: ListedPath[] } | { problem: string } {
   const paths: ListedPath[] = [];
@@ -614,19 +624,52 @@ export function parsePathLines(text: string, custom: boolean): { paths: ListedPa
         const price = Number(token.slice(1));
         if (token.length === 1 || !Number.isFinite(price) || price < 0) return { problem: `${where}: a price is $ and a number, such as $0.002.` };
         entry.per_request = price;
+      } else if (token === LIVE_TOKEN_WORD) {
+        entry.live_token = true;
       } else if (custom && CUSTOM_STYLES.includes(token)) {
         entry.style = token as ListedPath["style"];
       } else {
         return {
           problem: custom
-            ? `${where}: ${token} is not a price or an API style (${CUSTOM_STYLES.join(", ")}).`
-            : `${where}: ${token} is not a price. Write a price as $0.002.`,
+            ? `${where}: ${token} is not a price, ${LIVE_TOKEN_WORD} or an API style (${CUSTOM_STYLES.join(", ")}).`
+            : `${where}: ${token} is not a price or ${LIVE_TOKEN_WORD}. Write a price as $0.002.`,
         };
       }
     }
     paths.push(entry);
   }
   return { paths };
+}
+
+/** The listings this draft opts in to a live-session token path that the saved list did not. */
+export function newLiveTokenPaths(listed: readonly ListedPath[], saved: readonly ListedPath[]): ListedPath[] {
+  const before = new Set(saved.filter((path) => path.live_token === true).map((path) => `${path.method} ${path.path}`));
+  return listed.filter((path) => path.live_token === true && !before.has(`${path.method} ${path.path}`));
+}
+
+/**
+ * What opting a path in to a live-session token gives up (plan D4), said where
+ * a person makes that choice. The known holes are named, not hidden.
+ */
+export function LiveTokenNotice() {
+  return (
+    <Alert>
+      <AlertCircle />
+      <AlertTitle>Live-session tokens are not metered, not capped</AlertTitle>
+      <AlertDescription>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>
+            A path marked {LIVE_TOKEN_WORD} mints a short-lived secret. The live call it starts goes straight to the provider, so the
+            gateway cannot count its cost or end it.
+          </li>
+          <li>Each mint still needs the app's sign-in and counts toward its request limits.</li>
+          <li>Where the provider lets the request set it, the secret can start a call for 60 seconds only.</li>
+          <li>ElevenLabs' token carries a link that can start more calls within about 15 minutes.</li>
+          <li>One OpenAI client secret can start several calls before it expires.</li>
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 /**
@@ -642,11 +685,15 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
   const [base, setBase] = useState({ revision: provider?.revision ?? 0, listed: provider?.passthrough ?? [] });
   const [text, setText] = useState(base.listed.map(pathLine).join("\n"));
   const [trusted, setTrusted] = useState(false);
+  const [tokensAccepted, setTokensAccepted] = useState(false);
   const [conflict, setConflict] = useState(false);
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
   const choosing = !custom && base.listed.length === 0;
   const paths = "paths" in parsed ? parsed.paths : null;
+  // Opting a path in to a live-session token is its own choice, apart from passing paths through.
+  const newTokens = paths === null ? [] : newLiveTokenPaths(paths, base.listed);
+  const anyTokens = paths !== null && paths.some((path) => path.live_token === true);
 
   /** Starts again from the provider as it is now, dropping the draft. */
   const reload = () => {
@@ -684,7 +731,7 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       }
       submitLabel="Save paths"
       pending={update.isPending}
-      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted)}
+      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted) || (newTokens.length > 0 && !tokensAccepted)}
       onSubmit={() => void save()}
     >
       {conflict ? (
@@ -704,8 +751,8 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         htmlFor="listed-paths"
         hint={
           custom
-            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} matches one part of the path."
-            : "Method and path, then a price such as $0.002 if you want one. {name} matches one part of the path."
+            ? `Method and path, then a price such as $0.002, or an API style such as openai-chat. Add ${LIVE_TOKEN_WORD} to a path that mints a live-session secret. {name} matches one part of the path.`
+            : `Method and path, then a price such as $0.002 if you want one. Add ${LIVE_TOKEN_WORD} to a path that mints a live-session secret. {name} matches one part of the path.`
         }
       >
         <Textarea
@@ -727,6 +774,13 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         <label className="flex items-center gap-2 text-sm font-medium">
           <Checkbox checked={trusted} onCheckedChange={(checked) => setTrusted(checked === true)} />
           I understand, and want these paths passed through
+        </label>
+      ) : null}
+      {anyTokens ? <LiveTokenNotice /> : null}
+      {newTokens.length > 0 ? (
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <Checkbox checked={tokensAccepted} onCheckedChange={(checked) => setTokensAccepted(checked === true)} />
+          I understand these live-session tokens are not metered, not capped
         </label>
       ) : null}
     </FormDialog>
