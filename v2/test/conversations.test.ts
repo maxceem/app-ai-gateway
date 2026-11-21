@@ -957,6 +957,23 @@ describe("conversation storage through the gateway", () => {
     expect(record!.trace_id).toBeNull();
   });
 
+  it("leaves out a content type that holds a credential, even with an empty body (Sol round 10)", async () => {
+    const { slug, appId, key } = await storingApp();
+    // The provider echoes its key in a content type parameter, with nothing in the body.
+    fetchSpy.mockImplementation(async () =>
+      new Response("", { status: 400, headers: { "content-type": "application/json; key=sk-test-provider-key-5678" } }));
+    const { response } = await call(
+      `/v2/apps/${appId}/proxy/${slug}/v1/responses`,
+      responsesRequest(key, { "content-type": `application/json; echo=${key}` }),
+    );
+    expect(response.status).toBe(400);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    const stored = JSON.stringify(record);
+    expect(stored).not.toContain("sk-test-provider-key-5678");
+    expect(stored).not.toContain(key);
+  });
+
   it("ends the app's answer before the stored copy of it is put together (Sol round 1)", async () => {
     const { slug, appId, key } = await storingApp();
     providerAnswers();

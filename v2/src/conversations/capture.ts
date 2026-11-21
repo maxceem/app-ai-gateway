@@ -141,9 +141,14 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   if (keep === null) return;
   const sentRequest = await sentBytes(input.sent);
   const requestBytes = sentRequest.bytes.byteLength > CAPTURE_MAX_BYTES ? null : sentRequest.bytes;
-  const request = withoutCredentials(input, "request", { contentType: sentRequest.contentType, bytes: requestBytes });
+  // A content type is checked on its own, even where the body is empty or too large to keep:
+  // one that holds a credential is left out.
+  const request = withoutCredentials(input, "request", {
+    contentType: metadataWithoutCredentials(input, "request_content_type", sentRequest.contentType) ?? "",
+    bytes: requestBytes,
+  });
   const response = withoutCredentials(input, "response", {
-    contentType: input.response.contentType,
+    contentType: metadataWithoutCredentials(input, "response_content_type", input.response.contentType) ?? "",
     bytes: input.response.pieces === null ? null : wholeBody(input.response.pieces),
   });
   const record: ConversationCapture = {
