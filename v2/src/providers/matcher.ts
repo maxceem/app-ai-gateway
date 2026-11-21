@@ -391,7 +391,6 @@ export class ProviderMatcher {
     if (compiled === undefined) return null;
     const template = compiled.upstream ?? compiled.template;
     for (const segment of template.segments) {
-      if (segment.kind === "rest") return null;
       if ((segment.kind === "part" || segment.kind === "multi") && !Object.hasOwn(parts, segment.name)) return null;
       // A `{name...}` value keeps its `/`s, but never an empty segment.
       if (segment.kind === "multi" && parts[segment.name]!.split("/").includes("")) return null;
@@ -445,7 +444,7 @@ export function namedPartProblem(template: Template): string | null {
 function templatesMeet(listed: readonly SegmentPattern[], pattern: readonly TemplateSegment[], closedLists: ClosedLists): boolean {
   const multiAt = pattern.findIndex((segment) => segment.kind === "multi");
   const meetAll = (theirs: readonly TemplateSegment[], at: number) =>
-    theirs.every((segment, index) => segment.kind !== "multi" && segment.kind !== "rest" && segmentsMeet(listed[at + index]!, segment));
+    theirs.every((segment, index) => segment.kind !== "multi" && segmentsMeet(listed[at + index]!, segment));
   if (multiAt === -1) return pattern.length === listed.length && meetAll(pattern, 0);
   const before = pattern.slice(0, multiAt);
   const after = pattern.slice(multiAt + 1);

@@ -66,9 +66,7 @@ export type TemplateSegment =
   /** `{name}`, with an optional literal before and after it in the same segment. */
   | { readonly kind: "part"; readonly name: string; readonly prefix: string; readonly suffix: string }
   /** `{name...}`: one or more whole segments, from a closed list. */
-  | { readonly kind: "multi"; readonly name: string }
-  /** `*` at the end of a refused-path pattern: the rest of the path, if any. */
-  | { readonly kind: "rest" };
+  | { readonly kind: "multi"; readonly name: string };
 
 export interface Template {
   readonly source: string;
@@ -85,8 +83,6 @@ export class TemplateError extends Error {
 export interface ParseOptions {
   /** Allow `{name...}`. Off for paths a customer lists: a part there never spans a `/`. */
   readonly multi?: boolean;
-  /** Allow a trailing `*`. Only refused-path patterns use it. */
-  readonly rest?: boolean;
 }
 
 const PART = /^([^{}]*)\{([A-Za-z_][A-Za-z0-9_]*)(\.\.\.)?\}([^{}]*)$/;
@@ -101,15 +97,10 @@ export function parseTemplate(source: string, options: ParseOptions = {}): Templ
   const pieces = trimmed.split("/");
   const names = new Set<string>();
   const segments: TemplateSegment[] = [];
-  pieces.forEach((piece, index) => {
+  pieces.forEach((piece) => {
     if (piece === "") throw new TemplateError(source, "has an empty segment");
     if (piece === "." || piece === "..") throw new TemplateError(source, "has a dot segment");
-    if (piece === "*") {
-      if (!options.rest) throw new TemplateError(source, "may not use *");
-      if (index !== pieces.length - 1) throw new TemplateError(source, "may use * only as the last segment");
-      segments.push({ kind: "rest" });
-      return;
-    }
+    if (piece === "*") throw new TemplateError(source, "may not use *");
     if (!piece.includes("{") && !piece.includes("}")) {
       segments.push({ kind: "literal", value: piece });
       return;
@@ -142,8 +133,6 @@ export type ClosedLists = Readonly<Record<string, ReadonlySet<string> | "any">>;
 
 export interface MatchOptions {
   readonly closedLists?: ClosedLists;
-  /** Compare literals ignoring case. Used for refused paths, so case tricks cannot get around them. */
-  readonly ignoreCase?: boolean;
 }
 
 /** The part values of a match, decoded. A `{name...}` value holds its `/`s. */
@@ -156,9 +145,7 @@ export function matchTemplate(
   options: MatchOptions = {},
 ): Parts | null {
   const parts: Record<string, string> = {};
-  const same = options.ignoreCase
-    ? (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-    : (a: string, b: string) => a === b;
+  const same = (a: string, b: string) => a === b;
 
   const one = (pattern: TemplateSegment, value: string): boolean => {
     switch (pattern.kind) {
@@ -178,12 +165,6 @@ export function matchTemplate(
   };
 
   const pattern = template.segments;
-  const last = pattern[pattern.length - 1];
-  if (last?.kind === "rest") {
-    const fixed = pattern.slice(0, -1);
-    if (segments.length < fixed.length) return null;
-    return fixed.every((segment, index) => one(segment, segments[index]!)) ? parts : null;
-  }
 
   const multiAt = pattern.findIndex((segment) => segment.kind === "multi");
   if (multiAt === -1) {
@@ -234,8 +215,6 @@ export function fillTemplate(template: Template, parts: Parts): string | null {
         out.push(...value.split("/"));
         break;
       }
-      case "rest":
-        throw new TemplateError(template.source, "is a pattern, not an upstream template");
     }
   }
   if (out.some((segment) => segment === "." || segment === "..")) return null;

@@ -53,7 +53,6 @@ describe("parseTemplate", () => {
     ["v1/x{rest...}", { multi: true }],
     ["{a...}/{b...}", { multi: true }],
     ["v1/*", {}],
-    ["v1/*/x", { rest: true }],
   ])("refuses %j with %j", (source, options) => {
     expect(() => parseTemplate(source, options)).toThrow();
   });
@@ -87,11 +86,10 @@ describe("matchTemplate", () => {
     expect(matchTemplate(template, ["run", "fal-ai", "flux", "dev", "extra"])).toBeNull();
   });
 
-  it("is case-sensitive unless asked otherwise", () => {
-    const template = parseTemplate("v1/organization/*", { rest: true });
+  it("is case-sensitive", () => {
+    const template = parseTemplate("v1/organization/{thing}");
     expect(matchTemplate(template, ["V1", "Organization", "admin_api_keys"])).toBeNull();
-    expect(matchTemplate(template, ["V1", "Organization", "admin_api_keys"], { ignoreCase: true })).toEqual({});
-    expect(matchTemplate(template, ["v1", "organization"], { ignoreCase: true })).toEqual({});
+    expect(matchTemplate(template, ["v1", "organization", "admin_api_keys"])).toEqual({ thing: "admin_api_keys" });
   });
 });
 

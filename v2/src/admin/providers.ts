@@ -707,8 +707,8 @@ const BASE_PATH_PROBLEMS: Readonly<Record<PathRefusal, string>> = {
 
 /**
  * A base URL, checked when saved: the origin guard, then its path through
- * the same normalization request paths get (`normalizePath`). Refused paths
- * are judged on its segments (`upstreamTargets`), so an encoded slash, a
+ * the same normalization request paths get (`normalizePath`). Listings are
+ * judged on its segments (`upstreamTargets`), so an encoded slash, a
  * backslash, a dot segment, broken encoding or an empty segment, which the
  * provider could read as other segments, is refused. A stored base URL sent
  * back unchanged (`unchanged`) is not judged again.
