@@ -381,8 +381,15 @@ describe("judging a listing where the provider reads it", () => {
               ? [template, { source: "", segments: [...prefix.map((value) => ({ kind: "literal", value }) as const), ...template.segments] }]
               : [template],
         }));
-        // A listing drawn twice on one route is judged once.
+        // A listing drawn twice on one route is judged once, and a path the provider may read is worked out once.
         const drawn = new Set<string>();
+        const baseHost = connection.baseUrl === null ? null : new URL(connection.baseUrl).hostname;
+        const readCache = new Map<string, string[][]>();
+        const readOnce = (path: string) => {
+          let read = readCache.get(path);
+          if (read === undefined) readCache.set(path, (read = readAs(description, connection, path)));
+          return read;
+        };
         for (let round = 0; round < 60; round += 1) {
           const method = (["GET", "POST", "DELETE", "PATCH"] as const)[random(4)]!;
           const path = Array.from({ length: 1 + random(4) }, () => shapes[random(shapes.length)]!).join("/");
@@ -396,15 +403,18 @@ describe("judging a listing where the provider reads it", () => {
           }
           if (matcher.refusedCovering(listing, route) !== null || matcher.overlappingOperation(listing, route) !== null) continue;
           saved += 1;
+          // A path filled the same way twice is checked once.
+          const filled = new Set<string>();
           for (let fill = 0; fill < 6; fill += 1) {
             const concrete = listing.template.segments
               .map((segment) => (segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + vocabulary[random(vocabulary.length)]! + segment.suffix : "x"))
               .join("/");
+            if (filled.has(concrete)) continue;
+            filled.add(concrete);
             const match = matcher.match(method, concrete, { passthrough: [listing], route });
             if (match.kind !== "passthrough") continue;
-            for (const read of readAs(description, connection, match.upstream.path)) {
+            for (const read of readOnce(match.upstream.path)) {
               const where = () => `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
-              const baseHost = connection.baseUrl === null ? null : new URL(connection.baseUrl).hostname;
               for (const { template, methods, hosts } of refused) {
                 if (hosts !== null && (baseHost === null || !hosts.includes(baseHost))) continue;
                 if ((methods === null || methods.includes(method)) && matchTemplate(template, read, { ignoreCase: true }) !== null) failures.push(`${where()} is refused by ${template.source}`);
