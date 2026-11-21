@@ -47,6 +47,8 @@ export interface ConversationCapture {
   rawAudioRequest?: boolean;
   /** Form fields of the request that carry a recording (`OperationDescription.audioFormFields`). */
   audioFormFields?: readonly string[];
+  /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
+  responseJsonLines?: boolean;
   request: CapturedBytes;
   response: CapturedBytes & { aborted: boolean };
 }
@@ -277,7 +279,7 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
 }
 
 /** One SSE event's lines, split as the spec splits them: by CRLF, LF or CR, ended by a blank line. */
-function sseEvents(text: string): string[][] {
+function sseEvents(text: string): { events: string[][]; lastComplete: boolean } {
   const events: string[][] = [];
   let current: string[] = [];
   for (const line of text.split(/\r\n|\r|\n/)) {
@@ -288,8 +290,10 @@ function sseEvents(text: string): string[][] {
     }
     current.push(line);
   }
+  // An event still open at the end was cut short: no blank line ended it.
+  const lastComplete = current.length === 0;
   if (current.length > 0) events.push(current);
-  return events;
+  return { events, lastComplete };
 }
 
 /**
@@ -301,7 +305,8 @@ function sseEvents(text: string): string[][] {
  */
 async function keptEventStream(text: string, walk: Walk, filtering: boolean): Promise<string> {
   const out: string[] = [];
-  for (const lines of sseEvents(text)) {
+  const { events, lastComplete } = sseEvents(text);
+  for (const lines of events) {
     const others: string[] = [];
     const data: string[] = [];
     for (const line of lines) {
@@ -328,7 +333,8 @@ async function keptEventStream(text: string, walk: Walk, filtering: boolean): Pr
       out.push(lines.join("\n"));
     }
   }
-  return out.join("\n\n");
+  // Each complete event keeps the blank line that ends it, so a stored stream reads back whole.
+  return out.length === 0 ? "" : out.join("\n\n") + (lastComplete ? "\n\n" : "");
 }
 
 /**
@@ -337,10 +343,10 @@ async function keptEventStream(text: string, walk: Walk, filtering: boolean): Pr
  *
  * Where the body says it is NDJSON (`known`), each complete line is kept on its
  * own, and a line that is not JSON (the last one, cut short) is noted by its
- * size where any media is kept out, or kept as it came. Where it is only a
+ * size, whatever media is kept: it may be a piece of a recording. Where it is only a
  * guess, null when any line is not JSON, or there are fewer than `minLines`.
  */
-async function keptJsonLines(text: string, walk: Walk, options: { minLines?: number; known?: boolean; filtering?: boolean } = {}): Promise<unknown[] | null> {
+async function keptJsonLines(text: string, walk: Walk, options: { minLines?: number; known?: boolean } = {}): Promise<unknown[] | null> {
   const values: { parsed: unknown; raw: string; ok: boolean }[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() === "") continue;
@@ -355,7 +361,8 @@ async function keptJsonLines(text: string, walk: Walk, options: { minLines?: num
   const kept: unknown[] = [];
   for (const value of values) {
     if (value.ok) kept.push(await keptJson(value.parsed, walk));
-    else kept.push(options.filtering === true ? `${OMITTED}unreadable;${new TextEncoder().encode(value.raw).byteLength}` : value.raw);
+    // A line cut short is noted by its size, whatever media is kept: it may be a piece of a recording.
+    else kept.push(`${OMITTED}unreadable;${new TextEncoder().encode(value.raw).byteLength}`);
   }
   return kept;
 }
@@ -374,6 +381,7 @@ async function storedBody(
   audio?: { fields: readonly string[]; mime: string },
   rawAudio = false,
   audioFormFields: readonly string[] = [],
+  jsonLines = false,
 ): Promise<StoredBody> {
   const filtering = !keep.images || !keep.audio || !keep.files;
   const contentType = body.contentType;
@@ -422,12 +430,14 @@ async function storedBody(
     const mime = type.startsWith("audio/") ? type : UNKNOWN_AUDIO;
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, mime) };
   }
-  if (type !== "" && !type.startsWith("text/") && !isJson(type) && !isJsonLines(type)) {
+  // Declared newline-delimited JSON is read as such even when sent as `application/json`.
+  const asJsonLines = isJsonLines(type) || (jsonLines && (isJson(type) || type === ""));
+  if (type !== "" && !type.startsWith("text/") && !isJson(type) && !asJsonLines) {
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }
   let text = new TextDecoder().decode(body.bytes);
-  if (isJsonLines(type)) {
-    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, { minLines: 1, known: true, filtering });
+  if (asJsonLines) {
+    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, { minLines: 1, known: true });
     if (lines !== null) return { kind: "json", content_type: contentType, value: lines };
     if (filtering) return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
   }
@@ -462,7 +472,7 @@ export async function conversationRecord(
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
   let request = await storedBody(capture.request, shelf, capture.keep, undefined, capture.rawAudioRequest === true, capture.audioFormFields ?? []);
-  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio);
+  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, false, [], capture.responseJsonLines === true);
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,

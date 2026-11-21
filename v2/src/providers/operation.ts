@@ -566,6 +566,12 @@ export interface OperationDescription {
    */
   readonly audioFormFields?: readonly string[];
   /**
+   * Its answer is newline-delimited JSON, whatever content type it is sent
+   * with, such as ElevenLabs' streamed speech with timestamps: a stored
+   * conversation keeps it a line at a time (`../conversations/record.ts`).
+   */
+  readonly responseJsonLines?: true;
+  /**
    * How this operation's requests and answers are read, over its provider's
    * (`readingRules`): a custom provider's path of an API style carries the
    * rules of the built-in provider its definition comes from (`./custom.ts`),

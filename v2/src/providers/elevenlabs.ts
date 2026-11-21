@@ -94,6 +94,8 @@ export const elevenlabs = defineProvider({
       modelKinds: ["speech"],
       // Its recording arrives in base64 inside JSON, beside the timestamps.
       storedAudio: { fields: ["audio_base64"], mime: "audio/mpeg" },
+      // A line of JSON at a time, even where it is sent as `application/json`.
+      responseJsonLines: true,
       meter: ttsMeter,
     }),
     defineOperation({

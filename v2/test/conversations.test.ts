@@ -471,6 +471,46 @@ describe("conversation records", () => {
     expect(value[2]).toMatch(/^agw-omitted:unreadable;\d+$/);
   });
 
+  it("treats a declared stream audio field as audio, such as OpenAI speech's `audio` (Sol round 4)", async () => {
+    // The mock's own speech stream.
+    const stream = ['data: {"type":"speech.audio.delta","audio":"VVVV"}', "", 'data: {"type":"speech.audio.done"}', "", ""].join("\n");
+    const response = { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false };
+    const audio = { fields: ["audio"], mime: "audio/mpeg" };
+    const left = await conversationRecord(capture({ keep: { images: true, audio: false, files: true }, audio, response }));
+    expect(left.line).not.toContain("VVVV");
+    expect(left.media).toHaveLength(0);
+    // Where audio is kept, a streamed piece stays in its event, as other streamed audio does.
+    const kept = await conversationRecord(capture({ audio, response }));
+    expect(kept.line).toContain("VVVV");
+  });
+
+  it("keeps the blank line that ends each complete stream event (Sol round 4)", async () => {
+    const stored = async (stream: string) => (JSON.parse((await conversationRecord(capture({
+      response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false },
+    }))).line) as { response: { text: string } }).response.text;
+    expect(await stored('data: {"a":1}\r\n\r\ndata: [DONE]\r\n\r\n')).toBe('data: {"a":1}\n\ndata: [DONE]\n\n');
+    // A stream cut off inside its last event ends without one.
+    expect(await stored('data: {"a":1}\n\ndata: [DO')).toBe('data: {"a":1}\n\ndata: [DO');
+  });
+
+  it("reads a declared newline-delimited answer a line at a time even when sent as JSON, and always notes a cut line (Sol round 4)", async () => {
+    const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
+    const lines = [JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }), '{"audio_base64":"SUQz'].join("\n");
+    for (const contentType of ["application/json", "application/x-ndjson"]) {
+      for (const keep of [KEEP_ALL, { images: true, audio: false, files: true }]) {
+        const record = await conversationRecord(capture({
+          keep,
+          audio,
+          responseJsonLines: true,
+          response: { contentType, bytes: encoder.encode(lines), totalBytes: lines.length, aborted: true },
+        }));
+        const value = JSON.parse(record.line).response.value as unknown[];
+        expect(value[0]).toMatchObject({ alignment: { characters: ["h"] } });
+        expect(value[1]).toMatch(/^agw-omitted:unreadable;\d+$/);
+      }
+    }
+  });
+
   it("keeps a spoken reply as media", async () => {
     const speech = new Uint8Array([1, 2, 3, 4]);
     const { line, media } = await conversationRecord(capture({

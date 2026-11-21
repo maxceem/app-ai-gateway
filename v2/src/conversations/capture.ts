@@ -43,6 +43,8 @@ export interface CaptureInput {
   readonly rawAudio?: true;
   /** Request form fields that carry a recording (`OperationDescription.audioFormFields`). */
   readonly audioFormFields?: readonly string[];
+  /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
+  readonly responseJsonLines?: true;
   /** When the attempt started: a record's day is its charge's usage day, even for a stream that ends after midnight. */
   readonly startedAt: number;
   /** The charge's own id, so a stored conversation and its charge always name each other. */
@@ -140,6 +142,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
     ...(input.rawAudio === true ? { rawAudioRequest: true } : {}),
     ...(input.audioFormFields !== undefined && input.audioFormFields.length > 0 ? { audioFormFields: [...input.audioFormFields] } : {}),
+    ...(input.responseJsonLines === true ? { responseJsonLines: true } : {}),
     request: {
       contentType: request.contentType,
       bytes: request.bytes === null ? null : new Uint8Array(request.bytes),
