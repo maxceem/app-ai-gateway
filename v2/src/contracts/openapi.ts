@@ -44,7 +44,10 @@ function routeConfig(name: OperationName): RouteConfig {
         : { body: { required: true, content: { "application/json": { schema: entry.request } } } }),
     },
     responses: {
-      [entry.status ?? 200]: json(entry.responseDescription, entry.response),
+      [entry.status ?? 200]:
+        "file" in entry && entry.file === true
+          ? { description: entry.responseDescription, content: { "*/*": { schema: z.string().openapi({ format: "binary" }) } } }
+          : json(entry.responseDescription, entry.response),
       ...Object.fromEntries(
         Object.entries(entry.errors ?? {}).map(([status, text]) => [status, json(text, ErrorResponseSchema)]),
       ),

@@ -281,6 +281,23 @@ export const ProviderListResponseSchema = z
 
 export const SecretSchema = z.string().min(1).max(4096);
 
+/** What every provider key must be, so conversation history can always recognise an echo of it. */
+export const PROVIDER_SECRET_RULE = "a provider key is at least 8 characters, with no quotes, backslashes or control characters";
+
+/**
+ * Whether a provider key, or a Cloudflare token, can be saved. A key shorter
+ * than 8 characters would match ordinary text, and a quote, backslash or
+ * control character is escaped when JSON carries it: either would let an echo
+ * of the key reach stored conversations unnoticed. Judged only on a key being
+ * saved: a stored key is never sent back, so it is never judged again.
+ */
+export function providerSecretAccepted(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value.length >= 8 && !/["\\\u0000-\u001f\u007f]/u.test(value);
+}
+
+export const ProviderSecretSchema = SecretSchema.refine(providerSecretAccepted, { error: PROVIDER_SECRET_RULE });
+
 const CloudflareIdSchema = z.string().trim().min(1).max(100);
 
 /**
@@ -299,7 +316,7 @@ const ServingProvidersSchema = z
  * provider key is optional: Cloudflare can use the keys in its own key store.
  */
 const CloudflareGatewayInputSchema = z
-  .object({ accountId: CloudflareIdSchema, gatewayId: CloudflareIdSchema, token: SecretSchema })
+  .object({ accountId: CloudflareIdSchema, gatewayId: CloudflareIdSchema, token: ProviderSecretSchema })
   .strict();
 
 export const ProviderCreateRequestSchema = z
@@ -308,7 +325,7 @@ export const ProviderCreateRequestSchema = z
     name: z.string().trim().min(1).max(100),
     slug: z.string().regex(PROVIDER_SLUG_PATTERN, { error: "slug must be lowercase letters, digits and dashes" }).optional(),
     /** The provider's key. Optional only through Cloudflare AI Gateway, which can use the keys it stores. */
-    secret: SecretSchema.optional(),
+    secret: ProviderSecretSchema.optional(),
     baseUrl: z.string().optional(),
     cloudflareGateway: CloudflareGatewayInputSchema.optional(),
     servingProviders: ServingProvidersSchema.optional(),
@@ -326,7 +343,7 @@ export const ProviderUpdateRequestSchema = z
     revision: z.number().int().positive(),
     name: z.string().trim().min(1).max(100).optional(),
     /** A new key, or null to remove the stored one, which only a connection through Cloudflare AI Gateway may. */
-    secret: SecretSchema.nullable().optional(),
+    secret: ProviderSecretSchema.nullable().optional(),
     baseUrl: z.string().nullable().optional(),
     /**
      * A new Cloudflare AI Gateway setting, or null to stop using it. The token
@@ -540,6 +557,34 @@ export const JobListResponseSchema = z
   })
   .meta({ id: "JobListResponse" });
 
+/** A UTC day, `YYYY-MM-DD`. */
+const DaySchema = (name: string) => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: `${name} must be YYYY-MM-DD` });
+
+export const ConversationListQuerySchema = z.object({
+  from: DaySchema("from").optional().meta({ description: "First UTC day, YYYY-MM-DD; defaults to the oldest stored." }),
+  to: DaySchema("to").optional().meta({ description: "Last UTC day, YYYY-MM-DD, inclusive; defaults to today." }),
+  cursor: z.string().max(1024).optional().meta({ description: "The `next_cursor` of the page before." }),
+});
+
+export const ConversationFileListSchema = z
+  .object({
+    app_id: z.string(),
+    files: z.array(
+      z.object({
+        name: z.string().meta({ description: "The file's name within the app: `<YYYY-MM-DD>/<HHMMSS>-<batch>.jsonl.gz`." }),
+        size: z.number().int().meta({ description: "Bytes, gzipped." }),
+        records: z.number().int().nullable().meta({ description: "How many calls the file holds, one per line." }),
+        uploaded_at: z.string().meta({ description: "When the file was written, ISO 8601." }),
+      }),
+    ),
+    next_cursor: z.string().nullable().meta({ description: "Pass as `cursor` for the next page; null on the last one." }),
+  })
+  .meta({ id: "ConversationFileList" });
+
+export const ConversationFileQuerySchema = z.object({
+  name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
+});
+
 /** The price file as it is: dollars per million units, keyed by provider type and model. */
 export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })
@@ -548,7 +593,7 @@ export const PriceListResponseSchema = z
 export const ProviderTestRequestSchema = z
   .object({
     type: z.string().trim().min(1),
-    secret: SecretSchema.optional(),
+    secret: ProviderSecretSchema.optional(),
     baseUrl: z.string().optional(),
     cloudflareGateway: CloudflareGatewayInputSchema.optional(),
     /** For type `custom`: how its key is sent. */

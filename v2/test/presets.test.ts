@@ -17,7 +17,7 @@ import type { OperationDescription, ProviderDescription } from "../src/providers
 import type { Preset } from "../src/contracts/app-config.ts";
 import type { Caller } from "../src/proxy/serve.ts";
 import type { UpstreamCredentials } from "../src/providers/connections.ts";
-import { sendAttempts, type ProxyContext } from "../src/proxy/serve.ts";
+import { sendAttempts, type ClientSide, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import {
@@ -33,6 +33,8 @@ import {
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 const ORIGIN = "https://gateway.test";
+/** A caller whose request carried no credential header to strip. */
+const NO_CLIENT: ClientSide = { stripped: [], credential: "agw_unit_test_credential", credentialHeaders: [], identityHeaders: [] };
 const SECRET = "sk-test-provider-key-5678";
 const AUTH = { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } };
 
@@ -249,7 +251,7 @@ describe("presets", () => {
       servingProviders: null,
     };
     const body = { messages: [{ role: "user", content: "hi" }], web_search: true, detect_language: true, boost: "false" };
-    const caller = { identity: { appId: "app-1" }, credentialHeader: "authorization", appVersion: null, clientTraceId: null, facts: { operation: null, model: null } };
+    const caller = { identity: { appId: "app-1" }, credentialHeader: "authorization", credentialToken: "agw_test", appVersion: null, clientTraceId: null, facts: { operation: null, model: null } };
     const prepared = targetAttempt({
       slug: "p1",
       caller: caller as unknown as Caller,
@@ -480,7 +482,7 @@ describe("presets", () => {
         vi.setSystemTime(Date.now() + 121_000);
         return Response.json({ error: { code: "busy" } }, { status: 503 });
       });
-      const response = await sendAttempts(c, [], [unitAttempt(1, { requestId }), fallback]);
+      const response = await sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), fallback]);
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: { code: "busy" } });
       await done();
@@ -510,7 +512,7 @@ describe("presets", () => {
       );
       const chat = BUILT_IN_PROVIDERS.openai!.operations.find((operation) => operation.name === "openai.chat")!;
       const patient = fakeContext();
-      const waited = sendAttempts(patient.c, [], [unitAttempt(1, { operation: { ...chat, responseDeadlineMs: 20 * 60 * 1000 } })]);
+      const waited = sendAttempts(patient.c, NO_CLIENT, [unitAttempt(1, { operation: { ...chat, responseDeadlineMs: 20 * 60 * 1000 } })]);
       await vi.advanceTimersByTimeAsync(150_001);
       const got = await waited;
       expect(got.status).toBe(200);
@@ -518,7 +520,7 @@ describe("presets", () => {
       await got.text();
       await patient.done();
       const hurried = fakeContext();
-      const cut = sendAttempts(hurried.c, [], [unitAttempt(1)]).catch((error: unknown) => error);
+      const cut = sendAttempts(hurried.c, NO_CLIENT, [unitAttempt(1)]).catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(150_001);
       expect(await cut).toMatchObject({ status: 504 });
       await hurried.done();
@@ -535,7 +537,7 @@ describe("presets", () => {
       const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
       const after = unitAttempt(3, { requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
-      const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging, after]);
+      const answered = sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), hanging, after]);
       await vi.advanceTimersByTimeAsync(120_001);
       const response = await answered;
       expect(response.status).toBe(503);
@@ -563,7 +565,7 @@ describe("presets", () => {
         }),
       });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
-      const response = await sendAttempts(c, [], [unitAttempt(1, { requestId }), slow]);
+      const response = await sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), slow]);
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: { code: "busy" } });
       await done();
@@ -579,7 +581,7 @@ describe("presets", () => {
     const { c, done } = fakeContext();
     const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)) });
     fetchSpy.mockImplementation(async () => CHAT_OK());
-    const response = await sendAttempts(c, [], [unitAttempt(1), hanging]);
+    const response = await sendAttempts(c, NO_CLIENT, [unitAttempt(1), hanging]);
     expect(response.status).toBe(200);
     await response.text();
     await done();
@@ -593,7 +595,7 @@ describe("presets", () => {
       const requestId = `req_${crypto.randomUUID()}`;
       const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
-      const answered = sendAttempts(c, [], [unitAttempt(1, { requestId }), hanging]);
+      const answered = sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), hanging]);
       await vi.advanceTimersByTimeAsync(120_001);
       const response = await answered;
       expect(response.status).toBe(503);

@@ -203,3 +203,46 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
   }
   return access;
 }
+
+/**
+ * The features a plan can include or leave out (v1's `PLAN_FEATURES`, the one
+ * this gateway serves). Which plan includes one is plan data alone: a list
+ * under `limits.includes`. With no list, a plan includes every feature.
+ */
+export const PLAN_FEATURES = ["conversationStorage"] as const;
+export type PlanFeature = (typeof PLAN_FEATURES)[number];
+
+/**
+ * Whether the account's plan includes `feature` (v1's `planIncludes`).
+ * Self-hosted: always. Billing that cannot be read: never, because storing
+ * conversations is not something to guess a plan for. A `limits.includes`
+ * that is not a list of strings throws `502`: the plan is misconfigured.
+ */
+export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature): boolean {
+  if (access.state === "self_hosted") return true;
+  if (access.state === "unavailable" || access.plan === null) return false;
+  const limits = access.plan.limits;
+  if (limits === undefined || limits === null) return true;
+  if (typeof limits !== "object" || Array.isArray(limits)) {
+    throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
+  }
+  const includes = (limits as Record<string, unknown>).includes;
+  if (includes === undefined) return true;
+  if (!Array.isArray(includes) || !includes.every((entry) => typeof entry === "string")) {
+    throw new GatewayError(502, "billing_unavailable", "Billing plan limit includes is invalid");
+  }
+  return includes.includes(feature);
+}
+
+/**
+ * Turning a feature on needs a plan that includes it. Like any settings write,
+ * billing that cannot be read answers 503 rather than guessing.
+ */
+export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature, name: string): Promise<void> {
+  const access = requireActiveBilling(await getBillingAccess(env, accountId));
+  if (!planIncludes(access, feature)) {
+    throw new GatewayError(403, "billing_feature_not_included", `${name} is not included in this account's plan`, undefined, {
+      data: { feature },
+    });
+  }
+}

@@ -21,7 +21,7 @@ import {
   CreatedAppKeySchema,
   ProviderCreateRequestSchema,
   ProviderSchema,
-  SecretSchema,
+  ProviderSecretSchema,
 } from "./admin.ts";
 
 /**
@@ -173,7 +173,7 @@ export const HandoffSubmitRequestSchema = z
   .object({
     proof: z.string().min(16).max(512),
     /** The key the person entered. Never stored as given and never answered. */
-    secret: SecretSchema.refine((value) => /\S/u.test(value), { error: "secret must not be blank" }),
+    secret: ProviderSecretSchema.refine((value) => /\S/u.test(value), { error: "secret must not be blank" }),
   })
   .strict();
 

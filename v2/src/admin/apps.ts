@@ -17,7 +17,9 @@ import {
   CUSTOM_PROVIDER_TYPE,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
+import { AppConfigSchema, conversationsAreDefault, parseAppConfig as parseStoredConfig, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
+import { requirePlanFeature } from "../billing/access.ts";
+import { conversationsBucket } from "../conversations/storage.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { Preset } from "../contracts/app-config.ts";
 import {
@@ -111,7 +113,23 @@ export function parseAppConfig(raw: unknown): AppConfig {
     delete config.routing.model_rewrites;
   }
   if (config.presets !== undefined && Object.keys(config.presets).length === 0) delete config.presets;
+  if (config.conversations !== undefined && conversationsAreDefault(config.conversations)) delete config.conversations;
   return config;
+}
+
+/**
+ * Turning conversation storage on needs a deployment that keeps it (a
+ * `CONVERSATIONS` bucket) and a plan that includes it (v1). Keeping it on does
+ * not: an app whose plan no longer includes it stays editable, and stores
+ * nothing new until the plan includes it again (`../conversations/capture.ts`).
+ */
+export async function checkConversations(env: Env, accountId: string, next: AppConfig, current: AppConfig | null): Promise<void> {
+  if (next.conversations?.store !== true || current?.conversations?.store === true) return;
+  // Refused rather than accepted and ignored: a customer who turned it on would believe conversations were kept.
+  if (conversationsBucket(env) === null) {
+    throw invalid("config.conversations.store: conversation storage is not set up on this deployment (it needs a CONVERSATIONS bucket)");
+  }
+  await requirePlanFeature(env, accountId, "conversationStorage", "Conversation history");
 }
 
 /** An app's stored routing entries and presets, by slug, read loosely: they were valid when saved. */
@@ -681,6 +699,7 @@ export async function createApp(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, AppCreateRequestSchema);
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  await checkConversations(c.env, actor.accountId, config, null);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
   // The first key is not counted against the key ceiling, as v1, except when
   // the plan allows no keys at all: such a plan allows only App Attest apps.
@@ -704,6 +723,15 @@ export async function createApp(c: AdminContext): Promise<Response> {
   }
   const row = await appRow(c.env.DB, actor.accountId, id);
   return c.json({ app: appView(row), api_key: key?.created ?? null } satisfies OperationResponse<"createApp">, 201);
+}
+
+/** A stored configuration, or null where this version cannot read it: only to tell what a save turns on. */
+function storedConfig(row: AppRow): AppConfig | null {
+  try {
+    return parseStoredConfig(JSON.parse(row.config_json));
+  } catch {
+    return null;
+  }
 }
 
 /** The routing a stored configuration has, by slug, read loosely: it was valid when saved. */
@@ -759,6 +787,7 @@ async function saveApp(
   }
   const against = judgedAgainst(current, body.status);
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
+  await checkConversations(c.env, actor.accountId, config, storedConfig(current));
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
@@ -815,7 +844,9 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const body = await parseBody(c, AppValidateRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
   const against = judgedAgainst(current, body.status);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
+  // Judged as an update would be: storage needs the bucket and a plan that includes it.
+  await checkConversations(c.env, actor.accountId, config, storedConfig(current));
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 
@@ -823,7 +854,9 @@ export async function validateApp(c: AdminContext): Promise<Response> {
 export async function validateAppDraft(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const body = await parseBody(c, AppValidateRequestSchema);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  // Judged as a create would be.
+  await checkConversations(c.env, actor.accountId, config, null);
   return c.json({ valid: true } satisfies OperationResponse<"validateAppDraft">);
 }
 

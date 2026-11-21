@@ -30,6 +30,10 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
    the gateway lists its MCP tools, each with the command it is offered as,
    and `agw` builds the command from that. A gateway release adds commands
    without an `agw` release.
+   A command that writes files to a folder is built in instead, because a
+   tool's answer cannot carry them: `agw app conversations` calls the
+   operations that list and download stored conversations, which are then
+   among the paths in rule 4.
 
 ## What `agw` does with what it does not know
 

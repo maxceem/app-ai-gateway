@@ -30,12 +30,15 @@ import { presetHandler } from "./proxy/presets.ts";
 import { proxyHandler } from "./proxy/serve.ts";
 import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
+import { conversationsBucket } from "./conversations/storage.ts";
+import { RETENTION_HOUR_UTC, runConversationRetention } from "./conversations/retention.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
 export { ChargeStore } from "./do/ChargeStore.ts";
 export { AppLimiter } from "./do/AppLimiter.ts";
 export { AccountLimiter } from "./do/AccountLimiter.ts";
+export { ConversationLog } from "./do/ConversationLog.ts";
 
 type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 
@@ -190,13 +193,24 @@ export default {
   fetch: app.fetch,
   /**
    * Every minute: the sweep of open work. Hourly (any other cron): record
-   * expired, unused App Attest challenges as abandoned, and delete them; and
-   * clean up expired OAuth approvals and ended OAuth connections' tokens.
+   * expired, unused App Attest challenges as abandoned, and delete them;
+   * clean up expired OAuth approvals and ended OAuth connections' tokens;
+   * and once a day, delete stored conversations past their retention.
    */
   async scheduled(controller, env, ctx) {
     if (controller.cron === SWEEP_CRON) {
       ctx.waitUntil(runSweep(env, { waitUntil: (work) => ctx.waitUntil(work) }).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
       return;
+    }
+    // Stored conversations past their app's retention, once a day, where the deployment keeps them.
+    const bucket = conversationsBucket(env);
+    if (bucket !== null && new Date(controller.scheduledTime).getUTCHours() === RETENTION_HOUR_UTC) {
+      ctx.waitUntil(
+        runConversationRetention(bucket, env.DB, controller.scheduledTime).then(
+          (pruned) => log("info", "conversations_pruned", { ...pruned }),
+          (error: unknown) => log("warn", "conversations_prune_failed", { error: errorFacts(error) }),
+        ),
+      );
     }
     ctx.waitUntil(
       settleExpiredChallenges(env.DB).then(

@@ -31,6 +31,11 @@ export interface OperationSpec {
   readonly status?: 201;
   readonly response: z.ZodType;
   readonly responseDescription: string;
+  /**
+   * Where the success answer is a file rather than JSON: its bytes, of any
+   * media type (`*\/*`). `response` is then not read.
+   */
+  readonly file?: true;
   /** Error statuses this operation can answer with, and what each means. */
   readonly errors?: Readonly<Record<number, string>>;
 }

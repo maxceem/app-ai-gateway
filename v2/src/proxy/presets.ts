@@ -59,7 +59,7 @@ import {
   refusal,
   sendAttempts,
   serveCaller,
-  strippedHeaders,
+  clientSide,
   type Caller,
   type OutgoingBody,
   type PreparedAttempt,
@@ -267,6 +267,8 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
     body: build,
     attempt,
     ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
+    // A preset's targets are calls: stored where the caller's request is.
+    ...(input.caller.storesConversation && operation.lifecycle === "call" ? { storesConversation: true as const } : {}),
   };
 }
 
@@ -388,7 +390,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         refuse: refusal,
       });
-      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest], keyHeaders);
+      return await sendAttempts(c, clientSide(app, caller), [head, ...rest], keyHeaders);
     },
   );
 }

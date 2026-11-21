@@ -7,6 +7,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement } from "./helpers.ts";
+import { sealSecret } from "../src/vault/secrets.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -72,11 +73,53 @@ describe("management sign-in", () => {
 describe("provider connections", () => {
   it("gives a key too short to hint at no hint, so no response contains it", async () => {
     const key = await seedManagementKey();
-    const created = await createProvider(key, { secret: "ab" });
+    const created = await createProvider(key, { secret: "abcd1234" });
     expect(created.status).toBe(201);
     expect(created.body.provider.secretHint).toBe("");
     const listed = await request(key, "GET", "/v2/admin/providers");
-    expect(JSON.stringify(listed.body)).not.toContain('"ab"');
+    expect(JSON.stringify(listed.body)).not.toContain("abcd1234");
+  });
+
+  describe("a provider key conversation history can recognise", () => {
+    const refusedKeys: Array<[string, string]> = [
+      ["shorter than 8 characters", "sk-1234"],
+      ["a quote", 'sk-live"secret'],
+      ["a backslash", "sk-live\\secret"],
+      ["a control character", "sk-live\u0001secret"],
+    ];
+
+    it.each(refusedKeys)("refuses a new key with %s, wherever a key is sent", async (_, secret) => {
+      const key = await seedManagementKey();
+      const created = await createProvider(key, { secret });
+      expect(created.status).toBe(400);
+      expect(JSON.stringify(created.body)).toContain("at least 8 characters");
+      const saved = await createProvider(key);
+      const id = saved.body.provider.id as string;
+      const updated = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, secret });
+      expect(updated.status).toBe(400);
+      const tested = await request(key, "POST", "/v2/admin/providers/test", { type: "openai", secret });
+      expect(tested.status).toBe(400);
+      const cloudflare = await createProvider(key, { cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: secret } });
+      expect(cloudflare.status).toBe(400);
+    });
+
+    it("saves a key of 8 characters", async () => {
+      const key = await seedManagementKey();
+      expect((await createProvider(key, { secret: "sk-12345" })).status).toBe(201);
+    });
+
+    it("never judges a stored key again", async () => {
+      const key = await seedManagementKey();
+      const saved = await createProvider(key);
+      const id = saved.body.provider.id as string;
+      // A key stored before the rule: three characters.
+      const row = await env.DB.prepare("SELECT account_id FROM provider_connection WHERE id = ?").bind(id).first<{ account_id: string }>();
+      const blob = await sealSecret(env, "providerKey", [row!.account_id, id, "openai", ""], "abc");
+      await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(blob, id).run();
+      const renamed = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, name: "Renamed" });
+      expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+      expect(renamed.body.provider.name).toBe("Renamed");
+    });
   });
 
   it("seals the key and returns only its hint", async () => {
