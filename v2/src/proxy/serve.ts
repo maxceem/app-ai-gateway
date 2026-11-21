@@ -1286,6 +1286,7 @@ function storeConversation(
       appId: attempt.appId,
       keep,
       ...(prepared.operation.storedAudio !== undefined ? { audio: prepared.operation.storedAudio } : {}),
+      ...(prepared.operation.rawAudio === true ? { rawAudio: true } : {}),
       chargeId: chargeId(attempt.requestId, attempt.seq),
       identity: attempt.identity,
       appVersion: attempt.appVersion,

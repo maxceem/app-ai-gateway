@@ -554,6 +554,12 @@ export interface OperationDescription {
    */
   readonly storedAudio?: { readonly fields: readonly string[]; readonly mime: string };
   /**
+   * Its request body is a recording sent as raw bytes (`rawBody`), such as
+   * Deepgram's upload, whatever type the app named it: a stored conversation
+   * treats it as audio, so it is left out where an app keeps no audio.
+   */
+  readonly rawAudio?: true;
+  /**
    * How this operation's requests and answers are read, over its provider's
    * (`readingRules`): a custom provider's path of an API style carries the
    * rules of the built-in provider its definition comes from (`./custom.ts`),

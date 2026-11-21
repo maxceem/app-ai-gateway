@@ -43,6 +43,8 @@ export interface ConversationCapture {
   keep: KeptMedia;
   /** JSON fields of the answer that hold a recording in base64 (`OperationDescription.storedAudio`). */
   audio?: { fields: readonly string[]; mime: string };
+  /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
+  rawAudioRequest?: boolean;
   request: CapturedBytes;
   response: CapturedBytes & { aborted: boolean };
 }
@@ -91,6 +93,11 @@ function mediaType(contentType: string): string {
 
 function isJson(type: string): boolean {
   return type === "application/json" || type.endsWith("+json");
+}
+
+/** Newline-delimited JSON, as ElevenLabs streams speech with timestamps. */
+function isJsonLines(type: string): boolean {
+  return type === "application/x-ndjson" || type === "application/ndjson" || type === "application/jsonl" || type === "application/x-jsonlines";
 }
 
 /** Audio whose format the body does not say, such as a chat reply's `audio.data`. */
@@ -296,7 +303,7 @@ async function keptEventStream(text: string, walk: Walk, filtering: boolean): Pr
  * Newline-delimited JSON, as ElevenLabs streams speech with timestamps: each
  * line kept the way an event of a stream is. Null where a line is not JSON.
  */
-async function keptJsonLines(text: string, walk: Walk): Promise<unknown[] | null> {
+async function keptJsonLines(text: string, walk: Walk, minLines = 2): Promise<unknown[] | null> {
   const values: unknown[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() === "") continue;
@@ -306,7 +313,7 @@ async function keptJsonLines(text: string, walk: Walk): Promise<unknown[] | null
       return null;
     }
   }
-  if (values.length < 2) return null;
+  if (values.length < minLines) return null;
   const kept: unknown[] = [];
   for (const value of values) kept.push(await keptJson(value, walk));
   return kept;
@@ -324,6 +331,7 @@ async function storedBody(
   shelf: MediaShelf,
   keep: KeptMedia,
   audio?: { fields: readonly string[]; mime: string },
+  rawAudio = false,
 ): Promise<StoredBody> {
   const filtering = !keep.images || !keep.audio || !keep.files;
   const contentType = body.contentType;
@@ -365,10 +373,20 @@ async function storedBody(
       return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
     }
   }
-  if (type !== "" && !type.startsWith("text/") && !isJson(type)) {
+  if (rawAudio && !type.startsWith("text/") && !isJson(type)) {
+    // A recording sent as raw bytes: audio, whatever type it was named.
+    const mime = type.startsWith("audio/") ? type : UNKNOWN_AUDIO;
+    return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, mime) };
+  }
+  if (type !== "" && !type.startsWith("text/") && !isJson(type) && !isJsonLines(type)) {
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }
   let text = new TextDecoder().decode(body.bytes);
+  if (isJsonLines(type)) {
+    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, 1);
+    if (lines !== null) return { kind: "json", content_type: contentType, value: lines };
+    if (filtering) return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
+  }
   if (type === "text/event-stream") text = await keptEventStream(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, filtering);
   if (isJson(type) || type === "") {
     let parsed: unknown;
@@ -399,7 +417,7 @@ export async function conversationRecord(
   capture: ConversationCapture,
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
-  let request = await storedBody(capture.request, shelf, capture.keep);
+  let request = await storedBody(capture.request, shelf, capture.keep, undefined, capture.rawAudioRequest === true);
   let response = await storedBody(capture.response, shelf, capture.keep, capture.audio);
   const render = () => JSON.stringify({
     v: 1,
