@@ -1847,6 +1847,22 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
     expect(await openWork(appId)).toEqual([]);
   });
 
+  it("drops the provider's Location from a refused submit, keeping its status and body", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({
+      submit: () =>
+        Response.json(
+          { detail: "a job with this key already exists" },
+          { status: 409, headers: { location: "https://queue.fal.run/fal-ai/flux/requests/existing-1/status" } },
+        ),
+    });
+    const refused = await submit(appId, slug, key);
+    expect(refused.response.status).toBe(409);
+    expect(refused.response.headers.get("location")).toBeNull();
+    expect(refused.json).toEqual({ detail: "a job with this key already exists" });
+    expect((await charges(appId)).filter((row) => row.kind === "estimate")).toEqual([]);
+  });
+
   it("never passes an accepted submit's Location on: this job's status becomes the gateway's link, anything else is dropped", async () => {
     const { appId, slug, key } = await setup();
     const accepted = (location: string) => () =>

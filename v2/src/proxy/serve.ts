@@ -1114,6 +1114,10 @@ function answer(
     return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
+  // A job submit the provider refused (a 409 pointing at an existing provider job, say) has no
+  // gateway job, so there is no gateway link to give: the provider's `Location` is dropped, and
+  // its status and body go on as they are.
+  if (operation.lifecycle === "job") responseHeaders.delete("location");
   // A minted live-session credential is never kept by a cache between the gateway and the app:
   // a cache could hand one caller's signed URL to another.
   if (prepared.liveTokenMint === true) noStore(responseHeaders);
