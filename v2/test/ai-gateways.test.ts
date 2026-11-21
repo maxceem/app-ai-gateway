@@ -194,6 +194,32 @@ describe("where a request goes (route.ts)", () => {
     });
     expect(odd.headers["ai-reporting-user"]).toBeUndefined();
   });
+
+  it.each([
+    ["a short Cloudflare base URL, to Cloudflare's OpenAI endpoint", "https://gateway.ai.cloudflare.com/v1/acct/gw/", "openai/models"],
+    ["a Cloudflare endpoint v2 does not map", "https://gateway.ai.cloudflare.com/v1/acct/gw/workers-ai/", "v1/chat/completions"],
+    ["another provider's host, as stored before saving refused it", "https://api.eu.mistral.ai/", "v1/chat/completions"],
+  ])("sends Vercel's attribution only to Vercel, not through %s", (_where, baseUrl, path) => {
+    const sent = upstreamRequest(record({ type: "vercel", baseUrl }), BUILT_IN_PROVIDERS.vercel!, {
+      ...base,
+      userId: "user-42",
+      path,
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
+    });
+    expect(sent.url.startsWith(baseUrl)).toBe(true);
+    expect(sent.headers["ai-reporting-user"]).toBeUndefined();
+    expect(sent.headers["ai-reporting-tags"]).toBeUndefined();
+  });
+
+  it("keeps Vercel's attribution on a host no provider declares, such as a customer's own proxy", () => {
+    const sent = upstreamRequest(record({ type: "vercel", baseUrl: "https://vercel-proxy.example.net/" }), BUILT_IN_PROVIDERS.vercel!, {
+      ...base,
+      userId: "user-42",
+      path: "v1/chat/completions",
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
+    });
+    expect(sent.headers).toMatchObject({ "ai-reporting-user": "user-42", "ai-reporting-tags": "app:app_1" });
+  });
 });
 
 describe("Vercel's models, priced and read as their provider's", () => {

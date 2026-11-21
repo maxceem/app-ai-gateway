@@ -1069,14 +1069,21 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
   );
 }
 
+/** Cache directives aimed at CDNs alone, which some follow instead of `Cache-Control`. */
+const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"] as const;
+
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
 function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
   const { description, operation, attempt } = prepared;
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
   // A minted live-session credential is never kept by a cache between the gateway and the app,
-  // whatever the provider said: a cache could hand one caller's signed URL to another.
-  if (prepared.liveTokenMint === true) responseHeaders.set("cache-control", "no-store");
+  // whatever the provider said: a cache could hand one caller's signed URL to another. A CDN may
+  // follow its own targeted directive over `Cache-Control`, so those are dropped too.
+  if (prepared.liveTokenMint === true) {
+    for (const name of CDN_CACHE_HEADERS) responseHeaders.delete(name);
+    responseHeaders.set("cache-control", "no-store");
+  }
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 

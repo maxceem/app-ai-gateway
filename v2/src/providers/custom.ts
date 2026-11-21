@@ -266,8 +266,7 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     serviceModes: NO_SERVICE_TIERS,
     // None of its own: a known provider's refused and live-session token paths judge it where its requests go (`upstreamRoute`).
     refused: [],
-    // Its reporting headers, as its own connections send them.
-    ...(owner?.attributionHeaders !== undefined ? { attributionHeaders: owner.attributionHeaders } : {}),
+    // No reporting headers of its own: a known provider's are added where its requests go (`decorationOwner`).
     customerPaths: true,
     operations,
   };

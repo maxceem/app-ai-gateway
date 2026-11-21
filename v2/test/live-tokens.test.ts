@@ -645,7 +645,18 @@ describe("serving a live-session mint", () => {
     ] as const)("tells every cache after the gateway not to keep %s", async (_what, upstreamStatus) => {
       const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
       fetchSpy.mockImplementation(async () =>
-        Response.json({ value: "ek_minted", expires_at: 1 }, { status: upstreamStatus, headers: { "cache-control": "public, max-age=300" } }),
+        Response.json(
+          { value: "ek_minted", expires_at: 1 },
+          {
+            status: upstreamStatus,
+            headers: {
+              "cache-control": "public, max-age=300",
+              "cdn-cache-control": "public, max-age=300",
+              "cloudflare-cdn-cache-control": "max-age=300",
+              "surrogate-control": "max-age=300",
+            },
+          },
+        ),
       );
       const ctx = createExecutionContext();
       const response = await worker.fetch(
@@ -661,6 +672,10 @@ describe("serving a live-session mint", () => {
       await waitOnExecutionContext(ctx);
       expect(response.status).toBe(upstreamStatus);
       expect(response.headers.get("cache-control")).toBe("no-store");
+      // A CDN may follow its own directive over Cache-Control: none reaches the app.
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(response.headers.get("surrogate-control")).toBeNull();
     });
 
     it("leaves a provider's cache header on an answer that is not a mint", async () => {

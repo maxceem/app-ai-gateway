@@ -100,3 +100,27 @@ export function baseUrlOwnerProblem(description: ProviderDescription, baseUrl: s
   if (owner === null || owner.type === description.type) return null;
   return `${host} is ${owner.label}'s host; use a ${owner.label} connection for it, or a custom provider`;
 }
+
+/**
+ * Whose request decoration (a provider's own headers, such as Vercel's spend
+ * attribution) a request to `url` may carry: the built-in provider that owns
+ * its host, or for Cloudflare AI Gateway the provider behind its endpoint.
+ * `null`: a Cloudflare endpoint v2 does not map, or none named, so no
+ * provider's decoration. `undefined`: a host no built-in provider declares,
+ * such as a customer's own proxy, so the connection's own type decides.
+ */
+export function decorationOwner(url: string): ProviderDescription | null | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host === CLOUDFLARE_AI_GATEWAY_HOST) {
+    const endpoint = parsed.pathname.split("/").filter((piece) => piece !== "")[CLOUDFLARE_ENDPOINT_SEGMENTS - 1];
+    return endpoint === undefined ? null : cloudflareEndpointOwner(decodeURIComponent(endpoint));
+  }
+  return hostOwner(host) ?? undefined;
+}
+
