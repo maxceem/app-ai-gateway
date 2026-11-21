@@ -490,37 +490,94 @@ describe("serving a live-session mint", () => {
     check(sentBody(0), now);
   });
 
-  it("never lets Cloudflare AI Gateway cache a mint, whatever caching the app asked for", async () => {
-    const { appId, slug, key } = await connected({
-      type: "openai",
-      cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-test" },
-      passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }],
-    });
-    fetchSpy.mockImplementation(async () => Response.json({ value: "ek_minted", expires_at: 1 }));
-    const ctx = createExecutionContext();
-    const response = await worker.fetch(
-      new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${key}`,
-          "x-end-user-id": "user-1",
-          "content-type": "application/json",
-          "cf-aig-cache-ttl": "300",
-          "cf-aig-skip-cache": "false",
+  describe("is never served from a cache, wherever it goes", () => {
+    const cacheHeaders = { "CF-AIG-Cache-TTL": "300", "cf-aig-skip-cache": "false" };
+
+    async function mintVia(fields: Record<string, unknown>, path: string, extra: Record<string, string>) {
+      const { appId, slug, key } = await connected(fields);
+      fetchSpy.mockImplementation(async () => Response.json({ value: "ek_minted", expires_at: 1 }));
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json", ...extra },
+          body: JSON.stringify({ session: { type: "realtime" } }),
+        }),
+        env,
+        ctx,
+      );
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(200);
+      const [url, init] = fetchSpy.mock.calls[0]!;
+      return { url: String(url), headers: new Headers(init!.headers) };
+    }
+
+    it("through the Cloudflare AI Gateway setting", async () => {
+      const sent = await mintVia(
+        {
+          type: "openai",
+          cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-test" },
+          passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }],
         },
-        body: JSON.stringify({ session: { type: "realtime" } }),
-      }),
-      env,
-      ctx,
-    );
-    await response.text();
-    await waitOnExecutionContext(ctx);
-    expect(response.status).toBe(200);
-    const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(String(url)).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/realtime/client_secrets");
-    const headers = new Headers(init!.headers);
-    expect(headers.get("cf-aig-skip-cache")).toBe("true");
-    expect(headers.get("cf-aig-cache-ttl")).toBeNull();
+        "v1/realtime/client_secrets",
+        cacheHeaders,
+      );
+      expect(sent.url).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/realtime/client_secrets");
+      expect(sent.headers.get("cf-aig-skip-cache")).toBe("true");
+      expect(sent.headers.get("cf-aig-cache-ttl")).toBeNull();
+    });
+
+    it("through a base URL on Cloudflare AI Gateway", async () => {
+      const sent = await mintVia(
+        {
+          type: "xai",
+          baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/grok/",
+          passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }],
+        },
+        "v1/realtime/client_secrets",
+        cacheHeaders,
+      );
+      expect(sent.url).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/grok/v1/realtime/client_secrets");
+      expect(sent.headers.get("cf-aig-skip-cache")).toBe("true");
+      expect(sent.headers.get("cf-aig-cache-ttl")).toBeNull();
+    });
+
+    it("straight to the provider", async () => {
+      const sent = await mintVia(
+        { type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] },
+        "v1/realtime/client_secrets",
+        cacheHeaders,
+      );
+      expect(sent.url).toBe("https://api.openai.com/v1/realtime/client_secrets");
+      expect(sent.headers.get("cf-aig-skip-cache")).toBe("true");
+      expect(sent.headers.get("cf-aig-cache-ttl")).toBeNull();
+    });
+
+    it("leaves a request that is not a mint as it was", async () => {
+      const { appId, slug, key } = await connected({
+        type: "openai",
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-test" },
+        passthrough: [{ method: "POST", path: "v1/echo" }],
+      });
+      fetchSpy.mockImplementation(async () => Response.json({ ok: true }));
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/echo`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json", ...cacheHeaders },
+          body: "{}",
+        }),
+        env,
+        ctx,
+      );
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(200);
+      const headers = new Headers(fetchSpy.mock.calls[0]![1]!.headers);
+      expect(headers.get("cf-aig-cache-ttl")).toBe("300");
+      expect(headers.get("cf-aig-skip-cache")).toBe("false");
+    });
   });
 
   it("serves a mint only where the provider reads it as the mint, on save and when sent", async () => {

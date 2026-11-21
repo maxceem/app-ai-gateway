@@ -784,7 +784,7 @@ export interface PreparedAttempt {
   readonly attempt: CallAttempt;
   /** Headers set when the client sent none, such as the API version a preset's provider needs. */
   readonly defaultHeaders?: Readonly<Record<string, string>>;
-  /** A live-session mint (plan D4): never served from Cloudflare AI Gateway's cache. */
+  /** A live-session mint (plan D4): never served from a cache, whatever its destination. */
   readonly liveTokenMint?: true;
 }
 
@@ -949,9 +949,16 @@ export async function sendAttempts(
         client,
         appId: attempt.appId,
         userId: attempt.identity.userId,
-        ...(prepared.liveTokenMint === true ? { liveTokenMint: true } : {}),
       });
       for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
+      // A live-session mint (plan D4) is never served from a cache, wherever it
+      // goes: a cached secret comes back expired and is charged again. Every
+      // mint gets Cloudflare AI Gateway's skip header, which other hosts ignore,
+      // so no destination has to be recognized; the app's own cache headers go.
+      if (prepared.liveTokenMint === true) {
+        headers.delete("cf-aig-cache-ttl");
+        headers.set("cf-aig-skip-cache", "true");
+      }
       const url = target.url;
       keyHeader = target.keyHeader;
 

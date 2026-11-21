@@ -26,8 +26,6 @@ import {
 import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
 
 /** Cloudflare AI Gateway's own request headers that an app may send: caching and retries (v1). */
-const CLOUDFLARE_CACHE_HEADERS: readonly string[] = ["cf-aig-cache-ttl", "cf-aig-skip-cache"];
-
 const CLOUDFLARE_CLIENT_HEADERS: readonly string[] = [
   "cf-aig-cache-ttl",
   "cf-aig-skip-cache",
@@ -54,11 +52,6 @@ export interface UpstreamRequestInput {
   readonly client?: Headers;
   readonly appId: string;
   readonly userId: string | null;
-  /**
-   * A live-session mint (plan D4). Through Cloudflare AI Gateway its answer is
-   * never cached: a cached secret would come back expired, and be charged again.
-   */
-  readonly liveTokenMint?: boolean;
 }
 
 export interface UpstreamRequest {
@@ -142,15 +135,9 @@ export function upstreamRequest(
   const prefix = route.stripPathPrefix;
   const path = prefix !== undefined && input.path.startsWith(prefix) ? input.path.slice(prefix.length) : input.path;
   const headers: Record<string, string> = {};
-  const mint = input.liveTokenMint === true;
   input.client?.forEach((value, name) => {
-    const lower = name.toLowerCase();
-    if (!CLOUDFLARE_CLIENT_HEADERS.includes(lower)) return;
-    // A mint's caching is the gateway's alone: never cached, whatever the app asked.
-    if (mint && CLOUDFLARE_CACHE_HEADERS.includes(lower)) return;
-    headers[lower] = value;
+    if (CLOUDFLARE_CLIENT_HEADERS.includes(name.toLowerCase())) headers[name.toLowerCase()] = value;
   });
-  if (mint) headers["cf-aig-skip-cache"] = "true";
   Object.assign(headers, attribution, {
     "cf-aig-authorization": `Bearer ${input.credentials.cloudflareToken}`,
     // Cloudflare's own logs, under the real app and user: set here alone.
