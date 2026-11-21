@@ -11,15 +11,16 @@
  * - The upstream URL is built from the signed id, never from the path.
  * - A result call that is final settles the job, after the answer is sent.
  * - The provider's answer goes back as it came: binary bodies and bodiless
- *   answers too. Only a status answer's links are rewritten.
+ *   answers too. Only a status answer's links are rewritten, and no cache may
+ *   keep either answer (`Cache-Control: no-store`).
  */
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
-import { clientResponseHeaders } from "../proxy/headers.ts";
+import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -28,15 +29,6 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 function jsonOf(bytes: ArrayBuffer): unknown {
   try {
     return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-/** A response's JSON body, or null. */
-async function jsonOrNull(response: Response): Promise<unknown> {
-  try {
-    return (await response.json()) as unknown;
   } catch {
     return null;
   }
@@ -87,17 +79,20 @@ export function jobPollHandler(which: "status" | "result") {
         const headers = clientResponseHeaders(response.headers, keyHeader);
         headers.delete("content-length");
         headers.delete("content-encoding");
+        // A job's answer is the caller's own: no cache may keep it.
+        noStore(headers);
         const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
           if (context.spec.finalStatuses.includes(response.status)) {
-            // Settled from the headers, and from a copy of the body when outputs are counted;
-            // the app gets the body itself, untouched.
-            const copy = context.spec.outputsField !== undefined && !bodiless ? response.clone() : null;
+            // Settled from the units header when it has a number. Only without one is a
+            // copy of the body read to count outputs, at most OUTPUTS_READ_LIMIT bytes;
+            // the app gets the body itself, untouched, and never waits on the count.
+            const copy = !bodiless && countNeedsBody(context.spec, response.headers) ? response.clone() : null;
             const ref = { job: claims.job, accountId: claims.accountId, appId: claims.appId };
             const now = Date.now();
             c.executionCtx.waitUntil(
               (async () => {
-                const body = copy === null ? null : await jsonOrNull(copy);
+                const body = copy === null ? null : await boundedJson(copy);
                 const facts = jobResultFacts(context.spec, { status: response.status, headers: response.headers, body });
                 if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
               })(),

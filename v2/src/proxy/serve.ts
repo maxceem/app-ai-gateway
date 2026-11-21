@@ -61,7 +61,7 @@ import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
-import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./headers.ts";
+import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -1069,9 +1069,6 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
   );
 }
 
-/** Cache directives aimed at CDNs alone, which some follow instead of `Cache-Control`. */
-const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"] as const;
-
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
 function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response | Promise<Response> {
@@ -1081,13 +1078,9 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
     return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader);
   }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
-  // A minted live-session credential is never kept by a cache between the gateway and the app,
-  // whatever the provider said: a cache could hand one caller's signed URL to another. A CDN may
-  // follow its own targeted directive over `Cache-Control`, so those are dropped too.
-  if (prepared.liveTokenMint === true) {
-    for (const name of CDN_CACHE_HEADERS) responseHeaders.delete(name);
-    responseHeaders.set("cache-control", "no-store");
-  }
+  // A minted live-session credential is never kept by a cache between the gateway and the app:
+  // a cache could hand one caller's signed URL to another.
+  if (prepared.liveTokenMint === true) noStore(responseHeaders);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 
@@ -1203,19 +1196,44 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
 /** How long the body of an accepted job submission may take to arrive. */
 export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
 
-/** A response's JSON body, or null when it does not parse, fails, or does not arrive in time (the body is then cancelled). */
+/**
+ * A response's JSON body, or null when it does not parse, fails, or does not
+ * arrive in time. The body is read through a reader this function owns, so a
+ * body that stalls is cancelled at the deadline and the upstream stream is
+ * closed, not left open behind a `json()` call that holds its lock.
+ */
 async function jsonWithin(response: Response, ms: number): Promise<unknown> {
+  if (response.body === null) return null;
+  const reader = response.body.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<typeof LATE>((resolve) => {
     timer = setTimeout(() => resolve(LATE), ms);
   });
+  const reading = (async (): Promise<Uint8Array[] | null> => {
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return chunks;
+      chunks.push(value);
+    }
+  })().catch(() => null);
   try {
-    const answer = await Promise.race([response.json().catch(() => null), late]);
-    if (answer === LATE) {
-      response.body?.cancel().catch(() => undefined);
+    const chunks = await Promise.race([reading, late]);
+    if (chunks === LATE) {
+      await reader.cancel().catch(() => undefined);
       return null;
     }
-    return answer as unknown;
+    if (chunks === null) return null;
+    const bytes = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.byteLength, 0));
+    let at = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    const text = new TextDecoder().decode(bytes);
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }

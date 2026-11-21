@@ -194,7 +194,7 @@ export default {
    */
   async scheduled(controller, env, ctx) {
     if (controller.cron === SWEEP_CRON) {
-      ctx.waitUntil(runSweep(env).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
+      ctx.waitUntil(runSweep(env, { waitUntil: (work) => ctx.waitUntil(work) }).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
       return;
     }
     ctx.waitUntil(

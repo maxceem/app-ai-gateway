@@ -284,6 +284,52 @@ export function jobResultFacts(spec: JobSpec, result: JobResult): JobResultFacts
   };
 }
 
+/** The most of a result body read to count its outputs. A bigger body is not counted: the estimate stays. */
+export const OUTPUTS_READ_LIMIT = 1024 * 1024;
+
+/**
+ * Whether the result's body must be read to count it: only when outputs are
+ * counted and the provider's units header gave no number. A result with
+ * billed units is settled from its headers alone.
+ */
+export function countNeedsBody(spec: JobSpec, headers: Headers): boolean {
+  if (spec.outputsField === undefined) return false;
+  return spec.unitsHeader === undefined || headerNumber(headers.get(spec.unitsHeader)) === null;
+}
+
+/**
+ * A body read as JSON, at most `limit` bytes; null when it is larger, not
+ * JSON, or cannot be read. Reading stops (and the stream is cancelled) at the
+ * limit, so counting never holds a large result in memory.
+ */
+export async function boundedJson(response: Response, limit: number = OUTPUTS_READ_LIMIT): Promise<unknown> {
+  if (response.body === null) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether a result gives any count at all. One with none is never saved: it can never settle. */
 export function hasCount(facts: JobResultFacts): boolean {
   return facts.units !== null || facts.outputs !== null;
@@ -424,6 +470,25 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
 }
 
 /**
+ * How long one D1 step of applying a final figure may take: the settlement
+ * read and write, then the figure-row write. Short, so a slow D1 still leaves
+ * time, inside a poll's `waitUntil` window, to keep the figure in the
+ * failed-write store.
+ */
+export const FIGURE_D1_DEADLINE_MS = 3_000;
+
+/** `work`, or a rejection once `ms` has passed. The work itself keeps running; every write it makes is safe whenever it lands. */
+function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  // A late failure of the work, after the deadline answered, is not an unhandled rejection.
+  work.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Keeps a figure that could not settle yet, for the sweep: as its own row in
  * D1; while D1 cannot take it, in the failed-write store; when neither works,
  * logged in full, to be settled by hand. True when it was kept somewhere the
@@ -432,7 +497,7 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
 export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
   const row = figureWork(ref, facts, now);
   try {
-    await writeOpenWork(env.DB, [row]);
+    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");
     return true;
   } catch (error) {
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
@@ -460,7 +525,7 @@ export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFa
     return "no_count";
   }
   try {
-    if ((await settleFigure(env, ref, facts, now)) !== "waiting") return "done";
+    if ((await withDeadline(settleFigure(env, ref, facts, now), FIGURE_D1_DEADLINE_MS, "settling the figure")) !== "waiting") return "done";
   } catch (error) {
     log("warn", "job_settle_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
@@ -495,9 +560,11 @@ export function isFigureWork(id: string): boolean {
  *   does not read, or a connection gone or pointed elsewhere ends the check:
  *   the estimate stays, logged. Without a signing key the check waits; a
  *   paused connection's key is never opened. `signal` only stops the provider
- *   calls: every write here is safe whenever it lands.
+ *   calls: every write here is safe whenever it lands. Once a final figure is
+ *   read, applying it is handed to `keepAlive`, so the item's time limit
+ *   cannot cut it off.
  */
-export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
+export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAlive }) => {
   const ref: JobRef = { job: item.ownerId, accountId: item.accountId, appId: item.appId };
   const detail = item.detail ?? {};
   if (isFigureWork(item.id)) {
@@ -506,7 +573,9 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
       log("error", "job_figure_unreadable", { app: item.appId, work: item.id });
       return { done: true };
     }
-    return (await settleFigure(env, ref, facts, now)) === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
+    const settling = settleFigure(env, ref, facts, now);
+    keepAlive?.(settling.catch(() => undefined));
+    return (await settling) === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
   }
 
   // A check whose job was settled meanwhile (by a poll, or a figure row) asks the provider nothing.
@@ -530,9 +599,14 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
   const statusBody = await jsonOf(status.response);
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   const result = await fetchJob(env, context, "result", claims, null, signal);
-  const body = await jsonOf(result.response);
+  let body: unknown = null;
+  if (countNeedsBody(context.spec, result.response.headers)) body = await boundedJson(result.response);
+  else await result.response.body?.cancel().catch(() => undefined);
   const facts = jobResultFacts(context.spec, { status: result.response.status, headers: result.response.headers, body });
   if (facts === null) return retry(`result not final (${result.response.status})`);
-  const applied = await applyFinalResult(env, ref, facts, now);
+  // From here the provider's figure is in hand: finish keeping it even if the item's time runs out.
+  const applying = applyFinalResult(env, ref, facts, now);
+  keepAlive?.(applying);
+  const applied = await applying;
   return applied === "not_kept" ? retry("figure not kept") : { done: true };
 };

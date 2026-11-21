@@ -60,7 +60,17 @@ export type HandlerResult = { readonly done: true } | { readonly done: false; re
 export type OpenWorkHandler = (
   env: Env,
   item: OpenWorkItem,
-  context: { readonly now: number; readonly lastTry: boolean; readonly signal?: AbortSignal },
+  context: {
+    readonly now: number;
+    readonly lastTry: boolean;
+    readonly signal?: AbortSignal;
+    /**
+     * Keeps work alive after the item's time limit: once a handler holds a
+     * figure it must not lose (a provider's final result), it hands the
+     * write here, so the run's own deadline cannot cut it off.
+     */
+    readonly keepAlive?: (work: Promise<unknown>) => void;
+  },
 ) => Promise<HandlerResult>;
 
 const DONE: HandlerResult = { done: true };
@@ -161,6 +171,8 @@ export async function runSweep(
     readonly batch?: number;
     readonly itemTimeLimitMs?: number;
     readonly runTimeLimitMs?: number;
+    /** The cron's `ctx.waitUntil`, for work that must finish after an item's time limit. */
+    readonly waitUntil?: (work: Promise<unknown>) => void;
   } = {},
 ): Promise<SweepSummary> {
   const startedAt = Date.now();
@@ -194,7 +206,7 @@ export async function runSweep(
           resolve(TIMED_OUT);
         }, itemLimit);
       });
-      const answer = await Promise.race([handlers[item.kind](env, item, { now, lastTry, signal: controller.signal }), late]);
+      const answer = await Promise.race([handlers[item.kind](env, item, { now, lastTry, signal: controller.signal, keepAlive: options.waitUntil }), late]);
       result = answer === TIMED_OUT ? retry("timed out") : answer;
     } catch (error) {
       log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(error) });

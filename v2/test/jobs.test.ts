@@ -8,7 +8,7 @@ import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext }
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
-import { applyFinalResult, checkJob, figureWork, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
+import { applyFinalResult, boundedJson, checkJob, countNeedsBody, FIGURE_D1_DEADLINE_MS, figureWork, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
@@ -898,3 +898,172 @@ describe("request ids, result bodies and stalled answers (review fixes, round 3)
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
   });
 });
+
+/** A D1 whose estimate reads wait for `gate`, and whose batches never answer when `stallWrites` is set. */
+function slowD1(gate: Promise<void>, stallWrites = false): D1Database {
+  const wrap = <T extends object>(target: T, get: (target: T, prop: string | symbol) => unknown): T =>
+    new Proxy(target, { get: (t, prop) => get(t, prop) });
+  const pass = (t: object, prop: string | symbol) => {
+    const value = (t as Record<string | symbol, unknown>)[prop];
+    return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(t) : value;
+  };
+  return wrap(env.DB, (db, prop) => {
+    if (prop === "batch" && stallWrites) return () => new Promise(() => undefined);
+    if (prop !== "prepare") return pass(db, prop);
+    return (sql: string) => {
+      const statement = db.prepare(sql);
+      if (!sql.includes("kind = 'estimate'")) return statement;
+      return wrap(statement, (st, p) =>
+        p === "bind"
+          ? (...args: unknown[]) =>
+              wrap(st.bind(...args), (bound, q) =>
+                q === "first" ? async (...more: unknown[]) => (await gate, (bound.first as (...a: unknown[]) => unknown)(...more)) : pass(bound, q),
+              )
+          : pass(st, p),
+      );
+    };
+  });
+}
+
+describe("deadlines, store retries, counting and caching (review fixes, round 4)", () => {
+  it("hands the sweep's settlement to the cron's waitUntil, so the item's time limit cannot cut it off", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({ result: () => Response.json({ images: [{}, {}, {}, {}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const kept: Promise<unknown>[] = [];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const run = runSweep({ ...env, DB: slowD1(gate) } as Env, { now: Date.now() + 5 * 60_000, itemTimeLimitMs: 1_000, waitUntil: (work) => kept.push(work) });
+    // The item's time passes while the estimate read hangs: the run moves on, the settlement does not stop.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await run).toMatchObject({ retried: 1 });
+    expect(kept).toHaveLength(1);
+    release();
+    await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS * 2);
+    await Promise.all(kept);
+    vi.useRealTimers();
+    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect((await charges(appId)).map((row) => [row.kind, row.cost_nano])).toEqual([
+      ["estimate", 50_000_000],
+      ["correction", 50_000_000],
+    ]);
+  });
+
+  it("keeps a poll's figure in the failed-write store when D1 is slow, inside the poll's waitUntil window", async () => {
+    const { appId } = await setup();
+    await onlyThisApp(appId);
+    const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const applying = applyFinalResult({ ...env, DB: slowD1(new Promise(() => undefined), true) } as Env, ref, { status: 200, units: 4, outputs: 2 }, 3_000);
+    await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // the settlement read times out
+    await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // then the D1 figure write
+    expect(await applying).toBe("done");
+    vi.useRealTimers();
+    await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId));
+    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${ref.job}:200:4:2`]);
+  });
+
+  it("does not bring back a settled job's check when the store retries its submit batch", async () => {
+    const { appId } = await setup();
+    await onlyThisApp(appId);
+    const job = `job_${crypto.randomUUID()}`;
+    const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
+    const entry = jobEstimate(
+      {
+        requestId: job,
+        seq: 1,
+        accountId: ACCOUNT_ID,
+        appId,
+        identity: { accountId: ACCOUNT_ID, appId, userId: "user-1", installId: null, appleAccountId: null, authMethod: "api_key", credentialType: "api_key" } as never,
+        providerType: "fal",
+        connectionId: "c",
+        providerSlug: "fal",
+        operation: "fal.queue",
+        model: "fal-ai/flux/dev",
+        price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
+        reportsCost: false,
+        requestedMode: { tier: "standard", region: "global" } as never,
+        startedAt: 1_000,
+        appVersion: null,
+        clientTraceId: null,
+        requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
+      } as CallAttempt,
+      QUEUE,
+      { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "signed-id", now: 2_000 },
+    );
+    // D1 took the batch but its reply was lost, so the store keeps a copy too.
+    await writeToLedger(env.DB, [entry]);
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([entry]);
+    expect(await settleFigure(env, ref, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("settled");
+    await runDurableObjectAlarm(store);
+    expect(await openWork(appId)).toEqual([]);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
+  });
+
+  it("counts outputs only without a units header, and never more than a bounded part of the body", async () => {
+    expect(countNeedsBody(SPEC, new Headers({ "x-fal-billable-units": "2" }))).toBe(false);
+    expect(countNeedsBody(SPEC, new Headers())).toBe(true);
+    expect(await boundedJson(new Response('{"images":[1,2]}'), 64)).toEqual({ images: [1, 2] });
+    let cancelled = false;
+    const big = new ReadableStream<Uint8Array>({
+      pull: (controller) => controller.enqueue(new Uint8Array(1024)),
+      cancel: () => {
+        cancelled = true;
+      },
+    });
+    expect(await boundedJson(new Response(big), 4096)).toBeNull();
+    expect(cancelled).toBe(true);
+
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    // No units header and a body over the limit: nothing is counted, so the estimate stays, and the app gets every byte.
+    const huge = JSON.stringify({ images: [{ url: "x".repeat(OUTPUTS_READ_LIMIT + 10) }] });
+    falAnswers({ result: () => new Response(huge, { headers: { "content-type": "application/json" } }) });
+    const { text } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(text).toBe(huge);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+  });
+
+  it("closes the upstream stream of an accepted submission whose body stalls", async () => {
+    const { appId, slug, key } = await setup();
+    let cancelled = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    falAnswers({
+      submit: () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(new TextEncoder().encode('{"request_id":')),
+            cancel: () => {
+              cancelled = true;
+            },
+          }),
+          { status: 200 },
+        ),
+    });
+    const answer = submit(appId, slug, key);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect((await answer).response.status).toBe(502);
+    expect(cancelled).toBe(true);
+  });
+
+  it("lets no cache keep a job's status or result, whatever the provider said", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    const cacheable = { "cache-control": "public, max-age=300", "cdn-cache-control": "max-age=300", "cloudflare-cdn-cache-control": "max-age=300", "surrogate-control": "max-age=300" };
+    falAnswers({
+      status: () => Response.json({ status: "COMPLETED" }, { headers: cacheable }),
+      result: () => Response.json({ images: [{}] }, { headers: { ...cacheable, "x-fal-billable-units": "1" } }),
+    });
+    for (const path of [`/v2/apps/${appId}/jobs/${jobId}/status`, `/v2/apps/${appId}/jobs/${jobId}`]) {
+      const { response } = await call("GET", path, key);
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+      for (const name of ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"]) expect(response.headers.get(name), `${path} ${name}`).toBeNull();
+    }
+  });
+});
+
