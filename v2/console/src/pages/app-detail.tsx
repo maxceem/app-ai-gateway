@@ -721,6 +721,12 @@ function JobsTab({ app }: { app: App }) {
         queued job the provider confirms with no billed units is free; a cancel or failure the provider bills is charged at the job's saved rate
         (by the reported units, or one job for a flat price per job); and if the provider's billed units cannot be read, the estimate stays.
       </p>
+      {jobs.isError && jobs.data !== undefined ? (
+        // A failed background refresh keeps the last rows and their warnings.
+        <p role="status" className="text-sm text-destructive">
+          Could not refresh the jobs; showing the last list. {jobs.error instanceof Error ? jobs.error.message : ""}
+        </p>
+      ) : null}
       <Card className="overflow-hidden py-0">
         <Table>
           <TableHeader>
@@ -740,7 +746,7 @@ function JobsTab({ app }: { app: App }) {
                   <Skeleton className="h-5 w-full" />
                 </TableCell>
               </TableRow>
-            ) : jobs.isError ? (
+            ) : jobs.isError && jobs.data === undefined ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
                   Could not load the jobs. {jobs.error instanceof Error ? jobs.error.message : ""}

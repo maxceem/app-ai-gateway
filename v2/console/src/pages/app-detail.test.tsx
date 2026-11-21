@@ -224,6 +224,36 @@ describe("AppDetailPage", () => {
     }
   });
 
+  it("keeps the last jobs and their warnings when a background refresh fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.parse("2026-11-01T12:10:00.000Z") });
+    try {
+      const routes: Record<string, Answer> = {
+        "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+          body: {
+            app_id: "my-app",
+            total: 1,
+            limit: 50,
+            offset: 0,
+            jobs: [
+              { id: "late", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2026-11-01T12:01:00.000Z" },
+            ],
+          },
+        },
+      };
+      stub(routes);
+      renderTab("jobs");
+      const row = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+      expect(within(row).getByText(/overdue/i)).toBeTruthy();
+      routes["GET /v2/admin/apps/my-app/jobs?limit=50&offset=0"] = { status: 503, body: { error: { code: "unavailable", message: "Try again" } } };
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await waitFor(() => expect(screen.getByText(/could not refresh the jobs/i)).toBeTruthy());
+      expect(within(screen.getByText("fal-ai/flux/dev").closest("tr")!).getByText(/overdue/i)).toBeTruthy();
+      expect(screen.queryByText(/could not load the jobs/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("calls a check overdue only once it is more than five minutes late", () => {
     const due = Date.parse("2026-11-01T00:00:00.000Z");
     const job = { state: "checking" as const, next_check_at: new Date(due).toISOString() };
