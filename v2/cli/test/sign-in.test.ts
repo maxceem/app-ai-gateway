@@ -248,6 +248,21 @@ test("each failed sign-in's hint names no other command; gateway errors, redirec
   const unavailable = answered(503, JSON.stringify({ error: { code: "service_unavailable", message: "Starting." } }));
   // A 503 whose body names a code that alone would mean "check connectivity".
   const unavailableAsUnreachable = answered(503, JSON.stringify({ error: { code: "connection_failed", message: "Upstream down." } }));
+  // Every row's exit code as well as its hint: the same as before the hints
+  // changed, except that a sign-in nobody approved in time now exits 5.
+  const EXITS: Record<string, number> = {
+    timeout: 5,
+    "timeout, no code endpoint": 5,
+    declined: 4,
+    "device code expired": 4,
+    "device declined": 4,
+    "device poll 403 access_denied": 4,
+  };
+  const check = (error: CliError, hint: string, label: string) => {
+    assert.equal(error.nextAction, hint, label);
+    const row = label.slice(label.indexOf(": ") + 2);
+    assert.equal(error.exitCode, EXITS[row] ?? 3, `${label}: exit code`);
+  };
   const ACCESS = "Fix access to the gateway, then run the same command again.";
   const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
@@ -296,7 +311,7 @@ test("each failed sign-in's hint names no other command; gateway errors, redirec
       ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), ACCESS],
       ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
     ];
-    for (const [what, pending, expected] of around) assert.equal((await pending).nextAction, expected, `${start.name}: ${what}`);
+    for (const [what, pending, expected] of around) check(await pending, expected, `${start.name}: ${what}`);
     if (usesBrowser) {
       const silent: Loopback = { redirect: "http://127.0.0.1:43210/callback", callback: new Promise<Callback>(() => {}), answer: () => {}, close: async () => {} };
       const timeout = { listen: async () => silent, openBrowser: async () => true, loginDeadline: () => ({ expired: Promise.reject(new Error("timeout")), cancel: () => {} }) };
@@ -309,7 +324,7 @@ test("each failed sign-in's hint names no other command; gateway errors, redirec
         ["token unusable", failure(() => ({ status: 200, data: { access_token: "" } }), browser({ code: "c", iss: null })), AGAIN],
         ["token redirected", failure(refusal, browser({ code: "c", iss: null })), "Fix the gateway's address, then run the same command again."],
       ];
-      for (const [what, pending, expected] of cases) assert.equal((await pending).nextAction, expected, `${start.name}: ${what}`);
+      for (const [what, pending, expected] of cases) check(await pending, expected, `${start.name}: ${what}`);
     }
     // The device flow: chosen by the flags, or because this machine has no browser.
     const device = (answer: FormResponse, first = deviceOpened()) => (path: string) => (path === "/v2/oauth/device_authorization" ? first : answer);
@@ -325,7 +340,7 @@ test("each failed sign-in's hint names no other command; gateway errors, redirec
       ["poll redirected", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : refusal(path)), noBrowser), "Fix the gateway's address, then run the same command again."],
       ["no code endpoint", failure(() => tokens(1), noBrowser, false), `On a machine with a browser, run agw deployment connect --url with this gateway's address:\n${target}`],
     ];
-    for (const [what, pending, expected] of deviceCases) assert.equal((await pending).nextAction, expected, `${start.name}: device ${what}`);
+    for (const [what, pending, expected] of deviceCases) check(await pending, expected, `${start.name}: device ${what}`);
   }
 });
 
@@ -440,6 +455,25 @@ test("a refused renewal says to sign in again, naming a self-hosted gateway", as
     assert.equal(error.code, "invalid_client", url);
     assert.equal(error.nextAction, expected, url);
   }
+});
+
+test("a busy or unavailable gateway during renewal keeps the sign-in and says to run the same command again", async () => {
+  const cases: [string, FormResponse, string][] = [
+    ["429 slow_down", { status: 429, data: { error: "slow_down" } }, "Wait a moment, then run the same command again."],
+    ["503", { status: 503, data: { error: "temporarily_unavailable" } }, "Wait until the gateway is available, then run the same command again."],
+  ];
+  for (const url of [URL_, CLOUD])
+    for (const [what, answer, expected] of cases) {
+      const clock = fakeClock();
+      const store = memoryStore(signedInState(url, "agw_oat_old", new Date(clock.time - 1).toISOString()));
+      const transport = fakeTransport(notFound, () => answer);
+      const ctx = new Context(store, store.held, transport, {}, { env: {}, clock, stderr: sinks().stderr });
+      const error = await ctx.credential().then(() => assert.fail("expected a failure"), (caught: unknown) => caught);
+      assert.ok(error instanceof CliError);
+      assert.equal(error.nextAction, expected, `${url}: ${what}`);
+      // The stored sign-in is kept, to be renewed once the gateway answers.
+      assert.notEqual(store.held.active, null, `${url}: ${what}`);
+    }
 });
 
 test("the environment's key wins over a stored sign-in, and signing in while it is set is refused", async () => {
