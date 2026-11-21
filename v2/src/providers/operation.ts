@@ -815,15 +815,16 @@ export type OperationInput<P extends string, U extends string> = Omit<
  */
 /**
  * The model a request is sent and billed as: the app's rewrite of the model
- * it named, if any (v1). A fixed model is never rewritten. The one rule, for
- * serving and for the app save's checks alike.
+ * it named, if any (v1). A fixed model is never rewritten, and rewrites apply
+ * to calls only (plan D13): a job or a session runs the model it names. The
+ * one rule, for serving and for the app save's checks alike.
  */
 export function rewrittenModel(
-  operation: Pick<OperationDescription, "model">,
+  operation: Pick<OperationDescription, "model" | "lifecycle">,
   model: string,
   rewrites: Readonly<Record<string, string>> | undefined,
 ): string {
-  if (operation.model.in === "fixed" || rewrites === undefined) return model;
+  if (operation.lifecycle !== "call" || operation.model.in === "fixed" || rewrites === undefined) return model;
   return Object.hasOwn(rewrites, model) ? rewrites[model]! : model;
 }
 

@@ -20,7 +20,7 @@ import { connectionDescription, loadConnection } from "../providers/connections.
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, boundedJson, countedBody, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, readResultFacts, withGatewayLinks } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -93,10 +93,9 @@ export function jobPollHandler(which: "status" | "result") {
             c.executionCtx.waitUntil(
               (async () => {
                 const read = copy === null ? null : await boundedJson(copy);
-                // A copy cut off while reading counts nothing: the job's check stays, and the sweep reads it again.
-                if (read?.kind === "read_error") return;
-                const body = read === null ? null : countedBody(read);
-                const facts = jobResultFacts(context.spec, { status: response.status, headers: response.headers, body });
+                // The units header is applied even when the copy breaks; a figure that still
+                // needs the body is left to the job's check, which the sweep reads again.
+                const facts = readResultFacts(context.spec, response, read);
                 if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
               })(),
             );

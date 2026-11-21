@@ -14,9 +14,10 @@
  * charge can still be written by hand.
  */
 import { DurableObject } from "cloudflare:workers";
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
-import { logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
  * How many entries one store holds before the oldest go to the logs. One
@@ -34,6 +35,17 @@ export const RETRY_BATCH = 50;
 /** The first retry, then doubling up to `MAX_RETRY_DELAY_MS`. */
 export const FIRST_RETRY_DELAY_MS = 5_000;
 export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+
+/**
+ * One retry of what the store holds: charges first, then open-work rows. Each
+ * write has the ledger's deadline, so a stalled D1 batch rejects and the alarm
+ * falls through to its backoff instead of hanging. Stable ids make a late
+ * commit safe.
+ */
+export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[]): Promise<void> {
+  await withDeadline(writeToLedger(db, entries), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+  await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+}
 
 export class ChargeStore extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -109,8 +121,11 @@ export class ChargeStore extends DurableObject<Env> {
       return;
     }
     try {
-      await writeToLedger(this.env.DB, rows.map((row) => JSON.parse(row.entry) as LedgerEntry));
-      await writeOpenWork(this.env.DB, work.map((one) => JSON.parse(one.row) as OpenWorkRow));
+      await retryStored(
+        this.env.DB,
+        rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
+        work.map((one) => JSON.parse(one.row) as OpenWorkRow),
+      );
     } catch (error) {
       const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(FIRST_RETRY_DELAY_MS, this.delay() * 2));
       this.setDelay(delay);

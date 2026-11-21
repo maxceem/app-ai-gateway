@@ -14,6 +14,7 @@ import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
 import { fal } from "../src/providers/fal.ts";
+import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -1192,5 +1193,63 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
     const forged = await call("GET", `/v2/apps/${appId}/jobs/not-a-job/status`, key);
     expect(forged.response.status).toBe(404);
     expect(forged.response.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("what a broken body still settles, and rewrites (review fixes, round 6)", () => {
+  const PER_IMAGE = { "fal-ai/flux/dev": { per_image: 10_000_000 } };
+
+  /** A result body that breaks halfway, the way a dropped connection ends it. */
+  const brokenBody = () =>
+    new ReadableStream({
+      start: (controller) => {
+        controller.enqueue(new TextEncoder().encode('{"images":[{},'));
+        controller.error(new Error("connection dropped"));
+      },
+    });
+
+  it("settles a failure that billed 0 units from the header, even when its body breaks", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    // A failure that fal says billed 0 units: the broken body is not needed to settle it.
+    falAnswers({ result: () => new Response(brokenBody(), { status: 422, headers: { "x-fal-billable-units": "0" } }) });
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect(await openWork(appId)).toEqual([]);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(rows.reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(0);
+  });
+
+  it("reads a result again when its JSON is cut short but closes normally, while the rate needs the outputs", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    // A whole stream that is not whole JSON: no units header, and the rate counts images.
+    falAnswers({ result: () => new Response('{"images":[{},', { status: 200, headers: { "content-type": "application/json" } }) });
+    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await openWork(appId)).toHaveLength(1);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
+    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
+  });
+
+  it("never saves a figure whose body is still needed, and settles a broken-body result from the header when the rate is per unit", async () => {
+    const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId: "app_unread" };
+    // Outputs unread on a success, no units: nothing to settle or save; read again.
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
+    // The same with no estimate in the ledger yet: still never saved as a figure.
+    expect(await applyFinalResult(env, ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ n: number }>()).toEqual({ n: 0 });
+  });
+
+  it("applies model rewrites to calls only, never to a queued job (plan D13)", () => {
+    const run = fal.operations.find((one) => one.name === "fal.run")!;
+    const rewrites = { "fal-ai/flux/dev": "fal-ai/flux/schnell" };
+    expect(rewrittenModel(run, "fal-ai/flux/dev", rewrites)).toBe("fal-ai/flux/schnell");
+    expect(rewrittenModel(QUEUE, "fal-ai/flux/dev", rewrites)).toBe("fal-ai/flux/dev");
   });
 });

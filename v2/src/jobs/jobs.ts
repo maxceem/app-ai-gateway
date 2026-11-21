@@ -273,6 +273,13 @@ export interface JobResultFacts {
   readonly units: number | null;
   /** The outputs in the result, or null when it names none the gateway can count. */
   readonly outputs: number | null;
+  /**
+   * True when the body had to be read to count outputs, but could not be: cut
+   * off, or not whole JSON. Then a missing output count says nothing, and a
+   * figure that needs it is tried again instead of ending as "no count". Never
+   * saved on a figure row.
+   */
+  readonly unread?: true;
 }
 
 /** The facts of a result call, or null when its status is not final. */
@@ -300,17 +307,19 @@ export function countNeedsBody(spec: JobSpec): boolean {
   return spec.outputsField !== undefined;
 }
 
-/** A body read for counting: parsed (null when it is not JSON), larger than the limit, or cut off while reading. */
+/** A body read for counting: parsed (null when empty), larger than the limit, cut off while reading, or not whole JSON. */
 export type BodyRead =
   | { readonly kind: "parsed"; readonly value: unknown }
   | { readonly kind: "too_large" }
-  | { readonly kind: "read_error" };
+  | { readonly kind: "read_error" }
+  | { readonly kind: "unparseable" };
 
 /**
  * A body read as JSON, at most `limit` bytes. Reading stops (and the stream
  * is cancelled) at the limit, so counting never holds a large result in
- * memory. A body that is whole but not JSON is parsed as null; one that fails
- * while it is read is a read error, which the sweep tries again.
+ * memory. An empty body is parsed as null. One that fails while it is read is
+ * a read error, and one that is not whole JSON (truncated JSON that closed
+ * normally, for one) is unparseable: both are tried again by the sweep.
  */
 export async function boundedJson(response: Response, limit: number = OUTPUTS_READ_LIMIT): Promise<BodyRead> {
   if (response.body === null) return { kind: "parsed", value: null };
@@ -337,16 +346,34 @@ export async function boundedJson(response: Response, limit: number = OUTPUTS_RE
     bytes.set(chunk, at);
     at += chunk.byteLength;
   }
+  if (size === 0) return { kind: "parsed", value: null };
   try {
     return { kind: "parsed", value: JSON.parse(new TextDecoder().decode(bytes)) as unknown };
   } catch {
-    return { kind: "parsed", value: null };
+    return { kind: "unparseable" };
   }
 }
 
-/** The body counting reads: the parsed value, or null when it was too large (the estimate stays for a count per output). */
-export function countedBody(read: BodyRead): unknown {
-  return read.kind === "parsed" ? read.value : null;
+/**
+ * The facts of a final result, from its status, its headers and the body read
+ * done to count outputs (null when the body is not needed). A body that could
+ * not be read marks the facts `unread`; the units header is read either way,
+ * so a header that settles the estimate's rate is never lost to a broken body.
+ */
+export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
+  const body = read !== null && read.kind === "parsed" ? read.value : null;
+  const facts = jobResultFacts(spec, { status: response.status, headers: response.headers, body });
+  if (facts === null) return null;
+  return read !== null && (read.kind === "read_error" || read.kind === "unparseable") ? { ...facts, unread: true } : facts;
+}
+
+/**
+ * Whether a figure still needs the body: it could not be read, and the result
+ * succeeded, so its outputs may be what the estimate's rate counts. A failure's
+ * outputs are never counted, so its body is never needed.
+ */
+function bodyStillNeeded(facts: JobResultFacts): boolean {
+  return facts.unread === true && facts.status >= 200 && facts.status < 300;
 }
 
 /** Whether a result gives any count at all. One with none is never saved: it can never settle. */
@@ -360,6 +387,7 @@ function factsOf(value: unknown): JobResultFacts | null {
   const facts = value as Record<string, unknown>;
   const count = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one) && one >= 0);
   if (typeof facts.status !== "number" || !count(facts.units) || !count(facts.outputs)) return null;
+  // A saved figure was read whole: `unread` is never kept.
   return { status: facts.status, units: facts.units as number | null, outputs: facts.outputs as number | null };
 }
 
@@ -440,7 +468,7 @@ export function figureWork(ref: JobRef, facts: JobResultFacts, now: number): Ope
     ownerType: "job",
     ownerId: ref.job,
     chargeId: null,
-    detail: { result: { ...facts }, maxTries: FIGURE_MAX_TRIES },
+    detail: { result: { status: facts.status, units: facts.units, outputs: facts.outputs }, maxTries: FIGURE_MAX_TRIES },
     dueAt: now,
     createdAt: now,
   };
@@ -452,7 +480,9 @@ export type FigureSettlement =
   /** The figure gives no count the estimate's rates can use: the estimate stays, as it is labelled. */
   | "estimate_kept"
   /** The estimate is not in the ledger yet: save the figure and try later. */
-  | "waiting";
+  | "waiting"
+  /** The estimate's rate needs the outputs, and the body could not be read: read the result again. */
+  | "needs_body";
 
 /**
  * Settles a job from a final figure. The one settle function: a client poll,
@@ -468,6 +498,7 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
   if (estimate === null) return "waiting";
   const dropFigure = () => env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
   const final = jobFinalFigure(estimate, facts);
+  if (final === null && bodyStillNeeded(facts)) return "needs_body";
   if (final === null) {
     // Never read as 0: the estimate stays, already labelled an estimate.
     log("warn", "job_units_missing", { ...tags, status: facts.status });
@@ -522,21 +553,35 @@ export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, n
 
 /**
  * What a final result means, as a client poll and the sweep's live check both
- * apply it: a result with a count is settled, or kept for later when it cannot
- * settle yet. One with no count is not saved (it can never settle). Never
- * throws. The answer says whether the figure is settled or kept: then the job
- * needs no more checking.
+ * apply it. The one place that decides between settling, keeping the
+ * estimate, and reading the result again:
+ *
+ * - a figure that settles the estimate's rate settles, whatever happened to
+ *   the body (a units header is enough for a rate per billed unit, and for a
+ *   failure that billed 0);
+ * - a figure that cannot settle yet is kept for the sweep, unless its body
+ *   still has to be read: such a figure is never saved, and the result is
+ *   read again (`retry`);
+ * - a result with no count, read whole, ends as `no_count`: the estimate stays.
+ *
+ * Never throws. `done` means the figure is settled or kept: the job needs no
+ * more checking.
  */
-export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<"done" | "no_count" | "not_kept"> {
+export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<"done" | "no_count" | "retry" | "not_kept"> {
   if (!hasCount(facts)) {
+    if (bodyStillNeeded(facts)) return "retry";
     log("warn", "job_units_missing", { app: ref.appId, job: ref.job, status: facts.status });
     return "no_count";
   }
   try {
-    if ((await withDeadline(settleFigure(env, ref, facts, now), FIGURE_D1_DEADLINE_MS, "settling the figure")) !== "waiting") return "done";
+    const settled = await withDeadline(settleFigure(env, ref, facts, now), FIGURE_D1_DEADLINE_MS, "settling the figure");
+    if (settled === "needs_body") return "retry";
+    if (settled !== "waiting") return "done";
   } catch (error) {
     log("warn", "job_settle_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
+  // A figure whose body is still needed is never saved: it could only end as "estimate kept".
+  if (bodyStillNeeded(facts)) return "retry";
   return (await keepFigure(env, ref, facts, now)) ? "done" : "not_kept";
 }
 
@@ -607,20 +652,16 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   const statusBody = await jsonOf(status.response);
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   const result = await fetchJob(env, context, "result", claims, null, signal);
-  let body: unknown = null;
-  if (countNeedsBody(context.spec)) {
-    const read = await boundedJson(result.response);
-    // Cut off while reading: the result may still be readable on the next check.
-    if (read.kind === "read_error") return retry("result body could not be read");
-    body = countedBody(read);
-  } else {
-    void result.response.body?.cancel().catch(() => undefined);
-  }
-  const facts = jobResultFacts(context.spec, { status: result.response.status, headers: result.response.headers, body });
+  let read: BodyRead | null = null;
+  if (countNeedsBody(context.spec)) read = await boundedJson(result.response);
+  else void result.response.body?.cancel().catch(() => undefined);
+  const facts = readResultFacts(context.spec, result.response, read);
   if (facts === null) return retry(`result not final (${result.response.status})`);
   // From here the provider's figure is in hand: finish keeping it even if the item's time runs out.
   const applying = applyFinalResult(env, ref, facts, now);
   keepAlive?.(applying);
   const applied = await applying;
+  // A body cut off or not whole JSON, when the rate needs its outputs: the result may read whole on the next check.
+  if (applied === "retry") return retry("result body could not be read");
   return applied === "not_kept" ? retry("figure not kept") : { done: true };
 };

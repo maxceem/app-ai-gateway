@@ -5,8 +5,8 @@
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_PENDING } from "../src/do/ChargeStore.ts";
-import { recordLedgerEntry, writeToLedger, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
+import { MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
+import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeToLedger, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
 import { nano, type NanoDollars } from "../src/money.ts";
 
 const DAY = "2026-11-19";
@@ -195,6 +195,27 @@ describe("the failed-write store", () => {
     expect(logged).toContainEqual(
       expect.objectContaining({ message: "usage_record_failed", charge: expect.objectContaining({ id: one.charge.id, costNano: 1_000 }) }),
     );
+  });
+
+  it("gives up a stalled retry at the ledger's deadline, so the alarm reaches its backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = { prepare: (query: string) => env.DB.prepare(query), batch: () => new Promise<never>(() => undefined) } as unknown as D1Database;
+      const retry = retryStored(stalled, [entry()], []);
+      const outcome = retry.then(
+        () => "written",
+        (error: unknown) => (error as Error).message,
+      );
+      await vi.advanceTimersByTimeAsync(LEDGER_D1_DEADLINE_MS - 1);
+      let settled: string | undefined;
+      void outcome.then((value) => (settled = value));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await outcome).toMatch(/retrying stored charges took longer than/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("has a size limit", () => {
