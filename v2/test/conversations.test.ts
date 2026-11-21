@@ -513,6 +513,54 @@ describe("conversation storage through the gateway", () => {
     expect(await storedRecords(appId)).toEqual([]);
   });
 
+  it("never stores a body that echoes a credential the call carried (Sol round 1)", async () => {
+    const { slug, appId, key } = await storingApp();
+    // An upstream error that repeats the auth header it got, and the app's own key.
+    fetchSpy.mockImplementation(async (_url, init) => {
+      const auth = new Headers(init?.headers).get("authorization") ?? "";
+      return Response.json({ error: { message: `bad header: ${auth}` } }, { status: 401 });
+    });
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, {
+      ...responsesRequest(key),
+      body: JSON.stringify({ model: "gpt-4o-mini", input: `my key is ${key}` }),
+    });
+    expect(response.status).toBe(401);
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    const [record] = await storedRecords(appId);
+    const stored = JSON.stringify(record);
+    expect(stored).not.toContain("sk-test-provider-key-5678");
+    expect(stored).not.toContain(key);
+    expect(record!.response).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+    expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+  });
+
+  it("ends the app's answer before the stored copy of it is put together (Sol round 1)", async () => {
+    const { slug, appId, key } = await storingApp();
+    providerAnswers();
+    const observe = await import("../src/proxy/observe.ts");
+    const order: string[] = [];
+    const join = vi.spyOn(observe, "wholeBody").mockImplementation((pieces) => {
+      order.push("assembled");
+      let size = 0;
+      for (const piece of pieces) size += piece.byteLength;
+      const joined = new Uint8Array(size);
+      let at = 0;
+      for (const piece of pieces) {
+        joined.set(piece, at);
+        at += piece.byteLength;
+      }
+      return joined;
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key)), env, ctx);
+    const reader = response.body!.getReader();
+    while (!(await reader.read()).done);
+    order.push("client-eof");
+    await waitOnExecutionContext(ctx);
+    expect(join).toHaveBeenCalled();
+    expect(order[0]).toBe("client-eof");
+  });
+
   it("stores model calls alone: never a passthrough path", async () => {
     const slug = await connection();
     await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE slug = ?")

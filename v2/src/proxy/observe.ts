@@ -5,8 +5,10 @@
  * a reader (`readResponse` in `./meter.ts`) only after it is passed to the
  * app, so reading never delays the answer, and the reader keeps what it needs
  * as the body streams past. Nothing of the body is kept here, except the
- * start of an error answer, for its error code, and the whole of an answer
- * whose conversation is stored (`keepWhole`), up to its cap.
+ * start of an error answer, for its error code, and the pieces of an answer
+ * whose conversation is stored (`keepWhole`), up to its cap. Those pieces are
+ * never joined here: the app's answer ends first, and whoever stores them joins
+ * them later, in the background (`wholeBody`).
  */
 
 /** How much of an error answer is kept, for its error code. Error bodies are small. */
@@ -16,8 +18,11 @@ export interface ObservedBody {
   readonly totalBytes: number;
   /** The start of the body as text, when kept (`keepHead`): an error answer's. */
   readonly head: string;
-  /** The whole body, when kept (`keepWhole`) and no larger than its cap; null otherwise. */
-  readonly whole: Uint8Array | null;
+  /**
+   * The body's pieces, in order, when kept (`keepWhole`) and no larger than its
+   * cap; null otherwise. Join them with `wholeBody`, off the answer's path.
+   */
+  readonly whole: readonly Uint8Array[] | null;
   /** The app went away before the end: the rest was never read from the provider. */
   readonly clientAborted: boolean;
   /** The provider's stream broke before the end. */
@@ -67,16 +72,7 @@ export function observeBody(
       kept.set(piece, at);
       at += piece.byteLength;
     }
-    let joined: Uint8Array | null = null;
-    if (whole !== null) {
-      joined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const piece of whole) {
-        joined.set(piece, offset);
-        offset += piece.byteLength;
-      }
-    }
-    settle({ totalBytes, head: new TextDecoder().decode(kept), whole: joined, clientAborted, upstreamFailed });
+    settle({ totalBytes, head: new TextDecoder().decode(kept), whole, clientAborted, upstreamFailed });
   };
   const stream = new ReadableStream<Uint8Array>(
     {
@@ -90,8 +86,9 @@ export function observeBody(
           return;
         }
         if (result.done) {
-          finish(false, false);
+          // The app's answer ends first; what was observed is settled after.
           controller.close();
+          finish(false, false);
           return;
         }
         const chunk = result.value;
@@ -125,4 +122,17 @@ export function observeBody(
     { highWaterMark: 0 },
   );
   return { stream, observed };
+}
+
+/** Joins kept pieces into one body. Call it off the answer's path, where the body is stored. */
+export function wholeBody(pieces: readonly Uint8Array[]): Uint8Array {
+  let size = 0;
+  for (const piece of pieces) size += piece.byteLength;
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const piece of pieces) {
+    joined.set(piece, offset);
+    offset += piece.byteLength;
+  }
+  return joined;
 }

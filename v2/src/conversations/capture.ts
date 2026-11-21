@@ -16,6 +16,7 @@ import { getBillingAccess, planIncludes } from "../billing/access.ts";
 import type { KeptMedia } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { wholeBody } from "../proxy/observe.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { ConversationCapture } from "./record.ts";
 import { conversationsBucket } from "./storage.ts";
@@ -52,10 +53,15 @@ export interface CaptureInput {
   readonly httpStatus: number;
   readonly latencyMs: number;
   readonly sent: SentBody;
+  /**
+   * The credentials the call carried: the provider's key and the gateway
+   * credentials the app sent. A body that contains one is never stored.
+   */
+  readonly secrets: readonly string[];
   readonly response: {
     readonly contentType: string;
-    /** The whole body, or null where it was larger than `CAPTURE_MAX_BYTES`. */
-    readonly bytes: Uint8Array | null;
+    /** The body's pieces, or null where it was larger than `CAPTURE_MAX_BYTES`. Joined here, in the background. */
+    readonly pieces: readonly Uint8Array[] | null;
     readonly totalBytes: number;
     readonly aborted: boolean;
   };
@@ -69,13 +75,44 @@ async function sentBytes(sent: SentBody): Promise<{ contentType: string; bytes: 
   return { contentType: sent.contentType ?? "", bytes: new Uint8Array(sent.bytes) };
 }
 
+/** What a body that held a credential is stored as instead (`withoutCredentials`). */
+const OMITTED = new TextEncoder().encode(JSON.stringify({ omitted: "credential" }));
+
+/** A secret shorter than this is not looked for: it would match ordinary text. */
+const MIN_SECRET_LENGTH = 8;
+
+/**
+ * A body that contains one of the call's credentials, exactly as sent, is
+ * replaced by a marker, so history never holds a key an upstream echoed back
+ * (an error that repeats its auth header, say). Checked once, here.
+ */
+function withoutCredentials(
+  input: CaptureInput,
+  which: "request" | "response",
+  body: { contentType: string; bytes: Uint8Array | null },
+): { contentType: string; bytes: Uint8Array | null } {
+  if (body.bytes === null || body.bytes.byteLength === 0) return body;
+  const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
+  if (secrets.length === 0) return body;
+  const text = new TextDecoder().decode(body.bytes);
+  if (!secrets.some((secret) => text.includes(secret))) return body;
+  log("warn", "conversation_body_omitted", { app: input.appId, chargeId: input.chargeId, body: which, reason: "credential" });
+  return { contentType: "application/json", bytes: OMITTED };
+}
+
 async function capture(env: Env, input: CaptureInput): Promise<void> {
   if (conversationsBucket(env) === null) return;
   // An app that turned storage on under a plan that included it keeps its
   // setting, and stores nothing while its plan does not (v1). Read in the
   // background, so the plan is never waited on by the call.
   if (!planIncludes(await getBillingAccess(env, input.accountId), "conversationStorage")) return;
-  const request = await sentBytes(input.sent);
+  const sentRequest = await sentBytes(input.sent);
+  const requestBytes = sentRequest.bytes.byteLength > CAPTURE_MAX_BYTES ? null : sentRequest.bytes;
+  const request = withoutCredentials(input, "request", { contentType: sentRequest.contentType, bytes: requestBytes });
+  const response = withoutCredentials(input, "response", {
+    contentType: input.response.contentType,
+    bytes: input.response.pieces === null ? null : wholeBody(input.response.pieces),
+  });
   const record: ConversationCapture = {
     eventId: input.chargeId,
     createdAt: new Date().toISOString(),
@@ -94,12 +131,12 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     keep: input.keep,
     request: {
       contentType: request.contentType,
-      bytes: request.bytes.byteLength > CAPTURE_MAX_BYTES ? null : request.bytes,
-      totalBytes: request.bytes.byteLength,
+      bytes: request.bytes === null ? null : new Uint8Array(request.bytes),
+      totalBytes: sentRequest.bytes.byteLength,
     },
     response: {
-      contentType: input.response.contentType,
-      bytes: input.response.bytes === null ? null : new Uint8Array(input.response.bytes),
+      contentType: response.contentType,
+      bytes: response.bytes === null ? null : new Uint8Array(response.bytes),
       totalBytes: input.response.totalBytes,
       aborted: input.response.aborted,
     },

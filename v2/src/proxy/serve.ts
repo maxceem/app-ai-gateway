@@ -549,6 +549,12 @@ export type ParsedBody =
     };
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
+/** What an attempt sent: its body, and the credentials it carried, for its stored conversation. */
+interface SentAttempt {
+  readonly body: OutgoingBody;
+  readonly secrets: readonly (string | null)[];
+}
+
 export type OutgoingBody =
   | { readonly bytes: Uint8Array; readonly contentType: string | null; readonly form?: undefined }
   | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
@@ -908,7 +914,17 @@ async function sendAttemptsKeptFor(
 ): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController; sent: SentAttempt } | null = null;
+  // The gateway credentials the app sent (not its end-user id): a stored conversation that
+  // contains one of them is never written with that body (`storeConversation`).
+  const clientSecrets = stripped
+    .filter((name) => name.toLowerCase() !== DEFAULT_END_USER_HEADER)
+    .flatMap((name) => {
+      const value = c.req.header(name);
+      if (value === undefined) return [];
+      const token = value.replace(/^bearer\s+/iu, "");
+      return token === value ? [value] : [value, token];
+    });
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -934,7 +950,7 @@ async function sendAttemptsKeptFor(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
       }
       throw budgetExhausted(index);
     }
@@ -958,8 +974,10 @@ async function sendAttemptsKeptFor(
     let timer: ReturnType<typeof setTimeout>;
     let providerStart: number;
     let keyHeader = description.auth.header.toLowerCase();
+    let sent!: SentAttempt;
     try {
       const body = prepared.body();
+      sent = { body, secrets: [credentials.providerKey, credentials.cloudflareToken, ...clientSecrets] };
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
       const client = withoutHeaders(c.req.raw.headers, [...stripped, ...keyHeaders]);
@@ -1024,7 +1042,7 @@ async function sendAttemptsKeptFor(
         cutOnDisconnect(c, controller);
       }
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -1070,14 +1088,14 @@ async function sendAttemptsKeptFor(
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs, keyHeader, controller };
+      previous = { prepared, upstream, latencyMs, keyHeader, controller, sent };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs, keyHeader, controller);
+    return answer(c, prepared, upstream, latencyMs, keyHeader, controller, sent);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1124,6 +1142,8 @@ function answer(
   keyHeader: string,
   /** The attempt's fetch controller, so a job submit's body read that runs out of time can stop the fetch itself. */
   controller?: AbortController,
+  /** The body the attempt sent and the credentials it used, for its stored conversation. */
+  sent?: SentAttempt,
 ): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
   // A job submit the provider redirected was not accepted: nothing is charged, and its
@@ -1149,7 +1169,7 @@ function answer(
   const ok = upstream.status >= 200 && upstream.status < 300;
 
   if (upstream.body === null) {
-    storeConversation(c, prepared, { httpStatus: upstream.status, latencyMs, contentType, whole: new Uint8Array(0), totalBytes: 0, aborted: false });
+    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false });
     record(c, attempt, {
       status: ok ? "ok" : "provider_error",
       httpStatus: upstream.status,
@@ -1174,7 +1194,7 @@ function answer(
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
-        storeConversation(c, prepared, {
+        storeConversation(c, prepared, sent, {
           httpStatus: upstream.status,
           latencyMs,
           contentType,
@@ -1234,12 +1254,14 @@ function answer(
 function storeConversation(
   c: ProxyContext,
   prepared: PreparedAttempt,
-  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: Uint8Array | null; totalBytes: number; aborted: boolean },
+  sentAttempt: SentAttempt | undefined,
+  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean },
 ): void {
   const keep = prepared.conversation;
-  if (keep === undefined) return;
+  if (keep === undefined || sentAttempt === undefined) return;
   const { attempt } = prepared;
-  const outgoing = prepared.body();
+  // The body already sent, never built again: encoding it is left to the capture, in the background.
+  const outgoing = sentAttempt.body;
   const sent: SentBody = outgoing.form !== undefined ? { form: outgoing.form } : { bytes: outgoing.bytes ?? new Uint8Array(0), contentType: outgoing.contentType };
   c.executionCtx.waitUntil(
     captureConversation(c.env, {
@@ -1258,7 +1280,8 @@ function storeConversation(
       httpStatus: answer.httpStatus,
       latencyMs: answer.latencyMs,
       sent,
-      response: { contentType: answer.contentType, bytes: answer.whole, totalBytes: answer.totalBytes, aborted: answer.aborted },
+      secrets: sentAttempt.secrets.filter((secret): secret is string => secret !== null),
+      response: { contentType: answer.contentType, pieces: answer.whole, totalBytes: answer.totalBytes, aborted: answer.aborted },
     }),
   );
 }
