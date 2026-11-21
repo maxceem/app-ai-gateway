@@ -325,8 +325,12 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
     const imageField = generatedImageField(object);
     // Anthropic's custom-content document: an attachment written out as blocks.
     const attachedBlocks = key === "source" && object.type === "content" && Array.isArray(object.content);
+    // The same document written out as one string (Astra round 3).
+    const attachedString = key === "source" && object.type === "content" && typeof object.content === "string";
     for (const [name, item] of Object.entries(object)) {
-      if (attachedBlocks && name === "content") {
+      if (attachedString && name === "content") {
+        out[name] = walk.shelf.attachedText(item as string);
+      } else if (attachedBlocks && name === "content") {
         const blocks: unknown[] = [];
         for (const block of item as unknown[]) {
           const text = block !== null && typeof block === "object" ? (block as Record<string, unknown>).text : undefined;

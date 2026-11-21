@@ -1220,7 +1220,7 @@ function answer(
       latencyMs,
     });
     // After the charge is scheduled, and apart from it.
-    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false });
+    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false, upstreamFailed: false });
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
 
@@ -1288,6 +1288,7 @@ function answer(
           whole: body.whole,
           totalBytes: body.totalBytes,
           aborted: body.clientAborted,
+          upstreamFailed: body.upstreamFailed,
         })),
     );
   }
@@ -1303,7 +1304,7 @@ function storeConversation(
   c: ProxyContext,
   prepared: PreparedAttempt,
   sentAttempt: SentAttempt | undefined,
-  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean },
+  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean; upstreamFailed: boolean },
 ): void {
   if (prepared.storesConversation !== true || sentAttempt === undefined) return;
   const { attempt } = prepared;
@@ -1324,7 +1325,9 @@ function storeConversation(
       route: `${attempt.providerSlug}/${prepared.path.replace(/^\//u, "")}`,
       provider: attempt.providerType,
       model: attempt.model,
-      status: answer.httpStatus >= 200 && answer.httpStatus < 300 ? "ok" : "provider_error",
+      // A stream the provider broke off after a good status is a provider error, not
+      // a success: the stored answer is only its first part (Astra round 3).
+      status: answer.httpStatus >= 200 && answer.httpStatus < 300 && !answer.upstreamFailed ? "ok" : "provider_error",
       httpStatus: answer.httpStatus,
       latencyMs: answer.latencyMs,
       sent,

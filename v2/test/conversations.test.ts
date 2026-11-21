@@ -307,6 +307,24 @@ describe("conversation records", () => {
     for (const line of [kept, left]) expect(line).toContain('"data":"two eggs"');
   });
 
+  it("keeps an Anthropic custom-content document written as one string as an attachment (Astra round 3)", async () => {
+    const body = JSON.stringify({
+      messages: [{ role: "user", content: [
+        { type: "document", title: "Menu", source: { type: "content", content: "soup 200 g" } },
+      ] }],
+    });
+    const record = async (files: boolean) => (await conversationRecord(capture({
+      keep: { images: true, audio: true, files },
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }))).line;
+
+    expect(await record(true)).toContain('"content":"soup 200 g"');
+    const left = await record(false);
+    expect(left).not.toContain("soup 200 g");
+    expect(left).toContain('"title":"Menu"');
+    expect(left).toContain('"content":"agw-omitted:text/plain;10"');
+  });
+
   it("records left-out media by its exact size, and audio of no stated format as audio", async () => {
     // `YQ==` is one byte; a chat reply's audio does not repeat its format.
     const body = JSON.stringify({ choices: [{ message: { audio: { id: "audio_1", data: "YQ==" } } }] });
@@ -937,6 +955,29 @@ describe("conversation storage through the gateway", () => {
     expect(record!.response.text).toContain("data: [DONE]");
     // As the provider received it: the gateway asked for usage in the stream.
     expect(record!.request.value).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+  });
+
+  it("stores a stream the provider broke off after a good status as a provider error (Astra round 3)", async () => {
+    const { slug, appId, key } = await storingApp();
+    const first = `data: ${JSON.stringify({ choices: [{ delta: { content: "Two " } }] })}\n\n`;
+    fetchSpy.mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(first));
+        controller.error(new Error("provider connection reset"));
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "user-1" },
+      body: JSON.stringify({ model: "gpt-4o-mini", stream: true, messages: [{ role: "user", content: "breakfast" }] }),
+    }), env, ctx);
+    expect(response.status).toBe(200);
+    await response.text().catch(() => "");
+    await waitOnExecutionContext(ctx);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    expect(record).toMatchObject({ status: "provider_error", http_status: 200, client_aborted: false });
   });
 
   it("stores a preset's call as the provider received it, naming the preset", async () => {
