@@ -190,6 +190,16 @@
       "kind": "image",
       "per_unit": 0.04,
       "author": "fal"
+    },
+    "fal-ai/ltxv-13b-098-distilled": {
+      "kind": "video",
+      "per_unit": 0.02,
+      "author": "fal"
+    },
+    "fal-ai/ltx-video": {
+      "kind": "video",
+      "per_video": 0.02,
+      "author": "fal"
     }
   }
 }

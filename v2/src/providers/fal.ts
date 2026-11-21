@@ -28,11 +28,20 @@ const FETCH_KEPT = [
 
 /**
  * Up front, and when the units header is missing, the units are worked out
- * from the request: fal bills each image by its megapixels, rounded up
- * (T15), so a 1440 × 1440 image is two units. fal's size names are all one
- * megapixel or less, and a size object's missing side is 512. The image
- * count is kept beside it, so a price per image (a customer's own) still
- * bills. Either stays an estimate.
+ * from the request:
+ *
+ * - an image model bills each image by its megapixels, rounded up (T15), so
+ *   a 1440 × 1440 image is two units. fal's size names are all one megapixel
+ *   or less, and a size object's missing side is 512;
+ * - a video model billed per second (`ltxv-13b`) bills the frames it asks for
+ *   over its frame rate: 65 frames at 24 fps is 2.708 units (T15). Given only
+ *   when the request names `num_frames`, and then it replaces the image
+ *   estimate, being the later measure in the same unit;
+ * - beside them, the image count, one video and one job, so a price per
+ *   image, per video or per request (a customer's own, or ours for
+ *   `ltx-video`) still bills.
+ *
+ * Every one stays an estimate, settled by the job's result.
  */
 const estimate = [
   {
@@ -51,6 +60,9 @@ const estimate = [
     unit: "model_units",
   },
   { measure: "image_count", field: "num_images", default: 1, unit: "images" },
+  { measure: "frames_seconds", field: "num_frames", fps: "frame_rate", defaultFps: 24, unit: "model_units" },
+  { measure: "one", unit: "videos" },
+  { measure: "one", unit: "requests" },
 ] as const;
 
 export const fal = defineProvider({
@@ -91,9 +103,16 @@ export const fal = defineProvider({
         doneWhen: { field: "status", values: ["COMPLETED"] },
         // A success, or a failure fal reports `0` billed units with (T15).
         finalStatuses: [200, 422],
+        // Cancelled while still queued: nothing ran, and fal bills nothing (T15).
+        cancelled: { status: 499, header: { name: "x-fal-error-type", value: "client_cancelled" } },
         links: { status: "status_url", result: "response_url", cancel: "cancel_url" },
         unitsHeader: UNITS_HEADER,
-        outputsField: "images",
+        // Image models answer `images`, video models `video` (T15's `ltx-video`).
+        outputs: [
+          { field: "images", unit: "images" },
+          { field: "video", unit: "videos" },
+          { field: "videos", unit: "videos" },
+        ],
         // `?logs=1` asks fal for the runner's logs on a status poll.
         statusQuery: ["logs"],
         // Results go after an hour, large ones after 6 minutes (T15): check every minute, for an hour.

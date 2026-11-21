@@ -36,7 +36,7 @@ import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { connectionCredentials, connectionDescription, loadConnection, readConnection, type ConnectionRecord } from "../providers/connections.ts";
-import type { JobRequest, JobSpec, OperationDescription, ProviderDescription, Unit } from "../providers/operation.ts";
+import { UNITS, type JobRequest, type JobSpec, type OperationDescription, type ProviderDescription, type Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
 import { upstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
@@ -68,7 +68,7 @@ export function providerRequestId(spec: JobSpec, body: unknown): string | null {
   const value = (body as Record<string, unknown>)[spec.requestIdField];
   if (typeof value !== "string" || !REQUEST_ID.test(value) || value === "." || value === "..") return null;
   // Every follow-up path it fills must pass the path rules, so the URL means what the gateway signed.
-  for (const request of [spec.status, spec.result]) {
+  for (const request of [spec.status, spec.result, ...(spec.cancel === undefined ? [] : [spec.cancel])]) {
     if (!normalizePath(jobRequestPath(request, { model: "m", requestId: value })).ok) return null;
   }
   return value;
@@ -145,38 +145,49 @@ function checkPace(spec: JobSpec | undefined): { readonly retryEveryMs: number; 
 export interface GatewayLinks {
   readonly status: string;
   readonly result: string;
+  readonly cancel: string;
 }
 
-/** The gateway's polling links for a job id, under the app's own path. */
+/** The gateway's links for a job id, under the app's own path. */
 export function gatewayLinks(origin: string, appId: string, jobId: string): GatewayLinks {
   const base = `${origin}/v2/apps/${encodeURIComponent(appId)}/jobs/${jobId}`;
-  return { status: `${base}/status`, result: base };
+  return { status: `${base}/status`, result: base, cancel: `${base}/cancel` };
 }
 
 /**
  * A provider's answer with its links pointing at the gateway, and its request
- * id replaced by the gateway's job id. A link the gateway does not serve yet
- * (cancel) is removed. Only fields already in the answer are touched.
+ * id replaced by the gateway's job id. A cancel link is the gateway's own when
+ * the operation can cancel, and removed when it cannot. Only fields already in
+ * the answer are touched.
  */
 export function withGatewayLinks(body: Record<string, unknown>, spec: JobSpec, links: GatewayLinks, jobId: string): Record<string, unknown> {
   const out: Record<string, unknown> = { ...body };
   const named = spec.links ?? {};
   if (named.status !== undefined && Object.hasOwn(out, named.status)) out[named.status] = links.status;
   if (named.result !== undefined && Object.hasOwn(out, named.result)) out[named.result] = links.result;
-  if (named.cancel !== undefined) delete out[named.cancel];
+  if (named.cancel !== undefined && Object.hasOwn(out, named.cancel)) {
+    if (spec.cancel === undefined) delete out[named.cancel];
+    else out[named.cancel] = links.cancel;
+  }
   if (Object.hasOwn(out, spec.requestIdField)) out[spec.requestIdField] = jobId;
   return out;
 }
 
 /** A job's own follow-up endpoints. */
-export type JobEndpoint = "status" | "result";
+export type JobEndpoint = "status" | "result" | "cancel";
+
+/** The follow-up request for one of a job's endpoints, or null when the operation has none (a job that cannot be cancelled). */
+export function jobRequestFor(spec: JobSpec, which: JobEndpoint): JobRequest | null {
+  return which === "cancel" ? (spec.cancel ?? null) : spec[which];
+}
 
 /**
  * The upstream URL of one of a job's endpoints, without a query: where
  * `fetchJob` sends that request, built from the signed claims alone.
  */
 export function jobEndpointUrl(context: JobContext, which: JobEndpoint, claims: Pick<JobClaims, "model" | "requestId">): string {
-  const request = context.spec[which];
+  const request = jobRequestFor(context.spec, which);
+  if (request === null) throw new GatewayError(404, "job_not_found", "This job cannot be cancelled");
   return upstreamUrl(context.connection, context.description, { hostKey: request.host ?? "main", path: jobRequestPath(request, claims), query: "" });
 }
 
@@ -305,13 +316,14 @@ export async function jobContext(env: Env, claims: JobClaims, options: { readonl
 export async function fetchJob(
   env: Env,
   context: JobContext,
-  which: "status" | "result",
+  which: JobEndpoint,
   claims: JobClaims,
   userId: string | null,
   signal?: AbortSignal,
   query = "",
 ): Promise<{ readonly response: Response; readonly keyHeader: string; readonly url: string }> {
-  const request = context.spec[which];
+  const request = jobRequestFor(context.spec, which);
+  if (request === null) throw new GatewayError(404, "job_not_found", "This job cannot be cancelled");
   // Once the sweep's time for the item is up, no more provider calls start.
   signal?.throwIfAborted();
   const credentials = await connectionCredentials(env, context.connection);
@@ -368,12 +380,23 @@ export function jobDone(spec: JobSpec, body: unknown): boolean {
   return typeof value === "string" && spec.doneWhen.values.includes(value);
 }
 
-/** How many outputs a result names, or null when it names none the gateway can count. */
-function outputCount(spec: JobSpec, body: unknown): number | null {
-  if (spec.outputsField === undefined || typeof body !== "object" || body === null) return null;
-  const outputs = (body as Record<string, unknown>)[spec.outputsField];
-  if (outputs === undefined || outputs === null) return null;
-  return Array.isArray(outputs) ? outputs.length : 1;
+/** Whether the operation counts the outputs of a result (`JobSpec.outputs`). */
+export function countsOutputs(spec: JobSpec): boolean {
+  return (spec.outputs ?? []).length > 0;
+}
+
+/** The units a result's outputs can count in. */
+const OUTPUT_UNITS: ReadonlySet<Unit> = new Set<Unit>(["images", "videos"]);
+
+/** The outputs a result names, and their unit: the first output field it has. Null when it names none the gateway can count. */
+function outputCount(spec: JobSpec, body: unknown): { readonly count: number; readonly unit: Unit } | null {
+  if (typeof body !== "object" || body === null) return null;
+  for (const { field, unit } of spec.outputs ?? []) {
+    const outputs = (body as Record<string, unknown>)[field];
+    if (outputs === undefined || outputs === null) continue;
+    return { count: Array.isArray(outputs) ? outputs.length : 1, unit };
+  }
+  return null;
 }
 
 /** What a final result says, kept small so a figure row can hold it. */
@@ -383,6 +406,8 @@ export interface JobResultFacts {
   readonly units: number | null;
   /** The outputs in the result, or null when it names none the gateway can count. */
   readonly outputs: number | null;
+  /** The unit the outputs count in (images, videos); left out or null, outputs count as images. */
+  readonly outputUnit?: Unit | null;
   /**
    * True when the body had to be read to count outputs, but could not be: cut
    * off, empty, or not whole JSON. Then a missing output count says nothing.
@@ -439,18 +464,26 @@ export async function boundedJson(
  * estimate's rate is never lost to a broken body.
  */
 export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
+  // A job cancelled before it ran is a confirmed final zero: the provider bills it nothing (T15).
+  const cancelled = spec.cancelled;
+  if (cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value) {
+    return { status: response.status, units: 0, outputs: null, outputUnit: null };
+  }
   if (!spec.finalStatuses.includes(response.status)) return null;
+  const outputs = read !== null && read.kind === "parsed" ? outputCount(spec, read.value) : null;
   const facts: JobResultFacts = {
     status: response.status,
     units: spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader)),
-    outputs: read !== null && read.kind === "parsed" ? outputCount(spec, read.value) : null,
+    outputs: outputs?.count ?? null,
+    outputUnit: outputs?.unit ?? null,
   };
   const unread = read !== null && (read.kind === "read_error" || read.kind === "empty" || read.kind === "unparseable");
   return unread ? { ...facts, unread: true } : facts;
 }
 
 const succeeded = (facts: JobResultFacts) => facts.status >= 200 && facts.status < 300;
-const counted = (facts: JobResultFacts) => facts.units !== null || facts.outputs !== null;
+/** A result that gives some count: billed units, outputs, or, on a success, the one job itself (a price per request). */
+const counted = (facts: JobResultFacts) => facts.units !== null || facts.outputs !== null || succeeded(facts);
 
 /** Saved facts read back, or null when they are not facts. */
 function factsOf(value: unknown): JobResultFacts | null {
@@ -458,11 +491,20 @@ function factsOf(value: unknown): JobResultFacts | null {
   const facts = value as Record<string, unknown>;
   const count = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one) && one >= 0);
   if (typeof facts.status !== "number" || !count(facts.units) || !count(facts.outputs)) return null;
+  const outputs = facts.outputs as number | null;
+  // A figure saved before output units were named counted images.
+  const unit = facts.outputUnit ?? (outputs === null ? null : "images");
+  if (unit !== null && !(typeof unit === "string" && (UNITS as readonly string[]).includes(unit))) return null;
   // A saved figure was read whole: `unread` is never kept.
-  return { status: facts.status, units: facts.units as number | null, outputs: facts.outputs as number | null };
+  return { status: facts.status, units: facts.units as number | null, outputs, outputUnit: unit as Unit | null };
 }
 
-/** The counts a result gives, by unit. A failure is free only when the provider reports 0 billed units. */
+/**
+ * The counts a result gives, by unit. A success is one job (a price per
+ * request), with its outputs in their unit. A failure, or a job cancelled
+ * before it ran, is free only when the provider reports 0 billed units: then
+ * every count is 0.
+ */
 function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   const counts: Partial<Record<Unit, number>> = {};
   if (facts.units !== null) {
@@ -470,10 +512,11 @@ function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
     if (Number.isSafeInteger(scaled)) counts.model_units = scaled;
   }
   if (succeeded(facts)) {
-    if (facts.outputs !== null) counts.images = facts.outputs;
+    counts.requests = 1;
+    if (facts.outputs !== null) counts[facts.outputUnit ?? "images"] = facts.outputs;
   } else if (facts.units === 0) {
-    // The provider says the failure billed nothing: every count is 0.
-    counts.images = 0;
+    counts.requests = 0;
+    for (const unit of OUTPUT_UNITS) counts[unit] = 0;
   }
   return counts;
 }
@@ -528,7 +571,8 @@ export function decideFigure(estimate: ChargeRow, facts: JobResultFacts): Figure
   if (final !== null) return { kind: "settle", final };
   if (!succeeded(facts) || facts.outputs !== null) return { kind: "never" };
   const parts = rateBuckets(estimate, countsOf(facts));
-  const onlyOutputs = parts !== null && parts.missing.every((field) => UNIT_RATES.find((one) => one.field === field)?.units.includes("images") === true);
+  const onlyOutputs =
+    parts !== null && parts.missing.every((field) => UNIT_RATES.find((one) => one.field === field)?.units.some((unit) => OUTPUT_UNITS.has(unit)) === true);
   return onlyOutputs ? { kind: "needs_outputs" } : { kind: "never" };
 }
 
@@ -546,7 +590,9 @@ const figurePart = (value: number | null) => (value === null ? "-" : String(valu
 
 /** The id of a figure row. The figure is part of the id, so a different figure is a different row: nothing to overwrite. */
 export function figureWorkId(job: string, facts: JobResultFacts): string {
-  return `job_figure:${job}:${facts.status}:${figurePart(facts.units)}:${figurePart(facts.outputs)}`;
+  const unit = facts.outputUnit ?? "images";
+  const outputs = facts.outputs === null ? "-" : `${facts.outputs}${unit === "images" ? "" : unit}`;
+  return `job_figure:${job}:${facts.status}:${figurePart(facts.units)}:${outputs}`;
 }
 
 /**
@@ -563,7 +609,7 @@ export function figureWork(ref: JobRef, facts: JobResultFacts, now: number): Ope
     ownerType: "job",
     ownerId: ref.job,
     chargeId: null,
-    detail: { result: { status: facts.status, units: facts.units, outputs: facts.outputs }, maxTries: FIGURE_MAX_TRIES },
+    detail: { result: { status: facts.status, units: facts.units, outputs: facts.outputs, outputUnit: facts.outputUnit ?? null }, maxTries: FIGURE_MAX_TRIES },
     dueAt: now,
     createdAt: now,
   };
@@ -787,7 +833,7 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
       estimate = undefined;
     }
     // The body is read only when the decision may need it, and never for longer than its deadline.
-    const bodyNeeded = context.spec.outputsField !== undefined && (estimate == null || decideFigure(estimate, headerFacts).kind === "needs_outputs");
+    const bodyNeeded = countsOutputs(context.spec) && (estimate == null || decideFigure(estimate, headerFacts).kind === "needs_outputs");
     let read: BodyRead | null = null;
     if (bodyNeeded) read = await boundedJson(result.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
     else void result.response.body?.cancel().catch(() => undefined);

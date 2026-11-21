@@ -1924,6 +1924,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -2065,6 +2069,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -2201,6 +2209,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -2566,6 +2578,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -2707,6 +2723,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -2843,6 +2863,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -3152,6 +3176,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -3293,6 +3321,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -3429,6 +3461,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -3657,6 +3693,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -3798,6 +3838,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -3934,6 +3978,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -5848,6 +5896,105 @@
           },
           "404": {
             "description": "The app does not exist, or no job with this id belongs to this app and user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not be reached, or its connection is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/jobs/{job}/cancel": {
+      "put": {
+        "tags": [
+          "Jobs"
+        ],
+        "operationId": "cancelJob",
+        "summary": "Cancel a job",
+        "description": "Asks the provider to cancel a job submitted through the gateway, and passes its answer on. A job cancelled while it is still queued costs nothing: its charge settles to zero once the provider confirms it. A fal job that is already running usually finishes anyway and is charged in full. Free: it uses no request limit and no plan allowance.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The job id the gateway returned when the job was submitted."
+            },
+            "required": true,
+            "description": "The job id the gateway returned when the job was submitted.",
+            "name": "job",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider's answer to the cancel, passed on with its status code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, the user is blocked, or the app is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist, no job with this id belongs to this app and user, or its provider cannot cancel jobs.",
             "content": {
               "application/json": {
                 "schema": {

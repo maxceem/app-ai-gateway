@@ -160,6 +160,20 @@ export const CLIENT_CATALOG = {
     responseDescription: "The provider's result answer, passed on with its status code.",
     errors: JOB_ERRORS,
   },
+
+  cancelJob: {
+    method: "PUT",
+    path: "/v2/apps/{app}/jobs/{job}/cancel",
+    params: { ...APP_PARAM, job: { description: "The job id the gateway returned when the job was submitted." } },
+    tags: ["Jobs"],
+    summary: "Cancel a job",
+    description:
+      "Asks the provider to cancel a job submitted through the gateway, and passes its answer on. A job cancelled while it is still queued costs nothing: its charge settles to zero once the provider confirms it. A fal job that is already running usually finishes anyway and is charged in full. Free: it uses no request limit and no plan allowance.",
+    security: "gateway",
+    response: JobAnswerSchema,
+    responseDescription: "The provider's answer to the cancel, passed on with its status code.",
+    errors: { ...JOB_ERRORS, 404: "The app does not exist, no job with this id belongs to this app and user, or its provider cannot cancel jobs." },
+  },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
 
 export type ClientOperationName = keyof typeof CLIENT_CATALOG;
