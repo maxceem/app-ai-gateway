@@ -467,6 +467,64 @@ describe("safe defaults on listed paths", () => {
   });
 });
 
+describe("field settings while paths are edited", () => {
+  const LIMIT = { in: "query", name: "limit", value: 10 };
+  const open = async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+  };
+
+  it("keeps a path's settings when one of its named parts is renamed", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    const lines = await screen.findByRole("textbox", { name: /one path per line/i });
+    await userEvent.clear(lines);
+    await userEvent.type(lines, "GET v1/files/{{id}");
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "GET", path: "v1/files/{id}", set_fields: [LIMIT] }],
+      }),
+    );
+  });
+
+  it("keeps a value's unfinished text while a path line is briefly wrong, and still will not save it", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    const value = await screen.findByRole("textbox", { name: /value of limit/i });
+    await userEvent.clear(value);
+    await userEvent.type(value, "[[1,");
+    const lines = screen.getByRole("textbox", { name: /one path per line/i });
+    await userEvent.type(lines, "\nXX");
+    expect(screen.queryByRole("textbox", { name: /value of limit/i })).toBeNull();
+    await userEvent.type(lines, "{Backspace}{Backspace}{Backspace}");
+    expect(((await screen.findByRole("textbox", { name: /value of limit/i })) as HTMLInputElement).value).toBe("[1,");
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/write each value as json/i)));
+    expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toBeUndefined();
+    error.mockRestore();
+  });
+
+  it("saves once a value that does not read as JSON is removed", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    await userEvent.clear(await screen.findByRole("textbox", { name: /value of limit/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [] }],
+      }),
+    );
+  });
+});
+
 describe("listed path lines", () => {
   it("read a method, a path, a price and, on a custom provider, an API style", () => {
     expect(parsePathLines("get v1/files/{id} $0.5\n\n  POST  chat/completions  openai-chat ", true)).toEqual({

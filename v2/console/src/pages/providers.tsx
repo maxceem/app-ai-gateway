@@ -631,8 +631,12 @@ export function parsePathLines(text: string, custom: boolean): { paths: ListedPa
   return { paths };
 }
 
-/** The key a listed path's field settings are kept under while its line is edited. */
-export const pathKey = (path: { method: string; path: string }) => `${path.method} ${path.path.replace(/^\/+/u, "")}`;
+/**
+ * The key a listed path's field settings are kept under while its line is
+ * edited: the method and the path, with each named part's name left out, so
+ * renaming `{file_id}` to `{id}` keeps the same settings.
+ */
+export const pathKey = (path: { method: string; path: string }) => `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}`;
 
 /** A field setting as a request sends it: without what an answer adds about it. */
 function settingOnly({ label: _label, reason: _reason, suggested_value: _suggested, ...setting }: FieldSetting): FieldSetting {
@@ -658,30 +662,16 @@ function valueText(field: { value?: unknown; suggested_value?: unknown; as?: str
   return field.as === "time_from_now" ? `${text} seconds from sending` : text;
 }
 
+/** The key a field's typed text is kept under in the dialog draft. */
+const textKey = (path: ListedPath, field: { in: string; name: string }) => `${pathKey(path)}|${field.in}:${field.name}`;
+
 /**
- * A listed path's field settings, and for a newly listed path the provider's
- * safe defaults that saving will write in (plan section 4.5): each with its
- * label, the reason, and its value, which a person can change or remove.
+ * The field settings shown for a listed path: its own, or for a newly listed
+ * path the provider's safe defaults that saving will write in.
  */
-function SafeDefaults({
-  type,
-  path,
-  isNew,
-  fields,
-  onChange,
-  onInvalid,
-}: {
-  type: string;
-  path: ListedPath;
-  isNew: boolean;
-  fields: readonly FieldSetting[] | undefined;
-  onChange: (fields: FieldSetting[]) => void;
-  /** Says which values do not read as JSON yet, so saving can stop on them. */
-  onInvalid: (name: string, invalid: boolean) => void;
-}) {
+function shownFields(type: string, path: ListedPath, isNew: boolean, fields: readonly FieldSetting[] | undefined): FieldSetting[] {
   const suggested = suggestedPath(type, path.method, path.path);
-  const shown: FieldSetting[] =
-    fields !== undefined
+  return fields !== undefined
       ? [...fields]
       : isNew && suggested !== null
         ? suggested.fields.map((field) => ({
@@ -695,6 +685,32 @@ function SafeDefaults({
             suggested_value: field.value,
           }))
         : [];
+}
+
+/**
+ * A listed path's field settings, and for a newly listed path the provider's
+ * safe defaults that saving will write in (plan section 4.5): each with its
+ * label, the reason, and its value, which a person can change or remove.
+ */
+function SafeDefaults({
+  type,
+  path,
+  isNew,
+  fields,
+  onChange,
+  textOf,
+  onText,
+}: {
+  type: string;
+  path: ListedPath;
+  isNew: boolean;
+  fields: readonly FieldSetting[] | undefined;
+  onChange: (fields: FieldSetting[]) => void;
+  /** A field's text as typed so far, kept in the dialog draft so it survives while a path line is briefly invalid. */
+  textOf: (key: string) => string | undefined;
+  onText: (key: string, text: string) => void;
+}) {
+  const shown = shownFields(type, path, isNew, fields);
   if (shown.length === 0) return null;
   return (
     <div className="space-y-2 rounded-md border p-3 text-sm" data-testid="safe-defaults">
@@ -719,17 +735,16 @@ function SafeDefaults({
           <Input
             aria-label={`Value of ${field.label ?? field.name}`}
             className="font-mono text-xs"
-            defaultValue={JSON.stringify(field.value)}
+            value={textOf(textKey(path, field)) ?? JSON.stringify(field.value)}
             // The draft follows every keystroke, so pressing Enter saves the value shown, not the last one read on blur.
             onChange={(event) => {
+              onText(textKey(path, field), event.target.value);
               let value: unknown;
               try {
                 value = JSON.parse(event.target.value) as unknown;
               } catch {
-                onInvalid(`${field.in}:${field.name}`, true);
                 return;
               }
-              onInvalid(`${field.in}:${field.name}`, false);
               onChange(shown.map((other, at) => (at === index ? { ...other, value } : other)));
             }}
           />
@@ -784,8 +799,8 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
   const [trusted, setTrusted] = useState(false);
   const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(base.listed));
   const [conflict, setConflict] = useState(false);
-  // Field values typed so far that do not read as JSON, by path and field.
-  const [invalid, setInvalid] = useState<Record<string, true>>({});
+  // Field values as typed so far, by path and field (`textKey`): saving checks the ones still shown.
+  const [texts, setTexts] = useState<Record<string, string>>({});
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
   const choosing = !custom && base.listed.length === 0;
@@ -800,13 +815,25 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
     setBase({ revision: provider?.revision ?? 0, listed });
     setText(listed.map(pathLine).join("\n"));
     setFields(fieldsOf(listed));
+    setTexts({});
     setConflict(false);
   };
 
   const save = async () => {
     if (!provider || paths === null) return;
-    const live = new Set(paths.map(pathKey));
-    if (Object.keys(invalid).some((key) => live.has(key.slice(0, key.indexOf("|"))))) {
+    const unreadable = paths.some((path) =>
+      shownFields(type, path, !saved.has(pathKey(path)), fields[pathKey(path)]).some((field) => {
+        const typed = texts[textKey(path, field)];
+        if (typed === undefined) return false;
+        try {
+          JSON.parse(typed);
+          return false;
+        } catch {
+          return true;
+        }
+      }),
+    );
+    if (unreadable) {
       toast.error("Write each value as JSON, such as 60 or \"true\".");
       return;
     }
@@ -889,16 +916,8 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
           isNew={!saved.has(pathKey(path))}
           fields={fields[pathKey(path)]}
           onChange={(next) => setFields((current) => ({ ...current, [pathKey(path)]: next }))}
-          onInvalid={(name, bad) =>
-            setInvalid((current) => {
-              const key = `${pathKey(path)}|${name}`;
-              if (bad === (key in current)) return current;
-              const next = { ...current };
-              if (bad) next[key] = true;
-              else delete next[key];
-              return next;
-            })
-          }
+          textOf={(key) => texts[key]}
+          onText={(key, typed) => setTexts((current) => ({ ...current, [key]: typed }))}
         />
       ))}
       {anyTokens ? <LiveTokenNotice /> : null}
