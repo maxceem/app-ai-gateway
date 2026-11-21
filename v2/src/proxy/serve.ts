@@ -32,10 +32,11 @@ import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
+import { PROOF_HEADER } from "../client-auth/request-proof.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
-import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN, type KeptMedia } from "../contracts/app-config.ts";
-import { CAPTURE_MAX_BYTES, captureConversation, type SentBody } from "../conversations/capture.ts";
+import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
+import { CAPTURE_MAX_BYTES, captureConversation, captureHints, type SentBody } from "../conversations/capture.ts";
 import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -60,7 +61,7 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarg
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { readingRules, storedAudioType, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -143,11 +144,11 @@ export interface Caller {
   /** Set as the request is understood, for the rejection event of a refusal. */
   readonly facts: { operation: string | null; model: string | null };
   /**
-   * The media a stored conversation keeps, where this request's call is
-   * stored: the app turned storage on, the deployment has a bucket, and the
-   * client did not opt the request out. Null otherwise.
+   * Whether this request's call is stored: the app turned storage on, the
+   * deployment has a bucket, and the client did not opt the request out. What
+   * is kept is read fresh when the conversation is written.
    */
-  readonly conversation: KeptMedia | null;
+  readonly storesConversation: boolean;
 }
 
 /**
@@ -226,8 +227,8 @@ export async function serveCaller(
     if (storage !== undefined && storage.trim().toLowerCase() !== "off") {
       throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
     }
-    const conversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null ? app.conversations.keep : null;
-    return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, conversation });
+    const storesConversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null;
+    return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, storesConversation });
   } catch (error) {
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
@@ -429,7 +430,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           credentials: () => Promise.resolve(credentials),
           body: () => sent,
           attempt,
-          ...(caller.conversation !== null && operation.lifecycle === "call" ? { conversation: caller.conversation } : {}),
+          ...(caller.storesConversation && operation.lifecycle === "call" ? { storesConversation: true as const } : {}),
         },
       ]);
     },
@@ -787,10 +788,21 @@ export interface ClientSide {
   readonly stripped: readonly string[];
   /** The verified credential, masked from stored conversations whatever header carried it. */
   readonly credential: string;
+  /**
+   * The headers that carry the app's credentials: the one the credential came in,
+   * the app's issuer token header and the App Attest proof. A stored conversation
+   * never holds their values. End-user id headers are not among them.
+   */
+  readonly credentialHeaders: readonly string[];
 }
 
 export function clientSide(app: AppRecord, caller: Caller): ClientSide {
-  return { stripped: [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER], credential: caller.credentialToken };
+  const auth = clientAuth(app);
+  return {
+    stripped: [caller.credentialHeader, ...auth.consumedHeaders, DEFAULT_END_USER_HEADER],
+    credential: caller.credentialToken,
+    credentialHeaders: [caller.credentialHeader, ...(auth.tokenHeader !== undefined ? [auth.tokenHeader] : []), PROOF_HEADER],
+  };
 }
 
 /** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
@@ -815,11 +827,10 @@ export interface PreparedAttempt {
   /** A live-session mint (plan D4): never served from a cache, whatever its destination. */
   readonly liveTokenMint?: true;
   /**
-   * The media its stored conversation keeps, where this attempt's call is
-   * stored (`Caller.conversation`). Calls only: never a passthrough path, a
-   * job or a live-token mint, as v1 stored model calls alone.
+   * This attempt's call is stored (`Caller.storesConversation`). Calls only:
+   * never a passthrough path, a job or a live-token mint, as v1 stored model calls alone.
    */
-  readonly conversation?: KeptMedia;
+  readonly storesConversation?: true;
 }
 
 /** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
@@ -929,18 +940,16 @@ async function sendAttemptsKeptFor(
   let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController; sent: SentAttempt } | null = null;
   const stripped = client.stripped;
   // The gateway credentials the app sent: the one authentication verified, whatever
-  // header carried it, and any other credential header the app sent (not its end-user
-  // id). A stored conversation that contains one of them is never written with that body.
+  // header carried it, and the values of the headers that carry credentials. Never an
+  // end-user id. A stored conversation that contains one of them is never written with that body.
   const clientSecrets = [
     client.credential,
-    ...stripped
-      .filter((name) => name.toLowerCase() !== DEFAULT_END_USER_HEADER)
-      .flatMap((name) => {
-        const value = c.req.header(name);
-        if (value === undefined) return [];
-        const token = value.replace(/^bearer\s+/iu, "");
-        return token === value ? [value] : [value, token];
-      }),
+    ...client.credentialHeaders.flatMap((name) => {
+      const value = c.req.header(name);
+      if (value === undefined) return [];
+      const token = value.replace(/^bearer\s+/iu, "");
+      return token === value ? [value] : [value, token];
+    }),
   ];
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
@@ -1207,7 +1216,7 @@ function answer(
   const { stream, observed } = observeBody(upstream.body, {
     ...(reader !== null ? { onChunk: (chunk: Uint8Array) => reader.push(chunk) } : {}),
     keepHead: !ok,
-    ...(prepared.conversation !== undefined ? { keepWhole: CAPTURE_MAX_BYTES } : {}),
+    ...(prepared.storesConversation === true ? { keepWhole: CAPTURE_MAX_BYTES } : {}),
   });
   c.executionCtx.waitUntil(
     observed.then(
@@ -1254,7 +1263,7 @@ function answer(
     ),
   );
   // The stored conversation is scheduled on its own, after the charge's: neither waits on the other.
-  if (prepared.conversation !== undefined) {
+  if (prepared.storesConversation === true) {
     c.executionCtx.waitUntil(
       observed.then((body) =>
         storeConversation(c, prepared, sent, {
@@ -1272,7 +1281,7 @@ function answer(
 
 /**
  * Stores the conversation of an attempt whose answer went to the app, where
- * its call is stored (`PreparedAttempt.conversation`), after the answer ended.
+ * its call is stored (`PreparedAttempt.storesConversation`), after the answer ended.
  * Never part of the answer, and never able to fail it (`../conversations/capture.ts`).
  */
 function storeConversation(
@@ -1281,8 +1290,7 @@ function storeConversation(
   sentAttempt: SentAttempt | undefined,
   answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean },
 ): void {
-  const keep = prepared.conversation;
-  if (keep === undefined || sentAttempt === undefined) return;
+  if (prepared.storesConversation !== true || sentAttempt === undefined) return;
   const { attempt } = prepared;
   // The body already sent, never built again: encoding it is left to the capture, in the background.
   const outgoing = sentAttempt.body;
@@ -1291,14 +1299,7 @@ function storeConversation(
     captureConversation(c.env, {
       accountId: attempt.accountId,
       appId: attempt.appId,
-      keep,
-      ...(prepared.operation.storedAudio !== undefined
-        ? { audio: { fields: prepared.operation.storedAudio.fields, mime: storedAudioType(prepared.operation.storedAudio, prepared.query) } }
-        : {}),
-      ...(prepared.operation.rawAudio === true ? { rawAudio: true } : {}),
-      ...(prepared.operation.rawAudioResponse === true ? { rawAudioResponse: true } : {}),
-      ...(prepared.operation.audioFormFields !== undefined ? { audioFormFields: prepared.operation.audioFormFields } : {}),
-      ...(prepared.operation.responseJsonLines === true ? { responseJsonLines: true } : {}),
+      hints: captureHints(prepared.operation, prepared.query),
       startedAt: attempt.startedAt,
       chargeId: chargeId(attempt.requestId, attempt.seq),
       identity: attempt.identity,

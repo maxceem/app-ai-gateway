@@ -268,7 +268,7 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
     attempt,
     ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
     // A preset's targets are calls: stored where the caller's request is.
-    ...(input.caller.conversation !== null && operation.lifecycle === "call" ? { conversation: input.caller.conversation } : {}),
+    ...(input.caller.storesConversation && operation.lifecycle === "call" ? { storesConversation: true as const } : {}),
   };
 }
 

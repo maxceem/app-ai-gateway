@@ -43,6 +43,14 @@ export interface ConversationCapture {
   httpStatus: number;
   latencyMs: number;
   keep: KeptMedia;
+  /** What the operation declares about its bodies (`captureHints` in `./capture.ts`). */
+  hints: CaptureHints;
+  request: CapturedBytes;
+  response: CapturedBytes & { aborted: boolean };
+}
+
+/** What an operation declares about its bodies, for capture: data on the operation, never a provider branch. */
+export interface CaptureHints {
   /** JSON fields of the answer that hold a recording in base64 (`OperationDescription.storedAudio`). */
   audio?: { fields: readonly string[]; mime: string };
   /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
@@ -51,10 +59,8 @@ export interface ConversationCapture {
   rawAudioResponse?: boolean;
   /** Form fields of the request that carry a recording (`OperationDescription.audioFormFields`). */
   audioFormFields?: readonly string[];
-  /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
+  /** A successful answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
   responseJsonLines?: boolean;
-  request: CapturedBytes;
-  response: CapturedBytes & { aborted: boolean };
 }
 
 export interface CapturedBytes {
@@ -111,6 +117,14 @@ function isJsonLines(type: string): boolean {
 /** Audio whose format the body does not say, such as a chat reply's `audio.data`. */
 const UNKNOWN_AUDIO = "audio";
 
+/** A media type a body may name: `type/subtype` of token characters only. */
+const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
+
+/** The media type a body named, where it is a real one; anything else is just bytes. */
+function safeMime(mime: string): string {
+  return mime === UNKNOWN_AUDIO || MEDIA_TYPE.test(mime) ? mime : "application/octet-stream";
+}
+
 function mediaKind(mime: string): keyof KeptMedia {
   if (mime.startsWith("image/")) return "images";
   if (mime === UNKNOWN_AUDIO || mime.startsWith("audio/")) return "audio";
@@ -148,7 +162,10 @@ class MediaShelf {
   constructor(private readonly day: string, private readonly keep: KeptMedia) {}
 
   /** What replaces media in the record: its reference where it is kept, else its type and size. */
-  async place(bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string> {
+  async place(bytes: Uint8Array<ArrayBuffer>, named: string): Promise<string> {
+    // A type the body named with line breaks or other odd characters is never
+    // written as an object's content type: it would fail the write or the download.
+    const mime = safeMime(named);
     if (!this.keep[mediaKind(mime)]) return `${OMITTED}${mime};${bytes.byteLength}`;
     const name = mediaName(this.day, await sha256Hex(bytes), mime);
     if (!this.names.has(name)) {
@@ -160,7 +177,8 @@ class MediaShelf {
   }
 
   /** The same, for media in base64, which is decoded only where it is kept. */
-  async placeBase64(text: string, mime: string): Promise<string> {
+  async placeBase64(text: string, named: string): Promise<string> {
+    const mime = safeMime(named);
     const bytes = this.keep[mediaKind(mime)] ? decodeBase64(text) : null;
     return bytes === null ? `${OMITTED}${mime};${base64Bytes(text)}` : this.place(bytes, mime);
   }
@@ -404,17 +422,26 @@ function fileType(file: File): string {
   return typeForExtension(file.name) ?? "application/octet-stream";
 }
 
-async function storedBody(
-  body: CapturedBytes,
-  shelf: MediaShelf,
-  keep: KeptMedia,
-  audio?: { fields: readonly string[]; mime: string },
-  rawAudio = false,
-  audioFormFields: readonly string[] = [],
-  jsonLines = false,
-  failed = false,
-): Promise<StoredBody> {
+/** How one body is read: what its operation declares for it, and whether its answer failed. */
+interface BodyOptions {
+  keep: KeptMedia;
+  /** Fields that hold a recording in bare base64. */
+  audio?: { fields: readonly string[]; mime: string };
+  /** The body is a recording, whatever it was named. */
+  rawAudio: boolean;
+  /** Form fields that carry a recording. */
+  audioFormFields: readonly string[];
+  /** The body is newline-delimited JSON, whatever it was named. */
+  jsonLines: boolean;
+  /** An error answer: read as one JSON document first. */
+  failed: boolean;
+}
+
+async function storedBody(body: CapturedBytes, shelf: MediaShelf, options: BodyOptions): Promise<StoredBody> {
+  const { keep, audio, rawAudio, audioFormFields, jsonLines, failed } = options;
   const filtering = !keep.images || !keep.audio || !keep.files;
+  /** The one walk for this body's JSON: its shelf, whether it is a stream, and its declared audio fields. */
+  const walk = (streamed: boolean): Walk => ({ shelf, streamed, ...(audio ? { audio } : {}) });
   const contentType = body.contentType;
   const type = mediaType(contentType);
   if (body.bytes === null) {
@@ -433,7 +460,7 @@ async function storedBody(
       parsed = undefined;
     }
     if (parsed !== undefined) {
-      return { kind: "json", content_type: contentType, value: await keptJson(parsed, { shelf, streamed: false, ...(audio ? { audio } : {}) }) };
+      return { kind: "json", content_type: contentType, value: await keptJson(parsed, walk(false)) };
     }
   }
   if (type.startsWith("multipart/form-data")) {
@@ -481,11 +508,11 @@ async function storedBody(
   }
   let text = new TextDecoder().decode(body.bytes);
   if (asJsonLines) {
-    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, { minLines: 1, known: true });
+    const lines = await keptJsonLines(text, walk(true), { minLines: 1, known: true });
     if (lines !== null) return { kind: "json", content_type: contentType, value: lines };
     if (filtering) return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
   }
-  if (type === "text/event-stream") text = await keptEventStream(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, filtering);
+  if (type === "text/event-stream") text = await keptEventStream(text, walk(true), filtering);
   if (isJson(type) || type === "") {
     let parsed: unknown;
     let readable = true;
@@ -495,9 +522,9 @@ async function storedBody(
       readable = false;
     }
     if (readable) {
-      return { kind: "json", content_type: contentType, value: await keptJson(parsed, { shelf, streamed: false, ...(audio ? { audio } : {}) }) };
+      return { kind: "json", content_type: contentType, value: await keptJson(parsed, walk(false)) };
     }
-    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) });
+    const lines = await keptJsonLines(text, walk(true));
     if (lines !== null) return { kind: "json", content_type: contentType, value: lines };
     if (type !== "" || filtering) return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
   }
@@ -515,12 +542,26 @@ export async function conversationRecord(
   capture: ConversationCapture,
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
-  let request = await storedBody(capture.request, shelf, capture.keep, undefined, capture.rawAudioRequest === true, capture.audioFormFields ?? []);
-  // A declared newline-delimited answer is read by line only when it
-  // succeeded: an error (a 422 with a pretty-printed `detail`) is one JSON
-  // document, whatever the operation declares for its answers.
-  const jsonLines = capture.responseJsonLines === true && capture.status === "ok";
-  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], jsonLines, capture.status !== "ok");
+  const { hints } = capture;
+  let request = await storedBody(capture.request, shelf, {
+    keep: capture.keep,
+    rawAudio: hints.rawAudioRequest === true,
+    audioFormFields: hints.audioFormFields ?? [],
+    jsonLines: false,
+    failed: false,
+  });
+  // The answer's status is read here, once. What the operation declares for its
+  // answers holds for a successful one only: an error (a 422 with a pretty-printed
+  // `detail`) is one JSON document, never a recording or JSON lines.
+  const ok = capture.status === "ok";
+  let response = await storedBody(capture.response, shelf, {
+    keep: capture.keep,
+    ...(hints.audio ? { audio: hints.audio } : {}),
+    rawAudio: ok && hints.rawAudioResponse === true,
+    audioFormFields: [],
+    jsonLines: ok && hints.responseJsonLines === true,
+    failed: !ok,
+  });
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,

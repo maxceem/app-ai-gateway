@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { conversationRecord, type ConversationCapture } from "../src/conversations/record.ts";
+import { conversationRecord, type CaptureHints, type ConversationCapture } from "../src/conversations/record.ts";
 import { CallBudget, RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
 import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
@@ -38,8 +38,18 @@ function bucket(): R2Bucket {
 
 const encoder = new TextEncoder();
 
-function capture(overrides: Partial<ConversationCapture> = {}): ConversationCapture {
+/** A capture for the recorder; what an operation declares may be given flat, as `hints`' fields. */
+function capture(given: Partial<ConversationCapture> & CaptureHints = {}): ConversationCapture {
+  const { audio, rawAudioRequest, rawAudioResponse, audioFormFields, responseJsonLines, ...overrides } = given;
+  const hints: CaptureHints = {
+    ...(audio !== undefined ? { audio } : {}),
+    ...(rawAudioRequest !== undefined ? { rawAudioRequest } : {}),
+    ...(rawAudioResponse !== undefined ? { rawAudioResponse } : {}),
+    ...(audioFormFields !== undefined ? { audioFormFields } : {}),
+    ...(responseJsonLines !== undefined ? { responseJsonLines } : {}),
+  };
   return {
+    hints,
     eventId: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     accountId: ACCOUNT_ID,
@@ -996,6 +1006,23 @@ describe("conversation storage through the gateway", () => {
     expect(stored).not.toContain(key);
   });
 
+  it("stores an end-user id sent in the app's own header, which is not a credential (Fable round 1)", async () => {
+    const { slug, appId, key } = await storingApp({ store: true }, {
+      authentication: { type: "api_key", end_user: { source: "header", header: "X-User-Id" } },
+    });
+    providerAnswers();
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-user-id": "user_12345678" },
+      body: JSON.stringify({ model: "gpt-4o-mini", input: "hi", user: "user_12345678" }),
+    });
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    expect(record!.user_id).toBe("user_12345678");
+    expect(record!.request).toMatchObject({ kind: "json", value: { user: "user_12345678" } });
+  });
+
   it("ends the app's answer before the stored copy of it is put together (Sol round 1)", async () => {
     const { slug, appId, key } = await storingApp();
     providerAnswers();
@@ -1492,3 +1519,23 @@ describe("conversation retention", () => {
     expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe(appPrefix(ACCOUNT_ID, "cursor-b"));
   });
 });
+
+describe("media types a body names (Fable round 1)", () => {
+  it("stores media whose data URL names an odd type as plain bytes, never with that type", async () => {
+    const odd = await conversationRecord(capture({
+      request: {
+        contentType: "application/json",
+        bytes: encoder.encode(JSON.stringify({ input: `data:image/png\nx;base64,${PIXEL}` })),
+        totalBytes: 0,
+      },
+    }));
+    expect(odd.media).toHaveLength(1);
+    expect(odd.media[0]!.mime).toBe("application/octet-stream");
+    expect(odd.media[0]!.name).toMatch(/\.bin$/);
+    const plain = await conversationRecord(capture({
+      request: { contentType: "application/json", bytes: encoder.encode(JSON.stringify({ input: `data:image/png;base64,${PIXEL}` })), totalBytes: 0 },
+    }));
+    expect(plain.media[0]!.mime).toBe("image/png");
+  });
+});
+

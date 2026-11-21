@@ -15,12 +15,12 @@
  */
 import { readSavedConversations } from "../apps/app-records.ts";
 import { getBillingAccess, planIncludes } from "../billing/access.ts";
-import type { KeptMedia } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { storedAudioType, type OperationDescription } from "../providers/operation.ts";
 import { wholeBody } from "../proxy/observe.ts";
 import type { GatewayIdentity } from "../core/types.ts";
-import type { ConversationCapture } from "./record.ts";
+import type { CaptureHints, ConversationCapture } from "./record.ts";
 import { appFolderName, conversationsBucket } from "./storage.ts";
 
 /** A request or response body larger than this is recorded by its size alone (v1). */
@@ -34,21 +34,27 @@ export type SentBody =
   | { readonly bytes: Uint8Array; readonly contentType: string | null }
   | { readonly form: FormData };
 
+/**
+ * What the operation declares about its bodies for capture, gathered once
+ * from its description and passed through to the log unchanged.
+ */
+export function captureHints(operation: OperationDescription, query: string): CaptureHints {
+  return {
+    ...(operation.storedAudio !== undefined
+      ? { audio: { fields: [...operation.storedAudio.fields], mime: storedAudioType(operation.storedAudio, query) } }
+      : {}),
+    ...(operation.rawAudio === true ? { rawAudioRequest: true } : {}),
+    ...(operation.rawAudioResponse === true ? { rawAudioResponse: true } : {}),
+    ...(operation.audioFormFields !== undefined && operation.audioFormFields.length > 0 ? { audioFormFields: [...operation.audioFormFields] } : {}),
+    ...(operation.responseJsonLines === true ? { responseJsonLines: true } : {}),
+  };
+}
+
 export interface CaptureInput {
   readonly accountId: string;
   readonly appId: string;
-  /** The app's `conversations.keep` as cached when the call was served. The saved setting, read fresh, is what is written. */
-  readonly keep: KeptMedia;
-  /** Answer fields that hold a recording in base64 (`OperationDescription.storedAudio`). */
-  readonly audio?: { readonly fields: readonly string[]; readonly mime: string };
-  /** The request body is a recording sent as raw bytes (`OperationDescription.rawAudio`). */
-  readonly rawAudio?: true;
-  /** A successful answer that is not JSON, events or JSON lines is a recording (`OperationDescription.rawAudioResponse`). */
-  readonly rawAudioResponse?: true;
-  /** Request form fields that carry a recording (`OperationDescription.audioFormFields`). */
-  readonly audioFormFields?: readonly string[];
-  /** The answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
-  readonly responseJsonLines?: true;
+  /** What the operation declares about its bodies (`captureHints`). */
+  readonly hints: CaptureHints;
   /** When the attempt started: a record's day is its charge's usage day, even for a stream that ends after midnight. */
   readonly startedAt: number;
   /** The charge's own id, so a stored conversation and its charge always name each other. */
@@ -81,12 +87,24 @@ export interface CaptureInput {
   };
 }
 
-async function sentBytes(sent: SentBody): Promise<{ contentType: string; bytes: Uint8Array<ArrayBuffer> }> {
+/** The same bytes, as a view over a plain `ArrayBuffer`: copied only where they sit in another kind of buffer. */
+function plainBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return bytes.buffer instanceof ArrayBuffer ? (bytes as Uint8Array<ArrayBuffer>) : new Uint8Array(bytes);
+}
+
+/**
+ * The request as sent: its content type, its size, and its bytes where it is
+ * small enough to keep. Its size is checked before anything is copied, so a
+ * large upload is never copied just to be dropped.
+ */
+async function sentBody(sent: SentBody): Promise<{ contentType: string; bytes: Uint8Array<ArrayBuffer> | null; totalBytes: number }> {
   if ("form" in sent) {
     const encoded = new Response(sent.form);
-    return { contentType: encoded.headers.get("content-type") ?? "", bytes: new Uint8Array(await encoded.arrayBuffer()) };
+    const bytes = new Uint8Array(await encoded.arrayBuffer());
+    return { contentType: encoded.headers.get("content-type") ?? "", bytes: bytes.byteLength > CAPTURE_MAX_BYTES ? null : bytes, totalBytes: bytes.byteLength };
   }
-  return { contentType: sent.contentType ?? "", bytes: new Uint8Array(sent.bytes) };
+  const totalBytes = sent.bytes.byteLength;
+  return { contentType: sent.contentType ?? "", bytes: totalBytes > CAPTURE_MAX_BYTES ? null : plainBytes(sent.bytes), totalBytes };
 }
 
 /** What a body that held a credential is stored as instead (`withoutCredentials`). */
@@ -95,36 +113,34 @@ const OMITTED = new TextEncoder().encode(JSON.stringify({ omitted: "credential" 
 /** A secret shorter than this is not looked for: it would match ordinary text. */
 const MIN_SECRET_LENGTH = 8;
 
+/** Stands in for a required metadata field that held a credential. */
+const OMITTED_FIELD = "agw-omitted:credential";
+
 /**
- * A body that contains one of the call's credentials, exactly as sent, is
- * replaced by a marker, so history never holds a key an upstream echoed back
- * (an error that repeats its auth header, say). Checked once, here.
+ * Whether `text` holds one of the call's credentials, exactly as sent. The one
+ * test for bodies and metadata alike: history never holds a key an upstream
+ * echoed back (an error that repeats its auth header, say).
  */
+function holdsCredential(secrets: readonly string[], text: string): boolean {
+  return secrets.some((secret) => text.includes(secret));
+}
+
+/** A body that holds a credential is replaced by a marker. Bodies are decoded only where a secret could match. */
 function withoutCredentials(
   input: CaptureInput,
+  secrets: readonly string[],
   which: "request" | "response",
-  body: { contentType: string; bytes: Uint8Array | null },
-): { contentType: string; bytes: Uint8Array | null } {
-  if (body.bytes === null || body.bytes.byteLength === 0) return body;
-  const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
-  if (secrets.length === 0) return body;
-  const text = new TextDecoder().decode(body.bytes);
-  if (!secrets.some((secret) => text.includes(secret))) return body;
+  body: { contentType: string; bytes: Uint8Array<ArrayBuffer> | null },
+): { contentType: string; bytes: Uint8Array<ArrayBuffer> | null } {
+  if (body.bytes === null || body.bytes.byteLength === 0 || secrets.length === 0) return body;
+  if (!holdsCredential(secrets, new TextDecoder().decode(body.bytes))) return body;
   log("warn", "conversation_body_omitted", { app: input.appId, chargeId: input.chargeId, body: which, reason: "credential" });
   return { contentType: "application/json", bytes: OMITTED };
 }
 
-/**
- * A stored metadata field (the trace id, the user id, ...) that holds a credential
- * used on the call is left out of the record, the same check as for bodies.
- */
-/** Stands in for a required metadata field that held a credential. */
-const OMITTED_FIELD = "agw-omitted:credential";
-
-function metadataWithoutCredentials(input: CaptureInput, field: string, value: string | null): string | null {
-  if (value === null) return null;
-  const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
-  if (!secrets.some((secret) => value.includes(secret))) return value;
+/** A stored metadata field (the trace id, the user id, ...) that holds a credential is left out of the record. */
+function metadataWithoutCredentials(input: CaptureInput, secrets: readonly string[], field: string, value: string | null): string | null {
+  if (value === null || !holdsCredential(secrets, value)) return value;
   log("warn", "conversation_field_omitted", { app: input.appId, chargeId: input.chargeId, field, reason: "credential" });
   return null;
 }
@@ -134,53 +150,53 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   // An app that turned storage on under a plan that included it keeps its
   // setting, and stores nothing while its plan does not (v1). Read in the
   // background, so the plan is never waited on by the call.
-  if (!planIncludes(await getBillingAccess(env, input.accountId), "conversationStorage")) return;
+  const access = await getBillingAccess(env, input.accountId);
+  if (access.state === "unavailable") {
+    // Nothing is stored while billing cannot be read: logged, so a gap in history has a cause.
+    log("warn", "conversation_capture_skipped", { app: input.appId, chargeId: input.chargeId, reason: "billing_unavailable" });
+    return;
+  }
+  if (!planIncludes(access, "conversationStorage")) return;
   // The app's saved setting, read fresh: an isolate that cached the app before
   // storage was turned off must not store. Its media policy is the one used.
   const keep = await readSavedConversations(env, input.accountId, input.appId);
   if (keep === null) return;
-  const sentRequest = await sentBytes(input.sent);
-  const requestBytes = sentRequest.bytes.byteLength > CAPTURE_MAX_BYTES ? null : sentRequest.bytes;
+  // A secret shorter than this would match ordinary text: it is not looked for.
+  const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
+  const field = (name: string, value: string | null) => metadataWithoutCredentials(input, secrets, name, value);
+  const sentRequest = await sentBody(input.sent);
   // A content type is checked on its own, even where the body is empty or too large to keep:
   // one that holds a credential is left out.
-  const request = withoutCredentials(input, "request", {
-    contentType: metadataWithoutCredentials(input, "request_content_type", sentRequest.contentType) ?? "",
-    bytes: requestBytes,
+  const request = withoutCredentials(input, secrets, "request", {
+    contentType: field("request_content_type", sentRequest.contentType) ?? "",
+    bytes: sentRequest.bytes,
   });
-  const response = withoutCredentials(input, "response", {
-    contentType: metadataWithoutCredentials(input, "response_content_type", input.response.contentType) ?? "",
-    bytes: input.response.pieces === null ? null : wholeBody(input.response.pieces),
+  const response = withoutCredentials(input, secrets, "response", {
+    contentType: field("response_content_type", input.response.contentType) ?? "",
+    bytes: input.response.pieces === null ? null : plainBytes(wholeBody(input.response.pieces)),
   });
   const record: ConversationCapture = {
     eventId: input.chargeId,
     createdAt: new Date(input.startedAt).toISOString(),
     accountId: input.accountId,
     appId: input.appId,
-    userId: metadataWithoutCredentials(input, "user_id", input.identity.userId),
-    installId: metadataWithoutCredentials(input, "install_id", input.identity.installId),
-    appVersion: metadataWithoutCredentials(input, "app_version", input.appVersion),
-    clientTraceId: metadataWithoutCredentials(input, "trace_id", input.clientTraceId),
-    endpointSlug: metadataWithoutCredentials(input, "endpoint", input.preset),
-    route: metadataWithoutCredentials(input, "route", input.route) ?? OMITTED_FIELD,
+    userId: field("user_id", input.identity.userId),
+    installId: field("install_id", input.identity.installId),
+    appVersion: field("app_version", input.appVersion),
+    clientTraceId: field("trace_id", input.clientTraceId),
+    endpointSlug: field("endpoint", input.preset),
+    route: field("route", input.route) ?? OMITTED_FIELD,
     provider: input.provider,
-    model: metadataWithoutCredentials(input, "model", input.model) ?? OMITTED_FIELD,
+    model: field("model", input.model) ?? OMITTED_FIELD,
     status: input.status,
     httpStatus: input.httpStatus,
     latencyMs: input.latencyMs,
     keep,
-    ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
-    ...(input.rawAudio === true ? { rawAudioRequest: true } : {}),
-    ...(input.rawAudioResponse === true && input.status === "ok" ? { rawAudioResponse: true } : {}),
-    ...(input.audioFormFields !== undefined && input.audioFormFields.length > 0 ? { audioFormFields: [...input.audioFormFields] } : {}),
-    ...(input.responseJsonLines === true ? { responseJsonLines: true } : {}),
-    request: {
-      contentType: request.contentType,
-      bytes: request.bytes === null ? null : new Uint8Array(request.bytes),
-      totalBytes: sentRequest.bytes.byteLength,
-    },
+    hints: input.hints,
+    request: { contentType: request.contentType, bytes: request.bytes, totalBytes: sentRequest.totalBytes },
     response: {
       contentType: response.contentType,
-      bytes: response.bytes === null ? null : new Uint8Array(response.bytes),
+      bytes: response.bytes,
       totalBytes: input.response.totalBytes,
       aborted: input.response.aborted,
     },
