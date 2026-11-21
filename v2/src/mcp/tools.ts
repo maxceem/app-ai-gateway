@@ -39,6 +39,7 @@ export const MCP_READ_OPERATIONS = [
   "listAppKeys",
   "listAppUsers",
   "getAppUser",
+  "listAppJobs",
   "getOperation",
 ] as const satisfies readonly OperationName[];
 
@@ -534,6 +535,25 @@ export const MCP_TOOLS: readonly McpTool[] = [
     },
     summary: ({ app_id, month, user }) =>
       `User ${user.id} of ${app_id} is ${user.status}, with ${plural(user.usage.charges, "charge")} costing ${usd(user.usage.cost_nano)} in ${month}.`,
+  }),
+  tool({
+    name: "list_app_jobs",
+    title: "List an app's jobs",
+    description:
+      "Returns the jobs an app submitted through the gateway (such as fal queue jobs), newest first, a page at a time (limit, offset). Each shows the estimate charged at submit, the correction from the provider's final figure, the total, and its state: settled, checking, estimate_kept or gave_up. Use it to explain what a job cost. It changes nothing.",
+    operation: "listAppJobs",
+    cli: {
+      command: "app job list",
+      args: ["app"],
+      view: {
+        rows: "jobs",
+        columns: ["id", "model", "state", "estimate_nano=Estimate (nano-$)", "correction_nano=Correction (nano-$)", "total_nano=Total (nano-$)", "submitted_at=Submitted"],
+      },
+    },
+    summary: (result) => {
+      const settled = result.jobs.filter((job) => job.state === "settled").length;
+      return `${plural(result.jobs.length, "job")} of ${result.total} for ${result.app_id}, ${settled} settled, from offset ${result.offset}.`;
+    },
   }),
   tool({
     name: "get_operation",

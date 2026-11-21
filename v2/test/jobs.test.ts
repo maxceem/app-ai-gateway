@@ -19,7 +19,7 @@ import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -2101,6 +2101,39 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     const row = await env.DB.prepare("SELECT id, detail_json FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ id: string; detail_json: string }>();
     expect(row!.id).toBe(`job_figure:${ref.job}:200:-:2videos`);
     expect(JSON.parse(row!.detail_json).result).toMatchObject({ outputs: 2, outputUnit: "videos" });
+  });
+
+  it("lists an app's jobs with their estimate, correction, total and state, read-only", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const settled = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${settled.jobId}`, key);
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a dog" });
+    const management = await seedManagementKey({ grant: "read" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/jobs`, { headers: { authorization: `Bearer ${management}` } }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { total: number; jobs: Record<string, unknown>[] };
+    expect(body.total).toBe(2);
+    const byState = Object.fromEntries(body.jobs.map((job) => [job.state, job]));
+    expect(byState.settled).toMatchObject({
+      provider_slug: slug,
+      operation: "fal.queue",
+      model: "fal-ai/flux/dev",
+      estimate_nano: 50_000_000,
+      correction_nano: 50_000_000,
+      total_nano: 100_000_000,
+      measured: "estimated",
+    });
+    expect(byState.settled!.settled_at).not.toBeNull();
+    expect(byState.checking).toMatchObject({ estimate_nano: 25_000_000, correction_nano: null, total_nano: 25_000_000, settled_at: null });
   });
 
   it("reads fal's queued-cancel answer as a confirmed final zero, and nothing else", () => {
