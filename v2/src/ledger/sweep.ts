@@ -6,8 +6,12 @@
  * - Each item has `SWEEP_ITEM_TIME_LIMIT_MS`; a run stops starting new items
  *   after `SWEEP_RUN_TIME_LIMIT_MS`. The rest waits for the next run.
  * - Work that fails, times out or is not ready gets a later due time and one
- *   more try, so it cannot keep taking the batch.
- * - After `SWEEP_MAX_TRIES`, the row is marked given up and stays, and an
+ *   more try, so it cannot keep taking the batch. A row may set its own pace
+ *   in its detail: `retryEveryMs` (a fixed delay) and `maxTries`, for work
+ *   that must be done soon, such as a job whose result expires.
+ * - An item that runs out of time is aborted through its `signal`, so it
+ *   starts no more provider calls and writes nothing.
+ * - After `SWEEP_MAX_TRIES` (or the row's `maxTries`), the row is marked given up and stays, and an
  *   error is logged, so the monitor alerts and the console can show it.
  * - Every handler is safe to run twice: settlement and pricing write one
  *   correction per owner, so a crash between doing the work and deleting the
@@ -56,7 +60,7 @@ export type HandlerResult = { readonly done: true } | { readonly done: false; re
 export type OpenWorkHandler = (
   env: Env,
   item: OpenWorkItem,
-  context: { readonly now: number; readonly lastTry: boolean },
+  context: { readonly now: number; readonly lastTry: boolean; readonly signal?: AbortSignal },
 ) => Promise<HandlerResult>;
 
 const DONE: HandlerResult = { done: true };
@@ -134,6 +138,18 @@ export function retryDelay(tries: number): number {
   return Math.min(SWEEP_MAX_RETRY_DELAY_MS, SWEEP_FIRST_RETRY_MS * 2 ** Math.max(0, tries - 1));
 }
 
+const positive = (value: unknown): number | null =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+
+/** A row's own pace from its detail, or the sweep's defaults. */
+function paceOf(item: OpenWorkItem): { readonly maxTries: number; readonly delay: (tries: number) => number } {
+  const every = positive(item.detail?.retryEveryMs);
+  return {
+    maxTries: positive(item.detail?.maxTries) ?? SWEEP_MAX_TRIES,
+    delay: every === null ? retryDelay : () => every,
+  };
+}
+
 const TIMED_OUT = Symbol("timed out");
 
 /** Runs one sweep: the due rows, earliest first, each with its time limit. */
@@ -163,15 +179,22 @@ export async function runSweep(
   let gaveUp = 0;
   for (const row of rows.results) {
     if (Date.now() - startedAt >= runLimit) break;
-    const item = itemFromRow(row);
-    const lastTry = item.tries + 1 >= SWEEP_MAX_TRIES;
+    let item = itemFromRow(row);
+    let pace = paceOf(item);
     let result: HandlerResult;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
     try {
+      item = withDetail(item, row);
+      pace = paceOf(item);
+      const lastTry = item.tries + 1 >= pace.maxTries;
       const late = new Promise<typeof TIMED_OUT>((resolve) => {
-        timer = setTimeout(() => resolve(TIMED_OUT), itemLimit);
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(TIMED_OUT);
+        }, itemLimit);
       });
-      const answer = await Promise.race([handlers[item.kind](env, withDetail(item, row), { now, lastTry }), late]);
+      const answer = await Promise.race([handlers[item.kind](env, item, { now, lastTry, signal: controller.signal }), late]);
       result = answer === TIMED_OUT ? retry("timed out") : answer;
     } catch (error) {
       log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(error) });
@@ -180,6 +203,7 @@ export async function runSweep(
       clearTimeout(timer);
     }
 
+    const lastTry = item.tries + 1 >= pace.maxTries;
     try {
       if (result.done) {
         await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
@@ -192,7 +216,7 @@ export async function runSweep(
         gaveUp += 1;
       } else {
         await env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?")
-          .bind(result.reason, now + retryDelay(item.tries + 1), item.id)
+          .bind(result.reason, now + pace.delay(item.tries + 1), item.id)
           .run();
         retried += 1;
       }

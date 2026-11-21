@@ -16,16 +16,16 @@ import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
 import { clientResponseHeaders } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
-import { readJobId, type JobClaims } from "./job-id.ts";
+import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
 import { fetchJob, gatewayLinks, jobContext, settleJobFromResult, withGatewayLinks } from "./jobs.ts";
 
 function unknownJob(): GatewayError {
   return new GatewayError(404, "job_not_found", "No such job for this app");
 }
 
-/** Whether the claims name this app and this caller's end user. */
-function ownedBy(claims: JobClaims, app: { readonly id: string; readonly accountId: string }, userId: string | null): boolean {
-  return claims.appId === app.id && claims.accountId === app.accountId && claims.userId === userId;
+/** Whether the claims name this app and this caller's end user, compared by digest. */
+async function ownedBy(claims: JobClaims, app: { readonly id: string; readonly accountId: string }, userId: string | null): Promise<boolean> {
+  return claims.appId === app.id && claims.accountId === app.accountId && claims.userDigest === (await userDigest(userId));
 }
 
 /** The handler for one kind of poll. */
@@ -52,7 +52,7 @@ export function jobPollHandler(which: "status" | "result") {
         ...(description === null ? {} : { providerAuthHeader: description.auth.header }),
       },
       async (caller) => {
-        if (claims === null || !ownedBy(claims, app, caller.identity.userId)) throw unknownJob();
+        if (claims === null || !(await ownedBy(claims, app, caller.identity.userId))) throw unknownJob();
         caller.facts.operation = claims.operation;
         caller.facts.model = claims.model;
         const context = await jobContext(c.env, claims);
@@ -60,7 +60,7 @@ export function jobPollHandler(which: "status" | "result") {
         if (context.connection.status === "disabled") {
           throw new GatewayError(502, "provider_disabled", `Provider connection ${claims.slug} is disabled`);
         }
-        const { response, keyHeader } = await fetchJob(c.env, context, which, claims);
+        const { response, keyHeader } = await fetchJob(c.env, context, which, claims, caller.identity.userId);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         const text = await response.text();
         let body: unknown = null;
@@ -72,7 +72,7 @@ export function jobPollHandler(which: "status" | "result") {
         if (which === "result") {
           const now = Date.now();
           c.executionCtx.waitUntil(
-            settleJobFromResult(c.env, claims, context.spec, { status: response.status, headers: response.headers, body }, now),
+            settleJobFromResult(c.env, claims, jobId, context.spec, { status: response.status, headers: response.headers, body }, now),
           );
         }
         // A status answer's links point at the gateway, as the submit answer's do.

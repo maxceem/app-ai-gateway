@@ -65,7 +65,7 @@ import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./header
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
-import { signJobId } from "../jobs/job-id.ts";
+import { jobSigningReady, jobSigningUnavailable, signJobId } from "../jobs/job-id.ts";
 import { gatewayLinks, jobEstimate, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
@@ -874,6 +874,9 @@ export async function sendAttempts(
   // The header each connection's key is sent in belongs to the gateway alone: a client's value in any of
   // them, for any connection of the chain, never reaches any attempt. Its answers never pass it back
   // either (`clientResponseHeaders` in `answer`).
+  // A job's id is signed by the gateway: without a key that can sign, the job
+  // is never sent, so nothing is paid for that the app could not poll.
+  if (attempts.some((one) => one.operation.lifecycle === "job") && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
   const keyHeaders = [
     ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
     ...otherKeyHeaders,

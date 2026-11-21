@@ -39,6 +39,11 @@ import { readJobId, type JobClaims } from "./job-id.ts";
 /** When the sweep first checks a job. fal keeps results for an hour, large ones for 6 minutes (T15). */
 export const JOB_FIRST_CHECK_MS = 2 * 60 * 1000;
 
+/** How often the sweep checks a job again, when its operation does not say. */
+export const JOB_CHECK_EVERY_MS = 60 * 1000;
+/** How many checks before the sweep gives up on a job, when its operation does not say. */
+export const JOB_MAX_CHECKS = 60;
+
 /** How long a poll of the provider may take. */
 export const JOB_POLL_TIMEOUT_MS = 30_000;
 
@@ -106,12 +111,21 @@ export function jobEstimate(
       ownerType: "job",
       ownerId: job,
       chargeId: charge.id,
-      detail: { providerType: attempt.providerType, jobId: input.signedId },
+      detail: { providerType: attempt.providerType, jobId: input.signedId, ...checkPace(operation.job) },
       dueAt: input.now + JOB_FIRST_CHECK_MS,
       createdAt: input.now,
     });
   }
   return { charge, openWork };
+}
+
+/**
+ * How often the sweep checks a job, and how many times: from the operation,
+ * so a provider whose results expire soon is checked often. The sweep reads
+ * these from the row (`retryEveryMs`, `maxTries`) for any kind of work.
+ */
+function checkPace(spec: JobSpec | undefined): { readonly retryEveryMs: number; readonly maxTries: number } {
+  return { retryEveryMs: spec?.checkEveryMs ?? JOB_CHECK_EVERY_MS, maxTries: spec?.maxChecks ?? JOB_MAX_CHECKS };
 }
 
 /** The gateway's links for a job. */
@@ -171,12 +185,18 @@ export async function jobContext(env: Env, claims: JobClaims): Promise<JobContex
   return { connection, description, operation, spec: operation.job };
 }
 
-/** A follow-up request to the provider, with the connection's key, never following a redirect. */
+/**
+ * A follow-up request to the provider, with the connection's key, never
+ * following a redirect. `userId` is the polling caller's own end user, or
+ * null from the sweep: a job id carries only its digest.
+ */
 export async function fetchJob(
   env: Env,
   context: JobContext,
   which: "status" | "result",
   claims: JobClaims,
+  userId: string | null,
+  signal?: AbortSignal,
 ): Promise<{ readonly response: Response; readonly keyHeader: string }> {
   const request = context.spec[which];
   const credentials = await connectionCredentials(env, context.connection);
@@ -187,14 +207,14 @@ export async function fetchJob(
     credentials,
     client: new Headers(),
     appId: claims.appId,
-    userId: claims.userId,
+    userId,
   });
   try {
     const response = await fetch(target.url, {
       method: request.method,
       headers: target.headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(JOB_POLL_TIMEOUT_MS),
+      signal: signal === undefined ? AbortSignal.timeout(JOB_POLL_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(JOB_POLL_TIMEOUT_MS)]),
     });
     return { response, keyHeader: target.keyHeader };
   } catch (error) {
@@ -227,26 +247,60 @@ function outputCount(spec: JobSpec, body: unknown): number | null {
 }
 
 /**
- * The final figure of a job from its result, priced with the rates stored on
- * the estimate, or null when the result gives none. Only a final status
- * counts. Every rate the estimate stored must get a count:
+ * What a final result says, kept small so it can be saved when the estimate
+ * is not in the ledger yet, and settled later from the same facts.
+ */
+export interface JobResultFacts {
+  readonly status: number;
+  /** The billed units the provider reported, or null when it reported none. */
+  readonly units: number | null;
+  /** The outputs in the result, or null when it names none the gateway can count. */
+  readonly outputs: number | null;
+}
+
+/** The facts of a result call, or null when its status is not final. */
+export function jobResultFacts(spec: JobSpec, result: JobResult): JobResultFacts | null {
+  if (!spec.finalStatuses.includes(result.status)) return null;
+  return {
+    status: result.status,
+    units: spec.unitsHeader === undefined ? null : headerNumber(result.headers.get(spec.unitsHeader)),
+    outputs: outputCount(spec, result.body),
+  };
+}
+
+/** Saved facts read back, or null when they are not facts. */
+function factsOf(value: unknown): JobResultFacts | null {
+  if (typeof value !== "object" || value === null) return null;
+  const facts = value as Record<string, unknown>;
+  const count = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one) && one >= 0);
+  if (typeof facts.status !== "number" || !count(facts.units) || !count(facts.outputs)) return null;
+  return { status: facts.status, units: facts.units as number | null, outputs: facts.outputs as number | null };
+}
+
+/**
+ * The final figure of a job from its result's facts, priced with the rates
+ * stored on the estimate, or null when the result gives none and the estimate
+ * stays. Every rate the estimate stored must get a count:
  *
  * - billed units from the units header (fal's megapixels), never a missing
  *   header read as 0;
- * - the outputs in the result, for a rate per output: counted on a success,
- *   none on a failure.
+ * - the outputs in the result, for a rate per output, on a success only;
+ * - a failure is free only when the provider reports 0 billed units. A failure
+ *   with no units report keeps the estimate (T15: fal's units expire).
  */
-export function jobFinalFigure(estimate: ChargeRow, spec: JobSpec, result: JobResult): FinalFigure | null {
-  if (!spec.finalStatuses.includes(result.status)) return null;
-  const succeeded = result.status >= 200 && result.status < 300;
+export function jobFinalFigure(estimate: ChargeRow, facts: JobResultFacts): FinalFigure | null {
+  const succeeded = facts.status >= 200 && facts.status < 300;
   const counts: Partial<Record<Unit, number>> = {};
-  const header = spec.unitsHeader === undefined ? null : headerNumber(result.headers.get(spec.unitsHeader));
-  if (header !== null) {
-    const scaled = scaledCount("model_units", header);
+  if (facts.units !== null) {
+    const scaled = scaledCount("model_units", facts.units);
     if (Number.isSafeInteger(scaled)) counts.model_units = scaled;
   }
-  const outputs = succeeded ? outputCount(spec, result.body) : 0;
-  if (outputs !== null) counts.images = outputs;
+  if (succeeded) {
+    if (facts.outputs !== null) counts.images = facts.outputs;
+  } else if (facts.units === 0) {
+    // The provider says the failure billed nothing: every count is 0.
+    counts.images = 0;
+  }
   const rates = estimate.rates;
   if (rates === null || Object.keys(rates).length === 0) return null;
   const buckets: Record<string, number> = {};
@@ -279,21 +333,74 @@ export type JobSettlement =
   /** The estimate is not in the ledger yet: try again later. */
   | "waiting";
 
+/** The open-work row's columns for a job's saved result. */
+function savedResultRow(claims: JobClaims, jobId: string, spec: JobSpec, facts: JobResultFacts, now: number) {
+  return {
+    id: jobCheckId(claims.job),
+    accountId: claims.accountId,
+    appId: claims.appId,
+    owner: claims.job,
+    detail: JSON.stringify({ jobId, result: facts, ...checkPace(spec) }),
+    facts: JSON.stringify(facts),
+    now,
+  };
+}
+
 /**
- * Settles a job from a result call. Safe to call from a client poll and the
- * sweep at once: one correction results. Removes the job's check once done.
- * Never throws.
+ * Saves a final result whose estimate is not in the ledger yet, so it is
+ * settled later from the same facts with the same correction id, never
+ * dropped. It goes on the job's check row in D1; while D1 cannot take it, on
+ * the estimate's entry in the failed-write store, which writes both together.
+ * Only when neither works is it logged in full, to be settled by hand.
  */
-export async function settleJobFromResult(env: Env, claims: JobClaims, spec: JobSpec, result: JobResult, now: number): Promise<JobSettlement> {
-  const facts = { app: claims.appId, job: claims.job, providerSlug: claims.slug, model: claims.model };
+async function saveJobResult(env: Env, claims: JobClaims, jobId: string, spec: JobSpec, facts: JobResultFacts, now: number): Promise<void> {
+  const row = savedResultRow(claims, jobId, spec, facts, now);
   try {
-    if (!spec.finalStatuses.includes(result.status)) return "not_final";
+    await env.DB.prepare(
+      `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
+       VALUES (?, 'job_check', ?, ?, 'job', ?, NULL, ?, ?, 0, ?)
+       ON CONFLICT(id) DO UPDATE SET detail_json = json_set(COALESCE(open_work.detail_json, '{}'), '$.result', json(?)),
+         due_at = MIN(open_work.due_at, excluded.due_at), gave_up_at = NULL`,
+    )
+      .bind(row.id, row.accountId, row.appId, row.owner, row.detail, now, now, row.facts)
+      .run();
+    return;
+  } catch (error) {
+    log("warn", "job_result_save_failed", { app: claims.appId, job: claims.job, error: errorFacts(error) });
+  }
+  try {
+    if (await env.CHARGE_STORE.getByName(claims.appId).keepJobResult(claims.job, { ...facts })) return;
+  } catch (error) {
+    log("warn", "job_result_store_failed", { app: claims.appId, job: claims.job, error: errorFacts(error) });
+  }
+  log("error", "job_result_unrecorded", { app: claims.appId, job: claims.job, jobId, result: facts as unknown as Record<string, unknown> });
+}
+
+/**
+ * Settles a job from a final result's facts. Safe to call from a client poll
+ * and the sweep at once: one correction results. Removes the job's check once
+ * done. While the estimate is not in the ledger, the facts are saved
+ * (`saveJobResult`) and the answer is `waiting`. Never throws.
+ */
+export async function settleJobFromFacts(
+  env: Env,
+  claims: JobClaims,
+  jobId: string,
+  spec: JobSpec,
+  facts: JobResultFacts,
+  now: number,
+): Promise<JobSettlement> {
+  const facts_ = { app: claims.appId, job: claims.job, providerSlug: claims.slug, model: claims.model };
+  try {
     const estimate = await jobEstimateCharge(env.DB, claims.job);
-    if (estimate === null) return "waiting";
-    const final = jobFinalFigure(estimate, spec, result);
+    if (estimate === null) {
+      await saveJobResult(env, claims, jobId, spec, facts, now);
+      return "waiting";
+    }
+    const final = jobFinalFigure(estimate, facts);
     if (final === null) {
       // Never read as 0: the estimate stays, already labelled an estimate.
-      log("warn", "job_units_missing", { ...facts, status: result.status });
+      log("warn", "job_units_missing", { ...facts_, status: facts.status });
       await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
       return "estimate_kept";
     }
@@ -305,16 +412,32 @@ export async function settleJobFromResult(env: Env, claims: JobClaims, spec: Job
         await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
         return "settled";
       case "charge_missing":
+        await saveJobResult(env, claims, jobId, spec, facts, now);
         return "waiting";
       case "no_rate":
-        log("error", "job_settle_no_rate", { ...facts, bucket: settled.bucket });
+        log("error", "job_settle_no_rate", { ...facts_, bucket: settled.bucket });
         await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
         return "estimate_kept";
     }
   } catch (error) {
-    log("warn", "job_settle_failed", { ...facts, error: errorFacts(error) });
+    log("warn", "job_settle_failed", { ...facts_, error: errorFacts(error) });
+    await saveJobResult(env, claims, jobId, spec, facts, now);
     return "waiting";
   }
+}
+
+/** Settles a job from a result call: `not_final` when its status is not final, else as `settleJobFromFacts`. */
+export async function settleJobFromResult(
+  env: Env,
+  claims: JobClaims,
+  jobId: string,
+  spec: JobSpec,
+  result: JobResult,
+  now: number,
+): Promise<JobSettlement> {
+  const facts = jobResultFacts(spec, result);
+  if (facts === null) return "not_final";
+  return settleJobFromFacts(env, claims, jobId, spec, facts, now);
 }
 
 /** The JSON body of an answer, or null. */
@@ -329,25 +452,36 @@ export async function jsonOf(response: Response): Promise<unknown> {
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
 
 /**
- * The sweep's check of one job: the status first, then, once done, the
- * result, settled as a client poll would. Every provider's jobs go through
- * this one handler.
+ * The sweep's check of one job: a saved result is settled as it is; else the
+ * status first, then, once done, the result, settled as a client poll would.
+ * Every provider's jobs go through this one handler. A paused connection's key
+ * is never opened: its job waits. The item's time limit stops the work between
+ * steps, so a check that ran out of time starts no result call and settles
+ * nothing.
  */
-export const checkJob: OpenWorkHandler = async (env, item, { now }) => {
+export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
   const id = item.detail?.jobId;
   const claims = typeof id === "string" ? await readJobId(env.JWT_SECRET, id) : null;
-  if (claims === null) {
+  if (typeof id !== "string" || claims === null) {
     log("error", "job_check_unreadable", { app: item.appId, work: item.id });
     return { done: true };
   }
   const context = await jobContext(env, claims);
   if (context === null) return retry("the job's connection is gone");
-  const status = await fetchJob(env, context, "status", claims);
+  const saved = factsOf(item.detail?.result);
+  if (saved !== null) {
+    const settled = await settleJobFromFacts(env, claims, id, context.spec, saved, now);
+    return settled === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
+  }
+  if (context.connection.status === "disabled") return retry("the job's connection is disabled");
+  const status = await fetchJob(env, context, "status", claims, null, signal);
   const statusBody = await jsonOf(status.response);
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
-  const result = await fetchJob(env, context, "result", claims);
+  if (signal?.aborted) return retry("timed out");
+  const result = await fetchJob(env, context, "result", claims, null, signal);
   const body = await jsonOf(result.response);
-  const settled = await settleJobFromResult(env, claims, context.spec, { status: result.response.status, headers: result.response.headers, body }, now);
+  if (signal?.aborted) return retry("timed out");
+  const settled = await settleJobFromResult(env, claims, id, context.spec, { status: result.response.status, headers: result.response.headers, body }, now);
   if (settled === "waiting") return retry("estimate not in the ledger yet");
   if (settled === "not_final") return retry(`result not final (${result.response.status})`);
   return { done: true };

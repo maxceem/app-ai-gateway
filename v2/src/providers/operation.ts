@@ -438,6 +438,13 @@ export interface JobSpec {
    * `ltx-video`). An array counts its items; anything else counts one.
    */
   readonly outputsField?: string;
+  /**
+   * How often the sweep checks a job no client polled, so a result is read
+   * before the provider drops it. Default: every minute.
+   */
+  readonly checkEveryMs?: number;
+  /** How many sweep checks before the job is given up as unresolved. Default: 60. */
+  readonly maxChecks?: number;
 }
 
 export interface JobRequest {

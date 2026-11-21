@@ -65,6 +65,30 @@ export class ChargeStore extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Keeps a job's final result with its estimate, when the estimate waits
+   * here: the result goes on the job's check row, so both are written
+   * together and the sweep settles the job from it. False when no entry here
+   * is that job's estimate.
+   */
+  async keepJobResult(job: string, result: Readonly<Record<string, unknown>> | object): Promise<boolean> {
+    const rows = this.ctx.storage.sql.exec<{ id: string; entry: string }>("SELECT id, entry FROM pending").toArray();
+    for (const row of rows) {
+      const entry = JSON.parse(row.entry) as LedgerEntry;
+      if (entry.charge.ownerType !== "job" || entry.charge.ownerId !== job || entry.charge.kind !== "estimate") continue;
+      let found = false;
+      const openWork = entry.openWork.map((work) => {
+        if (work.kind !== "job_check") return work;
+        found = true;
+        return { ...work, detail: { ...(work.detail ?? {}), result } };
+      });
+      if (!found) return false;
+      this.ctx.storage.sql.exec("UPDATE pending SET entry = ? WHERE id = ?", JSON.stringify({ ...entry, openWork }), row.id);
+      return true;
+    }
+    return false;
+  }
+
   /** How many entries wait. For tests and diagnostics. */
   async pendingCount(): Promise<number> {
     return this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending").one().n;
