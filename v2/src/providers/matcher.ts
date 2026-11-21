@@ -174,7 +174,27 @@ export interface UpstreamRoute {
    * provider reads its paths. Null otherwise.
    */
   readonly hostPrefix?: readonly string[] | null;
+  /**
+   * A base URL on Cloudflare AI Gateway's host
+   * (`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/openai/`):
+   * Cloudflare reads what follows its provider endpoint as the
+   * `cloudflareGateway` setting does, so that reading is a target too. The
+   * path after the endpoint, and the prefix Cloudflare adds back
+   * (`cloudflarePrefix`'s rule). Absent otherwise.
+   */
+  readonly cloudflareBase?: { readonly after: readonly string[]; readonly prefix: readonly string[] };
+  /**
+   * The lower-cased host name of the connection's base URL, when it has one.
+   * Refused paths that name hosts (`RefusedPath.hosts`) apply only there.
+   */
+  readonly baseHost?: string | null;
 }
+
+/** Cloudflare AI Gateway's host: a base URL on it is read as its provider endpoint reads paths. */
+export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+
+/** Segments of Cloudflare AI Gateway's path before a provider's endpoint takes over: `v1`, the account, the gateway, the endpoint. */
+const CLOUDFLARE_ENDPOINT_SEGMENTS = 4;
 
 /** The provider's own hosts, with no base URL or Cloudflare. */
 export const DIRECT_ROUTE: UpstreamRoute = { basePath: null, cloudflarePrefix: null };
@@ -197,10 +217,9 @@ export function upstreamRoute(
   description: ProviderDescription,
   connection: { readonly baseUrl: string | null; readonly cloudflareGateway: object | null },
 ): UpstreamRoute {
-  if (connection.cloudflareGateway !== null) {
-    const prefix = description.cloudflareGateway?.stripPathPrefix ?? "";
-    return { basePath: null, cloudflarePrefix: prefix.split("/").filter((piece) => piece !== "") };
-  }
+  // Cloudflare's provider endpoint adds this back: the one mapping, for the setting and for a base URL on its host.
+  const cloudflarePrefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+  if (connection.cloudflareGateway !== null) return { basePath: null, cloudflarePrefix };
   if (connection.baseUrl !== null) {
     let url: URL | null = null;
     try {
@@ -213,7 +232,16 @@ export function upstreamRoute(
     const own = Object.values(description.hosts)
       .map((host) => ({ name: host.split("/")[0]!.toLowerCase(), prefix: pathSegments(host.slice(host.split("/")[0]!.length)) }))
       .find((host) => host.name === url?.host.toLowerCase() && host.prefix.length > 0);
-    return { basePath, cloudflarePrefix: null, ...(own !== undefined ? { hostPrefix: own.prefix } : {}) };
+    const baseHost = url?.hostname.toLowerCase() ?? null;
+    const cloudflareBase =
+      baseHost === CLOUDFLARE_AI_GATEWAY_HOST ? { after: basePath.slice(CLOUDFLARE_ENDPOINT_SEGMENTS), prefix: cloudflarePrefix } : undefined;
+    return {
+      basePath,
+      cloudflarePrefix: null,
+      baseHost,
+      ...(own !== undefined ? { hostPrefix: own.prefix } : {}),
+      ...(cloudflareBase !== undefined ? { cloudflareBase } : {}),
+    };
   }
   return DIRECT_ROUTE;
 }
@@ -223,6 +251,29 @@ export interface UpstreamTargets {
   /** A key of the provider's `hosts`. The main host stands for the base URL or Cloudflare too. */
   readonly host: string;
   readonly paths: readonly (readonly TemplateSegment[])[];
+  /** The base URL's host name on the main host (`UpstreamRoute.baseHost`), for refused paths that name hosts. */
+  readonly baseHost?: string | null;
+}
+
+/** The targets of `paths` on the main host of `route`, with its base URL's host. */
+const mainTargets = (route: UpstreamRoute, paths: readonly (readonly TemplateSegment[])[]): UpstreamTargets =>
+  route.baseHost === undefined || route.baseHost === null ? { host: "main", paths } : { host: "main", paths, baseHost: route.baseHost };
+
+/**
+ * How Cloudflare AI Gateway's provider endpoint reads `path`: it adds back
+ * `prefix` (`stripPathPrefix`); a path that may or may not start with it (a
+ * `{name}` part there) is read both ways.
+ */
+function cloudflareReadings(prefix: readonly string[], path: readonly TemplateSegment[]): (readonly TemplateSegment[])[] {
+  if (prefix.length === 0) return [path];
+  const added = [...prefix.map(literal), ...path];
+  const head = path.slice(0, prefix.length);
+  const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
+  if (starts) return [path];
+  const may =
+    head.length === prefix.length &&
+    head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: prefix[index]! }));
+  return may ? [path, added] : [added];
 }
 
 const literal = (value: string): TemplateSegment => ({ kind: "literal", value });
@@ -245,19 +296,9 @@ const literal = (value: string): TemplateSegment => ({ kind: "literal", value })
 export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: readonly TemplateSegment[]): UpstreamTargets | null {
   if (hostKey !== "main") return route.cloudflarePrefix !== null ? null : { host: hostKey, paths: [path] };
   const prefix = route.cloudflarePrefix;
-  if (prefix !== null) {
-    if (prefix.length === 0) return { host: "main", paths: [path] };
-    const added = [...prefix.map(literal), ...path];
-    const head = path.slice(0, prefix.length);
-    const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
-    if (starts) return { host: "main", paths: [path] };
-    const may =
-      head.length === prefix.length &&
-      head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: prefix[index]! }));
-    return { host: "main", paths: may ? [path, added] : [added] };
-  }
+  if (prefix !== null) return mainTargets(route, cloudflareReadings(prefix, path));
   const base = route.basePath;
-  if (base === null) return { host: "main", paths: [path] };
+  if (base === null) return mainTargets(route, [path]);
   const paths: (readonly TemplateSegment[])[] = base.map((_, from) => [...base.slice(from).map(literal), ...path]);
   paths.push(path);
   // A base URL on the provider's own host: the provider reads the whole path
@@ -271,7 +312,10 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
       head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: own[index]! }));
     if (may) paths.push(whole.slice(own.length));
   }
-  return { host: "main", paths };
+  // A base URL on Cloudflare AI Gateway's host: read as the setting reads it.
+  const cloudflare = route.cloudflareBase;
+  if (cloudflare !== undefined) paths.push(...cloudflareReadings(cloudflare.prefix, [...cloudflare.after.map(literal), ...path]));
+  return mainTargets(route, paths);
 }
 
 export interface MatchContext {
@@ -285,6 +329,8 @@ export interface MatchContext {
 interface CompiledRule<Entry> {
   readonly template: Template;
   readonly methods: ReadonlySet<string> | null;
+  /** The base URL hosts it applies on (`RefusedPath.hosts`), or null for every route. */
+  readonly hosts?: ReadonlySet<string> | null;
   readonly entry: Entry;
 }
 
@@ -308,7 +354,12 @@ export class ProviderMatcher {
     this.refused = provider.refused.map((entry) =>
       typeof entry === "string"
         ? { template: parseTemplate(entry, { rest: true }), methods: null, entry: null }
-        : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods), entry: null },
+        : {
+            template: parseTemplate(entry.path, { rest: true }),
+            methods: entry.methods === undefined ? null : new Set(entry.methods),
+            hosts: entry.hosts === undefined ? null : new Set(entry.hosts.map((host) => host.toLowerCase())),
+            entry: null,
+          },
     );
     // Every method under the path is refused; the opt-in reaches only the mint.
     this.liveTokens = (provider.liveTokens ?? []).map((entry) => ({
@@ -371,13 +422,13 @@ export class ProviderMatcher {
     if (!normalized.ok) return { kind: "refused", reason: "bad_path", detail: normalized.reason };
     const { segments } = normalized;
 
-    const atGateway: UpstreamTargets = { host: "main", paths: [segments.map(literal)] };
+    const route = context.route ?? DIRECT_ROUTE;
+    const atGateway = mainTargets(route, [segments.map(literal)]);
     const gateway = this.refusedAt(method, atGateway);
     if (gateway !== null) return { kind: "refused", reason: "refused_path", pattern: gateway };
     // A live-session token path is refused like the others unless a listed path that opts in takes the request.
     const gatewayToken = firstRule(this.liveTokens, method, atGateway);
 
-    const route = context.route ?? DIRECT_ROUTE;
     // A token path a listing reached without opting in to its mint: refused,
     // unless a later listing that opts in takes the request.
     let tokenRefusal: string | null = null;
@@ -483,7 +534,7 @@ export class ProviderMatcher {
    */
   refusedCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
     const { method } = listed.listed;
-    const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
+    const atGateway = mainTargets(route, [listed.template.segments]);
     const sent = upstreamTargets(route, "main", listed.template.segments);
     const refused = this.refusedAt(method, atGateway) ?? this.refusedAt(method, sent);
     if (refused !== null || listed.listed.liveToken === true) return refused;
@@ -497,7 +548,7 @@ export class ProviderMatcher {
    */
   liveTokenCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): LiveTokenPath | null {
     const { method } = listed.listed;
-    const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
+    const atGateway = mainTargets(route, [listed.template.segments]);
     const sent = upstreamTargets(route, "main", listed.template.segments);
     const token = this.tokenRule(method, atGateway, sent);
     // Only a listing of the mint itself may opt in: its method, on exactly the token path, wherever it is read.
@@ -646,12 +697,19 @@ function* everyRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], 
   }
 }
 
+/** Whether a rule applies where `targets` go: a rule that names hosts only on a base URL on one of them. */
+function appliesOn(rule: CompiledRule<unknown>, targets: UpstreamTargets): boolean {
+  if (rule.hosts === undefined || rule.hosts === null) return true;
+  return targets.baseHost !== undefined && targets.baseHost !== null && rule.hosts.has(targets.baseHost);
+}
+
 function firstRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Rule | null {
   if (targets === null || targets.host !== "main") return null;
   for (const path of targets.paths) {
     const segments = targetSegments(path);
     for (const rule of rules) {
       if (rule.methods !== null && !rule.methods.has(method)) continue;
+      if (!appliesOn(rule, targets)) continue;
       if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) return rule;
     }
   }

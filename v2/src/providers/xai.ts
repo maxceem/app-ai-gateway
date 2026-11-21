@@ -8,19 +8,27 @@
 import { chat, completions, embeddings, images, messages, responses, transcription, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
+/** xAI's management API host: every path on it manages the account. */
+const XAI_MANAGEMENT_HOST = "management-api.x.ai";
+
 export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
   // `management-api.x.ai` is declared so a custom provider there gets the
   // refused paths below: every path on it manages the account.
-  otherHosts: ["us.api.x.ai", "management-api.x.ai"],
+  otherHosts: ["us.api.x.ai", XAI_MANAGEMENT_HOST],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The key's own details. And the management host's account paths: API
-  // keys, teams, models and ACLs, management keys (`auth/*`), audit logs
-  // (`audit/*`) and billing (`v1/billing/*`). The inference host has none of
-  // these, so refusing them there changes nothing.
-  refused: ["v1/api-key/*", "auth/*", "audit/*", "v1/billing/*"],
+  // The key's own details. And, only on the management host, its account
+  // paths: API keys, teams, models and ACLs, management keys (`auth/*`),
+  // audit logs (`audit/*`) and billing (`v1/billing/*`). Elsewhere, such as an
+  // xAI-compatible server, those paths may be ordinary ones.
+  refused: [
+    "v1/api-key/*",
+    { path: "auth/*", hosts: [XAI_MANAGEMENT_HOST] },
+    { path: "audit/*", hosts: [XAI_MANAGEMENT_HOST] },
+    { path: "v1/billing/*", hosts: [XAI_MANAGEMENT_HOST] },
+  ],
   // Short-lived secrets for live sessions, reached only by a listed path that
   // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
   liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],

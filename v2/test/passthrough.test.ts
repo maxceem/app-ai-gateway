@@ -352,7 +352,9 @@ describe("judging a listing where the provider reads it", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       const matcher = new ProviderMatcher(description);
       const refused = description.refused.map((entry) =>
-        typeof entry === "string" ? { template: parseTemplate(entry, { rest: true }), methods: null } : { template: parseTemplate(entry.path, { rest: true }), methods: entry.methods as readonly string[] },
+        typeof entry === "string"
+          ? { template: parseTemplate(entry, { rest: true }), methods: null, hosts: null }
+          : { template: parseTemplate(entry.path, { rest: true }), methods: (entry.methods ?? null) as readonly string[] | null, hosts: entry.hosts ?? null },
       );
       const words = new Set(["v1", "x", "files", "chat"]);
       for (const source of [...description.refused.map((entry) => (typeof entry === "string" ? entry : entry.path)), ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
@@ -402,7 +404,9 @@ describe("judging a listing where the provider reads it", () => {
             if (match.kind !== "passthrough") continue;
             for (const read of readAs(description, connection, match.upstream.path)) {
               const where = () => `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
-              for (const { template, methods } of refused) {
+              const baseHost = connection.baseUrl === null ? null : new URL(connection.baseUrl).hostname;
+              for (const { template, methods, hosts } of refused) {
+                if (hosts !== null && (baseHost === null || !hosts.includes(baseHost))) continue;
                 if ((methods === null || methods.includes(method)) && matchTemplate(template, read, { ignoreCase: true }) !== null) failures.push(`${where()} is refused by ${template.source}`);
               }
               for (const { op, lists, templates } of readings) {

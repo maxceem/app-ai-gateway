@@ -107,7 +107,11 @@ describe("a custom provider's description", () => {
       for (const name of description.otherHosts ?? []) {
         const host = name.startsWith("*.") ? `jp${name.slice(1)}` : name;
         expect(knownHostOwner(`https://${host}/`)?.type, host).toBe(description.type);
-        expect(customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] }).refused, host).toBe(description.refused);
+        // Every refused path, except one that names other hosts; one naming this host applies to every request here.
+        const expected = description.refused.flatMap((entry) =>
+          typeof entry === "string" || entry.hosts === undefined ? [entry] : entry.hosts.includes(host) ? [entry.methods === undefined ? entry.path : { path: entry.path, methods: entry.methods }] : [],
+        );
+        expect(customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] }).refused, host).toEqual(expected);
       }
     }
     for (const host of ["us.api.openai.com", "gb.api.openai.com", "eu.api.openai.com", "jp.api.openai.com"]) {

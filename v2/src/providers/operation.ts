@@ -529,10 +529,17 @@ export function readingRules(description: ProviderDescription, operation: Operat
   return operation?.rules ?? description;
 }
 
-/** A refused path for some methods only. */
+/** A refused path for some methods only, or only on some hosts. */
 export interface RefusedPath {
   readonly path: string;
-  readonly methods: readonly HttpMethod[];
+  /** Only these methods are refused there. Every method when left out. */
+  readonly methods?: readonly HttpMethod[];
+  /**
+   * Only on a base URL on one of these hosts (lower-case names). A path that
+   * means account management on one host may be an ordinary path on a
+   * compatible server elsewhere. Every route when left out.
+   */
+  readonly hosts?: readonly string[];
 }
 
 /**

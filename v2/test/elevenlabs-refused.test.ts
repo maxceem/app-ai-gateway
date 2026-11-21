@@ -96,7 +96,7 @@ type Rule = { readonly path: string; readonly methods: readonly string[] | null;
 /** A description's refused and live-session token paths, as one list of rules. */
 const rulesOf = (description: ProviderDescription): Rule[] => [
   ...description.refused.map((entry) =>
-    typeof entry === "string" ? { path: entry, methods: null, token: false } : { path: entry.path, methods: entry.methods, token: false },
+    typeof entry === "string" ? { path: entry, methods: null, token: false } : { path: entry.path, methods: entry.methods ?? null, token: false },
   ),
   ...(description.liveTokens ?? []).map((entry) => ({
     path: entry.path,

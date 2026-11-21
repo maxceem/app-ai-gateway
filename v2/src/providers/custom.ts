@@ -233,8 +233,21 @@ function hostOf(baseUrl: string): string | null {
   }
 }
 
+/**
+ * A known provider's refused paths on `host`: one that names hosts applies
+ * only when `host` is one of them, and then on every request.
+ */
+function refusedOn(refused: ProviderDescription["refused"], host: string): ProviderDescription["refused"] {
+  if (refused.every((entry) => typeof entry === "string" || entry.hosts === undefined)) return refused;
+  return refused.flatMap((entry) => {
+    if (typeof entry === "string" || entry.hosts === undefined) return [entry];
+    if (!entry.hosts.includes(host)) return [];
+    return [entry.methods === undefined ? entry.path : { path: entry.path, methods: entry.methods }];
+  });
+}
+
 /** Cloudflare AI Gateway's host: it reaches every provider it serves, so no custom provider may use it. */
-export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+export { CLOUDFLARE_AI_GATEWAY_HOST } from "./matcher.ts";
 
 /** A provider's declared host names, lower-cased: its `hosts` and its `otherHosts`. */
 export function declaredHostNames(description: ProviderDescription): readonly string[] {
@@ -286,7 +299,8 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     hosts: owner === null ? { main: host } : owner.hosts,
     auth: setting.auth,
     serviceModes: NO_SERVICE_TIERS,
-    refused: owner === null ? [] : owner.refused,
+    // The owner's refused paths; one that names hosts applies here only when this base URL is on one of them.
+    refused: owner === null ? [] : refusedOn(owner.refused, host),
     ...(owner?.liveTokens === undefined ? {} : { liveTokens: owner.liveTokens }),
     // Its reporting headers, as its own connections send them.
     ...(owner?.attributionHeaders !== undefined ? { attributionHeaders: owner.attributionHeaders } : {}),

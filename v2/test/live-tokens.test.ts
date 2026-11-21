@@ -131,6 +131,60 @@ describe("matching a live-session token path", () => {
     expect(matcher.match("POST", "tts_websocket", { passthrough: relative, route })).toMatchObject({ kind: "passthrough", liveToken: { method: "POST" } });
   });
 
+  it("reads a base URL on Cloudflare AI Gateway as the Cloudflare setting reads its paths", () => {
+    const description = describedAs("openai");
+    const matcher = new ProviderMatcher(description);
+    // Cloudflare's OpenAI endpoint adds back `v1`, so `realtime/client_secrets` reaches the token path.
+    const route = upstreamRoute(description, { baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/openai/", cloudflareGateway: null });
+    const plain = compilePassthrough([{ method: "POST", path: "realtime/client_secrets" }]);
+    expect(matcher.match("POST", "realtime/client_secrets", { passthrough: plain, route })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    expect(matcher.refusedCovering(plain[0]!, route)).toBe("v1/realtime/client_secrets/*");
+    // Admin paths too, written as the endpoint reads them.
+    const admin = compilePassthrough([{ method: "GET", path: "organization/users" }]);
+    expect(matcher.refusedCovering(admin[0]!, route)).toBe("v1/organization/*");
+    expect(matcher.match("GET", "organization/users", { passthrough: admin, route })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    // Opted in, it is the mint.
+    const optedIn = compilePassthrough([{ method: "POST", path: "realtime/client_secrets", liveToken: true }]);
+    expect(matcher.liveTokenCovering(optedIn[0]!, route)).toMatchObject({ method: "POST" });
+    expect(matcher.match("POST", "realtime/client_secrets", { passthrough: optedIn, route })).toMatchObject({ kind: "passthrough", liveToken: { method: "POST" } });
+  });
+
+  it("refuses every built-in provider's refused paths through a base URL on its Cloudflare AI Gateway endpoint", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      const slug = description.cloudflareGateway?.slug;
+      if (slug === undefined) continue;
+      const matcher = new ProviderMatcher(description);
+      const route = upstreamRoute(description, { baseUrl: `https://gateway.ai.cloudflare.com/v1/acct/gw/${slug}/`, cloudflareGateway: null });
+      const strip = description.cloudflareGateway?.stripPathPrefix ?? "";
+      for (const entry of description.refused) {
+        const rule = typeof entry === "string" ? { path: entry, methods: undefined, hosts: undefined } : entry;
+        if (rule.hosts !== undefined) continue;
+        const method = rule.methods?.[0] ?? "GET";
+        // A concrete path under the rule, written as the client sends it to the endpoint.
+        const concrete = rule.path.replace(/\/\*$/, "/x").replace(/\{[^}]+\}/g, "x");
+        const sent = concrete.startsWith(strip) ? concrete.slice(strip.length) : concrete;
+        const listed = compilePassthrough([{ method, path: sent }]);
+        expect(matcher.match(method, sent, { passthrough: listed, route }), `${description.type} ${method} ${sent}`).toMatchObject({ kind: "refused" });
+      }
+    }
+  });
+
+  it("refuses xAI's management paths only on its management host", () => {
+    const description = describedAs("xai");
+    const matcher = new ProviderMatcher(description);
+    const health = compilePassthrough([{ method: "GET", path: "auth/health" }]);
+    // An xAI-compatible server: `auth/health` is an ordinary path there, as it was before.
+    const compatible = upstreamRoute(description, { baseUrl: "https://grok-compatible.example.com/", cloudflareGateway: null });
+    expect(matcher.match("GET", "auth/health", { passthrough: health, route: compatible })).toMatchObject({ kind: "passthrough" });
+    expect(matcher.refusedCovering(health[0]!, compatible)).toBeNull();
+    // The management host: key creation stays refused.
+    const management = upstreamRoute(description, { baseUrl: "https://management-api.x.ai/", cloudflareGateway: null });
+    const create = compilePassthrough([{ method: "POST", path: "auth/teams/{teamId}/api-keys" }]);
+    expect(matcher.refusedCovering(create[0]!, management)).toBe("auth/*");
+    expect(matcher.match("POST", "auth/teams/t1/api-keys", { passthrough: create, route: management })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    expect(matcher.match("GET", "auth/health", { passthrough: health, route: management })).toMatchObject({ kind: "refused", reason: "refused_path" });
+  });
+
   it("refuses an opt-in that some value of its parts would send under a token path but not to its mint", () => {
     const description = describedAs("gemini");
     const matcher = new ProviderMatcher(description);
@@ -552,6 +606,34 @@ describe("serving a live-session mint", () => {
       expect(sent.url).toBe("https://api.openai.com/v1/realtime/client_secrets");
       expect(sent.headers.get("cf-aig-skip-cache")).toBe("true");
       expect(sent.headers.get("cf-aig-cache-ttl")).toBeNull();
+    });
+
+    it("through a base URL on Cloudflare AI Gateway's OpenAI endpoint, with the expiry locked", async () => {
+      const { appId, slug, key } = await connected({
+        type: "openai",
+        baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/openai/",
+        passthrough: [{ method: "POST", path: "realtime/client_secrets", live_token: true }],
+      });
+      fetchSpy.mockImplementation(async () => Response.json({ value: "ek_minted", expires_at: 1 }));
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/realtime/client_secrets`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json", ...cacheHeaders },
+          body: JSON.stringify({ session: { type: "realtime" }, expires_after: { anchor: "created_at", seconds: 600 } }),
+        }),
+        env,
+        ctx,
+      );
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(200);
+      const [url, init] = fetchSpy.mock.calls[0]!;
+      expect(String(url)).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/realtime/client_secrets");
+      const headers = new Headers(init!.headers);
+      expect(headers.get("cf-aig-skip-cache")).toBe("true");
+      expect(headers.get("cf-aig-cache-ttl")).toBeNull();
+      expect(sentBody(0).expires_after).toEqual({ anchor: "created_at", seconds: 60 });
     });
 
     it("leaves a request that is not a mint as it was", async () => {
