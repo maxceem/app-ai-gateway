@@ -34,7 +34,7 @@ beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 const ORIGIN = "https://gateway.test";
 /** A caller whose request carried no credential header to strip. */
-const NO_CLIENT: ClientSide = { stripped: [], credential: "agw_unit_test_credential", credentialHeaders: [] };
+const NO_CLIENT: ClientSide = { stripped: [], credential: "agw_unit_test_credential", credentialHeaders: [], identityHeaders: [] };
 const SECRET = "sk-test-provider-key-5678";
 const AUTH = { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } };
 

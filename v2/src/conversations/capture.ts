@@ -46,6 +46,7 @@ export function captureHints(operation: OperationDescription, query: string): Ca
     ...(operation.rawAudio === true ? { rawAudioRequest: true } : {}),
     ...(operation.rawAudioResponse === true ? { rawAudioResponse: true } : {}),
     ...(operation.audioFormFields !== undefined && operation.audioFormFields.length > 0 ? { audioFormFields: [...operation.audioFormFields] } : {}),
+    ...(operation.imageFormFields !== undefined && operation.imageFormFields.length > 0 ? { imageFormFields: [...operation.imageFormFields] } : {}),
     ...(operation.responseJsonLines === true ? { responseJsonLines: true } : {}),
   };
 }

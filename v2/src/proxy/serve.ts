@@ -794,6 +794,8 @@ export interface ClientSide {
    * never holds their values. End-user id headers are not among them.
    */
   readonly credentialHeaders: readonly string[];
+  /** The headers that carry end-user ids (lowercase). Never a credential, even when a provider key header has the same name. */
+  readonly identityHeaders: readonly string[];
 }
 
 export function clientSide(app: AppRecord, caller: Caller): ClientSide {
@@ -802,6 +804,9 @@ export function clientSide(app: AppRecord, caller: Caller): ClientSide {
     stripped: [caller.credentialHeader, ...auth.consumedHeaders, DEFAULT_END_USER_HEADER],
     credential: caller.credentialToken,
     credentialHeaders: [caller.credentialHeader, ...(auth.tokenHeader !== undefined ? [auth.tokenHeader] : []), PROOF_HEADER],
+    identityHeaders: [...auth.identityHeaders, DEFAULT_END_USER_HEADER]
+      .map((name) => name.toLowerCase())
+      .filter((name) => name !== PROOF_HEADER.toLowerCase()),
   };
 }
 
@@ -939,18 +944,6 @@ async function sendAttemptsKeptFor(
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
   let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController; sent: SentAttempt } | null = null;
   const stripped = client.stripped;
-  // The gateway credentials the app sent: the one authentication verified, whatever
-  // header carried it, and the values of the headers that carry credentials. Never an
-  // end-user id. A stored conversation that contains one of them is never written with that body.
-  const clientSecrets = [
-    client.credential,
-    ...client.credentialHeaders.flatMap((name) => {
-      const value = c.req.header(name);
-      if (value === undefined) return [];
-      const token = value.replace(/^bearer\s+/iu, "");
-      return token === value ? [value] : [value, token];
-    }),
-  ];
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -967,6 +960,22 @@ async function sendAttemptsKeptFor(
     ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
     ...otherKeyHeaders,
   ].map((name) => name.toLowerCase());
+  // The credentials the app sent: the one authentication verified, whatever header
+  // carried it, the values of the headers that carry the app's credentials, and any
+  // value the client put in a provider key header (stripped above, never sent on).
+  // Never an end-user id. A stored conversation that contains one of them is never
+  // written with that body.
+  const secretHeaders = [...new Set([...client.credentialHeaders.map((name) => name.toLowerCase()), ...keyHeaders])]
+    .filter((name) => !client.identityHeaders.includes(name));
+  const clientSecrets = [
+    client.credential,
+    ...secretHeaders.flatMap((name) => {
+      const value = c.req.header(name);
+      if (value === undefined) return [];
+      const token = value.replace(/^bearer\s+/iu, "");
+      return token === value ? [value] : [value, token];
+    }),
+  ];
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;

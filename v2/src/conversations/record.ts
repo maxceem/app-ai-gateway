@@ -59,6 +59,8 @@ export interface CaptureHints {
   rawAudioResponse?: boolean;
   /** Form fields of the request that carry a recording (`OperationDescription.audioFormFields`). */
   audioFormFields?: readonly string[];
+  /** Form fields of the request that carry an image (`OperationDescription.imageFormFields`). */
+  imageFormFields?: readonly string[];
   /** A successful answer is newline-delimited JSON, whatever its content type (`OperationDescription.responseJsonLines`). */
   responseJsonLines?: boolean;
 }
@@ -117,6 +119,19 @@ function isJsonLines(type: string): boolean {
 /** Audio whose format the body does not say, such as a chat reply's `audio.data`. */
 const UNKNOWN_AUDIO = "audio";
 
+/** An image whose format neither the upload nor its first bytes say. */
+const UNKNOWN_IMAGE = "image";
+
+/** An image's type from its first bytes, for an upload that did not say it. */
+function sniffedImage(bytes: Uint8Array): string {
+  const starts = (...prefix: number[]) => prefix.every((byte, index) => bytes[index] === byte);
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (starts(0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  return UNKNOWN_IMAGE;
+}
+
 /** A media type a body may name: `type/subtype` of token characters only. */
 const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
@@ -126,13 +141,13 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
  * `audio/L16;codec=pcm;rate=24000` still counts as audio.
  */
 function safeMime(mime: string): string {
-  if (mime === UNKNOWN_AUDIO) return mime;
+  if (mime === UNKNOWN_AUDIO || mime === UNKNOWN_IMAGE) return mime;
   const base = mime.split(";")[0]!.trim();
   return MEDIA_TYPE.test(base) ? base : "application/octet-stream";
 }
 
 function mediaKind(mime: string): keyof KeptMedia {
-  if (mime.startsWith("image/")) return "images";
+  if (mime === UNKNOWN_IMAGE || mime.startsWith("image/")) return "images";
   if (mime === UNKNOWN_AUDIO || mime.startsWith("audio/")) return "audio";
   return "files";
 }
@@ -265,9 +280,10 @@ function bareMedia(
     const mime = value.media_type.toLowerCase();
     return value.type === "text" ? { mime, audio: false, text: true } : { mime, audio: mime.startsWith("audio/") };
   }
-  // Gemini's `inlineData` / `inline_data`: any media, typed.
+  // Gemini's `inlineData` / `inline_data`: any media, typed. Only under those
+  // keys, so a tool call's arguments with a `mimeType` and `data` stay as they are.
   const declared = typeof value.mimeType === "string" ? value.mimeType : value.mime_type;
-  if (typeof declared === "string") {
+  if ((key === "inlineData" || key === "inline_data") && typeof declared === "string") {
     const mime = declared.toLowerCase();
     return { mime, audio: mime.startsWith("audio/") };
   }
@@ -437,6 +453,8 @@ interface BodyOptions {
   rawAudio: boolean;
   /** Form fields that carry a recording. */
   audioFormFields: readonly string[];
+  /** Form fields that carry an image. */
+  imageFormFields: readonly string[];
   /** The body is newline-delimited JSON, whatever it was named. */
   jsonLines: boolean;
   /** An error answer: read as one JSON document first. */
@@ -444,7 +462,7 @@ interface BodyOptions {
 }
 
 async function storedBody(body: CapturedBytes, shelf: MediaShelf, options: BodyOptions): Promise<StoredBody> {
-  const { keep, audio, rawAudio, audioFormFields, jsonLines, failed } = options;
+  const { keep, audio, rawAudio, audioFormFields, imageFormFields, jsonLines, failed } = options;
   const filtering = !keep.images || !keep.audio || !keep.files;
   /** The one walk for this body's JSON: its shelf, whether it is a stream, and its declared audio fields. */
   const walk = (streamed: boolean): Walk => ({ shelf, streamed, ...(audio ? { audio } : {}) });
@@ -479,14 +497,21 @@ async function storedBody(body: CapturedBytes, shelf: MediaShelf, options: BodyO
           kept = entry.length > MAX_STRING_CHARS ? `${OMITTED}text;${entry.length}` : entry;
         } else {
           const file = entry as File;
-          // A field the operation declares as a recording is audio, whatever its file was named.
+          // A field the operation declares as a recording or an image is one,
+          // whatever its file was named or typed.
           const declared = fileType(file);
-          const mime = audioFormFields.includes(name) && !declared.startsWith("audio/") ? UNKNOWN_AUDIO : declared;
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const mime =
+            audioFormFields.includes(name) && !declared.startsWith("audio/")
+              ? UNKNOWN_AUDIO
+              : imageFormFields.includes(name) && !declared.startsWith("image/")
+                ? sniffedImage(bytes)
+                : declared;
           kept = {
             file: file.name,
             type: mime,
             bytes: file.size,
-            content: await shelf.place(new Uint8Array(await file.arrayBuffer()), mime),
+            content: await shelf.place(bytes, mime),
           };
         }
         // A repeated field keeps every value, in order.
@@ -553,6 +578,7 @@ export async function conversationRecord(
     keep: capture.keep,
     rawAudio: hints.rawAudioRequest === true,
     audioFormFields: hints.audioFormFields ?? [],
+    imageFormFields: hints.imageFormFields ?? [],
     jsonLines: false,
     failed: false,
   });
@@ -565,6 +591,7 @@ export async function conversationRecord(
     ...(hints.audio ? { audio: hints.audio } : {}),
     rawAudio: ok && hints.rawAudioResponse === true,
     audioFormFields: [],
+    imageFormFields: [],
     jsonLines: ok && hints.responseJsonLines === true,
     failed: !ok,
   });

@@ -573,6 +573,13 @@ export interface OperationDescription {
    */
   readonly audioFormFields?: readonly string[];
   /**
+   * Form fields of its request that carry an image, such as an image edit's
+   * `image`, `image[]` and `mask`: a stored conversation treats them as images
+   * whatever type or name the upload gave them (a browser often sends
+   * `application/octet-stream` named `blob`).
+   */
+  readonly imageFormFields?: readonly string[];
+  /**
    * Its answer is newline-delimited JSON, whatever content type it is sent
    * with, such as ElevenLabs' streamed speech with timestamps: a stored
    * conversation keeps it a line at a time (`../conversations/record.ts`).

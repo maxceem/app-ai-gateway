@@ -137,6 +137,7 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   rawAudio: "kept",
   rawAudioResponse: "kept",
   audioFormFields: "kept",
+  imageFormFields: "kept",
   responseJsonLines: "kept",
 };
 

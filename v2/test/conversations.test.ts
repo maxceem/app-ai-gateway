@@ -40,12 +40,13 @@ const encoder = new TextEncoder();
 
 /** A capture for the recorder; what an operation declares may be given flat, as `hints`' fields. */
 function capture(given: Partial<ConversationCapture> & CaptureHints = {}): ConversationCapture {
-  const { audio, rawAudioRequest, rawAudioResponse, audioFormFields, responseJsonLines, ...overrides } = given;
+  const { audio, rawAudioRequest, rawAudioResponse, audioFormFields, imageFormFields, responseJsonLines, ...overrides } = given;
   const hints: CaptureHints = {
     ...(audio !== undefined ? { audio } : {}),
     ...(rawAudioRequest !== undefined ? { rawAudioRequest } : {}),
     ...(rawAudioResponse !== undefined ? { rawAudioResponse } : {}),
     ...(audioFormFields !== undefined ? { audioFormFields } : {}),
+    ...(imageFormFields !== undefined ? { imageFormFields } : {}),
     ...(responseJsonLines !== undefined ? { responseJsonLines } : {}),
   };
   return {
@@ -559,6 +560,43 @@ describe("conversation records", () => {
     expect(file.media).toHaveLength(1);
   });
 
+  it("treats a declared image upload field as an image, whatever its file was named or typed (Astra round 1)", async () => {
+    const png = Uint8Array.from(atob(PIXEL), (char) => char.charCodeAt(0));
+    const form = new FormData();
+    form.append("model", "gpt-image-1");
+    form.append("image", new File([png], "blob", { type: "application/octet-stream" }));
+    const sent = new Request("https://example.test", { method: "POST", body: form });
+    const bytes = new Uint8Array(await sent.arrayBuffer());
+    const request = { contentType: sent.headers.get("content-type")!, bytes, totalBytes: bytes.byteLength };
+    const imagesOnly = { images: true, audio: true, files: false };
+    const kept = await conversationRecord(capture({ keep: imagesOnly, imageFormFields: ["image", "image[]", "mask"], request }));
+    expect(kept.media).toHaveLength(1);
+    expect(JSON.parse(kept.line).request.fields.image).toMatchObject({ file: "blob", type: "image/png" });
+    // The reverse: an app that keeps no images leaves it out, even with files kept.
+    const left = await conversationRecord(capture({
+      keep: { images: false, audio: true, files: true },
+      imageFormFields: ["image", "image[]", "mask"],
+      request,
+    }));
+    expect(left.media).toHaveLength(0);
+  });
+
+  it("keeps a tool call's mimeType and data as they are: only inlineData is Gemini media (Astra round 1)", async () => {
+    const body = JSON.stringify({
+      messages: [{ role: "assistant", content: [
+        { type: "tool_use", id: "t1", name: "save", input: { mimeType: "text/plain", data: "hello, world!" } },
+      ] }],
+      contents: [{ parts: [{ inlineData: { mimeType: "image/png", data: PIXEL } }] }],
+    });
+    const record = await conversationRecord(capture({
+      keep: { images: true, audio: true, files: true },
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }));
+    expect(record.line).toContain('"data":"hello, world!"');
+    // Gemini's own inlineData is still kept as media.
+    expect(record.media).toHaveLength(1);
+  });
+
   it("joins an event's data lines before reading it, so a multi-line text event is kept (Sol round 3)", async () => {
     const stream = ["data: {\"type\":\"text\",", "data: \"text\":\"Hello\"}", "", "data: [DONE]", ""].join("\n");
     const kept = (JSON.parse((await conversationRecord(capture({
@@ -1015,6 +1053,29 @@ describe("conversation storage through the gateway", () => {
     await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
     const [record] = await storedRecords(appId);
     expect(JSON.stringify(record)).not.toContain(token);
+    expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+  });
+
+  it("never stores a provider key the client sent in another key header (Astra round 1)", async () => {
+    await seedAccount();
+    const slug = await connection("anthropic");
+    const { appId, key } = await appWith({
+      routing: { providers: { [slug]: { operations: ["anthropic.messages"], models: ["claude-sonnet-5"] } } },
+      conversations: { store: true },
+    });
+    const clientKey = "sk-ant-client-held-key-0042";
+    fetchSpy.mockImplementation(async () =>
+      Response.json({ id: "msg_1", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 2 } }));
+    // The app authenticates with Authorization; an SDK also sends its own key in x-api-key.
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "x-api-key": clientKey, "content-type": "application/json", "x-end-user-id": "user-1" },
+      body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 10, messages: [{ role: "user", content: `my key is ${clientKey}` }] }),
+    });
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)).flush();
+    const [record] = await storedRecords(appId);
+    expect(JSON.stringify(record)).not.toContain(clientKey);
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
