@@ -150,8 +150,8 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
  * says, whatever the client sent. Every spelling of a field is removed and
  * only its first is written, so the provider reads one value; a nested
  * spelling gets its parent objects when the body has none. A mint that
- * forces no body field is sent as it is (`same`). An empty body becomes an
- * object holding only the forced fields. A body that is not a JSON object
+ * forces no body field is sent as it is (`same`). An empty body, or JSON
+ * `null`, becomes an object holding only the forced fields. A body that is not a JSON object
  * cannot carry them, so it is `unreadable`, and the gateway refuses to send
  * it rather than mint a secret it could not limit.
  */
@@ -169,6 +169,8 @@ export function lockedLiveTokenBody(
       return { kind: "unreadable" };
     }
   }
+  // JSON `null` carries nothing, like an empty body (ElevenLabs' schema allows it).
+  if (body === null) body = {};
   if (!isObject(body)) return { kind: "unreadable" };
   const locked: Record<string, unknown> = { ...body };
   for (const field of forced.fields) {

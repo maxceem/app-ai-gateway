@@ -80,6 +80,20 @@ describe("matching a live-session token path", () => {
     expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path, liveToken: true }]) })).toMatchObject({ kind: "refused", reason: "refused_path" });
   });
 
+  it("lets an opted-in mint through behind a broader listing that does not opt in, in either order", () => {
+    const matcher = new ProviderMatcher(describedAs("openai"));
+    const broad = { method: "POST" as const, path: "v1/realtime/{endpoint}" };
+    const mint = { method: "POST" as const, path: "v1/realtime/client_secrets", liveToken: true as const };
+    for (const order of [[broad, mint], [mint, broad]]) {
+      const passthrough = compilePassthrough(order);
+      expect(matcher.match("POST", "v1/realtime/client_secrets", { passthrough })).toMatchObject({ kind: "passthrough", listed: { liveToken: true } });
+      // The broad listing still serves its other paths, and reaches no token path itself.
+      expect(matcher.match("POST", "v1/realtime/calls", { passthrough })).toMatchObject({ kind: "passthrough", liveToken: null });
+    }
+    // Without an opted-in listing, the broad one alone does not reach the mint.
+    expect(matcher.match("POST", "v1/realtime/client_secrets", { passthrough: compilePassthrough([broad]) })).toMatchObject({ kind: "refused", reason: "refused_path" });
+  });
+
   it("keeps the opt-in to the paths it was made for: case and encoding tricks reach only the token path itself", () => {
     const matcher = new ProviderMatcher(describedAs("openai"));
     const passthrough = compilePassthrough([{ method: "POST", path: "v1/realtime/client_secrets", liveToken: true }]);
@@ -175,10 +189,17 @@ describe("locking a mint's window", () => {
   it("leaves a mint that forces no body field as it is, and calls a body that is not a JSON object unreadable", () => {
     const forced = one("ttl_seconds", { window: "seconds" });
     expect(lockedLiveTokenBody({ query: [{ name: "include_conversation_id", value: "true" }] }, new TextEncoder().encode("anything"), 0)).toEqual({ kind: "same" });
-    for (const body of ["[1]", "null", "7", "not json", "\"text\""]) {
+    for (const body of ["[1]", "7", "not json", "\"text\""]) {
       expect(lockedLiveTokenBody(forced, new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
     }
     expect(lockedLiveTokenBody(forced, new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
+  });
+
+  it("reads a JSON null body as an empty one, and adds the forced fields", () => {
+    // ElevenLabs' realtime client-secret mint accepts a null body.
+    const forced = one("ttl_seconds", { window: "seconds" });
+    expect(decode(lockedLiveTokenBody(forced, encode(null), 0))).toEqual({ ttl_seconds: 60 });
+    expect(decode(lockedLiveTokenBody(forced, new TextEncoder().encode(" null "), 0))).toEqual({ ttl_seconds: 60 });
   });
 });
 
@@ -291,8 +312,9 @@ describe("saving a live-session token path", () => {
     // Only some of its requests are token paths: it cannot opt in, nor be listed without.
     [[{ method: "POST", path: "v1/realtime/{thing}", live_token: true }], "not one of OpenAI's live-session token paths"],
     // Only the mint itself opts in: cancelling a ChatKit session, or another method on a mint's path, does not.
-    [[{ method: "POST", path: "v1/chatkit/sessions/{session_id}/cancel", live_token: true }], "not one of OpenAI's live-session token paths"],
-    [[{ method: "GET", path: "v1/chatkit/sessions", live_token: true }], "not one of OpenAI's live-session token paths"],
+    // Under a token path but not its mint: always refused, the same answer as without the opt-in.
+    [[{ method: "POST", path: "v1/chatkit/sessions/{session_id}/cancel", live_token: true }], "always refused"],
+    [[{ method: "GET", path: "v1/chatkit/sessions", live_token: true }], "always refused"],
     // Deepgram's grant also allows ordinary transcription and speech.
     [[{ method: "POST", path: "v1/auth/grant", live_token: true }], "always refused", "deepgram"],
   ])("refuses %j", async (passthrough, message, type = "openai") => {

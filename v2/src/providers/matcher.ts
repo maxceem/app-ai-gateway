@@ -378,6 +378,9 @@ export class ProviderMatcher {
     const gatewayToken = firstRule(this.liveTokens, method, atGateway);
 
     const route = context.route ?? DIRECT_ROUTE;
+    // A token path a listing reached without opting in to its mint: refused,
+    // unless a later listing that opts in takes the request.
+    let tokenRefusal: string | null = null;
     for (const listed of context.passthrough ?? []) {
       if (listed.listed.method !== method) continue;
       const parts = matchTemplate(listed.template, segments);
@@ -389,7 +392,8 @@ export class ProviderMatcher {
       const token = gatewayToken ?? firstRule(this.liveTokens, method, sent);
       // The opt-in reaches only the mint itself; anything else under a token path stays refused.
       if (token !== null && (listed.listed.liveToken !== true || !(mints(token, method, atGateway) || mints(token, method, sent)))) {
-        return { kind: "refused", reason: "refused_path", pattern: ruleSource(token) };
+        tokenRefusal ??= ruleSource(token);
+        continue;
       }
       return {
         kind: "passthrough",
@@ -399,6 +403,7 @@ export class ProviderMatcher {
         liveToken: token === null ? null : token.entry,
       };
     }
+    if (tokenRefusal !== null) return { kind: "refused", reason: "refused_path", pattern: tokenRefusal };
     if (gatewayToken !== null) return { kind: "refused", reason: "refused_path", pattern: ruleSource(gatewayToken) };
 
     for (const compiled of this.operations) {

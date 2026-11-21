@@ -348,14 +348,17 @@ function passthroughJson(
       if (matcher.refusedCovering(optedIn, route) !== null) {
         throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
       }
+      // Under a token path but not its mint, such as cancelling a session: no opt-in reaches it,
+      // so it is always refused, whether or not this listing opts in.
+      const { liveToken: _optIn, ...plainListed } = listed;
+      const plain: CompiledPassthrough = { ...compiled, listed: plainListed };
+      if (matcher.refusedCovering(plain, route) !== null && matcher.liveTokenCovering(compiled, route) === null) {
+        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+      }
       if (listed.liveToken === true && matcher.liveTokenCovering(compiled, route) === null) {
         throw new GatewayError(400, "invalid_request", `${where}.live_token: ${key} is not one of ${description.label}'s live-session token paths; only those can opt in`);
       }
       if (matcher.refusedCovering(compiled, route) !== null) {
-        // Under a token path but not its mint, such as cancelling a session: no opt-in reaches it.
-        if (matcher.liveTokenCovering(compiled, route) === null) {
-          throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
-        }
         // Refused only because it mints a live-session secret: the opt-in would reach it.
         throw new GatewayError(
           400,
