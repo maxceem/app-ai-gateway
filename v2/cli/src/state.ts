@@ -137,7 +137,9 @@ export function logoutStateFailure(error: unknown, store: object): unknown {
   const nextAction =
     error instanceof LocalDirectoryError
       ? `Keep connection.json. Replace this directory with a private directory you own at the same path, move connection.json into it, then run agw account logout again:\n${directory}\n${REVOKE_IN_CONSOLE}`
-      : `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${path}\n${REVOKE_IN_CONSOLE}`;
+      : error.code === "unsafe_storage"
+        ? `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${path}\n${REVOKE_IN_CONSOLE}`
+        : `The connection state file cannot be read, so its sign-in cannot be revoked from here. Revoke the sign-in in the console under Access:\n${path}`;
   return new (error instanceof LocalDirectoryError ? LocalDirectoryError : LocalStateError)(
     error.code,
     error.message,

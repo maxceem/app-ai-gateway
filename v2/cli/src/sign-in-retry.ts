@@ -54,7 +54,11 @@ export function signInFailure(error: unknown, gateway: string | null = null): un
   const status = error.details?.status;
   let next: string | null = null;
   if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
-  else if (status === 429) next = "Wait a moment, then run the same command again.";
+  else if (status === 429) {
+    // A known wait keeps the transport's exact "Wait until <time>" hint.
+    if (typeof error.details?.retryAfterSeconds === "number") return error;
+    next = "Wait a moment, then run the same command again.";
+  }
   else if (typeof status === "number" && status >= 500)
     next = "Wait until the gateway is available, then run the same command again.";
   else if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";

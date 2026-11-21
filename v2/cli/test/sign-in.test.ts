@@ -6,6 +6,7 @@ import { Context, launch } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
+import { signInFailure } from "../src/sign-in-retry.ts";
 import { Transport, type FormResponse } from "../src/transport.ts";
 import { fakeClock, fakeTransport, hasCode, memoryStore, signedInState, sinks } from "./helpers.ts";
 
@@ -475,6 +476,23 @@ test("a busy or unavailable gateway during renewal keeps the sign-in and says to
       // The stored sign-in is kept, to be renewed once the gateway answers.
       assert.notEqual(store.held.active, null, `${url}: ${what}`);
     }
+});
+
+test("a 429 with a known wait keeps the transport's exact hint; without one, it says to wait a moment", () => {
+  const resetAt = "2026-11-22T18:00:00.000Z";
+  const exact = `Wait until ${resetAt}, then run the same command again.`;
+  const known = new CliError("rate_limited", "Too many sign-ins.", exact, 3, { status: 429, retryAfterSeconds: 7200, resetAt });
+  assert.equal(signInFailure(known), known);
+  const shown = signInFailure(known, URL_);
+  assert.ok(shown instanceof CliError);
+  assert.equal(shown.nextAction, exact);
+  const unknown = new CliError("rate_limited", "Too many sign-ins.", "Wait for the limit named in the message to reset, then run the same command again.", 3, { status: 429 });
+  const generic = signInFailure(unknown);
+  assert.ok(generic instanceof CliError);
+  assert.equal(generic.nextAction, "Wait a moment, then run the same command again.");
+  // Only the hint changes.
+  assert.equal(generic.code, "rate_limited");
+  assert.equal(generic.exitCode, 3);
 });
 
 test("every token endpoint refusal keeps its error code and exit code, also in deployment status; the status picks only the hint", async () => {

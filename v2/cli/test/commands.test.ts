@@ -317,6 +317,29 @@ test("logout with an unsafe state file asks to repair it, never to move the sign
   }
 });
 
+test("logout with a corrupt state file says only to revoke the sign-in under Access, never to change the file's mode", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await writeFile(store.path, "{ not json", { mode: 0o600 });
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 4);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "invalid_state");
+    assert.equal(
+      error.nextAction,
+      `The connection state file cannot be read, so its sign-in cannot be revoked from here. Revoke the sign-in in the console under Access:\n${store.path}`,
+    );
+    assert.doesNotMatch(error.nextAction, /0600/);
+    // The file is left as it was.
+    assert.equal(await readFile(store.path, "utf8"), "{ not json");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a symlinked state directory gets its own hint, which names the directory", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
   try {
