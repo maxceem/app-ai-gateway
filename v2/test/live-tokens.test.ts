@@ -11,7 +11,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, ProviderMatcher } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced, type LiveTokenValue } from "../src/providers/operation.ts";
 import { lockedLiveTokenBody, lockedLiveTokenQuery, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
@@ -115,6 +115,20 @@ describe("matching a live-session token path", () => {
     // Decoded, it is the same path: the opted-in listing takes it, as the token path it is.
     expect(matcher.match("POST", "v1/realtime/%63lient_secrets", { passthrough })).toMatchObject({ kind: "passthrough", liveToken: { path: "v1/realtime/client_secrets/*" } });
     expect(matcher.match("POST", "v1/realtime/client_secrets/../../organization/users", { passthrough })).toMatchObject({ kind: "refused", reason: "bad_path" });
+  });
+
+  it("judges the mint where the provider reads it: a base URL that puts the listing under the namespace stays refused", () => {
+    const description = describedAs("elevenlabs");
+    const matcher = new ProviderMatcher(description);
+    const route = upstreamRoute(description, { baseUrl: "https://api.elevenlabs.io/v1/single-use-token/", cloudflareGateway: null });
+    // Sent as `v1/single-use-token/v1/single-use-token/tts_websocket`: under the namespace, not its mint.
+    const doubled = compilePassthrough([{ method: "POST", path: "v1/single-use-token/tts_websocket", liveToken: true }]);
+    expect(matcher.liveTokenCovering(doubled[0]!, route)).toBeNull();
+    expect(matcher.match("POST", "v1/single-use-token/tts_websocket", { passthrough: doubled, route })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    // The relative listing resolves to the mint itself, and is reached.
+    const relative = compilePassthrough([{ method: "POST", path: "tts_websocket", liveToken: true }]);
+    expect(matcher.liveTokenCovering(relative[0]!, route)).toMatchObject({ method: "POST" });
+    expect(matcher.match("POST", "tts_websocket", { passthrough: relative, route })).toMatchObject({ kind: "passthrough", liveToken: { method: "POST" } });
   });
 
   it("gives a custom provider on a known host that provider's token paths, and none elsewhere", async () => {
@@ -435,6 +449,31 @@ describe("serving a live-session mint", () => {
     const { status, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/${path}`, key, JSON.stringify(asked));
     expect(status, text).toBe(200);
     check(sentBody(0), now);
+  });
+
+  it("serves a mint only where the provider reads it as the mint, on save and when sent", async () => {
+    const baseUrl = "https://api.elevenlabs.io/v1/single-use-token/";
+    const management = await seedManagementKey();
+    const doubled = await admin(management, "POST", "/v2/admin/providers", {
+      name: "elevenlabs",
+      slug: `elevenlabs-${crypto.randomUUID().slice(0, 6)}`,
+      secret: SECRET,
+      type: "elevenlabs",
+      baseUrl,
+      passthrough: [{ method: "POST", path: "v1/single-use-token/tts_websocket", live_token: true }],
+    });
+    expect(doubled.status, JSON.stringify(doubled.body)).toBe(400);
+    const { appId, slug, key } = await connected({ type: "elevenlabs", baseUrl, passthrough: [{ method: "POST", path: "tts_websocket", live_token: true }] });
+    fetchSpy.mockImplementation(async () => Response.json({ token: "minted" }));
+    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/tts_websocket`, key, "{}")).status).toBe(200);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.elevenlabs.io/v1/single-use-token/tts_websocket");
+    // As if stored before this check: the doubled listing is refused when sent, and nothing reaches the provider.
+    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE slug = ?")
+      .bind(storedPassthrough([{ method: "POST", path: "v1/single-use-token/tts_websocket", liveToken: true }]), slug)
+      .run();
+    clearCaches();
+    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/single-use-token/tts_websocket`, key, "{}")).status).toBe(403);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to save an opt-in on a template that also covers the batch transcription token", async () => {

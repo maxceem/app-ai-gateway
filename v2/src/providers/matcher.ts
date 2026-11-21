@@ -391,8 +391,8 @@ export class ProviderMatcher {
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       const token = this.tokenRule(method, atGateway, sent);
       // The opt-in reaches only the mint itself; anything else under a token path stays refused.
-      if (token !== null && (listed.listed.liveToken !== true || !(mints(token, method, atGateway) || mints(token, method, sent)))) {
-        tokenRefusal ??= ruleSource(token);
+      if (token !== null && (listed.listed.liveToken !== true || !token.mint)) {
+        tokenRefusal ??= ruleSource(token.rule);
         continue;
       }
       return {
@@ -400,7 +400,7 @@ export class ProviderMatcher {
         listed: listed.listed,
         parts,
         upstream: { host: "main", path: joinSegments(segments) },
-        liveToken: token === null ? null : token.entry,
+        liveToken: token === null ? null : token.rule.entry,
       };
     }
     if (tokenRefusal !== null) return { kind: "refused", reason: "refused_path", pattern: tokenRefusal };
@@ -440,18 +440,31 @@ export class ProviderMatcher {
 
   /**
    * The live-session token path that takes a request at the gateway or where
-   * it is sent: the first whose mint it is, else the first that takes it, or
-   * null. Several token paths may share one namespace, each with its own mint.
+   * it is sent (`upstreamTargets`), or null, and whether the request is its
+   * mint. It is the mint only when every reading of its path that a token
+   * path takes is exactly that token path's mint: a base URL that puts the
+   * listed mint under the namespace (`v1/single-use-token/` with
+   * `v1/single-use-token/tts_websocket`) reaches another path there, which
+   * stays refused. Readings no token path takes do not count. Several token
+   * paths may share one namespace, each with its own mint.
    */
-  private tokenRule(method: string, atGateway: UpstreamTargets | null, sent: UpstreamTargets | null): CompiledLiveToken | null {
+  private tokenRule(method: string, atGateway: UpstreamTargets | null, sent: UpstreamTargets | null): { readonly rule: CompiledLiveToken; readonly mint: boolean } | null {
     let first: CompiledLiveToken | null = null;
+    let minted: CompiledLiveToken | null = null;
+    let every = true;
     for (const targets of [atGateway, sent]) {
-      for (const rule of everyRule(this.liveTokens, method, targets)) {
-        if (mints(rule, method, atGateway) || mints(rule, method, sent)) return rule;
-        first ??= rule;
+      if (targets === null || targets.host !== "main") continue;
+      for (const path of targets.paths) {
+        const taking = [...everyRule(this.liveTokens, method, { host: "main", paths: [path] })];
+        if (taking.length === 0) continue;
+        first ??= taking[0]!;
+        const mintOf = taking.find((rule) => mints(rule, method, { host: "main", paths: [path] }));
+        if (mintOf === undefined) every = false;
+        else minted ??= mintOf;
       }
     }
-    return first;
+    if (first === null) return null;
+    return minted !== null && every ? { rule: minted, mint: true } : { rule: minted ?? first, mint: false };
   }
 
   /** The first live-session token path that takes every path of one of `targets`, as `refusedAt`, or null. */
@@ -486,10 +499,10 @@ export class ProviderMatcher {
     const { method } = listed.listed;
     const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
     const sent = upstreamTargets(route, "main", listed.template.segments);
-    const rule = this.tokenRule(method, atGateway, sent);
-    // Only a listing of the mint itself may opt in: its method, on exactly the token path.
-    if (rule === null || !(mints(rule, method, atGateway) || mints(rule, method, sent))) return null;
-    return rule.entry;
+    const token = this.tokenRule(method, atGateway, sent);
+    // Only a listing of the mint itself may opt in: its method, on exactly the token path, wherever it is read.
+    if (token === null || !token.mint) return null;
+    return token.rule.entry;
   }
 
   /**
