@@ -576,6 +576,94 @@ describe("turning conversation storage on", () => {
   });
 });
 
+describe("reading stored conversations", () => {
+  async function get(path: string, bindings: Env = env): Promise<{ response: Response; bytes: ArrayBuffer }> {
+    const key = await seedManagementKey({ grant: "read" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`${ORIGIN}${path}`, { headers: { authorization: `Bearer ${key}` } }), bindings, ctx);
+    const bytes = await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+    return { response, bytes };
+  }
+  const json = (bytes: ArrayBuffer) => JSON.parse(new TextDecoder().decode(bytes)) as Record<string, any>;
+
+  async function storedFiles(): Promise<string> {
+    const { appId } = await appWith({});
+    const put = (name: string, body: string, contentType: string, records?: number) =>
+      bucket().put(`conversations/${appId}/${name}`, body, {
+        httpMetadata: { contentType },
+        ...(records === undefined ? {} : { customMetadata: { records: String(records) } }),
+      });
+    await put("2026-11-01/010203-aaaaaaaa.jsonl.gz", "one", "application/gzip", 3);
+    await put("2026-11-01/media/" + "a".repeat(64) + ".png", "pixel", "image/png");
+    await put("2026-11-02/010203-bbbbbbbb.jsonl.gz", "two", "application/gzip", 1);
+    await put("2026-11-03/010203-cccccccc.jsonl.gz", "three", "application/gzip", 2);
+    return appId;
+  }
+
+  it("lists an app's batches in a range of days, without its media", async () => {
+    const appId = await storedFiles();
+    const all = json((await get(`/v2/admin/apps/${appId}/conversations?to=2026-11-30`)).bytes);
+    expect(all.files.map((file: { name: string }) => file.name)).toEqual([
+      "2026-11-01/010203-aaaaaaaa.jsonl.gz",
+      "2026-11-02/010203-bbbbbbbb.jsonl.gz",
+      "2026-11-03/010203-cccccccc.jsonl.gz",
+    ]);
+    expect(all.files[0]).toMatchObject({ size: 3, records: 3 });
+    expect(all.next_cursor).toBeNull();
+
+    const middle = json((await get(`/v2/admin/apps/${appId}/conversations?from=2026-11-02&to=2026-11-02`)).bytes);
+    expect(middle.files.map((file: { name: string }) => file.name)).toEqual(["2026-11-02/010203-bbbbbbbb.jsonl.gz"]);
+  });
+
+  it("downloads a batch or media as an attachment, as it is stored", async () => {
+    const appId = await storedFiles();
+    const batch = await get(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent("2026-11-01/010203-aaaaaaaa.jsonl.gz")}`);
+    expect(batch.response.status).toBe(200);
+    expect(new TextDecoder().decode(batch.bytes)).toBe("one");
+    expect(batch.response.headers.get("content-type")).toBe("application/gzip");
+    expect(batch.response.headers.get("content-disposition")).toBe("attachment");
+    expect(batch.response.headers.get("x-content-type-options")).toBe("nosniff");
+
+    const media = await get(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent(`2026-11-01/media/${"a".repeat(64)}.png`)}`);
+    expect(media.response.status).toBe(200);
+    expect(media.response.headers.get("content-disposition")).toBe("attachment");
+  });
+
+  it("names only files of the app's own folder, and only the caller's own apps", async () => {
+    const appId = await storedFiles();
+    const outside = await get(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent("../other/2026-11-01/010203-aaaaaaaa.jsonl.gz")}`);
+    expect(outside.response.status).toBe(400);
+    const missing = await get(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent("2026-11-09/010203-dddddddd.jsonl.gz")}`);
+    expect(missing.response.status).toBe(404);
+
+    const now = Date.now();
+    const otherAccount = `org_${crypto.randomUUID().slice(0, 8)}`;
+    const otherApp = `app_other_${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Other', 'usr_test', ?, ?)")
+        .bind(otherAccount, new Date(now).toISOString(), new Date(now).toISOString()),
+      env.DB.prepare("INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, '{}', 1, 'active', ?, ?)")
+        .bind(otherApp, otherAccount, otherApp, now, now),
+    ]);
+    await bucket().put(`conversations/${otherApp}/2026-11-01/010203-aaaaaaaa.jsonl.gz`, "theirs");
+    const list = await get(`/v2/admin/apps/${otherApp}/conversations`);
+    expect(list.response.status).toBe(404);
+    const file = await get(`/v2/admin/apps/${otherApp}/conversations/file?name=${encodeURIComponent("2026-11-01/010203-aaaaaaaa.jsonl.gz")}`);
+    expect(file.response.status).toBe(404);
+    expect(json(file.bytes)).toMatchObject({ error: { code: "app_not_found" } });
+  });
+
+  it("lists nothing where the deployment has no bucket", async () => {
+    const appId = await storedFiles();
+    const withoutBucket = new Proxy(env, {
+      get: (target, property, receiver) => (property === "CONVERSATIONS" ? undefined : Reflect.get(target, property, receiver)),
+    });
+    const listed = await get(`/v2/admin/apps/${appId}/conversations`, withoutBucket);
+    expect(json(listed.bytes)).toEqual({ app_id: appId, files: [], next_cursor: null });
+  });
+});
+
 describe("conversation retention", () => {
   it("deletes days past an app's retention, and everything of an app that is gone", async () => {
     const { appId } = await storingApp({ store: true, retention_days: 30 });

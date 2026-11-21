@@ -32,6 +32,9 @@ import {
   EndUserBlockResponseSchema,
   EndUserListQuerySchema,
   JobListQuerySchema,
+  ConversationFileListSchema,
+  ConversationFileQuerySchema,
+  ConversationListQuerySchema,
   JobListResponseSchema,
   EndUserListResponseSchema,
   EndUserQuerySchema,
@@ -366,6 +369,37 @@ export const CATALOG = {
     query: JobListQuerySchema,
     response: JobListResponseSchema,
     responseDescription: "One page of jobs.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppConversations: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/conversations",
+    params: APP_PARAM,
+    tags: ["Admin conversations"],
+    summary: "List an app's stored conversation files",
+    description:
+      "The batches of stored conversations of an app with `conversations.store` on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one call and its answer per line. Media the app keeps (`conversations.keep`) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>`, and named in the records as `agw-media:<name>`.",
+    security: "management",
+    query: ConversationListQuerySchema,
+    response: ConversationFileListSchema,
+    responseDescription: "One page of stored conversation files.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppConversationFile: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/conversations/file",
+    params: APP_PARAM,
+    tags: ["Admin conversations"],
+    summary: "Download a stored conversation file",
+    description:
+      "One file the listing names, or media a record names: a batch answers as application/gzip, media as its own type. Always a download, never a page.",
+    security: "management",
+    query: ConversationFileQuerySchema,
+    response: z.unknown(),
+    responseDescription: "The file's bytes.",
+    file: true,
     errors: ADMIN_ERRORS,
   },
 

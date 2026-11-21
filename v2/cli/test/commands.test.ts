@@ -381,3 +381,60 @@ test("after logout, no command names the signed-out account", async () => {
   assert.equal(code, 0, status.err.text);
   assert.equal(JSON.parse(status.out.text).context.accountId, undefined);
 });
+
+test("app conversations downloads batches and the media they name, and skips what is already there", async () => {
+  const { gzipSync } = await import("node:zlib");
+  const media = `2026-11-01/media/${"a".repeat(64)}.png`;
+  const batch = gzipSync(`{"v":1,"request":{"image":"agw-media:${media}"}}\n`);
+  const name = "2026-11-01/010203-aaaaaaaa.jsonl.gz";
+  const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
+  try {
+    const answer = (path: string, options: RequestOptions) => {
+      if (path.startsWith("/v2/admin/apps/app_1/conversations/file")) {
+        assert.equal(options.binary, true);
+        const file = new URL(path, URL_).searchParams.get("name");
+        return file === name ? new Uint8Array(batch) : new Uint8Array([1, 2, 3]);
+      }
+      assert.match(path, /^\/v2\/admin\/apps\/app_1\/conversations\?/);
+      assert.equal(new URL(path, URL_).searchParams.get("from"), "2026-11-01");
+      return { app_id: "app_1", files: [{ name, size: batch.byteLength, records: 1, uploaded_at: "2026-11-01T01:02:03.000Z" }], next_cursor: null };
+    };
+    const argv = ["app", "conversations", "app_1", "--from", "2026-11-01", "--to", "2026-11-02", "--output", output, "--media", "--json"];
+    const first = await run(argv, answer);
+    assert.equal(first.code, 0, first.err);
+    assert.deepEqual(
+      { files: first.json().result.files, downloaded: first.json().result.downloaded, media: first.json().result.media },
+      { files: 1, downloaded: 1, media: 1 },
+    );
+    assert.deepEqual(await readFile(join(output, name)), batch);
+    assert.equal((await stat(join(output, media))).size, 3);
+
+    const again = await run(argv, answer);
+    assert.equal(again.code, 0, again.err);
+    assert.equal(again.json().result.downloaded, 0);
+    assert.equal(again.json().result.media, 0);
+    assert.equal(again.calls.filter((call) => call.path.includes("/conversations/file")).length, 0);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("app conversations refuses a file name that would land outside its folder, and a malformed day", async () => {
+  const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
+  try {
+    const outside = await run(["app", "conversations", "app_1", "--output", output, "--json"], () => ({
+      app_id: "app_1",
+      files: [{ name: "../escape.jsonl.gz", size: 1, records: 1, uploaded_at: "2026-11-01T01:02:03.000Z" }],
+      next_cursor: null,
+    }));
+    assert.notEqual(outside.code, 0);
+    assert.match(outside.out + outside.err, /outside the export folder/);
+    await assert.rejects(stat(join(output, "..", "escape.jsonl.gz")));
+
+    const badDay = await run(["app", "conversations", "app_1", "--from", "2026-13-40", "--output", output, "--json"], () => assert.fail("nothing is asked"));
+    assert.notEqual(badDay.code, 0);
+    assert.match(badDay.out + badDay.err, /YYYY-MM-DD/);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});

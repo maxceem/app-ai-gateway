@@ -38,6 +38,7 @@ agw app add --type ios --name "My App" --team-id ABCDE12345 --bundle-id com.exam
 agw app add --type server --name "Backend"  # its first key goes to a private file
 agw app key add <app> --name ci             # another key, also to a private file
 agw app update <app> --status disabled
+agw app conversations <app> --from 2026-11-01 --media   # stored conversations, into a folder
 agw app list
 ```
 

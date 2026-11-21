@@ -37,6 +37,7 @@ import { GatewayError } from "../core/errors.ts";
 import { clientAddress, enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { activeAccounts } from "../admin/access.ts";
 import { parseBody } from "../admin/apps.ts";
+import { conversationsBucket } from "../conversations/storage.ts";
 import { denyHandoff, getHandoff, submitHandoff } from "../admin/handoffs.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
@@ -52,6 +53,7 @@ consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
     registrationOpen: registrationOpen(c.env),
     googleAuth: googleAuthEnabled(c.env),
     oauth: oauthIssuer(c.env) !== null,
+    conversationStorage: conversationsBucket(c.env) !== null,
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
   } satisfies OperationResponse<"getConsoleCapabilities">),

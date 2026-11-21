@@ -540,6 +540,34 @@ export const JobListResponseSchema = z
   })
   .meta({ id: "JobListResponse" });
 
+/** A UTC day, `YYYY-MM-DD`. */
+const DaySchema = (name: string) => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: `${name} must be YYYY-MM-DD` });
+
+export const ConversationListQuerySchema = z.object({
+  from: DaySchema("from").optional().meta({ description: "First UTC day, YYYY-MM-DD; defaults to the oldest stored." }),
+  to: DaySchema("to").optional().meta({ description: "Last UTC day, YYYY-MM-DD, inclusive; defaults to today." }),
+  cursor: z.string().max(1024).optional().meta({ description: "The `next_cursor` of the page before." }),
+});
+
+export const ConversationFileListSchema = z
+  .object({
+    app_id: z.string(),
+    files: z.array(
+      z.object({
+        name: z.string().meta({ description: "The file's name within the app: `<YYYY-MM-DD>/<HHMMSS>-<batch>.jsonl.gz`." }),
+        size: z.number().int().meta({ description: "Bytes, gzipped." }),
+        records: z.number().int().nullable().meta({ description: "How many calls the file holds, one per line." }),
+        uploaded_at: z.string().meta({ description: "When the file was written, ISO 8601." }),
+      }),
+    ),
+    next_cursor: z.string().nullable().meta({ description: "Pass as `cursor` for the next page; null on the last one." }),
+  })
+  .meta({ id: "ConversationFileList" });
+
+export const ConversationFileQuerySchema = z.object({
+  name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
+});
+
 /** The price file as it is: dollars per million units, keyed by provider type and model. */
 export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })

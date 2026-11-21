@@ -1874,6 +1874,59 @@
           "settled_at"
         ]
       },
+      "ConversationFileList": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "The file's name within the app: `<YYYY-MM-DD>/<HHMMSS>-<batch>.jsonl.gz`."
+                },
+                "size": {
+                  "type": "integer",
+                  "description": "Bytes, gzipped."
+                },
+                "records": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "How many calls the file holds, one per line."
+                },
+                "uploaded_at": {
+                  "type": "string",
+                  "description": "When the file was written, ISO 8601."
+                }
+              },
+              "required": [
+                "name",
+                "size",
+                "records",
+                "uploaded_at"
+              ]
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; null on the last one."
+          }
+        },
+        "required": [
+          "app_id",
+          "files",
+          "next_cursor"
+        ]
+      },
       "PriceListResponse": {
         "type": "object",
         "properties": {
@@ -4937,6 +4990,9 @@
           "oauth": {
             "type": "boolean"
           },
+          "conversationStorage": {
+            "type": "boolean"
+          },
           "termsOfServiceUrl": {
             "type": "string"
           },
@@ -7783,6 +7839,214 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JobListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/conversations": {
+      "get": {
+        "tags": [
+          "Admin conversations"
+        ],
+        "operationId": "listAppConversations",
+        "summary": "List an app's stored conversation files",
+        "description": "The batches of stored conversations of an app with `conversations.store` on, oldest first, by the UTC day of their earliest record. Each file is gzipped JSON lines, one call and its answer per line. Media the app keeps (`conversations.keep`) is stored beside them as `<YYYY-MM-DD>/media/<sha256>.<ext>`, and named in the records as `agw-media:<name>`.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 1024,
+              "description": "The `next_cursor` of the page before."
+            },
+            "required": false,
+            "description": "The `next_cursor` of the page before.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of stored conversation files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationFileList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/conversations/file": {
+      "get": {
+        "tags": [
+          "Admin conversations"
+        ],
+        "operationId": "getAppConversationFile",
+        "summary": "Download a stored conversation file",
+        "description": "One file the listing names, or media a record names: a batch answers as application/gzip, media as its own type. Always a download, never a page.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`."
+            },
+            "required": true,
+            "description": "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`.",
+            "name": "name",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's bytes.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
