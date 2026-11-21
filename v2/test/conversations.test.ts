@@ -1040,6 +1040,29 @@ describe("conversation retention", () => {
     expect(left).toEqual([...kept].sort());
   });
 
+  it("reads the retention again before deleting a folder, so a retention raised mid-sweep keeps it (Sol round 4)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const key = `conversations/${appId}/2026-11-20/000000-0123456789abcdef.jsonl.gz`;
+    await store.put(key, "inside the new window");
+    // The owner raises retention to 30 days after the sweep read the settings and while it lists the app's days.
+    const list = store.list.bind(store);
+    const listed = vi.spyOn(store, "list").mockImplementation(async (options) => {
+      if (options?.prefix === `conversations/${appId}/` && options.delimiter === "/") {
+        await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.retention_days', 30) WHERE id = ?").bind(appId).run();
+      }
+      return list(options);
+    });
+    try {
+      await runConversationRetention(store, env.DB, now, new CallBudget(50));
+    } finally {
+      listed.mockRestore();
+    }
+    expect(await store.head(key)).not.toBeNull();
+  });
+
   it("starts the next run after an app it ran out in, so the apps after it progress (Sol round 2)", async () => {
     const store = bucket();
     for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);

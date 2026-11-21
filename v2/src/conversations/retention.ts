@@ -58,20 +58,35 @@ export class CallBudget {
 }
 
 /** Retention days per existing app, read in one statement. A config this cannot read keeps the default. */
+/** An app's retention in days from its stored settings; unreadable settings give the default, rather than losing everything. */
+function retentionOf(configJson: string): number {
+  try {
+    const value = (JSON.parse(configJson) as { conversations?: { retention_days?: unknown } }).conversations?.retention_days;
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  } catch {
+    // Unreadable: the default.
+  }
+  return CONVERSATION_RETENTION_DAYS.default;
+}
+
 async function appRetention(db: D1Database): Promise<Map<string, number>> {
   const { results } = await db.prepare("SELECT id, config_json FROM app").all<{ id: string; config_json: string }>();
   const days = new Map<string, number>();
-  for (const row of results) {
-    let retention: number = CONVERSATION_RETENTION_DAYS.default;
-    try {
-      const value = (JSON.parse(row.config_json) as { conversations?: { retention_days?: unknown } }).conversations?.retention_days;
-      if (typeof value === "number" && Number.isInteger(value) && value > 0) retention = value;
-    } catch {
-      // Unreadable: the default, rather than losing everything.
-    }
-    days.set(row.id, retention);
-  }
+  for (const row of results) days.set(row.id, retentionOf(row.config_json));
   return days;
+}
+
+/**
+ * The app's retention as stored right now, read just before a folder is deleted, so a retention raised
+ * while the sweep runs is honoured. `null` when it can't be read or the app is gone: the folder waits.
+ */
+async function currentRetention(db: D1Database, appId: string): Promise<number | null> {
+  try {
+    const row = await db.prepare("SELECT config_json FROM app WHERE id = ?").bind(appId).first<{ config_json: string }>();
+    return row === null ? null : retentionOf(row.config_json);
+  } catch {
+    return null;
+  }
 }
 
 /** Every key under `prefix`, deleted a page at a time. */
@@ -148,11 +163,14 @@ export async function runConversationRetention(
             result.removedApps += 1;
           } else {
             const prefix = appPrefix(appId);
-            const firstKept = dayBefore(now, days);
             for (const day of await folders(bucket, prefix, work, pageSize)) {
               const match = DAY_FOLDER.exec(day.slice(prefix.length));
               // Day folders sort oldest first, so the first one kept ends the app.
-              if (match === null || match[1]! >= firstKept) break;
+              if (match === null || match[1]! >= dayBefore(now, days)) break;
+              // Read the retention again right before deleting: a retention raised since the sweep began is
+              // honoured, and a failed read leaves the folder for a later run.
+              const fresh = await currentRetention(db, appId);
+              if (fresh === null || match[1]! >= dayBefore(now, fresh)) break;
               result.deletedObjects += await deleteAll(bucket, day, work, pageSize);
             }
           }
