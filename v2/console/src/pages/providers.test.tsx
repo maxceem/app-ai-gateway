@@ -463,6 +463,35 @@ describe("PricesDialog reload after a conflict", () => {
     expect(screen.queryByText(/these prices changed since you opened them/i)).toBeNull();
   });
 
+  it("makes the editor read-only while a reload is pending, so nothing typed is lost to its answer", async () => {
+    let lists = 0;
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return new Response(JSON.stringify({ providers: [changed] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    const box = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.readOnly).toBe(true));
+    await userEvent.click(box);
+    await userEvent.paste("typed while loading");
+    expect(box.value).not.toContain("typed while loading");
+    release!();
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs"));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).readOnly).toBe(false);
+  });
+
   it("keeps the draft and the notice when the fresh read fails", async () => {
     let lists = 0;
     vi.stubGlobal(

@@ -1202,6 +1202,9 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
           className="min-h-40 font-mono text-xs"
           value={text}
           spellCheck={false}
+          // While a reload is reading the server's prices, nothing typed can be lost to its answer.
+          readOnly={reloading}
+          aria-busy={reloading}
           onChange={(event) => setText(event.target.value)}
         />
       </Field>
