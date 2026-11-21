@@ -52,11 +52,11 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "../providers/connections.ts";
-import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
-import { compiledPassthrough, isPassthrough, lockedLiveTokenBody, lockedLiveTokenQuery, PASSTHROUGH } from "../providers/passthrough.ts";
+import { ProviderMatcher, type PassthroughPath, type UpstreamTarget } from "../providers/matcher.ts";
+import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { readingRules, type LiveTokenPath, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -78,18 +78,6 @@ const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
 /** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
 const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
-
-const ROUTES = new WeakMap<ConnectionRecord, UpstreamRoute>();
-
-/** A loaded connection's route (`upstreamRoute`), worked out once per loaded record. */
-function routeOf(description: ProviderDescription, connection: ConnectionRecord): UpstreamRoute {
-  let route = ROUTES.get(connection);
-  if (route === undefined) {
-    route = upstreamRoute(description, connection);
-    ROUTES.set(connection, route);
-  }
-  return route;
-}
 
 export function matcherFor(description: ProviderDescription): ProviderMatcher {
   let matcher = matchers.get(description);
@@ -273,10 +261,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // A connection's listed paths are reached only by an app that enables
       // passthrough on this route (plan section 4.5).
       const passthrough = routing.operations.includes(PASSTHROUGH) ? compiledPassthrough(connection.passthrough ?? []) : [];
-      // Refused paths are judged where the request really goes too: its base URL or Cloudflare.
-      const match = matcher.match(c.req.method, target.path, { passthrough, route: routeOf(description, connection) });
+      const match = matcher.match(c.req.method, target.path, { passthrough });
       if (match.kind === "passthrough") {
-        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.liveToken, upstream: match.upstream, url, startedAt });
+        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.suggested?.liveToken === true, upstream: match.upstream, url, startedAt });
       }
       if (match.kind !== "operation") {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
@@ -438,31 +425,29 @@ async function servePassthrough(
     readonly connection: ConnectionRecord;
     readonly description: ProviderDescription;
     readonly listed: PassthroughPath;
-    /** The live-session token path the listing opted in to, or null (plan D4). */
-    readonly liveToken: LiveTokenPath | null;
+    /** The listing is a live-session token mint the provider names (`SuggestedPath.liveToken`, plan D4). */
+    readonly liveToken: boolean;
     readonly upstream: UpstreamTarget;
     readonly url: URL;
     readonly startedAt: number;
   },
 ): Promise<Response> {
   const { app, connection, description, url, startedAt } = input;
-  const call = resolvePassthrough(input.listed, input.liveToken !== null);
+  const call = resolvePassthrough(input.listed, input.liveToken);
   const { operation, bill } = call;
   caller.facts.operation = operation.name;
   const bytes = await caller.readBody();
   const contentType = c.req.header("content-type") ?? "";
   // Never read: the body goes as the client's own bytes. One with no type is sent with none.
   let sent: OutgoingBody = { bytes, contentType: contentType === "" ? null : contentType };
-  // A live-session mint's window is locked where the request sets it, whatever the client sent (plan D4).
-  const forced = input.liveToken?.forced;
-  if (forced !== undefined) {
-    const locked = lockedLiveTokenBody(forced, bytes, startedAt);
-    if (locked.kind === "unreadable") {
-      const names = (forced.fields ?? []).map((field) => field.names[0]).join(", ");
-      throw new GatewayError(400, "invalid_request", `This request mints a live-session secret, so its body must be a JSON object: the gateway sets ${names} in it`);
-    }
-    if (locked.kind === "locked") sent = { bytes: locked.bytes, contentType: "application/json" };
+  // The listing's field settings, over whatever the app sent (plan section 4.5, "Safe defaults").
+  const settings = input.listed.setFields ?? [];
+  const applied = applyFieldSettings(settings, bytes, sanitizedQuery(url), startedAt);
+  if (applied.body.kind === "unreadable") {
+    const names = settings.filter((setting) => setting.in === "body").map((setting) => setting.name).join(", ");
+    throw new GatewayError(400, "invalid_request", `This path's body must be a JSON object: the gateway sets ${names} in it`);
   }
+  if (applied.body.kind === "set") sent = { bytes: applied.body.bytes, contentType: "application/json" };
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
   // The credentials are opened before admission: a request that cannot be sent must not spend anything.
   const credentials = await connectionCredentials(c.env, connection);
@@ -502,11 +487,11 @@ async function servePassthrough(
       operation,
       hostKey: input.upstream.host,
       path: input.upstream.path,
-      query: forced === undefined ? sanitizedQuery(url) : lockedLiveTokenQuery(forced, sanitizedQuery(url)),
+      query: applied.search,
       credentials: () => Promise.resolve(credentials),
       body: () => sent,
       attempt,
-      ...(input.liveToken !== null ? { liveTokenMint: true as const } : {}),
+      ...(input.liveToken ? { liveTokenMint: true as const } : {}),
     },
   ]);
 }

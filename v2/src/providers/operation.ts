@@ -529,87 +529,66 @@ export function readingRules(description: ProviderDescription, operation: Operat
   return operation?.rules ?? description;
 }
 
-/** A refused path for some methods only, or only on some hosts. */
-export interface RefusedPath {
-  readonly path: string;
-  /** Only these methods are refused there. Every method when left out. */
-  readonly methods?: readonly HttpMethod[];
+/**
+ * One request field a listed path sets, over whatever the app sent (plan
+ * section 4.5, "Safe defaults"). The customer owns it: the gateway suggests
+ * values for known paths (`SuggestedPath`), and the customer may change or
+ * remove them.
+ */
+export interface FieldSetting {
+  /** A JSON body field, or a query parameter. */
+  readonly in: "body" | "query";
+  /** The field's name; a body name with dots is a nested field, its parent objects created when missing. */
+  readonly name: string;
   /**
-   * Only on a base URL on one of these hosts (lower-case names). A path that
-   * means account management on one host may be an ordinary path on a
-   * compatible server elsewhere. Every route when left out.
+   * The value written. A query parameter's value is a string. With
+   * `as: "time_from_now"`, a whole number of seconds: the gateway writes the
+   * time that far after sending, in RFC 3339.
    */
-  readonly hosts?: readonly string[];
+  readonly value: unknown;
+  readonly as?: "time_from_now";
+  /** Other spellings the provider reads for the same field: removed, so only `name` reaches it. */
+  readonly aliases?: readonly string[];
+}
+
+/** A field the gateway suggests for a known path, with what a person reads about it. */
+export interface SuggestedField extends FieldSetting {
+  /** A short human name, such as "Token expiry". */
+  readonly label: string;
+  /** Why the value is suggested, in a sentence or two. */
+  readonly reason: string;
 }
 
 /**
- * How long a minted live-session secret may start a call, in seconds (plan
- * D4): the shortest window for starting one, not the session's length.
+ * A known path of a provider with safe defaults for some of its request
+ * fields (plan section 4.5). When a customer lists it, the suggested fields
+ * are written into the listing, where the customer sees, changes or
+ * removes them.
  */
+export interface SuggestedPath {
+  readonly method: HttpMethod;
+  /** As a customer lists it on the provider's own host. */
+  readonly path: string;
+  /**
+   * The path mints a short-lived secret for one live session (plan D4): the
+   * call it starts goes straight to the provider, not metered and not
+   * capped. The console says so, and the gateway never caches its request or
+   * answer, so no one else can be handed the secret.
+   */
+  readonly liveToken?: true;
+  readonly fields: readonly SuggestedField[];
+}
+
+/** How long a suggested live-session secret may start a call, in seconds (plan D4): the shortest window, not the session's length. */
 export const LIVE_TOKEN_WINDOW_SECONDS = 60;
 
-/**
- * The value the gateway writes into one forced field of a mint's body.
- * - `{ window: "expires_after" }`: `{ seconds }` holding the window, with
- *   `anchor: "created_at"` when `anchor` is set.
- * - `{ window: "time" }`: an RFC 3339 time, the window from now.
- * - `{ fixed }`: that value as it is, such as `uses: 1`.
- */
-export type LiveTokenValue =
-  | { readonly window: "expires_after"; readonly anchor?: true }
-  | { readonly window: "time" }
-  | { readonly fixed: number | string | boolean };
-
-/**
- * One field of a mint's JSON body that the gateway sets, whatever the client
- * sent. `names` holds every spelling the provider reads, the one the gateway
- * writes first: each is removed, and only the first is written. A name with
- * dots is a nested field, such as `client_secret.expires_after`; its parent
- * objects are created when the body has none.
- */
-export interface LiveTokenField {
-  readonly names: readonly [string, ...string[]];
-  readonly value: LiveTokenValue;
-}
-
-/** One query parameter of a mint that the gateway sets: every value the client sent is replaced by this one. */
-export interface LiveTokenQueryParam {
-  readonly name: string;
-  readonly value: string;
-}
-
-/**
- * What the gateway forces in a mint request so its secret can start a call
- * only within `LIVE_TOKEN_WINDOW_SECONDS`, or only once (plan D4): the
- * window, and any field that would let one secret start more calls, where
- * the provider lets the request set them.
- */
-export interface LiveTokenForced {
-  /** Body fields; a mint that forces any needs a JSON object body. */
-  readonly fields?: readonly [LiveTokenField, ...LiveTokenField[]];
-  readonly query?: readonly [LiveTokenQueryParam, ...LiveTokenQueryParam[]];
-}
-
-/**
- * A path that mints a short-lived secret for one live session (plan D4).
- * Every request under `path` is refused like a refused path. A listed path
- * that opts in (`liveToken` on the listing) reaches only the mint itself:
- * `method` on exactly `path`, without its trailing `*`. Anything else under
- * it, such as cancelling a session, stays refused even with the opt-in.
- */
-export interface LiveTokenPath {
-  /** A template, read as refused paths are: a trailing `*` refuses the rest too. */
-  readonly path: string;
-  /** The one method that mints. */
-  readonly method: HttpMethod;
-  /**
-   * The mint's exact path, when `path` is a wider namespace that stays
-   * refused around it, such as one token type of several. By default, `path`
-   * without its trailing `*`.
-   */
-  readonly mint?: string;
-  /** What the gateway sets in the mint, where the provider lets the request set it. */
-  readonly forced?: LiveTokenForced;
+/** The suggested expiry of a live-session secret on `provider`: `setting`, with its label and reason. */
+export function liveTokenExpiry(provider: string, setting: FieldSetting): SuggestedField {
+  return {
+    ...setting,
+    label: "Token expiry",
+    reason: `The app uses this secret to talk to ${provider} directly, outside the gateway's limits. A ${LIVE_TOKEN_WINDOW_SECONDS}-second expiry lets it start a call only within the next minute.`,
+  };
 }
 
 /** How the provider's key is sent. */
@@ -632,11 +611,12 @@ export interface ProviderDescription {
   readonly hosts: { readonly main: string } & Readonly<Record<string, string>>;
   /**
    * Every other host name the provider serves the same API on: regional,
-   * data-residency or older names. With `hosts`, the one declared list of
-   * the provider's hosts, apart from what any of them costs
-   * (`regionalOrigins`). A base URL on any of them is this provider's, and
-   * gets its refused paths (`./custom.ts`). `*.` names every host under
-   * one, as `*.api.openai.com` does OpenAI's data residency hosts.
+   * data-residency or older names. With `hosts`, the provider's declared
+   * hosts: a custom provider path on one of them speaks this provider's
+   * API styles as it defines them (`./custom.ts`), and a built-in
+   * connection's base URL on one of them is its plain address. `*.` names
+   * every host under one, as `*.api.openai.com` does OpenAI's data residency
+   * hosts.
    */
   readonly otherHosts?: readonly string[];
   readonly auth: ProviderAuth;
@@ -687,41 +667,22 @@ export interface ProviderDescription {
    */
   readonly passthroughHeaders?: readonly string[];
   /**
-   * Paths that are always refused, even if a customer lists them: key
-   * creation, admin, account and billing paths. Checked before anything else,
-   * ignoring case. A trailing `*` segment matches the rest of the path,
-   * including nothing, so `v1/organization/*` also refuses `v1/organization`.
-   * An entry may name methods (`RefusedPath`): only those are refused there,
-   * such as deleting a voice while reading one stays allowed.
+   * Known paths a customer may list, with safe defaults for some of their
+   * request fields (`SuggestedPath`), such as a live-session token's expiry.
    */
-  readonly refused: readonly (string | RefusedPath)[];
-  /**
-   * Paths that mint a short-lived secret for one live session (plan D4).
-   * Refused as refused paths are, unless the customer lists the path and
-   * opts in to it. Key creation, admin and account paths belong in
-   * `refused`, never here: those stay refused whatever is listed.
-   */
-  readonly liveTokens?: readonly LiveTokenPath[];
-  /**
-   * The endpoint through which Cloudflare AI Gateway reaches this provider:
-   * the provider's name in Cloudflare's URL space, and a path prefix that
-   * name already implies, which Cloudflare adds back (OpenAI's `v1/`). It
-   * answers "where does a request on Cloudflare's host go", for every
-   * provider Cloudflare serves, whether or not a connection may use the
-   * `cloudflareGateway` setting. Refused and live-session token paths follow
-   * it (`./destination.ts`). Absent when Cloudflare has no endpoint for it.
-   */
-  readonly cloudflareEndpoint?: {
-    readonly slug: string;
-    readonly stripPathPrefix?: string;
-  };
+  readonly suggestedPaths?: readonly SuggestedPath[];
   /**
    * A connection of this type may use the Cloudflare AI Gateway setting
-   * (D13), sent to its `cloudflareEndpoint`. Cloudflare returns the
-   * provider's own response, so metering and prices are the provider's.
-   * Without this, a connection of this type cannot use the setting.
+   * (D13). Cloudflare returns the provider's own response, so metering and
+   * prices are the provider's. Without this, a connection of this type cannot
+   * use the setting. Cloudflare is reached only this way, never through a
+   * base URL (plan section 4.5).
    */
   readonly cloudflareGateway?: {
+    /** The provider's name in Cloudflare's URL space. */
+    readonly slug: string;
+    /** A path prefix the name already implies, which Cloudflare adds back (OpenAI's `v1/`). */
+    readonly stripPathPrefix?: string;
     /**
      * How the provider's key is sent through Cloudflare for an API style whose
      * endpoint takes it differently from `auth`, as Cloudflare documents it:
@@ -758,13 +719,6 @@ export interface ProviderDescription {
    * them: client headers are an allowlist (`src/proxy/headers.ts`).
    */
   readonly attributionHeaders?: (context: { readonly appId: string; readonly userId: string | null }) => Readonly<Record<string, string>>;
-  /**
-   * Its operations are paths a customer listed (a custom provider,
-   * `./custom.ts`), not paths the gateway declares: refused paths are judged
-   * on every way the connection's base URL may be read, as they are for a
-   * listed passthrough path.
-   */
-  readonly customerPaths?: true;
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
   /**

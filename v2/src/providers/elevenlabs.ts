@@ -19,7 +19,7 @@
  *
  * v1 never served ElevenLabs, so nothing here replaces anything v1 did.
  */
-import { defineOperation, defineProvider } from "./operation.ts";
+import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry, type SuggestedField } from "./operation.ts";
 
 /** ElevenLabs' default text-to-speech model, used when the request names none. */
 const DEFAULT_TTS_MODEL = "eleven_multilingual_v2";
@@ -45,79 +45,42 @@ const ttsMeter = {
   inDoubtWhen: { in: "body", field: "pronunciation_dictionary_locators", kind: "list" },
 } as const;
 
+/** A signed URL that starts only one conversation. */
+const SINGLE_USE: SuggestedField = {
+  in: "query" as const,
+  name: "include_conversation_id",
+  value: "true",
+  label: "Single use",
+  reason: "With true, the signed URL starts only one conversation. Without it, one URL can start several for about 15 minutes, outside the gateway's limits.",
+};
+
 const ttsModel = { in: "body", field: "model_id", default: DEFAULT_TTS_MODEL } as const;
 
 export const elevenlabs = defineProvider({
   type: "elevenlabs",
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
-  cloudflareEndpoint: { slug: "elevenlabs" },
   // Its US host and its data residency hosts.
   otherHosts: ["api.us.elevenlabs.io", "api.eu.residency.elevenlabs.io", "api.in.residency.elevenlabs.io", "api.sg.residency.elevenlabs.io"],
   auth: { header: "xi-api-key", format: "{key}" },
   // ElevenLabs has no service modes on these APIs.
   serviceModes: [],
-  // A closed set, not every resource a key could change (plan section 4.5:
-  // admin and key-creation paths; the provider research's "never expose"
-  // list). Anything else a customer lists is their own trust choice.
-  // `test/elevenlabs-refused.test.ts` checks every operation of ElevenLabs'
-  // API against this set, both ways.
-  refused: [
-    // A single-use token for a batch file transcription is not for a live
-    // session, so no opt-in reaches it (plan D4).
-    { path: "v1/single-use-token/batch_scribe", methods: ["POST"] },
-    // The account and its admin: user, workspaces and their team, service
-    // accounts and their API keys, usage, and billing actions.
-    "v1/user/*",
-    "v1/workspace/*",
-    "v1/workspaces/*",
-    "v1/service-accounts/*",
-    "v1/usage/*",
-    "v1/reception/reseller/workspaces/*",
-    "v1/reception/team/*",
-    "v1/reception/reseller/billing/*",
-    { path: "v1/productions/orders/{order_id}/submit", methods: ["POST"] },
-    // Account-wide history, which holds every app's generations.
-    "v1/history/*",
-    "v1/audio-isolation/history/*",
-    // Stored credentials.
-    "v1/convai/secrets/*",
-    { path: "v1/convai/environment-variables/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
-    // Deleting an environment removes its values from every environment variable.
-    { path: "v1/convai/environments/{environment}", methods: ["DELETE"] },
-    // From the research: deleting a voice (not a collection, a voice's place
-    // in one, or a sample), and creating, changing or deleting agents and
-    // their settings (not queries under an agent, such as `rag-query`).
-    { path: "v1/voices/{voice_id}", methods: ["DELETE"] },
-    "v1/convai/agents/create",
-    { path: "v1/convai/agents/{agent_id}/duplicate", methods: ["POST"] },
-    { path: "v1/convai/agents/{agent_id}", methods: ["PUT", "PATCH", "DELETE"] },
-    { path: "v1/convai/agents/{agent_id}/avatar", methods: ["POST"] },
-    { path: "v1/convai/agents/{agent_id}/hold-audio", methods: ["POST", "DELETE"] },
-    { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
-    // An agent's link answers with a shareable token that may never expire
-    // (`expiration_time_unix_secs` can be null): open-ended access, which no
-    // opt-in reaches (plan D4).
-    "v1/convai/agents/{agent_id}/link",
-  ],
-  // Tokens and signed URLs for live sessions, reached only by a listed path
-  // that opts in, and only the mint itself: its method on the exact path
-  // (plan D4). Only the Realtime client secret takes an expiry; the others
-  // last as ElevenLabs sets them (about 15 minutes, T13). A signed URL is
-  // single use only with `include_conversation_id=true` (T13), so the
-  // gateway sets it, replacing whatever the client sent.
-  // Agent reads may hold a `shareable_token`; they stay allowed, since
-  // passthrough never changes a body and the customer turns sharing on
-  // themselves.
-  liveTokens: [
-    { path: "v1/convai/conversation/token/*", method: "GET" },
-    { path: "v1/convai/conversation/get-signed-url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
-    { path: "v1/convai/conversation/get_signed_url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
-    { path: "v1/convai/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
-    // Everything under `v1/single-use-token` stays refused, opt-in or not,
-    // except the mints of the types that start a live session.
-    { path: "v1/single-use-token/*", mint: "v1/single-use-token/realtime_scribe", method: "POST" },
-    { path: "v1/single-use-token/*", mint: "v1/single-use-token/tts_websocket", method: "POST" },
+  // Tokens and signed URLs for live sessions (plan D4). Only the Realtime
+  // client secret takes an expiry; the others last as ElevenLabs sets them
+  // (about 15 minutes, T13). A signed URL is single use only with
+  // `include_conversation_id=true` (T13).
+  suggestedPaths: [
+    { method: "GET", path: "v1/convai/conversation/token", liveToken: true, fields: [] },
+    { method: "GET", path: "v1/convai/conversation/get-signed-url", liveToken: true, fields: [SINGLE_USE] },
+    { method: "GET", path: "v1/convai/conversation/get_signed_url", liveToken: true, fields: [SINGLE_USE] },
+    {
+      method: "POST",
+      path: "v1/convai/realtime/client_secrets",
+      liveToken: true,
+      fields: [liveTokenExpiry("ElevenLabs", { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: LIVE_TOKEN_WINDOW_SECONDS } })],
+    },
+    { method: "POST", path: "v1/single-use-token/realtime_scribe", liveToken: true, fields: [] },
+    { method: "POST", path: "v1/single-use-token/tts_websocket", liveToken: true, fields: [] },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

@@ -156,6 +156,9 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
 /** Where Cloudflare AI Gateway lives. Only a test deployment's own build moves it (`./route.ts`). */
 export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
 
+/** Cloudflare AI Gateway's host, reached only through a connection's Cloudflare setting, never a base URL. */
+export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+
 /**
  * The origin a connection's provider key is given for, which seals it: the
  * connection's base URL, its Cloudflare AI Gateway, or "" for the provider's

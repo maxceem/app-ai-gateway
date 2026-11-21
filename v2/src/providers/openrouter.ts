@@ -11,11 +11,7 @@ export const openrouter = defineProvider({
   type: "openrouter",
   label: "OpenRouter",
   hosts: { main: "openrouter.ai/api" },
-  cloudflareEndpoint: { slug: "openrouter" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Key management (and the OAuth exchange that creates a key), the key's own
-  // limits, the account's credits and activity, and its organization settings.
-  refused: ["v1/keys/*", "v1/key/*", "v1/auth/*", "v1/credits/*", "v1/activity/*", "v1/organization/*", "v1/guardrails/*"],
   // Its key-status call: `v1/models` is public and answers any token.
   probe: { path: "v1/key" },
   // `priority` and `fast` are one tier there, named fast on OpenAI's models.

@@ -57,11 +57,9 @@ export const fal = defineProvider({
   type: "fal",
   label: "fal",
   hosts: { main: "fal.run", queue: "queue.fal.run" },
-  cloudflareEndpoint: { slug: "fal" },
   auth: { header: "authorization", format: "Key {key}" },
   // Step 4 reviews the service modes with the full operation list.
   serviceModes: [],
-  refused: [],
   operations: [
     defineOperation({
       name: "fal.run",

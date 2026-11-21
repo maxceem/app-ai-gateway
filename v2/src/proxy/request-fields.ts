@@ -272,13 +272,32 @@ export function unpricedOptionsNamed(operation: OperationDescription, fields: Re
 }
 
 /** Deletes a dot path from a JSON body. True if it was there. */
-function deleteAt(body: Record<string, unknown>, path: string): boolean {
+export function deleteAt(body: Record<string, unknown>, path: string): boolean {
   const keys = path.split(".");
   const last = keys.pop()!;
   const parent = keys.length === 0 ? body : asRecord(fieldAt(body, keys.join(".")));
   if (parent === null || !Object.hasOwn(parent, last)) return false;
   delete parent[last];
   return true;
+}
+
+/**
+ * Writes a dot path into a JSON body, creating its parent objects, or
+ * replacing a parent that is not an object. The one writer of a nested
+ * field: serving providers pinned on a connection, and a listing's field
+ * settings, both go through it.
+ */
+export function writeAt(body: Record<string, unknown>, path: string, value: unknown): void {
+  const keys = path.split(".");
+  const last = keys.pop()!;
+  let level = body;
+  for (const key of keys) {
+    const next = Object.hasOwn(level, key) ? level[key] : undefined;
+    const object = typeof next === "object" && next !== null && !Array.isArray(next) ? (next as Record<string, unknown>) : {};
+    level[key] = object;
+    level = object;
+  }
+  level[last] = value;
 }
 
 /**

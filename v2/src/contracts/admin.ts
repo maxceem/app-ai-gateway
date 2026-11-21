@@ -168,9 +168,41 @@ export const CUSTOM_PATH_STYLES = [
 export { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 
 /**
+ * One request field a listed path sets, over whatever the app sends (plan
+ * section 4.5, "Safe defaults"). For a path the provider knows, the gateway
+ * suggests values and writes them in when the path is first listed; the
+ * customer may change or remove them. An answer adds `label`, `reason` and
+ * `suggested_value` to a field the provider suggests, so a person or an
+ * agent sees why it is there. A request may send them back: they are ignored.
+ */
+export const FieldSettingSchema = z
+  .object({
+    /** A JSON body field, or a query parameter. */
+    in: z.enum(["body", "query"]),
+    /** The field's name. A body name with dots is a nested field, such as `client_secret.expires_after`. */
+    name: z.string().trim().min(1).max(200),
+    /** The value set. A query parameter's is a string. With `as: "time_from_now"`, a whole number of seconds. */
+    value: z.unknown(),
+    /** `time_from_now`: the gateway writes the time `value` seconds after it sends the request, in RFC 3339. */
+    as: z.enum(["time_from_now"]).optional(),
+    /** Other spellings the provider reads for the same field, removed so it reads only this one. */
+    aliases: z.array(z.string().trim().min(1).max(200)).max(10).optional(),
+    /** In an answer, for a field the provider suggests: a short name for it. */
+    label: z.string().optional(),
+    /** In an answer, for a field the provider suggests: why. */
+    reason: z.string().optional(),
+    /** In an answer, for a field the provider suggests: the value it suggests, which `value` may differ from. */
+    suggested_value: z.unknown().optional(),
+  })
+  .strict()
+  .meta({ id: "FieldSetting" });
+
+/**
  * A path a provider connection lists for passthrough (plan section 4.5): a
  * path of the provider the gateway does not declare, forwarded as it is to
- * apps that enable `passthrough`. `{name}` parts match exactly one segment.
+ * apps that enable `passthrough`. `{name}` parts match exactly one segment,
+ * and stand only where an id is: two fixed segments come before the first,
+ * and no two stand next to each other.
  */
 export const PassthroughPathSchema = z
   .object({
@@ -185,15 +217,12 @@ export const PassthroughPathSchema = z
      */
     style: z.enum(CUSTOM_PATH_STYLES).optional(),
     /**
-     * Opts the path in to one of the provider's live-session token paths,
-     * which mint a short-lived secret for a live call (such as OpenAI's
-     * `v1/realtime/client_secrets`). Without it they are refused, even when
-     * listed. Such a mint is not metered and not capped: the call it starts
-     * goes straight to the provider. Where the provider lets the request set
-     * how long the secret may start a call, the gateway locks it to 60
-     * seconds. Shown only when true.
+     * Request fields set on every request to the path, over what the app
+     * sends. Left out on a path the provider suggests values for, the
+     * suggested ones are written in when the path is first listed; an empty
+     * list sets none. Shown only when it sets some.
      */
-    live_token: z.boolean().optional(),
+    set_fields: z.array(FieldSettingSchema).max(20).optional(),
   })
   .strict()
   .meta({ id: "PassthroughPath" });

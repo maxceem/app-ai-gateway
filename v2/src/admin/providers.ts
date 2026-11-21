@@ -15,8 +15,10 @@
  *   Cloudflare can use the keys in its own key store. The key's origin is the
  *   gateway, so turning it on or off moves the key, by the rule above.
  * - Passthrough paths (plan section 4.5) are checked when saved: each must be
- *   a valid template, and a newly listed one must not be one the provider
- *   always refuses, nor overlap a declared operation (`passthroughJson`).
+ *   a valid template, and a newly listed one must follow the named-part rule
+ *   and not be a built-in endpoint (`passthroughJson`). There are no refused
+ *   paths: admin paths work too, if the customer lists them. A newly listed
+ *   path the provider suggests safe defaults for gets them written in.
  * - A custom provider (type `custom`, `../providers/custom.ts`) needs its
  *   base URL and the header its key is sent in. Its listed paths are its
  *   whole API; one that names an API style is an operation of that style,
@@ -24,6 +26,9 @@
  *   nor serving providers. Only a person or key with the manage grant can
  *   save one, as any base URL.
  * - A base URL's path is normalized as request paths are (`checkedBaseUrl`).
+ *   On the provider's own host it is the plain address, and Cloudflare AI
+ *   Gateway is reached through its setting, never a base URL
+ *   (`checkDestination`).
  * - Every change that affects which calls a connection serves or their price
  *   (rates, paths, API styles, base URL) is judged against the apps that
  *   route to it by one rule (`checkConnectionChange`).
@@ -35,6 +40,7 @@ import {
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   type CustomAuthSchema,
+  type FieldSettingSchema,
   type ModelPricingSchema,
   type PassthroughPathSchema,
 } from "../contracts/admin.ts";
@@ -46,6 +52,7 @@ import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProb
 import type { CustomerRates } from "../pricing/prices.ts";
 import { selectableModes } from "../proxy/meter.ts";
 import {
+  CLOUDFLARE_AI_GATEWAY_HOST,
   describeConnection,
   keyOrigin,
   readCloudflareGateway,
@@ -53,24 +60,27 @@ import {
   type CloudflareGatewaySetting,
 } from "../providers/connections.ts";
 import {
-  CLOUDFLARE_AI_GATEWAY_HOST,
   customAuthProblem,
   customDescription,
   customOperationName,
   customStyleProblem,
+  declaredHostNames,
+  hostMatches,
   isCustomStyle,
+  knownHostOwner,
 } from "../providers/custom.ts";
-import { baseUrlOwnerProblem } from "../providers/destination.ts";
 import { builtInProvider } from "../providers/index.ts";
 import {
   compilePassthrough,
+  listingShape,
+  namedPartProblem,
   ProviderMatcher,
   upstreamRoute,
   type CompiledPassthrough,
   type PassthroughPath,
   type UpstreamRoute,
 } from "../providers/matcher.ts";
-import type { OperationDescription, ProviderAuth, ProviderDescription } from "../providers/operation.ts";
+import type { FieldSetting, OperationDescription, ProviderAuth, ProviderDescription, SuggestedPath } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
 import { normalizePath, TemplateError, type PathRefusal } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
@@ -224,17 +234,84 @@ function pricingFromRates(rates: CustomerRates): DollarPricing {
   return pricing as DollarPricing;
 }
 
-/** Listed paths back to how the API writes them, the price in dollars. */
-function passthroughView(stored: string | null): z.output<typeof PassthroughPathSchema>[] | undefined {
+/**
+ * Listed paths back to how the API writes them, the price in dollars. A
+ * field setting the provider suggests (`suggestedPaths`) carries its label,
+ * reason and suggested value, read from the description now, never stored,
+ * so every console, CLI and MCP answer says why it is there.
+ */
+function passthroughView(stored: string | null, description: ProviderDescription | null = null): z.output<typeof PassthroughPathSchema>[] | undefined {
   const paths = readPassthrough(stored);
   if (paths.length === 0) return undefined;
-  return paths.map((listed) => ({
-    method: listed.method,
-    path: listed.path,
-    ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
-    ...(listed.style !== undefined && isCustomStyle(listed.style) ? { style: listed.style } : {}),
-    ...(listed.liveToken === true ? { live_token: true } : {}),
-  }));
+  const matcher = description === null ? null : new ProviderMatcher(description);
+  return paths.map((listed) => {
+    let suggested: SuggestedPath | null = null;
+    try {
+      suggested = matcher?.suggestionFor(compilePassthrough([listed])[0]!) ?? null;
+    } catch {
+      // A path that no longer compiles still shows as stored.
+    }
+    return {
+      method: listed.method,
+      path: listed.path,
+      ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
+      ...(listed.style !== undefined && isCustomStyle(listed.style) ? { style: listed.style } : {}),
+      ...(listed.setFields !== undefined && listed.setFields.length > 0 ? { set_fields: listed.setFields.map((field) => fieldView(field, suggested)) } : {}),
+    };
+  });
+}
+
+/** A field setting as the API writes it, with its suggestion's label, reason and suggested value when it has one. */
+function fieldView(field: FieldSetting, suggested: SuggestedPath | null): z.output<typeof FieldSettingSchema> {
+  const suggestion = suggested?.fields.find((entry) => entry.in === field.in && entry.name === field.name);
+  return {
+    in: field.in,
+    name: field.name,
+    value: field.value,
+    ...(field.as !== undefined ? { as: field.as } : {}),
+    ...(field.aliases !== undefined && field.aliases.length > 0 ? { aliases: [...field.aliases] } : {}),
+    ...(suggestion !== undefined ? { label: suggestion.label, reason: suggestion.reason, suggested_value: suggestion.value } : {}),
+  };
+}
+
+/** A suggested field as a listing stores it: without its label and reason. */
+function settingOf(field: FieldSetting): FieldSetting {
+  return {
+    in: field.in,
+    name: field.name,
+    value: field.value,
+    ...(field.as !== undefined ? { as: field.as } : {}),
+    ...(field.aliases !== undefined ? { aliases: field.aliases } : {}),
+  };
+}
+
+/** The most seconds a `time_from_now` value may hold: 30 days. */
+const MAX_SECONDS_FROM_NOW = 30 * 24 * 60 * 60;
+
+/** A listing's field settings, checked: each names a field once, and its value fits where it goes. */
+function checkedFields(asked: readonly z.output<typeof FieldSettingSchema>[] | undefined, where: string): FieldSetting[] | undefined {
+  if (asked === undefined) return undefined;
+  const seen = new Set<string>();
+  return asked.map((field, index) => {
+    const at = `${where}.set_fields.${index}`;
+    if (!Object.hasOwn(field, "value") || field.value === undefined) throw new GatewayError(400, "invalid_request", `${at}.value: a value is needed`);
+    const names = [field.name, ...(field.aliases ?? [])];
+    for (const name of names) {
+      const key = `${field.in}:${name}`;
+      if (seen.has(key)) throw new GatewayError(400, "invalid_request", `${at}: ${name} is set twice`);
+      seen.add(key);
+      if (field.in === "body" && name.split(".").includes("")) throw new GatewayError(400, "invalid_request", `${at}: ${name} is not a field name`);
+    }
+    if (field.as === "time_from_now") {
+      if (!Number.isSafeInteger(field.value) || (field.value as number) < 0 || (field.value as number) > MAX_SECONDS_FROM_NOW) {
+        throw new GatewayError(400, "invalid_request", `${at}.value: a time from now is a whole number of seconds, from 0 to ${MAX_SECONDS_FROM_NOW}`);
+      }
+    } else if (field.in === "query" && typeof field.value !== "string") {
+      throw new GatewayError(400, "invalid_request", `${at}.value: a query parameter's value is a string`);
+    }
+    if (JSON.stringify(field.value).length > 4096) throw new GatewayError(400, "invalid_request", `${at}.value: the value is too large`);
+    return settingOf(field as FieldSetting);
+  });
 }
 
 /** What a connection's listed paths are judged against: a built-in provider, or a custom one's base URL and key header. */
@@ -255,35 +332,40 @@ interface CheckedListing {
  *   once per method;
  * - its price, if any, is whole nano-dollars that the one charge function
  *   bills (`resolvePassthrough`, `callGap`);
- * - a path not listed before must not be one the provider always refuses
- *   (it could never be reached), nor overlap a declared operation (listed
- *   paths are matched first, so it would take that operation's requests
- *   unmetered). Both are judged on the connection's route too: where the
- *   provider reads the path through a base URL or Cloudflare AI Gateway
+ * - its field settings, if any, each name a field once (`checkedFields`);
+ * - a path not listed before follows the named-part rule
+ *   (`namedPartProblem`), and may not be a built-in endpoint: listed paths
+ *   are matched first, so it would take a declared operation's requests
+ *   unmetered ("turn it on for the app instead"). That is judged where the
+ *   provider reads the path, through a base URL or Cloudflare AI Gateway
  *   (`upstreamTargets`). Paths listed before on the same route are not
- *   judged again, so a later release that refuses or declares one never
- *   stops a save. A new route judges them all (`before` is then empty).
+ *   judged again, so a later release that declares one never stops a save.
+ *   A new route judges them all (`before` is then empty).
+ * - a path first listed (not in `stored`) that the provider suggests safe
+ *   defaults for (`suggestedPaths`) gets them, unless the request names its
+ *   own `set_fields`, even an empty list. Removed later, they stay removed.
  * - a custom provider's path may name an API style (`../providers/custom.ts`):
  *   a POST, with no flat price (its models' rates price it), one per style.
  *   It is then one of the provider's operations, so no plain listing may
  *   overlap it, nor another style's path.
- * - a path may opt in to the provider's live-session token paths
- *   (`live_token`, plan D4) only when one of them takes every request it
- *   could match; without the opt-in, such a path could never be reached.
- *   Turning the opt-in on or off judges the path again.
  */
 function passthroughJson(
   subject: ListingSubject,
   asked: readonly z.output<typeof PassthroughPathSchema>[],
   before: readonly PassthroughPath[],
+  stored: readonly PassthroughPath[] = before,
 ): CheckedListing {
-  const known = new Set(before.flatMap((listed) => {
-    try {
-      return [listingKey(compilePassthrough([listed])[0]!)];
-    } catch {
-      return [];
-    }
-  }));
+  const shapesOf = (paths: readonly PassthroughPath[]) =>
+    new Set(paths.flatMap((listed) => {
+      try {
+        return [listingKey(compilePassthrough([listed])[0]!)];
+      } catch {
+        return [];
+      }
+    }));
+  const known = shapesOf(before);
+  const kept = shapesOf(stored);
+  const builtInMatcher = subject.kind === "builtIn" ? new ProviderMatcher(subject.description) : null;
   const seen = new Set<string>();
   const styles = new Set<string>();
   const checked = asked.map((entry, index) => {
@@ -297,7 +379,9 @@ function passthroughJson(
       }
       if (styles.has(entry.style)) throw new GatewayError(400, "invalid_request", `${where}.style: list one path per API style; ${entry.style} has one already`);
       styles.add(entry.style);
-      if (entry.live_token === true) throw new GatewayError(400, "invalid_request", `${where}.live_token: a path of an API style is not a live-session token path`);
+      if (entry.set_fields !== undefined && entry.set_fields.length > 0) {
+        throw new GatewayError(400, "invalid_request", `${where}.set_fields: a path of an API style is served as that style; it sets no fields`);
+      }
     }
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
@@ -308,28 +392,38 @@ function passthroughJson(
         throw new GatewayError(400, "invalid_request", `${where}.per_request: the price is too large`);
       }
     }
-    const listed: PassthroughPath = {
+    const setFields = checkedFields(entry.set_fields, where);
+    const bare: PassthroughPath = {
       method: entry.method,
       path: entry.path,
       ...(priceNano !== undefined ? { priceNano } : {}),
       ...(entry.style !== undefined ? { style: entry.style } : {}),
-      ...(entry.live_token === true ? { liveToken: true as const } : {}),
     };
     let compiled: CompiledPassthrough;
     try {
-      [compiled] = compilePassthrough([listed]) as [CompiledPassthrough];
+      [compiled] = compilePassthrough([bare]) as [CompiledPassthrough];
     } catch (error) {
       if (!(error instanceof TemplateError)) throw error;
       throw new GatewayError(400, "invalid_request", `${where}.path: ${error.message}`);
     }
     // Two listings that match the same requests are one, whatever their parts are called.
-    const shape = listingShape(compiled);
+    const shape = listingShape(bare.method, compiled.template);
     if (seen.has(shape)) throw new GatewayError(400, "invalid_request", `${where}: ${key} matches the same requests as another listed path`);
     seen.add(shape);
-    if (callGap(resolvePassthrough(listed)) !== null) {
+    if (callGap(resolvePassthrough(bare)) !== null) {
       throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
-    return { where, key, listed, compiled, isNew: !known.has(listingKey(compiled)) };
+    const isNew = !known.has(listingKey(compiled));
+    if (isNew) {
+      const problem = namedPartProblem(compiled.template);
+      if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.path: ${problem}`);
+    }
+    // First listed with no settings of its own: the provider's safe defaults, written in so the customer sees them.
+    const suggested =
+      setFields === undefined && !kept.has(listingKey(compiled)) ? (builtInMatcher?.suggestionFor(compiled)?.fields.map(settingOf) ?? []) : [];
+    const fields = setFields ?? suggested;
+    const listed: PassthroughPath = { ...bare, ...(fields.length > 0 ? { setFields: fields } : {}) };
+    return { where, key, listed, compiled: { listed, template: compiled.template }, isNew };
   });
   const paths = checked.map((one) => one.listed);
   const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;
@@ -337,37 +431,17 @@ function passthroughJson(
   const matcher = new ProviderMatcher(description);
   // A new API-style path is an operation the plain listings could now overlap: they are judged against it again.
   const styleAdded = checked.some((one) => one.listed.style !== undefined && one.isNew);
-  // A base URL on another known provider's host (a custom provider's, or a stored one): that provider's declared operations, where its paths are read.
-  const owner = route.owner ?? null;
+  // A custom provider on a built-in provider's host: that provider's declared operations, where its paths are read.
+  const owner = subject.kind === "custom" ? knownHostOwner(subject.baseUrl) : null;
   const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
   const ownerRoute = owner === null || subject.baseUrl === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
   for (const { where, key, listed, compiled, isNew } of checked) {
-    if (isNew) {
-      // One verdict, whether or not the listing opts in (`listingVerdict`).
-      const verdict = matcher.listingVerdict(compiled, route);
-      // Key, admin and account paths, and anything under a token path but its mint
-      // (cancelling a session): no opt-in reaches them.
-      if (verdict.kind === "refused" || verdict.kind === "token_non_mint") {
-        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
-      }
-      if (listed.liveToken === true && verdict.kind !== "token_mint") {
-        throw new GatewayError(400, "invalid_request", `${where}.live_token: ${key} is not one of ${description.label}'s live-session token paths; only those can opt in`);
-      }
-      if (listed.liveToken !== true && verdict.kind === "token_mint") {
-        throw new GatewayError(
-          400,
-          "invalid_request",
-          `${where}.live_token: ${key} mints a live-session secret; set live_token to true to list it, knowing such calls are not metered and not capped`,
-        );
-      }
-    }
     // A path new or changed in this save is judged for its style: one already listed keeps working.
     if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
       const problem = customStyleProblem(listed.style, subject.baseUrl);
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
       // On a known provider's host, a path its declared operation serves speaks that operation's style:
       // another style's reader would miss what its answers report.
-      // Every operation it could take, not only the first: each must speak its style.
       const overlapped = ownerMatcher === null || ownerRoute === null ? [] : ownerMatcher.overlappingOperations(compiled, ownerRoute);
       const styleOf = (name: string) => owner!.operations.find((operation) => operation.name === name)?.style;
       const declared = overlapped.find((name) => styleOf(name) !== listed.style) ?? null;
@@ -382,7 +456,7 @@ function passthroughJson(
         );
       }
     }
-    // As on a built-in connection (5a): a plain path newly listed on a known provider's host may not take
+    // As on a built-in connection: a plain path newly listed on a known provider's host may not take
     // one of that provider's declared operations, which would pass it through unmetered.
     if (isNew && listed.style === undefined && ownerMatcher !== null && ownerRoute !== null) {
       const declared = ownerMatcher.overlappingOperation(compiled, ownerRoute);
@@ -392,8 +466,8 @@ function passthroughJson(
           400,
           "invalid_request",
           style !== undefined && isCustomStyle(style)
-            ? `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation; list it with the style ${style}, which meters and prices it`
-            : `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation, which a custom path cannot meter; use a ${owner!.label} connection for it`,
+            ? `${where}.path: ${key} is ${owner!.label}'s built-in ${declared} endpoint; list it with the style ${style}, which meters and prices it`
+            : `${where}.path: ${key} is ${owner!.label}'s built-in ${declared} endpoint; use a ${owner!.label} connection and turn it on for the app instead`,
         );
       }
     }
@@ -410,16 +484,12 @@ function passthroughJson(
     // could match any of an operation's paths would take its requests unmetered.
     const operation = matcher.overlappingOperation(compiled, route);
     if (operation !== null) {
-      // Only through the base URL's path: the listing itself is not the operation's path.
-      const throughBase = route.basePath !== null && matcher.overlappingOperation(compiled, { ...route, basePath: null }) === null;
       throw new GatewayError(
         400,
         "invalid_request",
         subject.kind === "custom"
           ? `${where}.path: ${key} can match the requests of the ${operation} path; list paths that do not overlap`
-          : throughBase
-            ? `${where}.path: behind this connection's base URL, ${key} can reach the provider path of the ${operation} operation; list a path the provider does not serve as an operation, or change the base URL`
-            : `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
+          : `${where}.path: ${key} is built in as the ${operation} operation; turn it on for the app instead`,
       );
     }
   }
@@ -455,36 +525,18 @@ export function assertModesSelectable(
 
 /** A listing's shape and, for a custom provider's path, its API style: what makes it the same listing as before. */
 function listingKey(compiled: CompiledPassthrough): string {
-  return `${listingShape(compiled)}\u0000${compiled.listed.style ?? ""}\u0000${compiled.listed.liveToken === true ? "live_token" : ""}`;
+  return `${listingShape(compiled.listed.method, compiled.template)}\u0000${compiled.listed.style ?? ""}`;
 }
 
-/** A listing's method and the requests it matches: a leading `/` and the names of its parts make no difference. */
-function listingShape(compiled: CompiledPassthrough): string {
-  const segments = compiled.template.segments.map((segment) =>
-    segment.kind === "literal" ? `l:${segment.value}` : segment.kind === "part" ? `p:${segment.prefix}\u0000${segment.suffix}` : segment.kind,
-  );
-  return [compiled.listed.method, ...segments].join("/");
-}
-
-/**
- * Whether two routes send every path to the same provider path, judged by
- * the same providers' rules (`upstreamTargets`): the same path mapping, the
- * same owner of the base URL's host, and Cloudflare's host or not.
- */
+/** Whether two routes send every path to the same provider path (`upstreamTargets`). */
 function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
   const same = (x: readonly string[] | null, y: readonly string[] | null) =>
     x === null || y === null ? x === y : x.length === y.length && x.every((piece, index) => piece === y[index]);
-  return (
-    same(a.basePath, b.basePath) &&
-    same(a.cloudflarePrefix, b.cloudflarePrefix) &&
-    same(a.hostPrefix ?? null, b.hostPrefix ?? null) &&
-    (a.owner?.type ?? null) === (b.owner?.type ?? null) &&
-    (a.cloudflareBase === undefined) === (b.cloudflareBase === undefined)
-  );
+  return same(a.basePath, b.basePath) && same(a.cloudflarePrefix, b.cloudflarePrefix);
 }
 
 export function providerView(row: ConnectionRow) {
-  const passthrough = passthroughView(row.passthrough_json);
+  const passthrough = passthroughView(row.passthrough_json, builtInProvider(row.type));
   const auth = row.type === CUSTOM_PROVIDER_TYPE ? readCustomAuth(row.passthrough_json) : null;
   return {
     id: row.id,
@@ -536,7 +588,7 @@ function checkRoute(
   cloudflare: { readonly accountId: string; readonly gatewayId: string } | null,
 ): void {
   if (cloudflare === null) return;
-  if (description.cloudflareGateway === undefined || description.cloudflareEndpoint === undefined) {
+  if (description.cloudflareGateway === undefined) {
     throw new GatewayError(400, "invalid_request", `cloudflareGateway: ${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
   if (baseUrl !== null) {
@@ -545,14 +597,27 @@ function checkRoute(
 }
 
 /**
- * A built-in connection's base URL may not be another provider's host, or
- * another provider's Cloudflare AI Gateway endpoint (`baseUrlOwnerProblem`):
- * its requests would reach that provider. Judged when the base URL is new or
- * changed.
+ * Why a built-in connection's new or changed base URL is refused, or null
+ * (plan section 4.5):
+ *
+ * - Cloudflare AI Gateway's host: Cloudflare is reached through the
+ *   connection's own setting, never a base URL.
+ * - the provider's own declared host with a path: there the base URL is the
+ *   plain address the provider declares (`https://openrouter.ai/api/`).
+ *
+ * Any other host, such as a self-hosted server, is the customer's own.
  */
-function checkBaseUrlOwner(description: ProviderDescription, baseUrl: string): void {
-  const problem = baseUrlOwnerProblem(description, baseUrl);
-  if (problem !== null) throw new GatewayError(400, "invalid_request", `baseUrl: ${problem}`);
+function baseUrlProblem(description: ProviderDescription, baseUrl: string): string | null {
+  const url = new URL(baseUrl);
+  const host = url.hostname.toLowerCase();
+  if (host === CLOUDFLARE_AI_GATEWAY_HOST) {
+    return "Cloudflare AI Gateway is reached through the connection's cloudflareGateway setting, not a base URL";
+  }
+  const declared = Object.values(description.hosts).find((entry) => entry.split("/")[0]!.toLowerCase() === host);
+  const plain = declared !== undefined ? `/${declared.slice(declared.split("/")[0]!.length + 1)}`.replace(/\/?$/u, "/") : "/";
+  const own = declared !== undefined || declaredHostNames(description).some((name) => hostMatches(name, host));
+  if (own && url.pathname !== plain) return `on ${description.label}'s own host the base URL is its plain address: https://${url.host}${plain}`;
+  return null;
 }
 
 /**
@@ -560,7 +625,7 @@ function checkBaseUrlOwner(description: ProviderDescription, baseUrl: string): v
  * of a type and base URL goes through: direct create, update, the key test,
  * and a provider handoff both when it is opened and when it is approved.
  * The route (a base URL or Cloudflare AI Gateway, not both) is always checked;
- * the base URL's owner only when it is new or changed (`stored`), so one
+ * the base URL itself only when it is new or changed (`stored`), so one
  * stored before keeps working.
  */
 export function checkDestination(
@@ -570,7 +635,9 @@ export function checkDestination(
   stored: string | null = null,
 ): void {
   checkRoute(description, baseUrl, cloudflare);
-  if (baseUrl !== null && baseUrl !== stored) checkBaseUrlOwner(description, baseUrl);
+  if (baseUrl === null || baseUrl === stored) return;
+  const problem = baseUrlProblem(description, baseUrl);
+  if (problem !== null) throw new GatewayError(400, "invalid_request", `baseUrl: ${problem}`);
 }
 
 /** Pinned serving providers, for a provider type that has the field (`servingProvidersField`) only. */
@@ -589,9 +656,8 @@ function keyNeeded(): GatewayError {
 
 /**
  * A custom provider's key header and base URL, checked when saved. Its base
- * URL passed the origin guard. It may not be Cloudflare AI Gateway's host,
- * which reaches every provider: a built-in connection's own setting goes
- * there instead, with that provider's refused paths.
+ * URL passed the origin guard. It may not be Cloudflare AI Gateway's host:
+ * a built-in connection's own setting goes there instead.
  */
 function checkedCustom(
   baseUrl: string | null,
@@ -861,8 +927,6 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   // changes where the provider reads a path (a base URL's path, or going
   // through Cloudflare or not) judges every listed path again, kept or sent.
   // Another Cloudflare gateway, or another host with the same path, does not.
-  // A custom provider's base URL moving to another known provider's host
-  // brings other refused paths: every path is judged again then too.
   let passthroughStored = current.passthrough_json;
   const storedPaths = readPassthrough(current.passthrough_json);
   const oldDescription = describeConnection({ type: current.type, baseUrl: current.base_url, passthrough: storedPaths, customAuth: storedAuth });
@@ -875,7 +939,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
       upstreamRoute(newDescription, { baseUrl, cloudflareGateway: cloudflare }),
     );
   const authMoved = customSetting !== null && (storedAuth?.header !== customSetting.auth.header || storedAuth?.format !== customSetting.auth.format);
-  const kept = body.passthrough === undefined && (routeMoved || authMoved) ? (passthroughView(current.passthrough_json) ?? []) : undefined;
+  const kept = body.passthrough === undefined && (routeMoved || authMoved) ? (passthroughView(current.passthrough_json, description) ?? []) : undefined;
   const askedPaths = body.passthrough === null ? (custom ? [] : null) : (body.passthrough ?? kept);
   // The description the connection has once saved: its paths decide a custom provider's operations.
   let operationsDescription: ProviderDescription | null = custom ? newDescription : description;
@@ -883,10 +947,10 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   else if (askedPaths !== undefined) {
     const priorPaths = routeMoved ? [] : storedPaths;
     let checked: CheckedListing;
-    if (customSetting !== null) checked = passthroughJson({ kind: "custom", ...customSetting }, askedPaths, priorPaths);
+    if (customSetting !== null) checked = passthroughJson({ kind: "custom", ...customSetting }, askedPaths, priorPaths, storedPaths);
     else {
       if (description === null) throw new GatewayError(400, "invalid_request", `passthrough: provider type ${current.type} is not supported`);
-      checked = passthroughJson({ kind: "builtIn", description, baseUrl, cloudflareGateway: cloudflare }, askedPaths, priorPaths);
+      checked = passthroughJson({ kind: "builtIn", description, baseUrl, cloudflareGateway: cloudflare }, askedPaths, priorPaths, storedPaths);
     }
     passthroughStored = checked.stored;
     operationsDescription = checked.description;
