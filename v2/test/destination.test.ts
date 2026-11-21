@@ -16,6 +16,7 @@ import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderMatcher, upstreamRoute, type PassthroughPath } from "../src/providers/matcher.ts";
 import type { HttpMethod } from "../src/providers/operation.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
+import { requestedServiceMode, selectableModes } from "../src/proxy/meter.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
@@ -214,6 +215,70 @@ describe("a stored connection on another provider's host, served end to end", ()
   });
 });
 
+
+describe("a base URL's region comes from its host's owner", () => {
+  const chat = provider("openai").operations.find((operation) => operation.name === "openai.chat")!;
+
+  it("prices a request at the region of the host it goes to, whatever the connection's type", () => {
+    // An OpenAI connection stored on Mistral's EU host: its calls go there, so they are in Mistral's `eu` region.
+    expect(requestedServiceMode(provider("openai"), chat, "https://api.eu.mistral.ai/", {}).mode).toEqual({ tier: "standard", region: "eu" });
+    expect(selectableModes(provider("openai"), chat, "https://api.eu.mistral.ai/")).toContainEqual({ tier: "standard", region: "eu" });
+    // A connection on its own regional host keeps its region, and an unknown host has none.
+    expect(requestedServiceMode(provider("xai"), undefined, "https://us.api.x.ai/", {}).mode.region).toBe("us");
+    expect(requestedServiceMode(provider("mistral"), undefined, "https://api.eu.mistral.ai/", {}).mode.region).toBe("eu");
+    expect(requestedServiceMode(provider("openai"), chat, "https://api.openai.com/", {}).mode.region).toBe("global");
+    expect(requestedServiceMode(provider("openai"), chat, "https://llm.example.net/", {}).mode.region).toBe("global");
+  });
+});
+
+describe("a stored connection on another provider's regional host, charged end to end", () => {
+  beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("bills a stored OpenAI connection at Mistral's EU host at its `eu` rate", async () => {
+    clearCaches();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ id: "c1", model: "house-model", choices: [{ message: { role: "assistant", content: "hi" } }], usage: { prompt_tokens: 1000, completion_tokens: 0, total_tokens: 1000 } }),
+    );
+    await seedAccount();
+    const id = crypto.randomUUID().replaceAll("-", "");
+    const slug = `openai-${id.slice(0, 6)}`;
+    const baseUrl = "https://api.eu.mistral.ai/";
+    const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl], "sk-test-1234");
+    const now = Date.now();
+    // Written directly, as a row stored before saving refused another provider's host: $1 per million, `eu` at 1.1 times.
+    const rates = { "house-model": { input: 1_000_000_000, output: 1_000_000_000, modes: { eu: { factor: 1.1 } } } };
+    await env.DB.prepare(
+      `INSERT INTO provider_connection
+        (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
+       VALUES (?, ?, 'openai', ?, 'OpenAI', 'active', ?, '1234', ?, ?, 1, 'usr_test', ?, ?)`,
+    )
+      .bind(id, ACCOUNT_ID, slug, blob, baseUrl, JSON.stringify(rates), now, now)
+      .run();
+    const appId = await seedRoutedApp(
+      { type: "api_key", end_user: { source: "none" } },
+      { providers: { [slug]: { operations: ["openai.chat"], models: ["house-model"] } } },
+    );
+    const { key } = await seedAppKey(appId);
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`https://gateway.test/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: "house-model", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      env,
+      ctx,
+    );
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).startsWith(baseUrl))).toBe(true);
+    const charge = await env.DB.prepare("SELECT cost_nano FROM charge WHERE app_id = ?").bind(appId).first<{ cost_nano: number }>();
+    // 1,000 input tokens at $1 per million, at the `eu` factor: 1,100,000 nano-dollars, not 1,000,000.
+    expect(charge?.cost_nano).toBe(1_100_000);
+  });
+});
 
 describe("saving a built-in connection's base URL", () => {
   it.each([

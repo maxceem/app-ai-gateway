@@ -268,8 +268,6 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     refused: [],
     // Its reporting headers, as its own connections send them.
     ...(owner?.attributionHeaders !== undefined ? { attributionHeaders: owner.attributionHeaders } : {}),
-    // A known provider's regional hosts serve at its regional prices, as for its own connections.
-    ...(owner?.regionalOrigins !== undefined ? { regionalOrigins: owner.regionalOrigins } : {}),
     customerPaths: true,
     operations,
   };
