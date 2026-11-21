@@ -1113,6 +1113,46 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "conversations": {
+                "type": "object",
+                "properties": {
+                  "store": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Keep a copy of every call this app sends through the gateway, request and response, with the media `keep` allows."
+                  },
+                  "keep": {
+                    "type": "object",
+                    "properties": {
+                      "images": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Keep images beside the conversation. Off, each is recorded by its type and size alone."
+                      },
+                      "audio": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Keep audio: recordings sent for transcription, audio in a request, spoken replies beside the conversation. Off, each is recorded by its type and size alone."
+                      },
+                      "files": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Keep every other attached file, such as a PDF or a text document beside the conversation. Off, each is recorded by its type and size alone."
+                      }
+                    },
+                    "default": {},
+                    "additionalProperties": false
+                  },
+                  "retention_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 400,
+                    "default": 180,
+                    "description": "Days a stored conversation is kept before it is deleted."
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "required": [

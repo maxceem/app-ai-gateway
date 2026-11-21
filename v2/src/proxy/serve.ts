@@ -25,7 +25,8 @@
  * JSON, or a multipart form (an upload), read by its content type. The app's
  * model rewrites apply here. Presets, with their fallback chains, are in
  * `./presets.ts`, and share the caller checks and the attempt loop.
- * Conversation storage comes in a later step.
+ * Each call's conversation is stored after its answer, where the app turned
+ * conversation storage on (`storeConversation`, `../conversations/capture.ts`).
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
@@ -33,7 +34,9 @@ import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
-import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
+import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN, type KeptMedia } from "../contracts/app-config.ts";
+import { CAPTURE_MAX_BYTES, captureConversation, type SentBody } from "../conversations/capture.ts";
+import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -59,7 +62,7 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
-import { safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
+import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
@@ -137,6 +140,12 @@ export interface Caller {
   readonly readBody: () => Promise<Uint8Array>;
   /** Set as the request is understood, for the rejection event of a refusal. */
   readonly facts: { operation: string | null; model: string | null };
+  /**
+   * The media a stored conversation keeps, where this request's call is
+   * stored: the app turned storage on, the deployment has a bucket, and the
+   * client did not opt the request out. Null otherwise.
+   */
+  readonly conversation: KeptMedia | null;
 }
 
 /**
@@ -208,7 +217,15 @@ export async function serveCaller(
         "X-Client-Trace-Id must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
       );
     }
-    return await serve({ identity, credentialHeader: credential.headerName, appVersion, clientTraceId, readBody, facts });
+    // `X-Conversation-Storage: off` opts this request out (v1). A value it
+    // cannot read is refused rather than ignored: storing what a user asked
+    // not to be stored is worse than a clear error.
+    const storage = c.req.header("x-conversation-storage");
+    if (storage !== undefined && storage.trim().toLowerCase() !== "off") {
+      throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
+    }
+    const conversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null ? app.conversations.keep : null;
+    return await serve({ identity, credentialHeader: credential.headerName, appVersion, clientTraceId, readBody, facts, conversation });
   } catch (error) {
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
@@ -410,6 +427,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           credentials: () => Promise.resolve(credentials),
           body: () => sent,
           attempt,
+          ...(caller.conversation !== null && operation.lifecycle === "call" ? { conversation: caller.conversation } : {}),
         },
       ]);
     },
@@ -778,6 +796,12 @@ export interface PreparedAttempt {
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   /** A live-session mint (plan D4): never served from a cache, whatever its destination. */
   readonly liveTokenMint?: true;
+  /**
+   * The media its stored conversation keeps, where this attempt's call is
+   * stored (`Caller.conversation`). Calls only: never a passthrough path, a
+   * job or a live-token mint, as v1 stored model calls alone.
+   */
+  readonly conversation?: KeptMedia;
 }
 
 /** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
@@ -1125,6 +1149,7 @@ function answer(
   const ok = upstream.status >= 200 && upstream.status < 300;
 
   if (upstream.body === null) {
+    storeConversation(c, prepared, { httpStatus: upstream.status, latencyMs, contentType, whole: new Uint8Array(0), totalBytes: 0, aborted: false });
     record(c, attempt, {
       status: ok ? "ok" : "provider_error",
       httpStatus: upstream.status,
@@ -1144,10 +1169,19 @@ function answer(
   const { stream, observed } = observeBody(upstream.body, {
     ...(reader !== null ? { onChunk: (chunk: Uint8Array) => reader.push(chunk) } : {}),
     keepHead: !ok,
+    ...(prepared.conversation !== undefined ? { keepWhole: CAPTURE_MAX_BYTES } : {}),
   });
   c.executionCtx.waitUntil(
     observed.then(
       (body) => {
+        storeConversation(c, prepared, {
+          httpStatus: upstream.status,
+          latencyMs,
+          contentType,
+          whole: body.whole,
+          totalBytes: body.totalBytes,
+          aborted: body.clientAborted,
+        });
         const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
         const usage = ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, reading?.usage ?? null, upstream.headers) : null;
         // A stream is whole once its style's closing event arrived, even if the
@@ -1190,6 +1224,43 @@ function answer(
     ),
   );
   return new Response(stream, { status: upstream.status, headers: responseHeaders });
+}
+
+/**
+ * Stores the conversation of an attempt whose answer went to the app, where
+ * its call is stored (`PreparedAttempt.conversation`), after the answer ended.
+ * Never part of the answer, and never able to fail it (`../conversations/capture.ts`).
+ */
+function storeConversation(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: Uint8Array | null; totalBytes: number; aborted: boolean },
+): void {
+  const keep = prepared.conversation;
+  if (keep === undefined) return;
+  const { attempt } = prepared;
+  const outgoing = prepared.body();
+  const sent: SentBody = outgoing.form !== undefined ? { form: outgoing.form } : { bytes: outgoing.bytes ?? new Uint8Array(0), contentType: outgoing.contentType };
+  c.executionCtx.waitUntil(
+    captureConversation(c.env, {
+      accountId: attempt.accountId,
+      appId: attempt.appId,
+      keep,
+      chargeId: chargeId(attempt.requestId, attempt.seq),
+      identity: attempt.identity,
+      appVersion: attempt.appVersion,
+      clientTraceId: attempt.clientTraceId,
+      preset: attempt.preset ?? null,
+      route: `${attempt.providerSlug}/${prepared.path.replace(/^\//u, "")}`,
+      provider: attempt.providerType,
+      model: attempt.model,
+      status: answer.httpStatus >= 200 && answer.httpStatus < 300 ? "ok" : "provider_error",
+      httpStatus: answer.httpStatus,
+      latencyMs: answer.latencyMs,
+      sent,
+      response: { contentType: answer.contentType, bytes: answer.whole, totalBytes: answer.totalBytes, aborted: answer.aborted },
+    }),
+  );
 }
 
 /**

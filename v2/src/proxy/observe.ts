@@ -5,7 +5,8 @@
  * a reader (`readResponse` in `./meter.ts`) only after it is passed to the
  * app, so reading never delays the answer, and the reader keeps what it needs
  * as the body streams past. Nothing of the body is kept here, except the
- * start of an error answer, for its error code.
+ * start of an error answer, for its error code, and the whole of an answer
+ * whose conversation is stored (`keepWhole`), up to its cap.
  */
 
 /** How much of an error answer is kept, for its error code. Error bodies are small. */
@@ -15,6 +16,8 @@ export interface ObservedBody {
   readonly totalBytes: number;
   /** The start of the body as text, when kept (`keepHead`): an error answer's. */
   readonly head: string;
+  /** The whole body, when kept (`keepWhole`) and no larger than its cap; null otherwise. */
+  readonly whole: Uint8Array | null;
   /** The app went away before the end: the rest was never read from the provider. */
   readonly clientAborted: boolean;
   /** The provider's stream broke before the end. */
@@ -26,6 +29,8 @@ export interface ObserveOptions {
   readonly onChunk?: (chunk: Uint8Array) => void;
   /** Keep the start of the body, for an error answer's code. */
   readonly keepHead?: boolean;
+  /** Keep the whole body, up to this many bytes; past it, none of it (a stored conversation's). */
+  readonly keepWhole?: number;
 }
 
 /**
@@ -47,6 +52,7 @@ export function observeBody(
   const reader = body.getReader();
   const head: Uint8Array[] = [];
   let headBytes = 0;
+  let whole: Uint8Array[] | null = options.keepWhole === undefined ? null : [];
   let totalBytes = 0;
   let onChunk = options.onChunk;
   let settle!: (value: ObservedBody) => void;
@@ -61,7 +67,16 @@ export function observeBody(
       kept.set(piece, at);
       at += piece.byteLength;
     }
-    settle({ totalBytes, head: new TextDecoder().decode(kept), clientAborted, upstreamFailed });
+    let joined: Uint8Array | null = null;
+    if (whole !== null) {
+      joined = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const piece of whole) {
+        joined.set(piece, offset);
+        offset += piece.byteLength;
+      }
+    }
+    settle({ totalBytes, head: new TextDecoder().decode(kept), whole: joined, clientAborted, upstreamFailed });
   };
   const stream = new ReadableStream<Uint8Array>(
     {
@@ -82,6 +97,10 @@ export function observeBody(
         const chunk = result.value;
         controller.enqueue(chunk);
         totalBytes += chunk.byteLength;
+        if (whole !== null) {
+          if (totalBytes > (options.keepWhole ?? 0)) whole = null;
+          else whole.push(chunk.slice());
+        }
         if (options.keepHead === true && headBytes < ERROR_HEAD_BYTES) {
           const take = Math.min(chunk.byteLength, ERROR_HEAD_BYTES - headBytes);
           head.push(chunk.slice(0, take));
