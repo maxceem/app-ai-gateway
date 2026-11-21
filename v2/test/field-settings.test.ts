@@ -81,6 +81,11 @@ describe("the named-part rule", () => {
     ["bytedance", "responses/{response_id}"],
     ["groq", "openai/v1/files/{file_id}"],
     ["elevenlabs", "v2/voices/{voice_id}"],
+    ["gemini", "v1beta/files/{id}"],
+    // A version segment second counts through it, with nothing declared.
+    ["perplexity", "router/v1/files/{id}"],
+    ["deepseek", "anthropic/v1/messages/{id}"],
+    ["deepseek", "beta/completions/{id}"],
   ])("allows %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).toBeNull());
 
   it.each([
@@ -97,6 +102,11 @@ describe("the named-part rule", () => {
     ["elevenlabs", "v2/{endpoint}"],
     ["deepgram", "v2/{endpoint}"],
     ["together", "v2/{endpoint}"],
+    // Through a version segment second in the listing, declared or not.
+    ["huggingface", "together/v1/{endpoint}"],
+    ["perplexity", "router/v1/{endpoint}"],
+    ["moonshot", "anthropic/v1/{endpoint}"],
+    ["deepseek", "beta/{endpoint}"],
   ])("refuses %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).not.toBeNull());
 
   it("reads a custom provider's listing after its base URL, counting only version segments as its prefix", () => {
@@ -105,6 +115,13 @@ describe("the named-part rule", () => {
     expect(namedPartProblem(parseTemplate("api/items/{id}"), [])).toBeNull();
     expect(namedPartProblem(parseTemplate("v1/{endpoint}"), [])).not.toBeNull();
     expect(namedPartProblem(parseTemplate("{endpoint}/x"), [])).not.toBeNull();
+    // A version segment second, or one ending in a digit, counts too.
+    expect(namedPartProblem(parseTemplate("api/v1/{endpoint}"), [])).not.toBeNull();
+    expect(namedPartProblem(parseTemplate("client/v4/{endpoint}"), [])).not.toBeNull();
+    expect(namedPartProblem(parseTemplate("v1beta1/{endpoint}"), [])).not.toBeNull();
+    expect(namedPartProblem(parseTemplate("api/v1/items/{id}"), [])).toBeNull();
+    // Known limit: on a bare host with no version segment, `api/{name}` saves.
+    expect(namedPartProblem(parseTemplate("api/{endpoint}"), [])).toBeNull();
   });
 
   it("suggests an endpoint under the prefix the listing starts with", () => {

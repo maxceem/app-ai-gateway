@@ -486,25 +486,38 @@ export function listingShape(method: string, template: Template): string {
 }
 
 /**
- * A version segment, such as `v1`, `v2`, `v1beta` or `v1alpha`. Leading
- * version segments always count as the API prefix, so providers declare only
- * the other parts of theirs (`apiPrefixes`).
+ * A version segment, such as `v1`, `v2`, `v1beta`, `v1alpha` or `v1beta1`.
+ * The API prefix runs through the last one among a listing's first two
+ * segments, so `api/v1`, `client/v4` and Groq's `openai/v1` need no
+ * declaration. Providers declare only prefixes this misses (`apiPrefixes`).
  */
-const VERSION_SEGMENT = /^v\d+[a-z]*$/i;
+const VERSION_SEGMENT = /^v\d+[a-z0-9]*$/i;
+
+/** How many of a listing's first segments are searched for a version segment. */
+const VERSION_SEARCH = 2;
 
 /**
- * The OpenAI-compatible layouts built-in providers are reached at
- * (`./llm.ts`), such as Groq's `openai/v1`. A provider adds its own
- * (`apiPrefixes`).
+ * Declared prefixes the version rule misses, for every built-in provider:
+ * Gemini's OpenAI-compatible layout goes one segment past its version. A
+ * provider adds its own (`apiPrefixes`).
  */
-export const COMMON_API_PREFIXES: readonly string[] = ["openai/v1", "inference/v1", "v1beta/openai"];
+export const COMMON_API_PREFIXES: readonly string[] = ["v1beta/openai"];
 
 /** A built-in provider's declared API prefixes, in segments: the common ones and its own. */
 export function apiPrefixesOf(description: ProviderDescription): readonly (readonly string[])[] {
   return [...COMMON_API_PREFIXES, ...(description.apiPrefixes ?? [])].map((prefix) => prefix.split("/"));
 }
 
-/** How many leading segments of `segments` are the API prefix: the longest declared prefix they start with, or their leading version segments. */
+/**
+ * How many leading segments of `segments` are the API prefix: through the last
+ * version segment among the first two, or the longest declared prefix they
+ * start with, whichever is longer.
+ *
+ * Known limit: a custom provider on a bare host whose API has no version
+ * segment, such as an Ollama-style `api/...`, has no prefix, so `api/{name}`
+ * saves there. Counting its first segment would refuse `files/{id}` on APIs
+ * with no prefix at all.
+ */
 function apiPrefixLength(segments: readonly TemplateSegment[], prefixes: readonly (readonly string[])[]): number {
   const literalAt = (index: number) => {
     const segment = segments[index];
@@ -512,7 +525,7 @@ function apiPrefixLength(segments: readonly TemplateSegment[], prefixes: readonl
   };
   const declared = prefixes.filter((prefix) => prefix.every((value, index) => literalAt(index) === value)).map((prefix) => prefix.length);
   let versions = 0;
-  while (VERSION_SEGMENT.test(literalAt(versions) ?? "")) versions++;
+  for (let index = 0; index < VERSION_SEARCH; index++) if (VERSION_SEGMENT.test(literalAt(index) ?? "")) versions = index + 1;
   return Math.max(versions, ...declared);
 }
 
@@ -521,8 +534,8 @@ function apiPrefixLength(segments: readonly TemplateSegment[], prefixes: readonl
  * 4.5), or null: a `{name}` part may stand only where an id is, never where
  * an endpoint's name is. So, after the API prefix the listing starts with,
  * one fixed segment comes before the first part, and no two parts stand next
- * to each other. The prefix is the listing's leading version segments (`v1`,
- * `v2`, `v1beta`), or a longer declared one such as Groq's `openai/v1`. A
+ * to each other. The prefix runs through a version segment among the first
+ * two (`v1`, `v1beta`, Groq's `openai/v1`, `api/v1`), or a declared one. A
  * listing is relative to the connection's base URL, so a custom provider at
  * `https://api.replicate.com/v1/` may list `predictions/{id}`. On OpenAI
  * `v1/files/{file_id}` and `v1/threads/{thread_id}/messages/{message_id}` are
