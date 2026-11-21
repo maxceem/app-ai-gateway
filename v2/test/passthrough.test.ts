@@ -789,7 +789,7 @@ describe("saving a listed path", () => {
   it.each([
     [[{ method: "GET", path: "v1/organization/{thing}" }], "always refused"],
     [[{ method: "POST", path: "v1/realtime/client_secrets" }], "set live_token to true"],
-    [[{ method: "GET", path: "v1/organization/{thing}", live_token: true }], "not one of OpenAI's live-session token paths"],
+    [[{ method: "GET", path: "v1/organization/{thing}", live_token: true }], "key, admin and account paths are always refused"],
     [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
     [[{ method: "POST", path: "v1/chat/completions" }], "openai.chat"],
     [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
