@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliError } from "../src/common.ts";
+import { CliError, LocalStateError } from "../src/common.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
@@ -269,7 +269,7 @@ test("a sign-in whose state file cannot be read never points at agw account logi
   const unreadable = () => {
     const store = memoryStore();
     store.read = async () => {
-      throw new CliError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
+      throw new LocalStateError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
     };
     return store;
   };

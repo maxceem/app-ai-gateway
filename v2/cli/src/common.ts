@@ -46,6 +46,14 @@ export class CliError extends Error {
   }
 }
 
+/**
+ * A failure reading or writing this machine's own CLI storage, raised where the
+ * storage is touched. A gateway answer can carry the same code (`invalid_state`)
+ * but is never this class, so only these get the advice to move the state file
+ * aside.
+ */
+export class LocalStateError extends CliError {}
+
 export function fail(
   code: string,
   message: string,

@@ -17,7 +17,7 @@ import { homedir, hostname, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { CliError, fail, randomToken } from "./common.ts";
+import { CliError, LocalStateError, fail, randomToken } from "./common.ts";
 
 /** Whether POSIX ownership and mode bits mean anything here (not on Windows). */
 const posixPermissions = (): boolean => process.platform !== "win32";
@@ -70,9 +70,9 @@ export function cacheDirectory(): string {
 export async function protectedDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const s = await lstat(path);
-  if (!s.isDirectory() || s.isSymbolicLink()) fail("unsafe_storage", "CLI storage must be a real directory.");
+  if (!s.isDirectory() || s.isSymbolicLink()) stateFail("unsafe_storage", "CLI storage must be a real directory.");
   if (!posixPermissions()) return;
-  if (process.getuid && s.uid !== process.getuid()) fail("unsafe_storage", "CLI storage belongs to another user.");
+  if (process.getuid && s.uid !== process.getuid()) stateFail("unsafe_storage", "CLI storage belongs to another user.");
   await chmod(path, 0o700);
 }
 
@@ -113,6 +113,11 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
 
 const RECOVER_STATE = "Move the file aside and sign in again with agw account login.";
 
+/** A failure of this machine's own storage, tagged so sign-in hints can tell it from a gateway's answer. */
+function stateFail(code: string, message: string, nextAction?: string, exitCode?: number): never {
+  throw new LocalStateError(code, message, nextAction, exitCode);
+}
+
 export class StateStore {
   readonly directory: string;
   readonly path: string;
@@ -128,7 +133,7 @@ export class StateStore {
   async read(): Promise<CliState> {
     const held = await lstat(this.path).catch((error: unknown) => {
       if (errorCode(error) === "ENOENT") return null;
-      fail("invalid_state", "Cannot read the connection state.", RECOVER_STATE, 4);
+      stateFail("invalid_state", "Cannot read the connection state.", RECOVER_STATE, 4);
     });
     if (!held) return emptyState();
     if (
@@ -136,15 +141,15 @@ export class StateStore {
       held.isSymbolicLink() ||
       (posixPermissions() && ((process.getuid && held.uid !== process.getuid()) || (held.mode & 0o077) !== 0))
     )
-      fail("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", RECOVER_STATE, 4);
+      stateFail("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", RECOVER_STATE, 4);
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(this.path, "utf8"));
     } catch {
-      fail("invalid_state", "The connection state is not readable JSON.", RECOVER_STATE, 4);
+      stateFail("invalid_state", "The connection state is not readable JSON.", RECOVER_STATE, 4);
     }
     const state = CliStateSchema.safeParse(parsed);
-    if (!state.success) fail("invalid_state", "The connection state has a shape this agw does not know.", RECOVER_STATE, 4);
+    if (!state.success) stateFail("invalid_state", "The connection state has a shape this agw does not know.", RECOVER_STATE, 4);
     return state.data;
   }
 

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { CliError, CLOUD } from "../src/common.ts";
+import { CliError, CLOUD, LocalStateError } from "../src/common.ts";
 import { Context, launch } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
@@ -268,6 +268,11 @@ test("every failed sign-in says to run the same command again, and never names a
   const unavailableAsUnreachable = (): never => {
     throw new CliError("connection_failed", "The gateway is not available (HTTP 503).", "Check connectivity and the selected URL.", 3, { status: 503 });
   };
+  // A gateway that answers with the same code as an unreadable state file: it is
+  // not this machine's storage, so moving the file aside must never be advised.
+  const gatewayInvalidState = (): never => {
+    throw new CliError("invalid_state", "The sign-in state was not accepted.", "Run agw --help for usage.", 3, { status: 400 });
+  };
   const ACCESS = "Fix access to the gateway, then run the same command again.";
   const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
@@ -301,6 +306,7 @@ test("every failed sign-in says to run the same command again, and never names a
       // gateway's address on a line of its own.
       if (error.code !== "device_flow_unavailable") assert.doesNotMatch(error.nextAction, /agw (account|deployment)|--url/, start.name);
       assert.doesNotMatch(error.nextAction, /agw account login/, start.name);
+      assert.doesNotMatch(error.nextAction, /state file/, start.name);
       return error;
     };
     const browser = (answer: Callback) => handLoopback(() => answer);
@@ -311,6 +317,7 @@ test("every failed sign-in says to run the same command again, and never names a
       ["discovery HTML 401", failure(() => tokens(1), noBrowser, true, htmlUnauthorized), ACCESS],
       ["discovery JSON 503", failure(() => tokens(1), noBrowser, true, unavailable), WAIT],
       ["discovery 503 connection_failed", failure(() => tokens(1), noBrowser, true, unavailableAsUnreachable), WAIT],
+      ["gateway 400 invalid_state", failure(() => tokens(1), noBrowser, true, gatewayInvalidState), AGAIN],
       ["discovery unreachable", failure(() => tokens(1), noBrowser, true, unreachable), "Check connectivity and the URL, then run the same command again."],
       ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), ACCESS],
       ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
@@ -355,7 +362,7 @@ test("a sign-in whose state file cannot be saved says to move it aside and run t
   );
   const store = memoryStore();
   store.update = async () => {
-    throw new CliError("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", "Move the file aside and sign in again with agw account login.", 4);
+    throw new LocalStateError("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", "Move the file aside and sign in again with agw account login.", 4);
   };
   const ctx = new Context(store, store.held, transport, { device: true }, { stderr: sinks().stderr, env: {}, browserAvailable: () => true, clock: fakeClock() });
   const error = await ctx.connect(URL_).then(() => assert.fail("expected a failure"), (caught: unknown) => caught);
@@ -378,7 +385,7 @@ test("a hosted sign-in whose state file cannot be saved says to run the same com
   );
   const store = memoryStore();
   store.update = async () => {
-    throw new CliError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
+    throw new LocalStateError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
   };
   const ctx = new Context(store, store.held, transport, { device: true }, { stderr: sinks().stderr, env: {}, browserAvailable: () => true, clock: fakeClock() });
   const error = await ctx.login(CLOUD).then(() => assert.fail("expected a failure"), (caught: unknown) => caught);

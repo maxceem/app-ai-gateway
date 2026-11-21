@@ -8,7 +8,7 @@
  * pastes the same in every shell is not possible.
  */
 
-import { CliError } from "./common.ts";
+import { CliError, LocalStateError } from "./common.ts";
 
 /** Run the same command again. */
 export const AGAIN = "Run the same command again.";
@@ -100,7 +100,8 @@ export function signInFailure(error: unknown, gateway: string | null = null): un
     next = "Wait until the gateway is available, then run the same command again.";
   else if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";
   else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
-  else if (error.code === "invalid_state" || error.code === "unsafe_storage") next = recoverState(gateway);
+  // Only this machine's own storage: a gateway answering `invalid_state` gets the plain hint.
+  else if (error instanceof LocalStateError) next = recoverState(gateway);
   else if (/agw account login|agw --help/.test(error.nextAction)) next = AGAIN;
   if (next === null) return error;
   const replaced = new CliError(error.code, error.message, next, error.exitCode, error.details);
@@ -114,6 +115,6 @@ export function signInFailure(error: unknown, gateway: string | null = null): un
  * rather than sending a self-hosted user to the hosted gateway.
  */
 export function signInStateFailure(error: unknown): unknown {
-  if (!(error instanceof CliError) || (error.code !== "invalid_state" && error.code !== "unsafe_storage")) return error;
+  if (!(error instanceof LocalStateError)) return error;
   return new CliError(error.code, error.message, recoverState(null, true), error.exitCode, error.details);
 }
