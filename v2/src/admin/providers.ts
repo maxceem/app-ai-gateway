@@ -328,8 +328,9 @@ function checkedFields(
         if (clash !== undefined) {
           throw new GatewayError(400, "invalid_request", `${at}: ${name} and ${clash.name} are the same field or one holds the other; set one of them`);
         }
+        // Checked against the setting's own other names and aliases too, not only earlier settings'.
+        bodyNames.push({ path, name });
       }
-      for (const name of names) bodyNames.push({ path: name.split("."), name });
     }
     if (field.as === "time_from_now") {
       if (!Number.isSafeInteger(field.value) || (field.value as number) < 0 || (field.value as number) > MAX_SECONDS_FROM_NOW) {

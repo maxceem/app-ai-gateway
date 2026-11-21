@@ -73,6 +73,13 @@ export type MatchResult =
       readonly upstream: UpstreamTarget;
       /** The provider's suggested path the listing is, or null (`SuggestedPath`): a live-session token mint, for one. */
       readonly suggested: SuggestedPath | null;
+      /**
+       * Whether this request is a live-session token mint the provider names
+       * (plan D4), judged on the path the provider reads, whatever template
+       * the listing used. It decides the cache rules only; suggested defaults
+       * stay with exact listings (`suggested`).
+       */
+      readonly liveTokenMint: boolean;
     }
   | { readonly kind: "refused"; readonly reason: "bad_path"; readonly detail: PathRefusal }
   | { readonly kind: "refused"; readonly reason: "not_declared" };
@@ -254,6 +261,8 @@ export class ProviderMatcher {
   private readonly operations: readonly CompiledOperation[];
   /** The provider's suggested paths (`SuggestedPath`), by listing shape (`listingShape`). */
   private readonly suggested: ReadonlyMap<string, SuggestedPath>;
+  /** The provider's live-session token mints, compiled, for judging a request's path (`isLiveTokenMint`). */
+  private readonly mints: readonly { readonly method: string; readonly template: Template }[];
 
   /**
    * Compiles every template once. Throws on a broken description, so a test
@@ -262,6 +271,7 @@ export class ProviderMatcher {
   constructor(provider: ProviderDescription) {
     this.provider = provider;
     this.suggested = new Map((provider.suggestedPaths ?? []).map((entry) => [listingShape(entry.method, parseTemplate(entry.path)), entry]));
+    this.mints = (provider.suggestedPaths ?? []).filter((entry) => entry.liveToken === true).map((entry) => ({ method: entry.method, template: parseTemplate(entry.path) }));
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
       if (names.has(operation.name)) {
@@ -326,6 +336,7 @@ export class ProviderMatcher {
         parts,
         upstream: { host: "main", path: joinSegments(segments) },
         suggested: this.suggestionFor(listed, context.route),
+        liveTokenMint: this.isLiveTokenMint(method, segments, context.route),
       };
     }
 
@@ -357,6 +368,22 @@ export class ProviderMatcher {
       if (found !== undefined) return found;
     }
     return null;
+  }
+
+  /**
+   * Whether a request is one of the provider's live-session token mints,
+   * judged on every path the provider may read for it (`upstreamTargets`,
+   * through the Cloudflare setting's prefix), so a listing such as
+   * `v1/realtime/{resource}` serving `v1/realtime/client_secrets` still gets
+   * the mint's cache rules.
+   */
+  isLiveTokenMint(method: string, segments: readonly string[], route: UpstreamRoute = DIRECT_ROUTE): boolean {
+    if (this.mints.length === 0) return false;
+    const reads = upstreamTargets({ basePath: null, cloudflarePrefix: route.cloudflarePrefix }, "main", segments.map(literal))?.paths ?? [];
+    return reads.some((read) => {
+      const path = read.map((segment) => (segment.kind === "literal" ? segment.value : ""));
+      return this.mints.some((mint) => mint.method === method && matchTemplate(mint.template, path) !== null);
+    });
   }
 
   /**

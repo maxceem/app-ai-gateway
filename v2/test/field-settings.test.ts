@@ -322,6 +322,7 @@ describe("saving a listing", () => {
   it.each([
     [[{ in: "body", name: "options.enabled", value: true }, { in: "body", name: "options", value: { mode: "standard" } }], "one holds the other"],
     [[{ in: "body", name: "options", value: {} }, { in: "body", name: "other", value: 1, aliases: ["options.enabled"] }], "one holds the other"],
+    [[{ in: "body", name: "options.enabled", value: true, aliases: ["options"] }], "one holds the other"],
   ])("refuses a field and a field inside it, aliases included: %j", async (set_fields, says) => {
     const { status, body } = await create({ type: "openai", passthrough: [{ method: "POST", path: "v1/echo", set_fields }] });
     expect(status).toBe(400);
@@ -450,6 +451,16 @@ describe("serving a listing with field settings", () => {
       expect(headers.get("cache-control")).toBe("no-store");
       expect(headers.get("cdn-cache-control")).toBeNull();
       expect(headers.get("surrogate-control")).toBeNull();
+    });
+
+    it("judges a mint by the path it serves, not by the listing's template", async () => {
+      const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/{resource}" }] });
+      fetchSpy.mockImplementation(async () => Response.json({ value: "ek" }, { headers: { "cache-control": "public, max-age=300" } }));
+      const { status, headers } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "{}", cacheHeaders);
+      expect(status).toBe(200);
+      const [, init] = fetchSpy.mock.calls[0]!;
+      expect(new Headers(init!.headers).get("cf-aig-skip-cache")).toBe("true");
+      expect(headers.get("cache-control")).toBe("no-store");
     });
 
     it("leaves a path that is not a mint as it was", async () => {

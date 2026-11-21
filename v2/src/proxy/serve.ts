@@ -263,7 +263,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const passthrough = routing.operations.includes(PASSTHROUGH) ? compiledPassthrough(connection.passthrough ?? []) : [];
       const match = matcher.match(c.req.method, target.path, { passthrough, route: upstreamRoute(description, connection) });
       if (match.kind === "passthrough") {
-        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.suggested?.liveToken === true, upstream: match.upstream, url, startedAt });
+        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.liveTokenMint, upstream: match.upstream, url, startedAt });
       }
       if (match.kind !== "operation") {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
