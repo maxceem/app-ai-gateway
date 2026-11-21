@@ -45,6 +45,8 @@ export interface ContextIo {
   env: Record<string, string | undefined>;
   /** The device flow's clock, and the clock tokens expire by. */
   clock: DeviceClock;
+  /** Rejects once a browser sign-in has waited too long; `cancel` stops it early. */
+  loginDeadline(ms: number): { expired: Promise<never>; cancel(): void };
 }
 
 const defaultIo = (): ContextIo => ({
@@ -54,6 +56,14 @@ const defaultIo = (): ContextIo => ({
   listen: listenLoopback,
   env: process.env,
   clock: { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
+  loginDeadline: (ms) => {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), ms);
+      timer.unref();
+    });
+    return { expired, cancel: () => clearTimeout(timer) };
+  },
 });
 
 /** The subset of a state store the context uses; the real one is `state.ts`. */
@@ -320,12 +330,12 @@ export class Context {
    * there is one; otherwise, or with `--device`, a link and a short code that
    * any browser can approve.
    */
-  async login(url: string = this.url): Promise<LoginResult> {
+  async login(url: string = this.url, again = "agw account login"): Promise<LoginResult> {
     this.assertNoEnvironmentKey();
     const target = origin(url);
     const server = await discover(this.transport, target);
     const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-    const login = useBrowser ? await this.browserLogin(target, server) : await this.deviceSignIn(target, server);
+    const login = useBrowser ? await this.browserLogin(target, server, again) : await this.deviceSignIn(target, server);
     const who = await this.whoAmI(target, login.accessToken);
     const { state } = await this.store.update((disk) => {
       disk.active = { url: target, login, account: who.account };
@@ -335,7 +345,12 @@ export class Context {
   }
 
   /** The authorization code with PKCE, back to a listener on this machine. */
-  private async browserLogin(url: string, server: OAuthServer): Promise<OAuthLogin> {
+  /**
+   * `again` is the command that started this sign-in. Until a sign-in
+   * succeeds the target gateway is not stored, so a plain `agw account login`
+   * could reach another gateway; the person is told to rerun this one.
+   */
+  private async browserLogin(url: string, server: OAuthServer, again: string): Promise<OAuthLogin> {
     const { verifier, challenge } = pkce();
     const state = randomBytes(24).toString("base64url");
     const loopback = await this.io.listen(state);
@@ -348,32 +363,26 @@ export class Context {
         return await this.deviceSignIn(url, server);
       }
       this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
-      let timer: NodeJS.Timeout | undefined;
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("timeout")),
-          LOGIN_TIMEOUT_MS,
-        );
-        timer.unref();
-      });
+      const deadline = this.io.loginDeadline(LOGIN_TIMEOUT_MS);
       let answer;
       try {
-        answer = await Promise.race([loopback.callback, timeout]);
+        answer = await Promise.race([loopback.callback, deadline.expired]);
       } catch {
         // Exit 5: this CLI stopped waiting for the browser (v1's wait timeout).
-        fail("login_expired", "The sign-in was not approved in time.", "Run agw account login again, or add --device to sign in with a code.", 5);
+        // A browser sign-in cannot be picked up again: it starts over.
+        fail("login_expired", "The sign-in was not approved in time.", `Run ${again} again, or add --device to sign in with a code.`, 5);
       } finally {
-        clearTimeout(timer);
+        deadline.cancel();
       }
       if ("error" in answer) {
         loopback.answer(false);
-        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", "Run agw account login again to start over.", 4);
-        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, "Run agw account login again.", 3);
+        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", `Run ${again} again to start over.`, 4);
+        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, `Run ${again} again.`, 3);
       }
       // RFC 9207: an answer naming another issuer is not this gateway's.
       if (answer.iss !== null && answer.iss !== server.issuer) {
         loopback.answer(false);
-        fail("login_failed", "The sign-in came back from another issuer than this gateway.", "Run agw account login again.", 3);
+        fail("login_failed", "The sign-in came back from another issuer than this gateway.", `Run ${again} again.`, 3);
       }
       try {
         const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now());
@@ -416,7 +425,7 @@ export class Context {
    */
   async connect(url: string): Promise<LoginResult> {
     const target = origin(url);
-    if (!this.environmentKey) return this.login(target);
+    if (!this.environmentKey) return this.login(target, target === CLOUD ? "agw deployment connect --cloud" : `agw deployment connect --url ${target}`);
     const who = await this.whoAmI(target, this.environmentKey);
     const { state } = await this.store.update((disk) => {
       // A sign-in already stored for this gateway is kept: the environment's

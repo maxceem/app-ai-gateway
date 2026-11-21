@@ -197,6 +197,33 @@ test("a browser sign-in answered by another issuer, or declined, stores nothing"
   assert.equal(transport.calls.filter((call) => call.kind === "form").length, 0);
 });
 
+test("a browser sign-in nobody approves exits 5 and says to rerun the command that started it", async () => {
+  const transport = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => tokens(1));
+  // The browser opens but never answers; the deadline fires at once instead of after five minutes.
+  const silent: Loopback = { redirect: "http://127.0.0.1:43210/callback", callback: new Promise<Callback>(() => {}), answer: () => {}, close: async () => {} };
+  let cancelled = 0;
+  const io = {
+    listen: async () => silent,
+    openBrowser: async () => true,
+    loginDeadline: () => ({ expired: Promise.reject(new Error("timeout")), cancel: () => void cancelled++ }),
+  };
+  const expired = (error: unknown) => {
+    assert.ok(error instanceof CliError);
+    assert.equal(error.code, "login_expired");
+    assert.equal(error.exitCode, 5);
+    return error;
+  };
+  const connect = contextFor(transport, io);
+  const viaConnect = expired(await connect.ctx.connect(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
+  assert.match(viaConnect.nextAction, new RegExp(`agw deployment connect --url ${URL_.replace(/[.]/g, "\\.")} again, or add --device`));
+  assert.doesNotMatch(viaConnect.nextAction, /agw account login/);
+  assert.equal(connect.store.held.active, null);
+  const login = contextFor(transport, io);
+  const viaLogin = expired(await login.ctx.login(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
+  assert.match(viaLogin.nextAction, /Run agw account login again, or add --device/);
+  assert.equal(cancelled, 2);
+});
+
 test("without a browser, sign-in uses the device flow and shows its code on stderr", async () => {
   const transport = fakeTransport(
     (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : path === "/v2/admin/session" ? { data: SESSION } : notFound()),

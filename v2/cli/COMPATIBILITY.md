@@ -60,7 +60,9 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
 - Exit codes keep their meaning: 0 done, 2 the command line is wrong, 3 the
   gateway or the network failed, 4 a state or a decision stops it, 5 `agw`
   stopped waiting while the step is still open (as in agw 1.x). A wait timeout
-  does not cancel the step: `agw operation wait` picks it up again.
+  does not cancel a gateway operation: `agw operation wait` picks it up again.
+  A browser sign-in that timed out cannot be picked up: run the command that
+  started it again, or add `--device`.
 - agw 1.x's `version_mismatch` notice is not in agw 2 yet. It compared the
   CLI's release with the release the gateway reports, and a v2 gateway does
   not report one yet. Until it does, agw 2 notices a newer gateway from fields
