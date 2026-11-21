@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -713,9 +713,12 @@ function JobsTab({ app }: { app: App }) {
   const list = jobs.data?.jobs ?? [];
   // The last total seen stays while another page loads or fails, so the pager, and with it the
   // way back to a page already seen, never disappears.
-  const lastTotal = useRef(0);
-  if (jobs.data !== undefined) lastTotal.current = jobs.data.total;
-  const total = jobs.data?.total ?? lastTotal.current;
+  const [lastTotal, setLastTotal] = useState(0);
+  const loadedTotal = jobs.data?.total;
+  useEffect(() => {
+    if (loadedTotal !== undefined) setLastTotal(loadedTotal);
+  }, [loadedTotal]);
+  const total = loadedTotal ?? lastTotal;
 
   return (
     <div className="space-y-4">

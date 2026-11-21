@@ -38,6 +38,7 @@ import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { connectionCredentials, connectionDescription, loadConnection, readConnection, type ConnectionRecord } from "../providers/connections.ts";
 import { UNITS, type JobRequest, type JobSpec, type OperationDescription, type ProviderDescription, type Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
+import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
 import { upstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
@@ -176,9 +177,14 @@ export function withGatewayLinks(body: Record<string, unknown>, spec: JobSpec, l
 /** A job's own follow-up endpoints. */
 export type JobEndpoint = "status" | "result" | "cancel";
 
-/** The follow-up request for one of a job's endpoints, or null when the operation has none (a job that cannot be cancelled). */
-export function jobRequestFor(spec: JobSpec, which: JobEndpoint): JobRequest | null {
-  return which === "cancel" ? (spec.cancel ?? null) : spec[which];
+/**
+ * The follow-up request for one of a job's endpoints. The one check that a
+ * job can be cancelled: an operation with no cancel request answers 404.
+ */
+export function jobRequestFor(spec: JobSpec, which: JobEndpoint): JobRequest {
+  const request = which === "cancel" ? spec.cancel : spec[which];
+  if (request === undefined) throw new GatewayError(404, "job_not_found", "This job cannot be cancelled");
+  return request;
 }
 
 /**
@@ -187,7 +193,6 @@ export function jobRequestFor(spec: JobSpec, which: JobEndpoint): JobRequest | n
  */
 export function jobEndpointUrl(context: JobContext, which: JobEndpoint, claims: Pick<JobClaims, "model" | "requestId">): string {
   const request = jobRequestFor(context.spec, which);
-  if (request === null) throw new GatewayError(404, "job_not_found", "This job cannot be cancelled");
   return upstreamUrl(context.connection, context.description, { hostKey: request.host ?? "main", path: jobRequestPath(request, claims), query: "" });
 }
 
@@ -323,7 +328,6 @@ export async function fetchJob(
   query = "",
 ): Promise<{ readonly response: Response; readonly keyHeader: string; readonly url: string }> {
   const request = jobRequestFor(context.spec, which);
-  if (request === null) throw new GatewayError(404, "job_not_found", "This job cannot be cancelled");
   // Once the sweep's time for the item is up, no more provider calls start.
   signal?.throwIfAborted();
   const credentials = await connectionCredentials(env, context.connection);
@@ -385,8 +389,10 @@ export function countsOutputs(spec: JobSpec): boolean {
   return (spec.outputs ?? []).length > 0;
 }
 
-/** The units a result's outputs can count in. */
-const OUTPUT_UNITS: ReadonlySet<Unit> = new Set<Unit>(["images", "videos"]);
+/** The units a result's outputs can count in: every unit a built-in job operation declares for its outputs (`JobSpec.outputs`). */
+const OUTPUT_UNITS: ReadonlySet<Unit> = new Set<Unit>(
+  Object.values(BUILT_IN_PROVIDERS).flatMap((provider) => provider.operations.flatMap((operation) => (operation.job?.outputs ?? []).map((output) => output.unit))),
+);
 
 /** A result's outputs, counted by unit: images, videos. */
 export type OutputCounts = Readonly<Partial<Record<Unit, number>>>;
@@ -485,8 +491,7 @@ export function readResultFacts(spec: JobSpec, response: Pick<Response, "status"
   // A confirmed cancel is final, whoever sent it. Billed units, when reported,
   // settle it; a header that is there but cannot be read keeps the estimate,
   // since only a missing header means the provider billed nothing.
-  const cancelled = spec.cancelled;
-  if (cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value) {
+  if (confirmsCancel(spec, response)) {
     if (rawUnits !== null && units === null) {
       log("warn", "job_units_unreadable", { status: response.status, header: spec.unitsHeader, value: rawUnits.slice(0, 64) });
       return { status: response.status, units: null, outputs: null };
@@ -503,6 +508,17 @@ export function readResultFacts(spec: JobSpec, response: Pick<Response, "status"
   return unread ? { ...facts, unread: true } : facts;
 }
 
+/** Whether a result confirms the job was cancelled (`JobSpec.cancelled`): its status and its header both. */
+function confirmsCancel(spec: JobSpec, response: Pick<Response, "status" | "headers">): boolean {
+  const cancelled = spec.cancelled;
+  return cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value;
+}
+
+/** Whether a result is final, so it can settle the job: what `readResultFacts` answers non-null for, without reading or logging anything. */
+export function isFinalResult(spec: JobSpec, response: Pick<Response, "status" | "headers">): boolean {
+  return confirmsCancel(spec, response) || spec.finalStatuses.includes(response.status);
+}
+
 const succeeded = (facts: JobResultFacts) => facts.status >= 200 && facts.status < 300;
 /**
  * A result that gives some count: billed units, outputs, on a success the one
@@ -516,25 +532,17 @@ function factsOf(value: unknown): JobResultFacts | null {
   const facts = value as Record<string, unknown>;
   const count = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one) && one >= 0);
   if (typeof facts.status !== "number" || !count(facts.units)) return null;
-  const outputs = savedOutputs(facts.outputs, facts.outputUnit);
+  const outputs = savedOutputs(facts.outputs);
   if (outputs === undefined) return null;
   // A saved figure was read whole: `unread` is never kept.
   return { status: facts.status, units: facts.units as number | null, outputs, ...(facts.cancelled === true ? { cancelled: true as const } : {}) };
 }
 
-/**
- * Saved output counts read back: by unit, or, as figures saved before counts
- * were kept by unit wrote them, one number in `outputUnit` (images when left
- * out). Undefined when they are not counts.
- */
-function savedOutputs(value: unknown, legacyUnit: unknown): OutputCounts | null | undefined {
+/** Saved output counts read back, by unit. Undefined when they are not counts. */
+function savedOutputs(value: unknown): OutputCounts | null | undefined {
   if (value === null || value === undefined) return null;
   const unitName = (one: unknown): one is Unit => typeof one === "string" && (UNITS as readonly string[]).includes(one);
   const countOf = (one: unknown) => typeof one === "number" && Number.isFinite(one) && one >= 0;
-  if (countOf(value)) {
-    const unit = legacyUnit ?? "images";
-    return unitName(unit) ? { [unit]: value as number } : undefined;
-  }
   if (typeof value !== "object" || Array.isArray(value)) return undefined;
   const counts: Partial<Record<Unit, number>> = {};
   for (const [unit, count] of Object.entries(value as Record<string, unknown>)) {
@@ -642,7 +650,7 @@ const figurePart = (value: number | null) => (value === null ? "-" : String(valu
 /** The id of a figure row. The figure is part of the id, so a different figure is a different row: nothing to overwrite. */
 export function figureWorkId(job: string, facts: JobResultFacts): string {
   const entries = Object.entries(facts.outputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  const outputs = entries.length === 0 ? "-" : entries.map(([unit, count]) => (unit === "images" ? `${count}` : `${count}${unit}`)).join("+");
+  const outputs = entries.length === 0 ? "-" : entries.map(([unit, count]) => `${count}${unit}`).join("+");
   return `job_figure:${job}:${facts.status}:${figurePart(facts.units)}:${outputs}`;
 }
 
@@ -695,8 +703,7 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
  * read (null: not in the ledger); when left out it is read here. Throws when
  * D1 cannot answer.
  */
-export async function settleFigure(env: Env, ref: JobRef, given: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
-  const facts = given;
+export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;

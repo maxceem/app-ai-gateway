@@ -1038,7 +1038,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     expect(await applying).toBe("done");
     vi.useRealTimers();
     await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId));
-    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${ref.job}:200:4:2`]);
+    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${ref.job}:200:4:2images`]);
   });
 
   it("does not bring back a settled job's check when the store retries its submit batch", async () => {
@@ -1714,6 +1714,7 @@ describe("disconnects, stalled bodies and oversized status answers (review fixes
       request_id: jobId,
       status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
       response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+      cancel_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/cancel`,
     });
     expect(without.text).not.toContain("queue.fal.run");
   });
@@ -1790,6 +1791,7 @@ describe("disconnects, stalled retries and redirects (review fixes, Astra round 
       request_id: jobId,
       status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
       response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+      cancel_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/cancel`,
     });
     await waitOnExecutionContext(ctx);
   });
@@ -2076,10 +2078,10 @@ describe("cancels, unlisted and video models (step 6b)", () => {
 
   it("refuses to save a job model priced with two unit rates, and leaves a stored one alone", () => {
     // Fable round 1: a job settles from the one rate its estimate stored, so per unit plus per job could settle on the wrong one.
-    const two = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01, per_request: 0.02 } }, "fal", fal.operations);
+    const two = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01, per_request: 0.02 } } as Parameters<typeof ratesFromPricing>[0], "fal", fal.operations);
     expect(() => assertModesSelectable(fal, null, two, null)).toThrow(/a job model takes one rate/);
     expect(() => assertModesSelectable(fal, null, two, two)).not.toThrow();
-    const one = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01 } }, "fal", fal.operations);
+    const one = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01 } } as Parameters<typeof ratesFromPricing>[0], "fal", fal.operations);
     expect(() => assertModesSelectable(fal, null, one, null)).not.toThrow();
   });
 
