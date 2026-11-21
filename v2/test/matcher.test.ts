@@ -94,6 +94,7 @@ describe("passthrough paths", () => {
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
       suggested: null,
+      liveTokenMint: false,
     });
   });
 
