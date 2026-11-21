@@ -12,11 +12,15 @@ export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
-  otherHosts: ["us.api.x.ai"],
+  // `management-api.x.ai` is declared so a custom provider there gets the
+  // refused paths below: every path on it manages the account.
+  otherHosts: ["us.api.x.ai", "management-api.x.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Key management lives on a separate host the gateway never calls. The
-  // key's own details are refused.
-  refused: ["v1/api-key/*"],
+  // The key's own details. And the management host's account paths: API
+  // keys, teams, models and ACLs, management keys (`auth/*`), audit logs
+  // (`audit/*`) and billing (`v1/billing/*`). The inference host has none of
+  // these, so refusing them there changes nothing.
+  refused: ["v1/api-key/*", "auth/*", "audit/*", "v1/billing/*"],
   // Short-lived secrets for live sessions, reached only by a listed path that
   // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
   liveTokens: [{ path: "v1/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],

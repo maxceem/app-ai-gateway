@@ -29,7 +29,7 @@ import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
-import { ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
@@ -115,6 +115,24 @@ describe("a custom provider's description", () => {
     }
     // Only under it: a look-alike name is not OpenAI's.
     expect(knownHostOwner("https://api.openai.com.example.net/")).toBeNull();
+  });
+
+  it("refuses xAI's account management on its management host, even when listed", () => {
+    expect(knownHostOwner("https://management-api.x.ai/")?.type).toBe("xai");
+    const matcher = new ProviderMatcher(customDescription({ baseUrl: "https://management-api.x.ai/", auth: AUTH, paths: [] }));
+    for (const [method, path] of [
+      ["POST", "auth/teams/t1/api-keys"],
+      ["GET", "auth/teams/t1/api-keys"],
+      ["PUT", "auth/api-keys/k1"],
+      ["DELETE", "auth/api-keys/k1"],
+      ["GET", "auth/management-keys/validation"],
+      ["GET", "audit/teams/t1/events"],
+      ["POST", "v1/billing/teams/t1/usage"],
+    ] as const) {
+      const passthrough = compilePassthrough([{ method, path }]);
+      expect(matcher.match(method, path, { passthrough }), `${method} ${path}`).toMatchObject({ kind: "refused", reason: "refused_path" });
+      expect(matcher.refusedCovering(passthrough[0]!), `${method} ${path}`).not.toBeNull();
+    }
   });
 
   it("builds an API-style path from a built-in definition, with that provider's rules for reading it", () => {
