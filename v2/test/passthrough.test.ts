@@ -44,17 +44,6 @@ describe("matching a listed path", () => {
     { method: "GET", path: "v1/files/{file_id}" },
   ]);
 
-  it.each([
-    "v1/organization/admin_api_keys",
-    "V1/Organization/admin_api_keys",
-    "v1/%6Frganization/admin_api_keys",
-    "v1/%4F%52GANIZATION/users",
-    "/v1//organization/users/",
-    "v1/organization",
-  ])("keeps the admin API refused even when listed: %s", (path) => {
-    expect(matcher.match("GET", path, { passthrough: listed })).toMatchObject({ kind: "refused", reason: "refused_path" });
-  });
-
   it.each(["v1/files/../organization/users", "v1/files/%2E%2E/organization", "v1/files/a%2Forganization", "v1/files/a%5Cb", "v1/files/%00", "v1/files/%E0%A4%A"])(
     "refuses a path that could mean another one upstream: %s",
     (path) => {
@@ -71,14 +60,6 @@ describe("matching a listed path", () => {
 
   it("compares a listed path's literals exactly: case is not folded for it", () => {
     expect(matcher.match("GET", "V1/FILES/file-abc", { passthrough: listed })).toEqual({ kind: "refused", reason: "not_declared" });
-  });
-
-  it("reports a refused path that takes every request a listing could match", () => {
-    const [refused, partial, files] = listed as [any, any, any];
-    expect(matcher.refusedCovering(refused)).toBe("v1/organization/*");
-    // `v1/organization/users` is refused on its own, but `v1/teams/users` is not.
-    expect(matcher.refusedCovering(partial)).toBeNull();
-    expect(matcher.refusedCovering(files)).toBeNull();
   });
 
   const overlap = (method: "GET" | "POST", path: string, on: ProviderMatcher = matcher) => on.overlappingOperation(compilePassthrough([{ method, path }])[0]!);
@@ -124,52 +105,6 @@ describe("matching a listed path", () => {
     expect(() => compilePassthrough([{ method: "GET", path: "v1/files/{file_id}:content" }])).not.toThrow();
   });
 
-  it("never refuses a declared operation of any built-in provider by its own refused paths, on any route", () => {
-    const routes = [
-      { baseUrl: null, cloudflareGateway: null },
-      { baseUrl: null, cloudflareGateway: { accountId: "a", gatewayId: "g" } },
-      { baseUrl: "https://example.com/v1/", cloudflareGateway: null },
-      { baseUrl: "https://example.com/openai/v1/", cloudflareGateway: null },
-    ];
-    for (const description of Object.values(BUILT_IN_PROVIDERS)) for (const connection of routes) {
-      const route = upstreamRoute(description, connection);
-      const matcher = new ProviderMatcher(description);
-      for (const operation of description.operations) {
-        const path = operation.match.path
-          .split("/")
-          .map((segment) => segment.replace(/\{[A-Za-z_][A-Za-z0-9_]*\.\.\.\}/u, (part) => {
-            const list = operation.multiSegment?.[part.slice(1, -4)];
-            return Array.isArray(list) ? list[0]! : "some/model";
-          }).replace(/\{[A-Za-z_][A-Za-z0-9_]*\}/u, "x1"))
-          .join("/");
-        expect(matcher.match(operation.match.method, path, { route }), `${operation.name}: ${path} ${JSON.stringify(connection)}`).not.toMatchObject({ reason: "refused_path" });
-      }
-    }
-  });
-
-  it.each([
-    ["openai", "POST", "v1/realtime/client_secrets"],
-    ["openai", "POST", "v1/organization/admin_api_keys"],
-    ["anthropic", "POST", "v1/organizations/api_keys"],
-    ["openrouter", "POST", "v1/keys"],
-    ["openrouter", "POST", "v1/auth/keys"],
-    ["openrouter", "GET", "v1/credits"],
-    ["xai", "GET", "v1/api-key"],
-    ["gemini", "POST", "v1alpha/auth_tokens"],
-    ["gemini", "POST", "v1beta/tunedModels/m1/permissions"],
-    ["deepgram", "POST", "v1/projects/p1/keys"],
-    ["elevenlabs", "GET", "v1/convai/conversation/token"],
-    ["elevenlabs", "POST", "v1/single-use-token/realtime_scribe"],
-    ["fireworks", "POST", "v1/accounts/acct/users/u1/apiKeys"],
-    ["perplexity", "POST", "generate_auth_token"],
-    ["deepseek", "GET", "user/balance"],
-    ["moonshot", "GET", "v1/users/me/balance"],
-    ["vercel", "GET", "v1/credits"],
-  ])("refuses %s %s %s, whatever is listed", (type, method, path) => {
-    const description = BUILT_IN_PROVIDERS[type]!;
-    const passthrough = compilePassthrough([{ method: method as "GET", path }]);
-    expect(new ProviderMatcher(description).match(method, path, { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
-  });
 });
 
 describe("judging a listing where the provider reads it", () => {
@@ -181,103 +116,12 @@ describe("judging a listing where the provider reads it", () => {
     ["Cloudflare", CLOUDFLARE],
     ["a base URL ending in /v1/", BASE_V1],
     ["a base URL with OpenAI's Azure path", { baseUrl: "https://example.com/openai/v1/", cloudflareGateway: null }],
-  ] as const)("refuses on OpenAI through %s what the provider reads as a refused path or a declared operation", (_, connection) => {
+  ] as const)("refuses on OpenAI through %s what the provider reads as a declared operation", (_, connection) => {
     const route = upstreamRoute(openai, connection);
     const matcher = new ProviderMatcher(openai);
-    expect(matcher.refusedCovering(compiled("POST", "realtime/client_secrets"), route)).toBe("v1/realtime/client_secrets/*");
-    expect(matcher.refusedCovering(compiled("GET", "organization/{x}"), route)).toBe("v1/organization/*");
     expect(matcher.overlappingOperation(compiled("POST", "responses"), route)).not.toBeNull();
-    // Straight to OpenAI, these paths are not ones it serves under `v1/`.
-    expect(matcher.refusedCovering(compiled("POST", "realtime/client_secrets"))).toBeNull();
-  });
-
-  it("refuses those paths at serve too, where the request really goes", () => {
-    const matcher = new ProviderMatcher(openai);
-    const passthrough = compilePassthrough([{ method: "POST", path: "realtime/client_secrets" }, { method: "GET", path: "organization/{x}" }]);
-    for (const connection of [CLOUDFLARE, BASE_V1]) {
-      const route = upstreamRoute(openai, connection);
-      expect(matcher.match("POST", "realtime/client_secrets", { passthrough, route })).toMatchObject({ reason: "refused_path" });
-      expect(matcher.match("GET", "organization/admin_api_keys", { passthrough, route })).toMatchObject({ reason: "refused_path" });
-    }
-    expect(matcher.match("POST", "realtime/client_secrets", { passthrough })).toMatchObject({ kind: "passthrough" });
-  });
-
-  it("judges a declared operation without each way a base URL may be mounted, and a listing with them", () => {
-    for (const [description, baseUrl, method, path] of [
-      [BUILT_IN_PROVIDERS.deepseek!, "https://proxy.example/user/42/", "POST", "chat/completions"],
-      [openai, "https://proxy.example/v1/organization/team-a/", "POST", "v1/chat/completions"],
-    ] as const) {
-      const route = upstreamRoute(description, { baseUrl, cloudflareGateway: null });
-      const matcher = new ProviderMatcher(description);
-      expect(matcher.match(method, path, { route })).toMatchObject({ kind: "operation" });
-      // A listing behind it could reach the refused path, so it is still refused.
-      expect(matcher.refusedCovering(compiled("GET", "models"), route)).not.toBeNull();
-    }
-  });
-
-  it("reads a base URL on the provider's own host under that host's built-in prefix", () => {
-    const openrouter = BUILT_IN_PROVIDERS.openrouter!;
-    const route = upstreamRoute(openrouter, { baseUrl: "https://openrouter.ai/", cloudflareGateway: null });
-    expect(route.hostPrefix).toEqual(["api"]);
-    const matcher = new ProviderMatcher(openrouter);
-    expect(matcher.overlappingOperation(compiled("POST", "api/v1/chat/completions"), route)).toBe("openrouter.chat");
-    expect(matcher.refusedCovering(compiled("GET", "api/v1/keys"), route)).not.toBeNull();
-    // Another host has no built-in prefix to read.
-    expect(upstreamRoute(openrouter, { baseUrl: "https://proxy.example/", cloudflareGateway: null }).hostPrefix).toBeUndefined();
-  });
-
-  it("refuses some methods on a path and allows the others: deleting a voice, not reading one", () => {
-    const elevenlabs = BUILT_IN_PROVIDERS.elevenlabs!;
-    const matcher = new ProviderMatcher(elevenlabs);
-    const listed = compilePassthrough([
-      { method: "GET", path: "v1/voices/{voice_id}" },
-      { method: "DELETE", path: "v1/voices/{voice_id}" },
-      { method: "PATCH", path: "v1/convai/agents/{agent_id}" },
-      { method: "GET", path: "v1/convai/agents/{agent_id}" },
-    ]);
-    expect(matcher.refusedCovering(listed[0]!)).toBeNull();
-    expect(matcher.refusedCovering(listed[1]!)).toMatch(/DELETE/u);
-    expect(matcher.refusedCovering(listed[2]!)).toMatch(/PATCH/u);
-    expect(matcher.refusedCovering(listed[3]!)).toBeNull();
-    expect(matcher.match("GET", "v1/voices/v1", { passthrough: listed })).toMatchObject({ kind: "passthrough" });
-    expect(matcher.match("DELETE", "v1/voices/v1", { passthrough: listed })).toMatchObject({ reason: "refused_path" });
-    expect(matcher.match("delete".toUpperCase(), "V1/VOICES/v1", { passthrough: listed })).toMatchObject({ reason: "refused_path" });
-  });
-
-  it.each([
-    ["DELETE", "v1/voices/voice-1"],
-    ["POST", "v1/convai/agents/create"],
-    ["PATCH", "v1/convai/agents/a1"],
-    ["POST", "v1/convai/agents/a1/duplicate"],
-    ["PATCH", "v1/convai/environment-variables/e1"],
-    ["DELETE", "v1/audio-isolation/history/h1"],
-    ["POST", "v1/productions/orders/o1/submit"],
-    ["POST", "v1/convai/realtime/client_secrets"],
-    ["POST", "v1/workspaces/api-keys/third-party-disabling"],
-  ] as const)("refuses ElevenLabs %s %s, even when listed", (method, path) => {
-    const matcher = new ProviderMatcher(BUILT_IN_PROVIDERS.elevenlabs!);
-    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ reason: "refused_path" });
-  });
-
-  it.each([
-    ["GET", "v1/voices"],
-    ["GET", "v1/voices/voice-1"],
-    ["POST", "v1/text-to-voice/design"],
-    ["POST", "v1/text-to-voice/create-voice-from-preview"],
-    ["POST", "v1/voices/add"],
-    ["POST", "v1/convai/agents/a1/knowledge-base/rag-query"],
-    ["POST", "v1/convai/agents/a1/simulate-conversation"],
-    ["GET", "v1/studio/projects/p1/snapshots/s1/stream"],
-    ["DELETE", "v1/dubbing/d1"],
-    ["GET", "v1/convai/environment-variables"],
-    ["POST", "v1/voice-generation/generate-voice"],
-    ["GET", "v1/voice-generation/generate-voice/parameters"],
-    ["GET", "v1/convai/agents/a1"],
-    ["GET", "v1/dubbing/d1"],
-    ["GET", "v1/pronunciation-dictionaries"],
-  ] as const)("still serves ElevenLabs %s %s once listed", (method, path) => {
-    const matcher = new ProviderMatcher(BUILT_IN_PROVIDERS.elevenlabs!);
-    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ kind: "passthrough" });
+    // Straight to OpenAI, `responses` is not a path it serves under `v1/`.
+    expect(matcher.overlappingOperation(compiled("POST", "responses"))).toBeNull();
   });
 
   it("refuses on fal a listing its priced-models path would also take upstream", () => {
@@ -329,7 +173,7 @@ describe("judging a listing where the provider reads it", () => {
     const segments = new URL(url).pathname.split("/").filter((piece) => piece !== "").map((piece) => decodeURIComponent(piece));
     if (connection.cloudflareGateway !== null) {
       // `/v1/<account>/<gateway>/<slug>/<rest>`: Cloudflare's endpoint for the provider adds its prefix back.
-      const prefix = (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+      const prefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece: string) => piece !== "");
       return [[...prefix, ...segments.slice(4)]];
     }
     if (connection.baseUrl !== null) {
@@ -340,7 +184,7 @@ describe("judging a listing where the provider reads it", () => {
     return [segments.slice(hostPrefix)];
   }
 
-  it("never lets a listing that saves reach a refused path or a declared operation, on any route (fuzz)", () => {
+  it("never lets a listing that saves reach a declared operation, on any route (fuzz)", () => {
     let seed = 0x5eed;
     const random = (n: number) => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -351,13 +195,8 @@ describe("judging a listing where the provider reads it", () => {
     const failures: string[] = [];
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       const matcher = new ProviderMatcher(description);
-      const refused = description.refused.map((entry) =>
-        typeof entry === "string"
-          ? { template: parseTemplate(entry, { rest: true }), methods: null, hosts: null }
-          : { template: parseTemplate(entry.path, { rest: true }), methods: (entry.methods ?? null) as readonly string[] | null, hosts: entry.hosts ?? null },
-      );
       const words = new Set(["v1", "x", "files", "chat"]);
-      for (const source of [...description.refused.map((entry) => (typeof entry === "string" ? entry : entry.path)), ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
+      for (const source of description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])) {
         for (const piece of source.split("/")) if (piece !== "" && piece !== "*" && !piece.includes("{")) words.add(piece);
       }
       const vocabulary = [...words];
@@ -371,7 +210,7 @@ describe("judging a listing where the provider reads it", () => {
         }));
       for (const connection of routesOf(description)) {
         const route = upstreamRoute(description, connection);
-        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
+        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece: string) => piece !== "") : [];
         // Each operation's paths as the provider reads them on this route, worked out once.
         const readings = operations.map(({ op, template, lists }) => ({
           op,
@@ -383,7 +222,6 @@ describe("judging a listing where the provider reads it", () => {
         }));
         // A listing drawn twice on one route is judged once, and a path the provider may read is worked out once.
         const drawn = new Set<string>();
-        const baseHost = connection.baseUrl === null ? null : new URL(connection.baseUrl).hostname;
         const readCache = new Map<string, string[][]>();
         const readOnce = (path: string) => {
           let read = readCache.get(path);
@@ -401,7 +239,7 @@ describe("judging a listing where the provider reads it", () => {
           } catch {
             continue;
           }
-          if (matcher.refusedCovering(listing, route) !== null || matcher.overlappingOperation(listing, route) !== null) continue;
+          if (matcher.overlappingOperation(listing, route) !== null) continue;
           saved += 1;
           // A path filled the same way twice is checked once.
           const filled = new Set<string>();
@@ -411,14 +249,10 @@ describe("judging a listing where the provider reads it", () => {
               .join("/");
             if (filled.has(concrete)) continue;
             filled.add(concrete);
-            const match = matcher.match(method, concrete, { passthrough: [listing], route });
+            const match = matcher.match(method, concrete, { passthrough: [listing] });
             if (match.kind !== "passthrough") continue;
             for (const read of readOnce(match.upstream.path)) {
               const where = () => `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
-              for (const { template, methods, hosts } of refused) {
-                if (hosts !== null && (baseHost === null || !hosts.includes(baseHost))) continue;
-                if ((methods === null || methods.includes(method)) && matchTemplate(template, read, { ignoreCase: true }) !== null) failures.push(`${where()} is refused by ${template.source}`);
-              }
               for (const { op, lists, templates } of readings) {
                 if (op.match.method !== method) continue;
                 if (templates.some((reading) => matchTemplate(reading, read, { closedLists: lists }) !== null)) failures.push(`${where()} reaches ${op.name}`);
@@ -429,7 +263,7 @@ describe("judging a listing where the provider reads it", () => {
       }
     }
     expect(failures).toEqual([]);
-    // The fuzz judged a real number of saved listings, not only refused ones.
+    // The fuzz judged a real number of saved listings, not only overlapping ones.
     expect(saved).toBeGreaterThan(300);
   });
 });
@@ -661,19 +495,18 @@ describe("serving a listed path", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("keeps a refused path refused through the proxy even when the stored list names it", async () => {
-    const { appId, slug, key } = await setup([
-      { method: "POST", path: "v1/organization/admin_api_keys" },
-      { method: "POST", path: "v1/{area}/admin_api_keys" },
-    ]);
-    for (const path of ["v1/organization/admin_api_keys", "V1/ORGANIZATION/admin_api_keys", "v1/%6frganization/admin_api_keys", "v1/x/../organization/admin_api_keys"]) {
-      const { response } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/${path}`, key, { body: "{}", headers: { "content-type": "application/json" } });
-      expect(response.status, path).toBe(403);
-    }
-    expect(fetchSpy).not.toHaveBeenCalled();
+  it("serves a listed admin path, matched exactly as listed", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "v1/organization/admin_api_keys" }]);
+    fetchSpy.mockImplementation(async () => Response.json({ ok: true }));
+    const served = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/organization/admin_api_keys`, key, { body: "{}", headers: { "content-type": "application/json" } });
+    expect(served.response.status, served.text).toBe(200);
+    // A listing's literals are compared exactly.
+    const other = await send("POST", `/v2/apps/${appId}/proxy/${slug}/V1/ORGANIZATION/admin_api_keys`, key, { body: "{}", headers: { "content-type": "application/json" } });
+    expect(other.response.status).toBe(403);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("serves declared operations behind a base URL whose own path looks like a refused one, as before", async () => {
+  it("serves declared operations behind a base URL with a path of its own, as before", async () => {
     const { appId, slug, key } = await setup([], ["deepseek.chat"], { type: "deepseek", baseUrl: "https://proxy.example/user/42/" });
     fetchSpy.mockResolvedValueOnce(
       Response.json({ id: "c1", object: "chat.completion", model: "deepseek-v4-flash", choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }),
@@ -801,12 +634,10 @@ describe("saving a listed path", () => {
   });
 
   it.each([
-    [[{ method: "GET", path: "v1/organization/{thing}" }], "always refused"],
-    [[{ method: "POST", path: "v1/realtime/client_secrets" }], "set live_token to true"],
-    [[{ method: "GET", path: "v1/organization/{thing}", live_token: true }], "key, admin and account paths are always refused"],
-    [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
-    [[{ method: "POST", path: "v1/chat/completions" }], "openai.chat"],
-    [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
+    [[{ method: "GET", path: "v1/files", live_token: true }], "live_token"],
+    [[{ method: "POST", path: "v1/chat/completions" }], "is built in as the openai.chat operation; turn it on for the app instead"],
+    [[{ method: "POST", path: "v1/chat/{what}" }], "is built in as the openai.chat operation"],
+    [[{ method: "POST", path: "v1/{endpoint}" }], "two fixed segments"],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
     [[{ method: "GET", path: "v1/files/%2e%2e" }], "path"],
     [[{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/files" }], "matches the same requests"],
@@ -820,10 +651,10 @@ describe("saving a listed path", () => {
     expect(JSON.stringify(refused.body)).toContain(message);
   });
 
-  it("does not judge again a path listed before, so a later refused path or operation never stops a save", async () => {
+  it("does not judge again a path listed before, so a later declared operation or a stricter rule never stops a save", async () => {
     const key = await seedManagementKey();
     const created = await create(key, [{ method: "GET", path: "v1/files" }]);
-    // As if a release had since declared or refused it: the stored list names it already.
+    // As if a release had since declared it: the stored list names it already.
     await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
       .bind(storedPassthrough([{ method: "GET", path: "v1/files" }, { method: "POST", path: "v1/chat/completions" }]), created.body.provider.id)
       .run();
@@ -841,10 +672,10 @@ describe("saving a listed path", () => {
 
   it("refuses a broad listing that overlaps a declared operation, and saves a narrow one", async () => {
     const key = await seedManagementKey();
-    for (const path of ["v1/{endpoint}", "v1/{a}/{b}", "{version}/embeddings"]) {
+    for (const path of ["v1/chat/{what}", "v1/chat/comp{rest}"]) {
       const refused = await create(key, [{ method: "POST", path }]);
       expect(refused.status, path).toBe(400);
-      expect(JSON.stringify(refused.body)).toContain("can match a path of the openai.");
+      expect(JSON.stringify(refused.body)).toContain("is built in as the openai.chat operation");
     }
     const narrow = await create(key, [{ method: "POST", path: "v1/moderations" }, { method: "GET", path: "v1/files/{file_id}" }]);
     expect(narrow.status).toBe(201);
@@ -878,25 +709,21 @@ describe("saving a listed path", () => {
       { baseUrl: "https://example.com/v1/" },
     ];
     for (const route of routes) {
-      for (const passthrough of [
-        [{ method: "POST", path: "realtime/client_secrets" }],
-        [{ method: "GET", path: "organization/{x}" }],
-        [{ method: "POST", path: "responses" }],
-      ]) {
-        const refused = await create(key, passthrough, route);
-        expect(refused.status, JSON.stringify([route, passthrough])).toBe(400);
-      }
-      expect((await create(key, [{ method: "POST", path: "moderations" }], route)).status).toBe(201);
+      const refused = await create(key, [{ method: "POST", path: "responses" }], route);
+      expect(refused.status, JSON.stringify(route)).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain("is built in as the openai.responses operation");
+      // There are no refused paths: an admin path or a token mint saves on any route.
+      expect((await create(key, [{ method: "POST", path: "moderations" }, { method: "POST", path: "realtime/client_secrets" }, { method: "GET", path: "organization/users" }], route)).status).toBe(201);
     }
   });
 
   it("judges kept listings again when the connection moves to a new route", async () => {
     const key = await seedManagementKey();
-    const created = await create(key, [{ method: "GET", path: "organization/{x}" }]);
+    const created = await create(key, [{ method: "POST", path: "embeddings" }]);
     expect(created.status).toBe(201);
     const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://example.com/v1/", secret: "sk-live-secret-abcd" });
     expect(moved.status).toBe(400);
-    expect(JSON.stringify(moved.body)).toContain("never allows");
+    expect(JSON.stringify(moved.body)).toContain("is built in as the openai.embeddings operation");
   });
 
   it("keeps listings saved before when the route reads paths the same way, such as another Cloudflare gateway", async () => {
@@ -904,7 +731,7 @@ describe("saving a listed path", () => {
     const gateway = (gatewayId: string) => ({ cloudflareGateway: { accountId: "acct", gatewayId, token: "cf-token-for-tests-1234" } });
     const created = await create(key, [{ method: "POST", path: "moderations" }], gateway("gw-a"));
     expect(created.status).toBe(201);
-    // As if a release had since declared or refused it.
+    // As if a release had since declared it.
     await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
       .bind(storedPassthrough([{ method: "POST", path: "responses" }]), created.body.provider.id)
       .run();
@@ -913,36 +740,35 @@ describe("saving a listed path", () => {
     expect(moved.body.provider.passthrough).toEqual([{ method: "POST", path: "responses" }]);
   });
 
-  it("says when an overlap comes from the base URL, not from the listing itself", async () => {
+  it("refuses a built-in endpoint behind a base URL as it does a listing of it", async () => {
     const key = await seedManagementKey();
-    const behind = await create(key, [{ method: "POST", path: "embeddings" }], { baseUrl: "https://example.com/v1/" });
-    expect(behind.status).toBe(400);
-    expect(JSON.stringify(behind.body)).toContain("behind this connection's base URL");
-    const direct = await create(key, [{ method: "POST", path: "v1/embeddings" }], { baseUrl: "https://example.com/v1/" });
-    expect(direct.status).toBe(400);
-    expect(JSON.stringify(direct.body)).toContain("enable openai.embeddings on the app");
+    for (const path of ["embeddings", "v1/embeddings"]) {
+      const refused = await create(key, [{ method: "POST", path }], { baseUrl: "https://example.com/v1/" });
+      expect(refused.status, path).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain("is built in as the openai.embeddings operation; turn it on for the app instead");
+    }
   });
 
-  it("refuses a listing that reaches OpenRouter's own chat or keys behind a base URL on its host", async () => {
+  it("refuses OpenRouter's own chat as a listing on its plain address, and saves its keys path", async () => {
     const key = await seedManagementKey();
-    for (const listing of [{ method: "POST", path: "api/v1/chat/completions" }, { method: "GET", path: "api/v1/keys" }]) {
-      const refused = await admin(key, "POST", "/v2/admin/providers", {
+    const make = (listing: unknown) =>
+      admin(key, "POST", "/v2/admin/providers", {
         type: "openrouter",
         name: "OpenRouter",
         slug: `or-${crypto.randomUUID().slice(0, 6)}`,
         secret: "sk-or-live-secret-abcd",
-        baseUrl: "https://openrouter.ai/",
+        baseUrl: "https://openrouter.ai/api/",
         passthrough: [listing],
       });
-      expect(refused.status, listing.path).toBe(400);
-    }
+    expect((await make({ method: "POST", path: "v1/chat/completions" })).status).toBe(400);
+    expect((await make({ method: "GET", path: "v1/keys" })).status).toBe(201);
   });
 
-  it("refuses deleting an ElevenLabs voice when listed, and saves reading one", async () => {
+  it("saves deleting an ElevenLabs voice as it saves reading one: the customer decides", async () => {
     const key = await seedManagementKey();
     const make = (passthrough: unknown) =>
       admin(key, "POST", "/v2/admin/providers", { type: "elevenlabs", name: "ElevenLabs", slug: `el-${crypto.randomUUID().slice(0, 6)}`, secret: "el-live-secret-abcd", passthrough });
-    expect((await make([{ method: "DELETE", path: "v1/voices/{voice_id}" }])).status).toBe(400);
+    expect((await make([{ method: "DELETE", path: "v1/voices/{voice_id}" }])).status).toBe(201);
     expect((await make([{ method: "GET", path: "v1/voices/{voice_id}" }])).status).toBe(201);
   });
 
@@ -953,10 +779,10 @@ describe("saving a listed path", () => {
       name: "fal",
       slug: `fal-${crypto.randomUUID().slice(0, 6)}`,
       secret: "fal-live-secret-abcd",
-      passthrough: [{ method: "POST", path: "fal-ai/{a}/{b}" }],
+      passthrough: [{ method: "POST", path: "run/fal-ai/{model}" }],
     });
     expect(refused.status).toBe(400);
-    expect(JSON.stringify(refused.body)).toContain("fal.run");
+    expect(JSON.stringify(refused.body)).toContain("is built in as the fal.run operation");
   });
 
   it("lets an app enable passthrough on the connection", async () => {
