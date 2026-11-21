@@ -38,9 +38,10 @@ export function recoverState(gateway: string | null): string {
  * replaces only the hints that come from the status or the connection.
  *
  * The HTTP status decides first, whatever the body said: a 403 with
- * `access_denied` is still about access, a 503 with `connection_failed` still
- * means the gateway is not available yet. Only without a deciding status do
- * the codes count.
+ * `access_denied` is still about access, a 429 says to wait a moment, and a
+ * 503 with `connection_failed` still means the gateway is not available yet.
+ * Only without a deciding status do the codes count. The status changes only
+ * the hint: the error code and the exit code stay as the failure set them.
  *
  * `gateway` is the self-hosted gateway the sign-in was for, when it is known:
  * after the state file is moved aside, the same command would no longer find
@@ -51,6 +52,7 @@ export function signInFailure(error: unknown, gateway: string | null = null): un
   const status = error.details?.status;
   let next: string | null = null;
   if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
+  else if (status === 429) next = "Wait a moment, then run the same command again.";
   else if (typeof status === "number" && status >= 500)
     next = "Wait until the gateway is available, then run the same command again.";
   else if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";

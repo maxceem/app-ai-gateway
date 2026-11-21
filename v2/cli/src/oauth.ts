@@ -260,12 +260,10 @@ export async function deviceLogin(
       interval += 5;
       continue;
     }
-    // A decline keeps its exit code (4); its status still reaches the hint,
-    // so a 403 decline is told to fix access.
+    // The error code alone decides the error and the exit code, as before; the
+    // status rides along only so the hint can say to fix access or to wait.
     if (error === "access_denied")
       fail("login_denied", "The sign-in was declined in the browser.", START_OVER, 4, { status: answer.status });
-    // Otherwise the status comes first: a 403 or 5xx says more than the body's code.
-    if (answer.status === 403 || answer.status === 401 || answer.status >= 500) tokenRefusal(answer, "The sign-in");
     if (error === "expired_token") break;
     tokenRefusal(answer, "The sign-in");
   }
@@ -289,18 +287,23 @@ export async function refresh(
     client_id: login.clientId,
     resource: url + V2_PATH,
   });
-  // A refusal (400 or 401) means the sign-in itself is no good, so the hint
-  // signs in again. A self-hosted gateway is named: a bare `agw account login`
-  // could reach the hosted one instead. A busy or unavailable gateway keeps the
-  // stored sign-in, so the same command works once it answers again.
+  // The error code decides the outcome, as before: `invalid_grant` ends the
+  // sign-in whatever the status; anything else is thrown with exit 3. The
+  // status only picks the hint: a busy (429) or unavailable (5xx) gateway is
+  // waited for; a refusal signs in again, naming a self-hosted gateway, since a
+  // bare `agw account login` could reach the hosted one instead.
   const signInAgain =
     url === CLOUD ? "Run agw account login again." : `Run agw deployment connect --url with this gateway's address:\n${url}`;
   if (answer.status === 200) return loginFrom(answer, now(), login.id, signInAgain);
-  if (answer.status === 429) tokenRefusal(answer, "Renewing the sign-in", "Wait a moment, then run the same command again.");
-  if (answer.status >= 500)
-    tokenRefusal(answer, "Renewing the sign-in", "Wait until the gateway is available, then run the same command again.");
   if (answer.data["error"] === "invalid_grant") return null;
-  tokenRefusal(answer, "Renewing the sign-in", signInAgain);
+  tokenRefusal(answer, "Renewing the sign-in", renewalHint(answer.status, signInAgain));
+}
+
+/** The next step after a refused renewal: chosen by the status, never changing the outcome. */
+function renewalHint(status: number, signInAgain: string): string {
+  if (status === 429) return "Wait a moment, then run the same command again.";
+  if (status >= 500) return "Wait until the gateway is available, then run the same command again.";
+  return signInAgain;
 }
 
 /** Revokes a sign-in (RFC 7009). True when the gateway accepted it. */

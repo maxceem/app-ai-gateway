@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { CliError, CLOUD, LocalStateError } from "../src/common.ts";
 import { Context, launch } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
+import { main, MemoryCatalogCache } from "../src/main.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
 import { Transport, type FormResponse } from "../src/transport.ts";
 import { fakeClock, fakeTransport, hasCode, memoryStore, signedInState, sinks } from "./helpers.ts";
@@ -474,6 +475,110 @@ test("a busy or unavailable gateway during renewal keeps the sign-in and says to
       // The stored sign-in is kept, to be renewed once the gateway answers.
       assert.notEqual(store.held.active, null, `${url}: ${what}`);
     }
+});
+
+test("every token endpoint refusal keeps its error code and exit code, also in deployment status; the status picks only the hint", async () => {
+  // Each row is one answer from the token endpoint, met in each place it can
+  // come: polling the device flow, starting it, exchanging a browser code, and
+  // renewing a stored sign-in. The error codes and exit codes are the ones the
+  // CLI gave before the hints changed. They were found by running these same
+  // answers through `git show origin/v2:v2/cli/src` (origin/v2 at 9544165a),
+  // and they must not change. The HTTP status decides only the hint: 401 or 403
+  // says to fix access, 429 to wait a moment, 5xx to wait for the gateway.
+  type Outcome = [code: string, exit: number, hint: string];
+  type Row = {
+    poll: Outcome;
+    start: Outcome;
+    exchange: Outcome;
+    renewal: Outcome;
+    /** `deployment status` after that renewal: signed out with exit 0, or this error. */
+    status: "signed out" | [code: string, exit: number];
+  };
+  const AGAIN = "Run the same command again.";
+  const ACCESS = "Fix access to the gateway, then run the same command again.";
+  const MOMENT = "Wait a moment, then run the same command again.";
+  const WAIT = "Wait until the gateway is available, then run the same command again.";
+  const NEW_CODE = "Run the same command again for a new code.";
+  const START_OVER = "Run the same command again to start over.";
+  const SIGN_IN = `Run agw deployment connect --url with this gateway's address:\n${URL_}`;
+  // A renewal answered `invalid_grant` means the sign-in has ended, whatever the status.
+  const ENDED: Outcome = ["login_required", 4, "Run agw account login, or set AGW_MANAGEMENT_KEY."];
+  const same = (outcome: Outcome) => ({ start: outcome, exchange: outcome });
+  const rows: [number, string | null, Row][] = [
+    [400, "invalid_grant", { poll: ["login_failed", 3, AGAIN], ...same(["login_failed", 3, AGAIN]), renewal: ENDED, status: "signed out" }],
+    [401, "invalid_grant", { poll: ["login_failed", 3, ACCESS], ...same(["login_failed", 3, ACCESS]), renewal: ENDED, status: "signed out" }],
+    [429, "invalid_grant", { poll: ["login_failed", 3, MOMENT], ...same(["login_failed", 3, MOMENT]), renewal: ENDED, status: "signed out" }],
+    [503, "invalid_grant", { poll: ["login_failed", 3, WAIT], ...same(["login_failed", 3, WAIT]), renewal: ENDED, status: "signed out" }],
+    [400, "invalid_client", { poll: ["invalid_client", 3, AGAIN], ...same(["invalid_client", 3, AGAIN]), renewal: ["invalid_client", 3, SIGN_IN], status: ["invalid_client", 3] }],
+    [401, "invalid_client", { poll: ["invalid_client", 3, ACCESS], ...same(["invalid_client", 3, ACCESS]), renewal: ["invalid_client", 3, SIGN_IN], status: "signed out" }],
+    [400, "expired_token", { poll: ["login_expired", 4, NEW_CODE], ...same(["expired_token", 3, AGAIN]), renewal: ["expired_token", 3, SIGN_IN], status: ["expired_token", 3] }],
+    [401, "expired_token", { poll: ["login_expired", 4, NEW_CODE], ...same(["expired_token", 3, ACCESS]), renewal: ["expired_token", 3, SIGN_IN], status: "signed out" }],
+    [400, "access_denied", { poll: ["login_denied", 4, START_OVER], ...same(["access_denied", 3, AGAIN]), renewal: ["access_denied", 3, SIGN_IN], status: ["access_denied", 3] }],
+    [403, "access_denied", { poll: ["login_denied", 4, ACCESS], ...same(["access_denied", 3, ACCESS]), renewal: ["access_denied", 3, SIGN_IN], status: ["access_denied", 3] }],
+    // While polling, slow_down only stretches the wait, until the code expires.
+    [429, "slow_down", { poll: ["login_expired", 4, NEW_CODE], ...same(["slow_down", 3, MOMENT]), renewal: ["slow_down", 3, MOMENT], status: ["slow_down", 3] }],
+    [503, "temporarily_unavailable", { poll: ["temporarily_unavailable", 3, WAIT], ...same(["temporarily_unavailable", 3, WAIT]), renewal: ["temporarily_unavailable", 3, WAIT], status: ["temporarily_unavailable", 3] }],
+    [500, null, { poll: ["http_500", 3, WAIT], ...same(["http_500", 3, WAIT]), renewal: ["http_500", 3, WAIT], status: ["http_500", 3] }],
+  ];
+  const get = (path: string) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound());
+  const opened: FormResponse = { status: 200, data: { device_code: "dc", user_code: "AAAA-BBBB", verification_uri: `${URL_}/v2/device`, expires_in: 30, interval: 5 } };
+  const io = { env: {}, browserAvailable: () => true, clock: fakeClock() };
+  const failure = (pending: Promise<unknown>): Promise<CliError> =>
+    pending.then(
+      () => assert.fail("expected a failure"),
+      (caught: unknown) => {
+        assert.ok(caught instanceof CliError);
+        return caught;
+      },
+    );
+  const expired = () => memoryStore(signedInState(URL_, "agw_oat_old", new Date(fakeClock().time - 1).toISOString()));
+  for (const [status, code, row] of rows) {
+    const answer: FormResponse = { status, data: code ? { error: code } : {} };
+    const label = `${status} ${code ?? "with no body"}`;
+    const store = () => memoryStore();
+    const s1 = store();
+    const poll = new Context(s1, s1.held, fakeTransport(get, (path) => (path === SERVER.device ? opened : answer)), { device: true }, { ...io, stderr: sinks().stderr, clock: fakeClock() });
+    const s2 = store();
+    const start = new Context(s2, s2.held, fakeTransport(get, () => answer), { device: true }, { ...io, stderr: sinks().stderr, clock: fakeClock() });
+    const s3 = store();
+    const browser = handLoopback(() => ({ code: "c", iss: null }));
+    const exchange = new Context(s3, s3.held, fakeTransport(get, () => answer), {}, { ...io, stderr: sinks().stderr, clock: fakeClock(), ...browser });
+    const renewing = expired();
+    const renewal = new Context(renewing, renewing.held, fakeTransport(notFound, () => answer), {}, { env: {}, clock: fakeClock(), stderr: sinks().stderr });
+    const outcomes: [string, Promise<unknown>, Outcome][] = [
+      ["device poll", poll.login(URL_), row.poll],
+      ["device start", start.login(URL_), row.start],
+      ["browser code exchange", exchange.connect(URL_), row.exchange],
+      ["renewal", renewal.credential(), row.renewal],
+    ];
+    for (const [where, pending, [errorCode, exit, hint]] of outcomes) {
+      const error = await failure(pending);
+      assert.equal(error.code, errorCode, `${label}, ${where}: error code`);
+      assert.equal(error.exitCode, exit, `${label}, ${where}: exit code`);
+      assert.equal(error.nextAction, hint, `${label}, ${where}: hint`);
+    }
+    // Only an ended sign-in is forgotten; any other refusal keeps it for the next renewal.
+    assert.equal(renewing.held.active?.login === undefined, row.renewal === ENDED, `${label}: stored sign-in`);
+    const statusStore = expired();
+    const out = sinks();
+    const exit = await main(["deployment", "status", "--json"], {
+      store: statusStore,
+      transport: fakeTransport(notFound, () => answer),
+      stdout: out.stdout,
+      stderr: out.stderr,
+      io: { env: {}, clock: fakeClock() },
+      catalogCache: new MemoryCatalogCache(),
+    });
+    const json = JSON.parse(out.out.text);
+    if (row.status === "signed out") {
+      assert.equal(exit, 0, `${label}, deployment status: ${out.err.text}`);
+      assert.equal(json.result.signedIn, false, `${label}, deployment status`);
+      assert.equal(json.result.credential, "oauth", `${label}, deployment status`);
+    } else {
+      assert.equal(json.error.code, row.status[0], `${label}, deployment status: error code`);
+      assert.equal(exit, row.status[1], `${label}, deployment status: exit code`);
+    }
+  }
 });
 
 test("the environment's key wins over a stored sign-in, and signing in while it is set is refused", async () => {
