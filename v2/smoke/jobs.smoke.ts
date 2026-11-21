@@ -1,9 +1,12 @@
 /**
- * fal's queue through a live v2 deployment (plan step 6a): a job submitted
- * through the gateway gets a signed job id and polling links on the gateway,
- * its estimate counts at once, polls are free, and reading its result
- * settles it to the units fal billed. Everything is made through the
- * management API and removed afterwards.
+ * fal's queue through a live v2 deployment (plan steps 6a and 6b): a job
+ * submitted through the gateway gets a signed job id and links on the
+ * gateway, its estimate counts at once, polls and cancels are free, and
+ * reading its result settles it to what fal billed. A job cancelled while
+ * queued costs nothing, a model off our list bills at the connection's own
+ * flat price, a video settles by counting it, and the app's job list shows
+ * each job. Everything is made through the management API and removed
+ * afterwards.
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \
@@ -38,14 +41,22 @@ let appKey = "";
 
 before(async () => {
   if (skip !== false) return;
-  const created = await admin("POST", "/v2/admin/providers", { type: "fal", name: "Smoke fal queue", slug: falSlug, secret: "sk-mock-smoke-fal", baseUrl: mockUrl });
+  const created = await admin("POST", "/v2/admin/providers", {
+    type: "fal",
+    name: "Smoke fal queue",
+    slug: falSlug,
+    secret: "sk-mock-smoke-fal",
+    baseUrl: mockUrl,
+    // A model off our price list, at a flat price per job of the connection's own.
+    pricing: { "fal-ai/smoke-flat": { per_request: 0.02 } },
+  });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   providerId = created.body.provider.id;
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke fal queue",
     config: {
       authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
-      routing: { providers: { [falSlug]: { operations: ["fal.queue"], models: ["fal-ai/flux/dev"] } } },
+      routing: { providers: { [falSlug]: { operations: ["fal.queue"], models: ["fal-ai/flux/dev", "fal-ai/smoke-flat", "fal-ai/ltx-video"] } } },
     },
   });
   assert.equal(app.status, 201, JSON.stringify(app.body));
@@ -62,8 +73,8 @@ function headers(user: string): Record<string, string> {
   return { authorization: `Bearer ${appKey}`, "x-end-user-id": user };
 }
 
-async function submit(user: string, body: Record<string, unknown>): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${falSlug}/queue/fal-ai/flux/dev`, base), {
+async function submit(user: string, body: Record<string, unknown>, model = "fal-ai/flux/dev"): Promise<{ status: number; body: any }> {
+  const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${falSlug}/queue/${model}`, base), {
     method: "POST",
     headers: { ...headers(user), "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -102,7 +113,8 @@ test("a queue job gets a signed job id and gateway links, and its estimate count
   assert.ok(jobId.startsWith("j1."), jobId);
   assert.equal(submitted.body.status_url, new URL(`/v2/apps/${appId}/jobs/${jobId}/status`, base).toString());
   assert.equal(submitted.body.response_url, new URL(`/v2/apps/${appId}/jobs/${jobId}`, base).toString());
-  assert.equal(submitted.body.cancel_url, undefined);
+  // Step 6b: the cancel link is the gateway's own (it was left out in 6a).
+  assert.equal(submitted.body.cancel_url, new URL(`/v2/apps/${appId}/jobs/${jobId}/cancel`, base).toString());
   await usageReaches(user, 1, 200_000_000);
 
   // Polls are free: the status answers through the gateway and adds no charge.
@@ -138,4 +150,52 @@ test("a job id that is not this app's own is unknown", { skip }, async () => {
   assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
   const other = await get(submitted.body.status_url, user);
   assert.equal(other.status, 404);
+});
+
+test("a job cancelled through the gateway while queued costs nothing once fal confirms it", { skip }, async () => {
+  const user = `smoke-falq-cancel-${run}`;
+  const submitted = await submit(user, { prompt: "a lighthouse", mock_cancelled: true });
+  assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
+  await usageReaches(user, 1, 25_000_000);
+  // The cancel is free: fal's own answer, and no charge.
+  const cancelled = await fetch(submitted.body.cancel_url, { method: "PUT", headers: headers(user) });
+  assert.equal(cancelled.status, 202);
+  assert.equal(((await cancelled.json()) as { status?: string }).status, "CANCELLATION_REQUESTED");
+  assert.equal(cancelled.headers.get("cache-control"), "no-store");
+  const result = await get(submitted.body.response_url, user);
+  assert.equal(result.status, 499);
+  await usageReaches(user, 1, 0);
+});
+
+test("a model off our list bills at the connection's flat price per job", { skip }, async () => {
+  const user = `smoke-falq-flat-${run}`;
+  const submitted = await submit(user, { prompt: "a lighthouse", mock_no_units: true }, "fal-ai/smoke-flat");
+  assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
+  await usageReaches(user, 1, 20_000_000);
+  const result = await get(submitted.body.response_url, user);
+  assert.equal(result.status, 200);
+  await usageReaches(user, 1, 20_000_000);
+});
+
+test("a video with no units header settles by counting it, and the app's job list shows it settled", { skip }, async () => {
+  const user = `smoke-falq-video-${run}`;
+  // ltx-video: $0.02 per video, and fal sends no units header for it (T15).
+  const submitted = await submit(user, { prompt: "a lighthouse", mock_video: true }, "fal-ai/ltx-video");
+  assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
+  await usageReaches(user, 1, 20_000_000);
+  const result = await get(submitted.body.response_url, user);
+  assert.equal(result.status, 200);
+  assert.ok(result.body.video);
+  let job: any = null;
+  for (let tries = 0; tries < 30; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${appId}/jobs?limit=200`);
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    job = listed.body.jobs.find((one: any) => one.end_user_id === user);
+    if (job?.state === "settled") break;
+    // real-timer: polls the live deployment until the settlement written after the answer appears.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.equal(job?.state, "settled", JSON.stringify(job));
+  assert.equal(job.model, "fal-ai/ltx-video");
+  assert.equal(job.total_nano, 20_000_000);
 });
