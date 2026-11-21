@@ -24,6 +24,7 @@ import {
   type OAuthTransport,
 } from "./oauth.ts";
 import type { Flags } from "./parser.ts";
+import { SignInRetry, type SignInStart } from "./sign-in-retry.ts";
 import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
 
@@ -330,12 +331,17 @@ export class Context {
    * there is one; otherwise, or with `--device`, a link and a short code that
    * any browser can approve.
    */
-  async login(url: string = this.url, again = "agw account login"): Promise<LoginResult> {
+  async login(url: string = this.url, command: Pick<SignInStart, "command" | "url" | "cloud"> = { command: "account login" }): Promise<LoginResult> {
     this.assertNoEnvironmentKey();
     const target = origin(url);
     const server = await discover(this.transport, target);
+    // Every hint a failed sign-in gives names this command, with its flags.
+    const retry = new SignInRetry(
+      { ...command, ...(this.flags.device ? { device: true } : {}), ...(this.flags["no-open"] ? { noOpen: true } : {}) },
+      server.device !== null,
+    );
     const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-    const login = useBrowser ? await this.browserLogin(target, server, again) : await this.deviceSignIn(target, server, again);
+    const login = useBrowser ? await this.browserLogin(target, server, retry) : await this.deviceSignIn(target, server, retry);
     const who = await this.whoAmI(target, login.accessToken);
     const { state } = await this.store.update((disk) => {
       disk.active = { url: target, login, account: who.account };
@@ -344,13 +350,11 @@ export class Context {
     return { connected: true, url: target, credential: "oauth", ...who };
   }
 
-  /** The authorization code with PKCE, back to a listener on this machine. */
   /**
-   * `again` is the command that started this sign-in. Until a sign-in
-   * succeeds the target gateway is not stored, so a plain `agw account login`
-   * could reach another gateway; the person is told to rerun this one.
+   * The authorization code with PKCE, back to a listener on this machine.
+   * `retry` names the command that started this sign-in in every hint.
    */
-  private async browserLogin(url: string, server: OAuthServer, again: string): Promise<OAuthLogin> {
+  private async browserLogin(url: string, server: OAuthServer, retry: SignInRetry): Promise<OAuthLogin> {
     const { verifier, challenge } = pkce();
     const state = randomBytes(24).toString("base64url");
     const loopback = await this.io.listen(state);
@@ -360,7 +364,7 @@ export class Context {
         // Only a browser here could finish this one, so a code takes its place.
         this.say("The browser could not be opened, so sign in with a code instead.");
         await loopback.close();
-        return await this.deviceSignIn(url, server, again);
+        return await this.deviceSignIn(url, server, retry);
       }
       this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
       const deadline = this.io.loginDeadline(LOGIN_TIMEOUT_MS);
@@ -370,22 +374,22 @@ export class Context {
       } catch {
         // Exit 5: this CLI stopped waiting for the browser (v1's wait timeout).
         // A browser sign-in cannot be picked up again: it starts over.
-        fail("login_expired", "The sign-in was not approved in time.", `Run ${again} again, or add --device to sign in with a code.`, 5);
+        fail("login_expired", "The sign-in was not approved in time.", retry.againOrCode(), 5);
       } finally {
         deadline.cancel();
       }
       if ("error" in answer) {
         loopback.answer(false);
-        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", `Run ${again} again to start over.`, 4);
-        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, `Run ${again} again.`, 3);
+        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", retry.startOver(), 4);
+        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, retry.again(), 3);
       }
       // RFC 9207: an answer naming another issuer is not this gateway's.
       if (answer.iss !== null && answer.iss !== server.issuer) {
         loopback.answer(false);
-        fail("login_failed", "The sign-in came back from another issuer than this gateway.", `Run ${again} again.`, 3);
+        fail("login_failed", "The sign-in came back from another issuer than this gateway.", retry.again(), 3);
       }
       try {
-        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now(), again);
+        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now(), retry);
         loopback.answer(true);
         return login;
       } catch (error) {
@@ -398,7 +402,7 @@ export class Context {
   }
 
   /** The device flow, with its code shown on stderr. */
-  private deviceSignIn(url: string, server: OAuthServer, again: string): Promise<OAuthLogin> {
+  private deviceSignIn(url: string, server: OAuthServer, retry: SignInRetry): Promise<OAuthLogin> {
     const style = styleFor(this.io.stderr);
     return deviceLogin(
       this.transport,
@@ -416,7 +420,7 @@ export class Context {
         );
       },
       this.io.clock,
-      again,
+      retry,
     );
   }
 
@@ -426,7 +430,7 @@ export class Context {
    */
   async connect(url: string): Promise<LoginResult> {
     const target = origin(url);
-    if (!this.environmentKey) return this.login(target, target === CLOUD ? "agw deployment connect --cloud" : `agw deployment connect --url ${shellQuoted(target)}`);
+    if (!this.environmentKey) return this.login(target, target === CLOUD ? { command: "deployment connect", cloud: true } : { command: "deployment connect", url: target });
     const who = await this.whoAmI(target, this.environmentKey);
     const { state } = await this.store.update((disk) => {
       // A sign-in already stored for this gateway is kept: the environment's
@@ -511,13 +515,4 @@ export function openBrowser(url: string): Promise<boolean> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   return launch(command, args);
-}
-
-/**
- * A value pasted into a shell as one word: left as it is when it holds only
- * characters no shell treats specially, single-quoted otherwise. A URL such as
- * `http://[::1]:8787` would otherwise be read as a glob by zsh.
- */
-export function shellQuoted(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
