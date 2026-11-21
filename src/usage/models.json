@@ -1034,8 +1034,7 @@
       "long_cached_input": 0.4,
       "long_output": 4.0,
       "author": "xAI",
-      "release_date": "2026-04-16",
-      "unlisted_since": "2026-11-20"
+      "release_date": "2026-04-16"
     },
     "grok-4.3": {
       "kind": "text",
@@ -2194,13 +2193,13 @@
     },
     "nvidia/nemotron-3.5-asr-streaming-0.6b": {
       "kind": "transcription",
-      "per_minute": 0.0015,
+      "per_minute": 0.0045,
       "author": "NVIDIA",
       "release_date": "2026-06-04"
     },
     "nvidia/nemotron-3-asr-streaming-0.6b": {
       "kind": "transcription",
-      "per_minute": 0.0015,
+      "per_minute": 0.0045,
       "author": "NVIDIA",
       "release_date": "2026-11-15"
     },
