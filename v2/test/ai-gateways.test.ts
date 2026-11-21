@@ -150,6 +150,20 @@ describe("where a request goes (route.ts)", () => {
     expect(through("anthropic-messages").authorization).toBeUndefined();
   });
 
+  it("names the header the key was sent in, for each endpoint, with the request it builds", () => {
+    const anthropic = BUILT_IN_PROVIDERS.anthropic!;
+    const sent = (cloudflareGateway: typeof cloudflare | null, style: "openai-chat" | "anthropic-messages") =>
+      upstreamRequest(record({ type: "anthropic", cloudflareGateway }), anthropic, {
+        ...base,
+        path: "v1/chat/completions",
+        style,
+        credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      }).keyHeader;
+    expect(sent(cloudflare, "openai-chat")).toBe("authorization");
+    expect(sent(cloudflare, "anthropic-messages")).toBe("x-api-key");
+    expect(sent(null, "openai-chat")).toBe("x-api-key");
+  });
+
   it("sets Vercel's spend attribution, leaving out a user id it would refuse", () => {
     const vercel = BUILT_IN_PROVIDERS.vercel!;
     const plain = upstreamRequest(record({ type: "vercel" }), vercel, {
@@ -374,6 +388,19 @@ describe("calls through the gateways, end to end", () => {
     expect(rows).toHaveLength(1);
     const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
     expect(Number(rows[0]!.cost_nano)).toBe(expected);
+  });
+
+  it("never passes back the header the key was sent in: Authorization for Anthropic's chat through Cloudflare", async () => {
+    const { appId, slug, appKey } = await routed(
+      { type: "anthropic", secret: PROVIDER_KEY, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } },
+      "anthropic.chat",
+      ["claude-sonnet-5"],
+    );
+    fetchSpy.mockResolvedValue(Response.json({ id: "c1", model: "claude-sonnet-5", choices: [], usage }, { headers: { authorization: `Bearer ${PROVIDER_KEY}` } }));
+    const response = await call(slug, appKey, appId, "v1/chat/completions", { model: "claude-sonnet-5", messages: [] });
+    expect(response.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe(`Bearer ${PROVIDER_KEY}`);
+    expect(response.headers.get("authorization")).toBeNull();
   });
 
   it("bills a Vercel call from our price list, under its model's provider", async () => {

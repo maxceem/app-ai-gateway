@@ -421,20 +421,27 @@ export class ProviderMatcher {
    * priced-models list through any value.
    */
   overlappingOperation(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
+    return this.overlappingOperations(listed, route)[0] ?? null;
+  }
+
+  /** Every declared operation a listed path could also take on `route`, in declared order (`overlappingOperation`). */
+  overlappingOperations(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): readonly string[] {
     const mine = listed.template.segments as readonly SegmentPattern[];
     const sent = upstreamTargets(route, "main", mine);
+    const found: string[] = [];
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== listed.listed.method) continue;
-      if (templatesMeet(mine, compiled.template.segments, compiled.closedLists)) return compiled.operation.name;
+      if (templatesMeet(mine, compiled.template.segments, compiled.closedLists)) {
+        found.push(compiled.operation.name);
+        continue;
+      }
       const theirs = upstreamTargets(route, compiled.host, (compiled.upstream ?? compiled.template).segments);
       if (sent === null || theirs === null || theirs.host !== sent.host) continue;
-      for (const path of sent.paths) {
-        if (theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists))) {
-          return compiled.operation.name;
-        }
+      if (sent.paths.some((path) => theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
+        found.push(compiled.operation.name);
       }
     }
-    return null;
+    return found;
   }
 
   /**

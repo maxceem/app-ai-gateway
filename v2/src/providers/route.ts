@@ -58,6 +58,22 @@ export interface UpstreamRequest {
   readonly url: string;
   /** Set on the outgoing headers last, over anything else. */
   readonly headers: Readonly<Record<string, string>>;
+  /** The header the provider key is sent in (`keyAuth`): never forwarded from the client, never passed back to it. */
+  readonly keyHeader: string;
+}
+
+/**
+ * How a connection's provider key is sent for an operation of `style`: through
+ * Cloudflare AI Gateway, the way Cloudflare's endpoint for that style takes it
+ * (`authByStyle`), else the provider's own way. The one place this is decided.
+ */
+export function keyAuth(
+  connection: { readonly cloudflareGateway: object | null },
+  description: ProviderDescription,
+  style: ApiStyle | undefined,
+): ProviderAuth {
+  if (connection.cloudflareGateway === null) return description.auth;
+  return (style !== undefined ? description.cloudflareGateway?.authByStyle?.[style] : undefined) ?? description.auth;
 }
 
 /** The provider's key, in the header and format given. A callback, so a key with `$&` is sent as it is. */
@@ -105,6 +121,7 @@ export function upstreamRequest(
     return {
       url: `${upstreamOrigin(connection, description, input.hostKey)}${input.path}${input.query}`,
       headers: { ...attribution, ...providerAuth(description.auth, input.credentials.providerKey) },
+      keyHeader: description.auth.header.toLowerCase(),
     };
   }
   const route = description.cloudflareGateway;
@@ -126,12 +143,11 @@ export function upstreamRequest(
     // Cloudflare's own logs, under the real app and user: set here alone.
     "cf-aig-metadata": asciiJson({ app_id: input.appId, ...(input.userId === null ? {} : { user_id: input.userId }) }),
   });
-  if (input.credentials.providerKey !== null) {
-    const auth = (input.style !== undefined ? route.authByStyle?.[input.style] : undefined) ?? description.auth;
-    Object.assign(headers, providerAuth(auth, input.credentials.providerKey));
-  }
+  const auth = keyAuth(connection, description, input.style);
+  if (input.credentials.providerKey !== null) Object.assign(headers, providerAuth(auth, input.credentials.providerKey));
   return {
     url: `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`,
     headers,
+    keyHeader: auth.header.toLowerCase(),
   };
 }

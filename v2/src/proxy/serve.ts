@@ -55,7 +55,7 @@ import {
 import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
 import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
-import { upstreamRequest } from "../providers/route.ts";
+import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
@@ -854,10 +854,12 @@ export async function sendAttempts(
   c: ProxyContext,
   stripped: readonly string[],
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
+  /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
+  otherKeyHeaders: readonly string[] = [],
 ): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string } | null = null;
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -870,7 +872,10 @@ export async function sendAttempts(
   // The header each connection's key is sent in belongs to the gateway alone: a client's value in any of
   // them, for any connection of the chain, never reaches any attempt. Its answers never pass it back
   // either (`clientResponseHeaders` in `answer`).
-  const keyHeaders = attempts.map((one) => one.description.auth.header.toLowerCase());
+  const keyHeaders = [
+    ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
+    ...otherKeyHeaders,
+  ].map((name) => name.toLowerCase());
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
@@ -880,7 +885,7 @@ export async function sendAttempts(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
       }
       throw budgetExhausted(index);
     }
@@ -903,6 +908,7 @@ export async function sendAttempts(
     let controller: AbortController;
     let timer: ReturnType<typeof setTimeout>;
     let providerStart: number;
+    let keyHeader = description.auth.header.toLowerCase();
     try {
       const body = prepared.body();
       // The app's headers without the gateway's own credentials and end-user ids:
@@ -931,6 +937,7 @@ export async function sendAttempts(
       });
       for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
       const url = target.url;
+      keyHeader = target.keyHeader;
 
       // Checked just before each fetch: nothing is sent for an app that went
       // away. The app's own signal is never passed to the provider, so an
@@ -955,7 +962,7 @@ export async function sendAttempts(
         signal: controller.signal,
       });
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -995,14 +1002,14 @@ export async function sendAttempts(
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs };
+      previous = { prepared, upstream, latencyMs, keyHeader };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs);
+    return answer(c, prepared, upstream, latencyMs, keyHeader);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1040,9 +1047,10 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
 }
 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
-function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number): Response {
+/** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
+function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
   const { description, operation, attempt } = prepared;
-  const responseHeaders = clientResponseHeaders(upstream.headers, description.auth.header);
+  const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 

@@ -344,9 +344,12 @@ function passthroughJson(
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
       // On a known provider's host, a path its declared operation serves speaks that operation's style:
       // another style's reader would miss what its answers report.
-      const declared = ownerMatcher === null || ownerRoute === null ? null : ownerMatcher.overlappingOperation(compiled, ownerRoute);
-      const declaredStyle = declared === null ? undefined : owner!.operations.find((operation) => operation.name === declared)?.style;
-      if (declared !== null && declaredStyle !== listed.style) {
+      // Every operation it could take, not only the first: each must speak its style.
+      const overlapped = ownerMatcher === null || ownerRoute === null ? [] : ownerMatcher.overlappingOperations(compiled, ownerRoute);
+      const styleOf = (name: string) => owner!.operations.find((operation) => operation.name === name)?.style;
+      const declared = overlapped.find((name) => styleOf(name) !== listed.style) ?? null;
+      const declaredStyle = declared === null ? undefined : styleOf(declared);
+      if (declared !== null) {
         throw new GatewayError(
           400,
           "invalid_request",

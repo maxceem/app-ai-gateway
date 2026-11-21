@@ -336,6 +336,8 @@ describe("saving a custom provider", () => {
     ],
     [{ baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
     [{ baseUrl: "https://eu.api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
+    // It could take openai.responses, and openai.embeddings, whose answers the Responses reader would misread.
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/{operation}", style: "openai-responses" }], pricing: PRICING }, "openai.embeddings operation"],
     [{ baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/images/generations", style: "openai-images" }] }, "can report only their cost"],
     [{ baseUrl: "https://api.openai.com/v1%2Forganization/", passthrough: [{ method: "GET", path: "users" }] }, "encoded /"],
     [{ baseUrl: "https://llm.example.com/v1//chat/" }, "empty segment"],
@@ -936,6 +938,28 @@ describe("serving a custom provider", () => {
     expect(second!.url).toBe("https://other.example.org/v1/chat/completions");
     expect(second!.headers.get("idempotency-key")).toBeNull();
     expect(second!.headers.get("x-api-key")).toBe(`Key ${SECRET}`);
+  });
+
+  it("drops a disabled preset target's key header from the client's request too", async () => {
+    const chat = [{ method: "POST", path: "chat/completions", style: "openai-chat" }];
+    const disabled = await setup(chat, ["custom.openai-chat"], BASE, undefined, undefined, { header: "idempotency-key", format: "{key}" });
+    await env.DB.prepare("UPDATE provider_connection SET status = 'disabled' WHERE slug = ?").bind(disabled.slug).run();
+    const fallback = await setup(chat, ["custom.openai-chat"], "https://other.example.org/v1/");
+    const stored = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(disabled.appId).first<{ config_json: string }>();
+    const config = {
+      ...JSON.parse(stored!.config_json),
+      presets: { chat: { provider: disabled.slug, operation: "custom.openai-chat", model: "local-llm", fallback: [{ provider: fallback.slug, model: "local-llm" }] } },
+    };
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify(config), disabled.appId).run();
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "c1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    const { response, text } = await send("POST", `/v2/apps/${disabled.appId}/presets/chat`, disabled.key, {
+      body: JSON.stringify({ messages: [] }),
+      headers: { "content-type": "application/json", "IDEMPOTENCY-KEY": "client-retry-1" },
+    });
+    expect(response.status, text).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://other.example.org/v1/chat/completions");
+    expect(new Headers(fetchSpy.mock.calls[0]![1]!.headers).get("idempotency-key")).toBeNull();
   });
 
   it("checks who is calling first: a custom path needs a valid app key", async () => {

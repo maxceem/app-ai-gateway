@@ -46,6 +46,7 @@ import {
 } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
+import { keyAuth } from "../providers/route.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -310,6 +311,8 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       ];
       const connections = new Map<string, ConnectionRecord | null>([[preset.provider, first]]);
       const attempts: PreparedAttempt[] = [];
+      // Every target's key header, a skipped one's too: no client value in any of them reaches any attempt.
+      const keyHeaders: string[] = [];
       let paused: GatewayError | null = null;
       for (const [index, target] of targets.entries()) {
         const primary = index === 0;
@@ -325,6 +328,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
               new GatewayError(502, "provider_not_configured", `No provider connection ${target.provider} is set up for this app`),
             );
           }
+          keyHeaders.push(description.auth.header, keyAuth(connection, description, style).header);
           if (connection.status === "disabled") {
             const error = new GatewayError(502, "provider_disabled", `Provider connection ${target.provider} is disabled`);
             // Disabling is a deliberate pause: the chain goes on to its fallbacks.
@@ -384,7 +388,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         refuse: refusal,
       });
-      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest]);
+      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest], keyHeaders);
     },
   );
 }
