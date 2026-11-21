@@ -25,6 +25,10 @@
       "description": "The signed-in caller's own state."
     },
     {
+      "name": "Jobs",
+      "description": "Polling a job submitted through the gateway, such as a fal queue job. Polls are free."
+    },
+    {
       "name": "Admin applications",
       "description": "Apps and their settings."
     },
@@ -433,6 +437,11 @@
           "install_id",
           "limits"
         ]
+      },
+      "JobAnswer": {
+        "type": "object",
+        "additionalProperties": {},
+        "description": "The provider's own answer, with its links pointing at the gateway."
       },
       "AppListResponse": {
         "type": "object",
@@ -5651,6 +5660,204 @@
           },
           "404": {
             "description": "The app does not exist, or identifies no end users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/jobs/{job}/status": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "operationId": "getJobStatus",
+        "summary": "Get a job's status",
+        "description": "The provider's own status answer for a job submitted through the gateway, such as a fal queue job. Its polling links point at the gateway, and its request id is the gateway's job id. Polls are free: they use no request limit and no plan allowance.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The job id the gateway returned when the job was submitted."
+            },
+            "required": true,
+            "description": "The job id the gateway returned when the job was submitted.",
+            "name": "job",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider's status answer, passed on with its status code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, the user is blocked, or the app is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist, or no job with this id belongs to this app and user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not be reached, or its connection is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/jobs/{job}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "operationId": "getJobResult",
+        "summary": "Get a job's result",
+        "description": "The provider's own result answer, passed on as it is. A final result settles the job's charge to what the provider billed. Polls are free: they use no request limit and no plan allowance.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The job id the gateway returned when the job was submitted."
+            },
+            "required": true,
+            "description": "The job id the gateway returned when the job was submitted.",
+            "name": "job",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider's result answer, passed on with its status code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, the user is blocked, or the app is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist, or no job with this id belongs to this app and user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not be reached, or its connection is disabled.",
             "content": {
               "application/json": {
                 "schema": {

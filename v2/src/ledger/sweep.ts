@@ -18,6 +18,7 @@ import { log } from "../core/log.ts";
 import { priceUnresolvedCharge } from "./corrections.ts";
 import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
+import { checkJob } from "../jobs/jobs.ts";
 
 /** The sweep's cron: every minute, faster than fal's shortest result window. Also in wrangler.jsonc. */
 export const SWEEP_CRON = "* * * * *";
@@ -62,12 +63,12 @@ const DONE: HandlerResult = { done: true };
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
 
 /**
- * Provider-specific work, by provider type: cost lookups (Deepgram's request
- * record, ElevenLabs' conversation record) and job checks (fal). Each
- * provider's step adds its entry. Work for a provider with no entry waits.
+ * Provider cost lookups, by provider type (Deepgram's request record,
+ * ElevenLabs' conversation record). Each provider's step adds its entry.
+ * Work for a provider with no entry waits. Job checks need no table: one
+ * handler reads every provider's jobs from its description (`../jobs/jobs.ts`).
  */
 export const PROVIDER_LOOKUPS: Record<string, OpenWorkHandler> = {};
-export const JOB_CHECKS: Record<string, OpenWorkHandler> = {};
 
 function byProvider(table: Record<string, OpenWorkHandler>, what: string): OpenWorkHandler {
   return async (env, item, context) => {
@@ -99,7 +100,7 @@ export const OPEN_WORK_HANDLERS: Record<OpenWorkKind, OpenWorkHandler> = {
     return result === "waiting" || result === "not_closed" ? retry(`session ${result}`) : DONE;
   },
   provider_lookup: byProvider(PROVIDER_LOOKUPS, "cost lookup"),
-  job_check: byProvider(JOB_CHECKS, "job check"),
+  job_check: (env, item, context) => checkJob(env, item, context),
 };
 
 export interface SweepSummary {

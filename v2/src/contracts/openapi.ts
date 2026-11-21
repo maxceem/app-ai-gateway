@@ -92,6 +92,7 @@ export function createOpenAPIDocument() {
       { name: "Operations", description: "Unauthenticated service health." },
       { name: "App sign-in", description: "App Attest challenges and keys, and exchanging a client proof for a gateway token." },
       { name: "Application", description: "The signed-in caller's own state." },
+      { name: "Jobs", description: "Polling a job submitted through the gateway, such as a fal queue job. Polls are free." },
       { name: "Admin applications", description: "Apps and their settings." },
       { name: "Admin providers", description: "Provider connections and their keys. A key is write-only: only its hint is ever returned." },
       { name: "Admin app keys", description: "Keys for server apps." },

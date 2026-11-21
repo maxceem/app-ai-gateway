@@ -416,10 +416,28 @@ export interface JobSpec {
   readonly status: JobRequest;
   readonly result: JobRequest;
   readonly cancel?: JobRequest;
-  /** Response fields with provider links. The gateway rewrites them to point at itself. */
-  readonly linkFields?: readonly string[];
+  /** The status answer's field, and its values, that say the job is done and its result can be read. */
+  readonly doneWhen: { readonly field: string; readonly values: readonly string[] };
+  /**
+   * The result call's HTTP statuses that are final: a success (2xx), or a
+   * failure the provider reports its billed units with (fal's 422 with `0`).
+   * Any other status is not final, and the job is checked again later.
+   */
+  readonly finalStatuses: readonly number[];
+  /**
+   * Answer fields with provider links, by what they point at. The gateway
+   * rewrites them to its own polling links; a link it does not serve yet is
+   * removed.
+   */
+  readonly links?: { readonly status?: string; readonly result?: string; readonly cancel?: string };
   /** Response header with the final billed units, read on the result call. */
   readonly unitsHeader?: string;
+  /**
+   * The result field with the job's outputs, such as `images`: counted for a
+   * model priced per output whose provider sends no units (T15's
+   * `ltx-video`). An array counts its items; anything else counts one.
+   */
+  readonly outputsField?: string;
 }
 
 export interface JobRequest {

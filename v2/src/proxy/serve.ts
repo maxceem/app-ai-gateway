@@ -65,6 +65,8 @@ import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./header
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
+import { signJobId } from "../jobs/job-id.ts";
+import { gatewayLinks, jobEstimate, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -990,14 +992,20 @@ export async function sendAttempts(
         ...(attempts.length > 1 ? { attempt: attempt.seq } : {}),
         error: errorFacts(error),
       });
-      record(c, attempt, {
-        status: timedOut ? "timeout" : "network_error",
-        httpStatus: null,
-        errorCode: null,
-        usage: null,
-        cut: false,
-        latencyMs: Date.now() - providerStart,
-      });
+      if (prepared.operation.lifecycle === "job") {
+        // A submission whose answer was lost may have been accepted and paid:
+        // it is never sent again, and keeps its estimate (T15).
+        recordLostSubmission(c, prepared, timedOut ? "timeout" : "network_error", Date.now() - providerStart, "no_answer");
+      } else {
+        record(c, attempt, {
+          status: timedOut ? "timeout" : "network_error",
+          httpStatus: null,
+          errorCode: null,
+          usage: null,
+          cut: false,
+          latencyMs: Date.now() - providerStart,
+        });
+      }
       failure = timedOut
         ? new GatewayError(504, "provider_error", "Provider did not respond in time")
         : new GatewayError(502, "provider_error", "Provider request failed");
@@ -1059,8 +1067,12 @@ const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", 
 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
-function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
+function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
+  // A job the provider accepted: its answer carries the gateway's job id, and its estimate is charged.
+  if (operation.lifecycle === "job" && upstream.status >= 200 && upstream.status < 300) {
+    return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader);
+  }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
   // A minted live-session credential is never kept by a cache between the gateway and the app,
   // whatever the provider said: a cache could hand one caller's signed URL to another. A CDN may
@@ -1138,6 +1150,70 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
     ),
   );
   return new Response(stream, { status: upstream.status, headers: responseHeaders });
+}
+
+/**
+ * The answer to a job the provider accepted (plan D9): the provider's own
+ * answer, with its request id replaced by a job id the gateway signs and its
+ * links pointing at the gateway. The job's estimate and its check are
+ * written after the answer is sent. An answer with no request id the gateway
+ * can use is a lost submission: the estimate stays, and the app gets an error.
+ */
+async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Promise<Response> {
+  const { operation, attempt, connection } = prepared;
+  const spec = operation.job!;
+  let body: unknown = null;
+  try {
+    body = await upstream.json();
+  } catch {
+    body = null;
+  }
+  const requestId = providerRequestId(spec, body);
+  if (requestId === null) {
+    recordLostSubmission(c, prepared, "ok", latencyMs, "no_request_id", upstream.status);
+    throw new GatewayError(502, "provider_error", "The provider accepted the job but sent no job id");
+  }
+  const now = Date.now();
+  const jobId = await signJobId(c.env.JWT_SECRET, {
+    job: attempt.requestId,
+    connectionId: connection.id,
+    slug: connection.slug,
+    operation: operation.name,
+    model: attempt.model,
+    requestId,
+    accountId: attempt.accountId,
+    appId: attempt.appId,
+    userId: attempt.identity.userId,
+    issuedAt: now,
+  });
+  const entry = jobEstimate(attempt, operation, { status: "ok", httpStatus: upstream.status, latencyMs, signedId: jobId, now });
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
+  const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
+  const headers = clientResponseHeaders(upstream.headers, keyHeader);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("content-type", "application/json");
+  return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
+}
+
+/**
+ * A job submission whose answer was lost, or came with no request id: the
+ * provider may have accepted and billed it, and the gateway cannot find it
+ * again. It keeps its estimate, marked `estimated`, with nothing to check
+ * later, and is logged. Never sent again.
+ */
+function recordLostSubmission(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  status: "ok" | "timeout" | "network_error",
+  latencyMs: number,
+  reason: "no_answer" | "no_request_id",
+  httpStatus: number | null = null,
+): void {
+  const { attempt, operation } = prepared;
+  log("error", "job_submission_lost", { app: attempt.appId, providerSlug: attempt.providerSlug, model: attempt.model, reason });
+  const entry = jobEstimate(attempt, operation, { status, httpStatus, latencyMs, signedId: null, now: Date.now() });
+  c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
 }
 
 /** Writes the charge of an attempt that ended with no body to read, after the response. */

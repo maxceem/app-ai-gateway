@@ -28,6 +28,7 @@ import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, t
 import { meHandler } from "./routes/me.ts";
 import { presetHandler } from "./proxy/presets.ts";
 import { proxyHandler } from "./proxy/serve.ts";
+import { jobResultHandler, jobStatusHandler } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
@@ -117,6 +118,9 @@ app.all("/v2/mcp", lazyRoutes(() => import("./mcp/app.ts").then((module) => modu
 
 // Provider requests. No deadline of their own: a provider may stream for minutes.
 app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);
+// Job polls: free, and their upstream URL comes from the signed job id (plan D9).
+app.get(routePath("getJobStatus"), jobStatusHandler);
+app.get(routePath("getJobResult"), jobResultHandler);
 app.post("/v2/apps/:app/presets/:slug", presetHandler);
 
 app.notFound(async (c) => {
