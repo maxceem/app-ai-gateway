@@ -8,7 +8,9 @@
  *   without the field name and one space after it, joined with line breaks,
  *   as SSE does. Comments and other fields are never data. A line ends at a
  *   carriage return, a line feed, or both together, even when the two arrive
- *   in different pieces. This is the one SSE parser in the gateway.
+ *   in different pieces. This is the gateway's SSE parser for reading usage
+ *   as a stream goes by; stored conversations split whole, finished streams
+ *   into events with their own small splitter (`../conversations/record.ts`).
  *
  * Every byte is seen once, in order, so the framer always knows where a line
  * and an event start and end: nothing is ever read from the middle of one.

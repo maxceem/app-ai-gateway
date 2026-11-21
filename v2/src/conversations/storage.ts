@@ -12,18 +12,24 @@
  * A folder without an account in its name (written before this layout, on a
  * test deployment only) is never served and never touched.
  *
- * A batch sits under the UTC day of its earliest record, and media under the
- * day of the record that carried it, which is that batch's day or a later one.
- * Every batch holds one UTC day's records only.
+ * A batch sits under the UTC day of its records, every batch holding one UTC
+ * day's records only, and media under the day of the record that carried it,
+ * which is always its batch's day.
  * So a listing by day is a listing by prefix, and retention deletes whole days
  * and never removes media a kept record names.
  */
 
 export const CONVERSATIONS_ROOT = "conversations/";
 
+const DAY_PART = String.raw`\d{4}-\d{2}-\d{2}`;
+const BATCH_PART = String.raw`\d{6}-[a-z0-9]{8,32}\.jsonl\.gz`;
+const MEDIA_PART = String.raw`media\/[0-9a-f]{64}\.[a-z0-9]{1,5}`;
+
 /** A file name relative to its app's folder, as the management API accepts it. */
-export const CONVERSATION_FILE_NAME =
-  /^\d{4}-\d{2}-\d{2}\/(?:\d{6}-[a-z0-9]{8,32}\.jsonl\.gz|media\/[0-9a-f]{64}\.[a-z0-9]{1,5})$/;
+export const CONVERSATION_FILE_NAME = new RegExp(`^${DAY_PART}\\/(?:${BATCH_PART}|${MEDIA_PART})$`);
+
+/** A batch of records among those file names (`CONVERSATION_FILE_NAME`), as a listing shows them. */
+export const CONVERSATION_BATCH_NAME = new RegExp(`^${DAY_PART}\\/${BATCH_PART}$`);
 
 /** Separates the account from the app in a folder name; neither id can hold it. */
 const ACCOUNT_APP_SEPARATOR = "~";

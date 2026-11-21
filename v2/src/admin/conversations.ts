@@ -10,13 +10,11 @@ import type { Context } from "hono";
 import { ConversationFileQuerySchema, ConversationListQuerySchema } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
-import { appPrefix, CONVERSATION_FILE_NAME, conversationsBucket } from "../conversations/storage.ts";
+import { appPrefix, CONVERSATION_BATCH_NAME, CONVERSATION_FILE_NAME, conversationsBucket } from "../conversations/storage.ts";
 import { requireAdminRole, type AdminVariables } from "./actor.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
-/** A batch's name within its app: `YYYY-MM-DD/HHMMSS-<batch>.jsonl.gz`. */
-const BATCH_NAME = /^\d{4}-\d{2}-\d{2}\/\d{6}-[a-z0-9]{8,32}\.jsonl\.gz$/u;
 const LIST_PAGE = 1000;
 
 /** The app, if it is the caller's account's: stored conversations are reached through it only. */
@@ -66,7 +64,7 @@ export async function listAppConversations(c: AdminContext): Promise<Response> {
       complete = true;
       break;
     }
-    if (!BATCH_NAME.test(name)) continue;
+    if (!CONVERSATION_BATCH_NAME.test(name)) continue;
     const records = Number(object.customMetadata?.records);
     files.push({ name, size: object.size, records: Number.isInteger(records) ? records : null, uploaded_at: object.uploaded.toISOString() });
   }
