@@ -579,6 +579,18 @@ describe("conversation records", () => {
     }
   });
 
+  it("stores a declared newline-delimited answer's JSON error as one document (Sol round 7)", async () => {
+    const error = JSON.stringify({ detail: { status: "invalid_voice", message: "Voice not found" } }, null, 2);
+    const record = await conversationRecord(capture({
+      status: "provider_error",
+      httpStatus: 422,
+      responseJsonLines: true,
+      response: { contentType: "application/json", bytes: encoder.encode(error), totalBytes: error.length, aborted: false },
+    }));
+    expect(record.line).not.toContain("agw-omitted:unreadable");
+    expect(JSON.parse(record.line).response.value).toEqual({ detail: { status: "invalid_voice", message: "Voice not found" } });
+  });
+
   it("reads a declared newline-delimited answer by line even when labelled text/plain (Sol round 5)", async () => {
     const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
     const lines = [JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }), '{"audio_base64":"SUQz'].join("\n");

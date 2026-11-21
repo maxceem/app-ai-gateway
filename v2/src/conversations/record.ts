@@ -478,7 +478,11 @@ export async function conversationRecord(
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
   let request = await storedBody(capture.request, shelf, capture.keep, undefined, capture.rawAudioRequest === true, capture.audioFormFields ?? []);
-  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], capture.responseJsonLines === true);
+  // A declared newline-delimited answer is read by line only when it
+  // succeeded: an error (a 422 with a pretty-printed `detail`) is one JSON
+  // document, whatever the operation declares for its answers.
+  const jsonLines = capture.responseJsonLines === true && capture.status === "ok";
+  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], jsonLines);
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,
