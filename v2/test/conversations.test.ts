@@ -761,6 +761,21 @@ describe("turning conversation storage on", () => {
     expect(edit.response.status).toBe(400);
   });
 
+  it("refuses a reserved app that stores conversations where this deployment cannot (Sol round 2)", async () => {
+    const withoutBucket = new Proxy(env, {
+      get: (target, property, receiver) => (property === "CONVERSATIONS" ? undefined : Reflect.get(target, property, receiver)),
+    });
+    const key = await seedManagementKey();
+    const config = { authentication: { type: "api_key", end_user: { source: "none" } }, conversations: { store: true } };
+    const reserved = await call("/v2/admin/reserved/apps", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "agent app", config }),
+    }, withoutBucket);
+    expect(reserved.response.status).toBe(400);
+    expect(JSON.parse(reserved.text)).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
   it("needs a plan that includes it; with no list, a plan includes everything", () => {
     const plan = (limits: unknown) => ({ state: "billed" as const, plan: { planKey: "p", planName: "P", isDefault: false, limits }, subscription: null });
     expect(planIncludes({ state: "self_hosted" }, "conversationStorage")).toBe(true);

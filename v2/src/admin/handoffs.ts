@@ -50,7 +50,7 @@ import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
-import { appRow, checkAppConfig, checkNewConnection, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { appRow, checkAppConfig, checkConversations, checkNewConnection, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkDestination,
@@ -635,6 +635,8 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
     // A key needs a page to be revealed on, checked before anything is written.
     if (apiKeyApp) consoleAt(c.env);
     await checkAppConfig(c.env.DB, actor.accountId, request.config);
+    // As `createApp`: storage needs this deployment's bucket and a plan that includes it.
+    await checkConversations(c.env, actor.accountId, payload.config, null);
     // The first key is not counted against the key ceiling, as v1, except
     // when the plan allows no keys at all.
     if (apiKeyApp && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {
