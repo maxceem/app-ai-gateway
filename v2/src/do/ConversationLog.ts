@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { conversationRecord, type ConversationCapture } from "../conversations/record.ts";
-import { appPrefix, batchKey, conversationsBucket } from "../conversations/storage.ts";
+import { appPrefix, batchKey, conversationsBucket, recordDay } from "../conversations/storage.ts";
 
 /** How long a record waits for its batch to fill before it is written anyway. */
 export const FLUSH_INTERVAL_MS = 5 * 60_000;
@@ -24,6 +24,10 @@ export const MAX_BATCH_CHARS = 16 * 1024 * 1024;
  * stored too. A batch is named before it is written and that name is kept
  * until its rows are gone, so a write retried after a crash overwrites the
  * same file instead of adding a second copy of the same records.
+ *
+ * A batch holds the records of one UTC day only, the day of the folder it is
+ * written under. So retention, which deletes whole days, never deletes a record
+ * still inside its window, and a day's listing names every record of that day.
  */
 export class ConversationLog extends DurableObject<Env> {
   private flushing: Promise<void> | null = null;
@@ -42,6 +46,9 @@ export class ConversationLog extends DurableObject<Env> {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           key TEXT NOT NULL,
           last_id INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS batch_row (
+          pending_id INTEGER PRIMARY KEY
         );
       `);
     });
@@ -103,6 +110,35 @@ export class ConversationLog extends DurableObject<Env> {
     }
   }
 
+  /**
+   * The rows of the next batch: the earliest UTC day's records, in arrival
+   * order, up to `MAX_BATCH_CHARS`. Null where nothing is pending.
+   */
+  private nextBatch(): { ids: number[]; earliest: string; appId: string } | null {
+    const rows = this.ctx.storage.sql
+      .exec<{ id: number; app_id: string; created_at: string; chars: number }>(
+        "SELECT id, app_id, created_at, LENGTH(line) AS chars FROM pending ORDER BY id",
+      )
+      .toArray();
+    if (rows.length === 0) return null;
+    let day: string | null = null;
+    for (const row of rows) {
+      const own = recordDay(row.created_at);
+      if (day === null || own < day) day = own;
+    }
+    const ids: number[] = [];
+    let chars = 0;
+    let earliest: string | null = null;
+    for (const row of rows) {
+      if (recordDay(row.created_at) !== day) continue;
+      if (ids.length > 0 && chars + row.chars > MAX_BATCH_CHARS) break;
+      ids.push(row.id);
+      chars += row.chars;
+      if (earliest === null || new Date(row.created_at).getTime() < new Date(earliest).getTime()) earliest = row.created_at;
+    }
+    return { ids, earliest: earliest!, appId: rows[0]!.app_id };
+  }
+
   /** Writes the next batch, if there is one, and answers whether it wrote. */
   private async writeBatch(): Promise<boolean> {
     const bucket = conversationsBucket(this.env);
@@ -110,33 +146,23 @@ export class ConversationLog extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     let batch = sql.exec<{ key: string; last_id: number }>("SELECT key, last_id FROM batch WHERE id = 1").toArray()[0];
     if (batch === undefined) {
-      const first = sql
-        .exec<{ id: number; app_id: string; created_at: string }>(
-          "SELECT id, app_id, created_at FROM pending ORDER BY id LIMIT 1",
-        )
-        .toArray()[0];
-      if (first === undefined) return false;
-      const bounded = sql
-        .exec<{ id: number }>(
-          `SELECT id FROM (
-             SELECT id, SUM(LENGTH(line)) OVER (ORDER BY id) AS running FROM pending
-           ) WHERE running <= ? ORDER BY id DESC LIMIT 1`,
-          MAX_BATCH_CHARS,
-        )
-        .toArray()[0];
-      const lastId = bounded?.id ?? first.id;
-      // Named from its earliest record, not its first to arrive: a request that
-      // started before midnight can finish after one that started later, and a
-      // batch must never sit under a day later than its records' media.
-      const earliest = sql
-        .exec<{ created_at: string }>("SELECT MIN(created_at) AS created_at FROM pending WHERE id <= ?", lastId)
-        .toArray()[0]!;
+      const next = this.nextBatch();
+      if (next === null) return false;
       const batchId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-      batch = { key: batchKey(first.app_id, earliest.created_at, batchId), last_id: lastId };
-      sql.exec("INSERT INTO batch (id, key, last_id) VALUES (1, ?, ?)", batch.key, batch.last_id);
+      // Named from its earliest record: every record in it shares that record's UTC day.
+      batch = { key: batchKey(next.appId, next.earliest, batchId), last_id: Math.max(...next.ids) };
+      const named = batch;
+      this.ctx.storage.transactionSync(() => {
+        sql.exec("INSERT INTO batch (id, key, last_id) VALUES (1, ?, ?)", named.key, named.last_id);
+        for (const id of next.ids) sql.exec("INSERT INTO batch_row (pending_id) VALUES (?)", id);
+      });
     }
+    // A batch named before batch rows were kept (an older version's) is every row up to its last id.
+    const listed = sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM batch_row").one().count > 0;
+    const chosen = listed ? "id IN (SELECT pending_id FROM batch_row)" : "id <= ?";
+    const bindings = listed ? [] : [batch.last_id];
     const lines = sql
-      .exec<{ line: string }>("SELECT line FROM pending WHERE id <= ? ORDER BY id", batch.last_id)
+      .exec<{ line: string }>(`SELECT line FROM pending WHERE ${chosen} ORDER BY id`, ...bindings)
       .toArray()
       .map((row) => row.line);
     if (lines.length > 0) {
@@ -148,9 +174,9 @@ export class ConversationLog extends DurableObject<Env> {
         customMetadata: { records: String(lines.length) },
       });
     }
-    const lastId = batch.last_id;
     this.ctx.storage.transactionSync(() => {
-      sql.exec("DELETE FROM pending WHERE id <= ?", lastId);
+      sql.exec(`DELETE FROM pending WHERE ${chosen}`, ...bindings);
+      sql.exec("DELETE FROM batch_row");
       sql.exec("DELETE FROM batch");
     });
     return true;

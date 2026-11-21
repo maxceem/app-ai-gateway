@@ -4,16 +4,22 @@
  * deleted, with the media inside it. An app that no longer exists keeps
  * nothing.
  *
- * Batches and media sit under days, so retention deletes whole days and never
- * opens a file. Each R2 call is counted against the run's allowance, and a run
- * that runs out stops where it is. The next run starts after the last app this
- * one finished, recorded in one small object, so a long list of apps is worked
- * through in turn rather than its first few every time.
+ * Batches and media sit under days, so retention deletes whole days. A batch
+ * holds one day's records (`../do/ConversationLog.ts`), but one written by an
+ * older version, or copied from v1, may run past midnight: before the newest
+ * day it deletes, retention opens that day's batches and writes again, under
+ * their own day, the records still inside the window. Each R2 call is counted
+ * against the run's allowance, and a run that runs out stops where it is.
+ *
+ * App folders are listed a page at a time, starting after the last app the
+ * previous run finished (kept in one small object), so a run always makes
+ * progress, however many apps there are, and a long list is worked through in
+ * turn rather than its first few every time.
  *
  * Runs once a day, from the hourly cron (`../index.ts`).
  */
 import { CONVERSATION_RETENTION_DAYS } from "../contracts/app-config.ts";
-import { appPrefix, CONVERSATIONS_ROOT, dayBefore } from "./storage.ts";
+import { appPrefix, batchKey, CONVERSATIONS_ROOT, dayBefore, recordDay } from "./storage.ts";
 
 const DAY_FOLDER = /^(\d{4}-\d{2}-\d{2})\/$/;
 const R2_PAGE = 1000;
@@ -95,11 +101,66 @@ async function folders(bucket: R2Bucket, prefix: string, budget: CallBudget): Pr
   return found;
 }
 
+/**
+ * Writes again, under their own day, the records of `folder`'s batches whose
+ * day is `firstKept` or later, before the folder is deleted. A batch that holds
+ * one day only is left as it is.
+ */
+async function keepLaterRecords(bucket: R2Bucket, appId: string, folder: string, firstKept: string, budget: CallBudget): Promise<void> {
+  budget.charge(1);
+  const listing = await bucket.list({ prefix: folder, limit: R2_PAGE });
+  for (const object of listing.objects) {
+    if (!object.key.endsWith(".jsonl.gz")) continue;
+    budget.charge(1);
+    const stored = await bucket.get(object.key);
+    if (stored === null) continue;
+    let text: string;
+    try {
+      text = await new Response(stored.body.pipeThrough(new DecompressionStream("gzip"))).text();
+    } catch {
+      // A batch it cannot read has no records it could keep: it goes with its day.
+      continue;
+    }
+    const later = new Map<string, { lines: string[]; earliest: string }>();
+    for (const line of text.split("\n")) {
+      if (line === "") continue;
+      let createdAt: unknown;
+      try {
+        createdAt = (JSON.parse(line) as { created_at?: unknown }).created_at;
+      } catch {
+        continue;
+      }
+      if (typeof createdAt !== "string") continue;
+      const day = recordDay(createdAt);
+      if (day < firstKept) continue;
+      const group = later.get(day) ?? { lines: [], earliest: createdAt };
+      group.lines.push(line);
+      if (new Date(createdAt).getTime() < new Date(group.earliest).getTime()) group.earliest = createdAt;
+      later.set(day, group);
+    }
+    for (const group of later.values()) {
+      // Named from the batch it came from, so a run retried after a crash writes the same file again.
+      const source = object.key.slice(object.key.lastIndexOf("-") + 1, -".jsonl.gz".length).toLowerCase().replace(/[^a-z0-9]/g, "");
+      const batchId = `${source.slice(0, 24)}split`.padStart(8, "0");
+      const gzipped = await new Response(
+        new Blob([`${group.lines.join("\n")}\n`]).stream().pipeThrough(new CompressionStream("gzip")),
+      ).arrayBuffer();
+      budget.charge(1);
+      await bucket.put(batchKey(appId, group.earliest, batchId), gzipped, {
+        httpMetadata: { contentType: "application/gzip" },
+        customMetadata: { records: String(group.lines.length) },
+      });
+    }
+  }
+}
+
 export async function runConversationRetention(
   bucket: R2Bucket,
   db: D1Database,
   now: number,
   budget: CallBudget = new CallBudget(RETENTION_CALLS),
+  /** App folders listed per R2 call: R2's most, except in tests. */
+  pageSize: number = R2_PAGE,
 ): Promise<ConversationRetentionResult> {
   const result: ConversationRetentionResult = { deletedObjects: 0, removedApps: 0 };
   let finished: string | null = null;
@@ -111,26 +172,55 @@ export async function runConversationRetention(
     // The cursor is written with the one call kept back for it.
     const work = new CallBudget(Math.max(0, budget.remaining - 1));
     try {
-      const apps = await folders(bucket, CONVERSATIONS_ROOT, work);
-      // Starting after the app the last run finished, and coming round to it.
-      const ordered = last === null ? apps : [...apps.filter((app) => app > last!), ...apps.filter((app) => app <= last!)];
-      for (const folder of ordered) {
-        const appId = folder.slice(CONVERSATIONS_ROOT.length, -1);
-        const days = retention.get(appId);
-        if (days === undefined) {
-          result.deletedObjects += await deleteAll(bucket, folder, work);
-          result.removedApps += 1;
-        } else {
-          const prefix = appPrefix(appId);
-          const firstKept = dayBefore(now, days);
-          for (const day of await folders(bucket, prefix, work)) {
-            const match = DAY_FOLDER.exec(day.slice(prefix.length));
-            // Day folders sort oldest first, so the first one kept ends the app.
-            if (match === null || match[1]! >= firstKept) break;
-            result.deletedObjects += await deleteAll(bucket, day, work);
+      // A page at a time, starting after the app the last run finished, and coming round to it.
+      let cursor: string | undefined;
+      let wrapped = last === null;
+      for (;;) {
+        work.charge(1);
+        const page = await bucket.list({
+          prefix: CONVERSATIONS_ROOT,
+          delimiter: "/",
+          limit: pageSize,
+          ...(cursor !== undefined ? { cursor } : !wrapped && last !== null ? { startAfter: last } : {}),
+        });
+        let round = false;
+        for (const folder of page.delimitedPrefixes) {
+          if (wrapped && last !== null && folder > last) {
+            round = true;
+            break;
           }
+          // `startAfter` names the folder, whose own keys sort after it: it comes back first.
+          if (!wrapped && last !== null && folder <= last) continue;
+          const appId = folder.slice(CONVERSATIONS_ROOT.length, -1);
+          const days = retention.get(appId);
+          if (days === undefined) {
+            result.deletedObjects += await deleteAll(bucket, folder, work);
+            result.removedApps += 1;
+          } else {
+            const prefix = appPrefix(appId);
+            const firstKept = dayBefore(now, days);
+            const expired: string[] = [];
+            for (const day of await folders(bucket, prefix, work)) {
+              const match = DAY_FOLDER.exec(day.slice(prefix.length));
+              // Day folders sort oldest first, so the first one kept ends the app.
+              if (match === null || match[1]! >= firstKept) break;
+              expired.push(day);
+            }
+            const newest = expired.at(-1);
+            if (newest !== undefined) await keepLaterRecords(bucket, appId, newest, firstKept, work);
+            for (const day of expired) result.deletedObjects += await deleteAll(bucket, day, work);
+          }
+          finished = folder;
         }
-        finished = folder;
+        if (round) break;
+        if (page.truncated) {
+          cursor = page.cursor;
+        } else if (!wrapped) {
+          wrapped = true;
+          cursor = undefined;
+        } else {
+          break;
+        }
       }
     } finally {
       // What the work spent is the run's too (never more than it was given).

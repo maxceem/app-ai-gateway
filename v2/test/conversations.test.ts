@@ -428,14 +428,21 @@ describe("ConversationLog", () => {
     );
     expect((await storedRecords(appId)).map((record) => record.event_id)).toEqual(["event-1", "event-2"]);
 
-    // A batch is named from its earliest record, whatever order they arrived in.
+    // A batch holds one UTC day's records, named from the earliest, whatever order they arrived in (Sol round 1).
     const late = `log-${crypto.randomUUID().slice(0, 8)}`;
     const lateLog = env.CONVERSATION_LOG.getByName(late);
-    await lateLog.append(capture({ appId: late, createdAt: "2026-11-02T00:00:01.000Z" }));
-    await lateLog.append(capture({ appId: late, createdAt: "2026-11-01T23:59:59.000Z" }));
+    await lateLog.append(capture({ appId: late, eventId: "after", createdAt: "2026-11-02T00:00:01.000Z" }));
+    await lateLog.append(capture({ appId: late, eventId: "before", createdAt: "2026-11-01T23:59:59.000Z" }));
+    await lateLog.append(capture({ appId: late, eventId: "earlier", createdAt: "2026-11-01T23:58:00.000Z" }));
     await lateLog.flush();
-    const lateKeys = (await bucket().list({ prefix: `conversations/${late}/` })).objects.map((object) => object.key);
-    expect(lateKeys).toEqual([expect.stringMatching(new RegExp(`^conversations/${late}/2026-11-01/235959-`))]);
+    const lateKeys = (await bucket().list({ prefix: `conversations/${late}/` })).objects.map((object) => object.key).sort();
+    expect(lateKeys).toEqual([
+      expect.stringMatching(new RegExp(`^conversations/${late}/2026-11-01/235800-`)),
+      expect.stringMatching(new RegExp(`^conversations/${late}/2026-11-02/000001-`)),
+    ]);
+    const byKey = async (key: string) => (await gunzip(await (await bucket().get(key))!.arrayBuffer())).split("\n").filter(Boolean).map((line) => JSON.parse(line).event_id);
+    expect(await byKey(lateKeys[0]!)).toEqual(["before", "earlier"]);
+    expect(await byKey(lateKeys[1]!)).toEqual(["after"]);
 
     // Nothing pending writes nothing.
     await log.flush();
@@ -775,6 +782,44 @@ describe("conversation retention", () => {
     expect(left).toContain(`conversations/${appId}/${today}/000000-bbbbbbbb.jsonl.gz`);
     expect(left).not.toContain(`conversations/${appId}/2020-01-01/000000-aaaaaaaa.jsonl.gz`);
     expect(left.some((key) => key.startsWith("conversations/conversation-deleted-app/"))).toBe(false);
+  });
+
+  it("keeps a record past midnight that an old batch named for the day before holds (Sol round 1)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    // Written by an older version, or copied from v1: one batch for both sides of midnight.
+    const mixed = [
+      JSON.stringify({ v: 1, event_id: "before-midnight", created_at: "2026-11-20T23:59:00.000Z" }),
+      JSON.stringify({ v: 1, event_id: "after-midnight", created_at: "2026-11-21T00:01:00.000Z" }),
+    ].join("\n") + "\n";
+    const gzipped = await new Response(new Blob([mixed]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+    await store.put(`conversations/${appId}/2026-11-20/235900-abcdef0123456789.jsonl.gz`, gzipped);
+
+    await runConversationRetention(store, env.DB, now, new CallBudget(500));
+    const keys = (await store.list({ prefix: `conversations/${appId}/` })).objects.map((object) => object.key);
+    expect(keys.some((key) => key.includes("/2026-11-20/"))).toBe(false);
+    const kept = keys.filter((key) => key.includes("/2026-11-21/"));
+    expect(kept).toHaveLength(1);
+    const lines = (await gunzip(await (await store.get(kept[0]!))!.arrayBuffer())).split("\n").filter(Boolean);
+    expect(lines.map((line) => JSON.parse(line).event_id)).toEqual(["after-midnight"]);
+  });
+
+  it("works through more app folders than one run can list, a page at a time (Sol round 1)", async () => {
+    const store = bucket();
+    // Leave only these folders, so the run's pages are predictable.
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const apps = ["page-a", "page-b", "page-c", "page-d", "page-e", "page-f"];
+    for (const app of apps) await store.put(`conversations/${app}/2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
+    const left = async () => (await store.list({ prefix: "conversations/page-" })).objects.length;
+    // One page of two folders per list: each run reads the cursor, lists a page, deletes two apps, then saves where it stopped.
+    let runs = 0;
+    while ((await left()) > 0 && runs < 10) {
+      await runConversationRetention(store, env.DB, Date.now(), new CallBudget(7), 2);
+      runs += 1;
+    }
+    expect(await left()).toBe(0);
+    expect(runs).toBeGreaterThan(1);
   });
 
   it("stops when the run's allowance runs out", async () => {
