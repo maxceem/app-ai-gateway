@@ -18,7 +18,7 @@ import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
-import { useCreateProvider, useDeleteProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
+import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -1117,18 +1117,38 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
  */
 function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
+  const fresh = useFreshProvider();
   // The version the draft was made from: it is saved at that revision, never at a newer one the list
   // loaded since, so another admin's change is never quietly overwritten.
   const [revision, setRevision] = useState(provider?.revision ?? 0);
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
   const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const parsed = parsePricesText(text);
 
-  /** Starts again from the provider as it is now, dropping the draft. */
-  const reload = () => {
-    setRevision(provider?.revision ?? 0);
-    setText(pricesText(provider?.pricing ?? null));
-    setConflict(false);
+  /**
+   * Starts again from the provider as the server has it now, read fresh, not
+   * from a list that may still be the old one. The draft is dropped only once
+   * that read succeeds; if it fails, the draft and the conflict notice stay.
+   */
+  const reload = async () => {
+    if (!provider) return;
+    setReloading(true);
+    try {
+      const latest = await fresh(provider.id);
+      if (latest === null) {
+        toast.error("This provider was deleted");
+        onClose();
+        return;
+      }
+      setRevision(latest.revision);
+      setText(pricesText(latest.pricing));
+      setConflict(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reload the prices");
+    } finally {
+      setReloading(false);
+    }
   };
 
   const submit = async () => {
@@ -1164,7 +1184,7 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
           <AlertTitle>These prices changed since you opened them</AlertTitle>
           <AlertDescription>
             <p>Someone else saved this provider. Reload to see their prices, then make your change again.</p>
-            <Button type="button" variant="outline" size="sm" onClick={reload}>
+            <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={() => void reload()}>
               Reload prices
             </Button>
           </AlertDescription>

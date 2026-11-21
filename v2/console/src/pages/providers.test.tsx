@@ -418,6 +418,72 @@ describe("PricesDialog after a conflict", () => {
   });
 });
 
+describe("PricesDialog reload after a conflict", () => {
+  const opened = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+  const changed = { ...opened, revision: 4, pricing: { "fal-ai/old": { per_unit: 0.01 }, "fal-ai/theirs": { per_request: 0.05 } } };
+
+  /** Opens the dialog, types a draft and saves it into a 409. */
+  async function intoConflict() {
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/mine": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    expect(await screen.findByText(/these prices changed since you opened them/i)).toBeTruthy();
+  }
+
+  it("waits for the fresh list before it drops the draft, even when clicked while the list still loads", async () => {
+    let lists = 0;
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        // The refresh after the conflict is held until the test lets it go.
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return new Response(JSON.stringify({ providers: [changed] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    // Still loading: the draft stays and saving stays held back.
+    const box = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    expect(box.value).toContain("fal-ai/mine");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    release!();
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs"));
+    expect(screen.queryByText(/these prices changed since you opened them/i)).toBeNull();
+  });
+
+  it("keeps the draft and the notice when the fresh read fails", async () => {
+    let lists = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        return new Response(JSON.stringify({ error: { code: "unavailable", message: "down" } }), { status: 503 });
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    await waitFor(() => expect(lists).toBeGreaterThan(2));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/mine");
+    expect(screen.getByText(/these prices changed since you opened them/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe("safe defaults on listed paths", () => {
   const EXPIRY = { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: 60 } };
 

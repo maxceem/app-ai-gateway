@@ -326,8 +326,6 @@ function falQueueFollowUp(request: Request, url: URL): Response | null {
   if (request.method === "PUT" && FAL_QUEUE_CANCEL.test(url.pathname)) return Response.json({ status: "CANCELLATION_REQUESTED" }, { status: 202 });
   if (request.method !== "GET") return null;
   const status = FAL_QUEUE_STATUS.exec(url.pathname);
-  // A job the smoke check cancels while queued is still queued when the gateway asks, just before its cancel.
-  if (status !== null && /-c-/u.test(status[1]!)) return Response.json({ status: "IN_QUEUE", request_id: status[1], queue_position: 0 });
   if (status !== null) return Response.json({ status: "COMPLETED", request_id: status[1], response_url: `https://queue.fal.run${url.pathname.replace(/^\/queue/u, "").replace(/\/status$/u, "")}` });
   const result = FAL_QUEUE_RESULT.exec(url.pathname);
   if (result === null) return null;

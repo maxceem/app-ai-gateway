@@ -53,9 +53,11 @@ shows the same.
 
 - **A job cancelled while it is still queued** costs nothing. Its charge is
   corrected to zero once the provider confirms the cancel.
-- **A job that is already running** usually finishes anyway, and is charged
-  in full. fal's own docs say a running job may still complete after a
-  cancel.
+- **A job that is already running** is charged in full, by the units the
+  provider billed. fal's own docs say a running job may still complete after
+  a cancel.
+- Both hold whether you cancel through the gateway or at the provider
+  directly: the charge follows the provider's final answer.
 
 ## How long results stay readable
 

@@ -696,7 +696,7 @@ function JobsTab({ app }: { app: App }) {
       <p className="text-sm text-muted-foreground">
         Jobs the app submitted, such as image and video jobs, newest first. Each is charged an estimate when it is submitted, and corrected to what
         the provider billed once its result is read. A job cancelled while it was still queued costs nothing; one that was already running is
-        usually charged in full.
+        charged in full, by the units the provider billed. Both hold whether it was cancelled here or at the provider.
       </p>
       <Card className="overflow-hidden py-0">
         <Table>

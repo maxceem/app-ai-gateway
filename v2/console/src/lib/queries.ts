@@ -263,6 +263,19 @@ export function useProviders() {
 }
 
 /**
+ * Reads one connection fresh from the server, not from the cached list, and
+ * stores the new list. For a dialog that must restart from the server's own
+ * latest version, such as after a conflict. Throws when the read fails.
+ */
+export function useFreshProvider() {
+  const client = useQueryClient();
+  return async (id: string) => {
+    const list = await client.fetchQuery({ queryKey: keys.providers, queryFn: () => call("listProviders"), staleTime: 0 });
+    return list.providers.find((provider) => provider.id === id) ?? null;
+  };
+}
+
+/**
  * A connection's change can make an app ready or not, so every app's check
  * is refreshed with the list. A refused update is refreshed too, so a retry
  * after someone else's change uses the new revision.
