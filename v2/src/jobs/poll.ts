@@ -20,7 +20,7 @@ import { connectionDescription, loadConnection } from "../providers/connections.
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, readResultFacts, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobStatusQuery, readResultFacts, withGatewayLinks } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -75,7 +75,9 @@ export function jobPollHandler(which: "status" | "result") {
         if (context.connection.status === "disabled") {
           throw new GatewayError(502, "provider_disabled", `Provider connection ${claims.slug} is disabled`);
         }
-        const { response, keyHeader } = await fetchJob(c.env, context, which, claims, caller.identity.userId);
+        // Only the query fields the operation lists go upstream, and only on a status poll.
+        const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
+        const { response, keyHeader } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         headers.delete("content-length");
         headers.delete("content-encoding");
@@ -93,8 +95,8 @@ export function jobPollHandler(which: "status" | "result") {
             c.executionCtx.waitUntil(
               (async () => {
                 const read = copy === null ? null : await boundedJson(copy);
-                // The units header is applied even when the copy breaks; a figure that still
-                // needs the body is left to the job's check, which the sweep reads again.
+                // The units header is applied even when the copy breaks. Whether the body is
+                // still needed is decided with the estimate's rate; the job's check stays open.
                 const facts = readResultFacts(context.spec, response, read);
                 if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
               })(),

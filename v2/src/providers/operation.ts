@@ -433,6 +433,11 @@ export interface JobSpec {
   /** Response header with the final billed units, read on the result call. */
   readonly unitsHeader?: string;
   /**
+   * Query fields a client's status poll may pass on to the provider, such as
+   * fal's `logs`. Every other query field is dropped. Default: none.
+   */
+  readonly statusQuery?: readonly string[];
+  /**
    * The result field with the job's outputs, such as `images`: counted for a
    * model priced per output whose provider sends no units (T15's
    * `ltx-video`). An array counts its items; anything else counts one.

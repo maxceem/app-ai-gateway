@@ -693,10 +693,10 @@ describe("a figure is its own row, written once and never changed (review fixes,
   it("keeps the estimate when no usable figure ever arrives, and saves nothing for a result with no count", async () => {
     const { appId, job, ref } = await fresh();
     await writeToLedger(env.DB, [estimateOf(appId, job)]);
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("no_count");
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
     expect(await openWork(appId)).toEqual([]);
     // A count the estimate's rate cannot use: the estimate stays, and the row is not kept.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_000)).toBe("estimate_kept");
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
     expect(await openWork(appId)).toEqual([]);
@@ -707,7 +707,8 @@ describe("a figure is its own row, written once and never changed (review fixes,
     expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_100)).toBe("done");
     await writeToLedger(env.DB, [estimateOf(appId, job)]);
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_200)).toBe("done");
+    // The rate bills units: this result cannot settle it, and leaves the saved 4 alone.
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_200)).toBe("estimate_kept");
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
     expect(await openWork(appId)).toEqual([]);
@@ -851,6 +852,63 @@ describe("a figure is its own row, written once and never changed (review fixes,
 
   it("keeps two user ids apart that encode to the same bytes", async () => {
     expect(await userDigest("a\uD800")).not.toBe(await userDigest("a�"));
+  });
+
+  // Review fixes, round 7: the decision is made with the estimate's rate.
+  type Case = readonly [name: string, facts: { status: number; units: number | null; outputs: number | null; unread?: true }, outcome: string];
+  const PER_UNIT_CASES: readonly Case[] = [
+    ["200, header, whole body", { status: 200, units: 4, outputs: 2 }, "done"],
+    ["200, header, body unread", { status: 200, units: 4, outputs: null, unread: true }, "done"],
+    ["200, no header, whole body", { status: 200, units: null, outputs: 2 }, "estimate_kept"],
+    ["200, no header, body unread", { status: 200, units: null, outputs: null, unread: true }, "estimate_kept"],
+    ["200, no header, no outputs", { status: 200, units: null, outputs: null }, "estimate_kept"],
+    ["422, header 0, body unread", { status: 422, units: 0, outputs: null, unread: true }, "done"],
+    ["422, no header, body unread", { status: 422, units: null, outputs: null, unread: true }, "estimate_kept"],
+    ["422, no header, whole body", { status: 422, units: null, outputs: null }, "estimate_kept"],
+  ];
+  const PER_IMAGE_CASES: readonly Case[] = [
+    ["200, header, whole body", { status: 200, units: 4, outputs: 2 }, "done"],
+    ["200, header, body unread", { status: 200, units: 4, outputs: null, unread: true }, "retry"],
+    ["200, no header, whole body", { status: 200, units: null, outputs: 3 }, "done"],
+    ["200, no header, body unread", { status: 200, units: null, outputs: null, unread: true }, "retry"],
+    ["200, no header, no outputs", { status: 200, units: null, outputs: null }, "estimate_kept"],
+    ["422, header 0, body unread", { status: 422, units: 0, outputs: null, unread: true }, "done"],
+    ["422, no header, body unread", { status: 422, units: null, outputs: null, unread: true }, "estimate_kept"],
+    ["422, no header, whole body", { status: 422, units: null, outputs: null }, "estimate_kept"],
+  ];
+
+  /** The 2-unit estimate, or the same job billed per image (2 images at $0.01). */
+  function estimateWith(appId: string, job: string, perImage: boolean) {
+    const entry = estimateOf(appId, job);
+    if (!perImage) return entry;
+    return { ...entry, charge: { ...entry.charge, rates: { per_image: 10_000_000 }, unit: "images", costNano: 20_000_000 } as unknown as ChargeRow };
+  }
+
+  for (const [rate, cases] of [["per unit", PER_UNIT_CASES], ["per image", PER_IMAGE_CASES]] as const) {
+    it(`decides every result with the estimate's rate (${rate}): settle, read again, or keep the estimate`, async () => {
+      for (const [name, facts, outcome] of cases) {
+        const { appId, job, ref } = await fresh();
+        await writeToLedger(env.DB, [estimateWith(appId, job, rate === "per image")]);
+        expect(await applyFinalResult(env, ref, facts, 3_000), name).toBe(outcome);
+        const kinds = (await charges(appId)).map((row) => row.kind);
+        expect(kinds, name).toEqual(outcome === "done" ? ["estimate", "correction"] : ["estimate"]);
+        // Nothing is kept for later once the rate has decided: settled, or the estimate stays.
+        expect(await openWork(appId), name).toEqual([]);
+      }
+    });
+  }
+
+  it("saves a units header from a broken body while the estimate waits in the store, then settles it at 4", async () => {
+    const { appId, job, ref } = await fresh();
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([estimateOf(appId, job)]);
+    // fal sent 4 billed units, and the body broke: the header alone is kept.
+    expect(await applyFinalResult(env, ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
+    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${job}:200:4:-`]);
+    expect(await runDurableObjectAlarm(store)).toBe(true);
+    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect(await costs(appId)).toEqual(SETTLED_AT_4);
+    expect(await openWork(appId)).toEqual([]);
   });
 });
 
@@ -1237,13 +1295,57 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
   });
 
-  it("never saves a figure whose body is still needed, and settles a broken-body result from the header when the rate is per unit", async () => {
+  it("saves a units header as a figure even when the body broke, and keeps checking while the rate is not known", async () => {
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId: "app_unread" };
-    // Outputs unread on a success, no units: nothing to settle or save; read again.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
-    // The same with no estimate in the ledger yet: still never saved as a figure.
+    const rows = async () =>
+      (await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ? ORDER BY id").bind(ref.job).all()).results.map((row) => row.id);
+    // No estimate in the ledger yet: a header alone is a usable figure, and the body may still matter.
     expect(await applyFinalResult(env, ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ n: number }>()).toEqual({ n: 0 });
+    expect(await rows()).toEqual([`job_figure:${ref.job}:200:4:-`]);
+    // Nothing usable at all: nothing saved, still read again.
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
+    // A whole result with no count: no rate can ever settle it.
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
+    expect(await rows()).toEqual([`job_figure:${ref.job}:200:4:-`]);
+  });
+
+  it("reads a result again when its body is empty, while the rate needs the outputs (review fixes, round 7)", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    // A success cut off before its first byte, with no units header.
+    falAnswers({ result: () => new Response("", { status: 200, headers: { "content-type": "application/json" } }) });
+    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await openWork(appId)).toHaveLength(1);
+    falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
+    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
+  });
+
+  it("does not read a result again when the rate bills units and no header came (review fixes, round 7)", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    // The price file bills flux/dev per billed unit: a whole body could not help, so the check ends.
+    falAnswers({ result: () => new Response(brokenBody(), { status: 200 }) });
+    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 0 });
+    expect(await openWork(appId)).toEqual([]);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+  });
+
+  it("passes only the fields the operation lists on a status poll's query (review fixes, round 7)", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    fetchSpy.mockClear();
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status?logs=1&webhook=https%3A%2F%2Fevil.test`, key);
+    const statusUrl = new URL(String(fetchSpy.mock.calls[0]![0]));
+    expect(statusUrl.search).toBe("?logs=1");
+    fetchSpy.mockClear();
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}?logs=1`, key);
+    expect(new URL(String(fetchSpy.mock.calls[0]![0])).search).toBe("");
   });
 
   it("applies model rewrites to calls only, never to a queued job (plan D13)", () => {

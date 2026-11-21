@@ -94,6 +94,8 @@ export const fal = defineProvider({
         links: { status: "status_url", result: "response_url", cancel: "cancel_url" },
         unitsHeader: UNITS_HEADER,
         outputsField: "images",
+        // `?logs=1` asks fal for the runner's logs on a status poll.
+        statusQuery: ["logs"],
         // Results go after an hour, large ones after 6 minutes (T15): check every minute, for an hour.
         checkEveryMs: 60_000,
         maxChecks: 60,
