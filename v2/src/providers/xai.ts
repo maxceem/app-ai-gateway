@@ -19,16 +19,11 @@ export const xai = defineProvider({
   // refused paths below: every path on it manages the account.
   otherHosts: ["us.api.x.ai", XAI_MANAGEMENT_HOST],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The key's own details. And, only on the management host, its account
-  // paths: API keys, teams, models and ACLs, management keys (`auth/*`),
-  // audit logs (`audit/*`) and billing (`v1/billing/*`). Elsewhere, such as an
-  // xAI-compatible server, those paths may be ordinary ones.
-  refused: [
-    "v1/api-key/*",
-    { path: "auth/*", hosts: [XAI_MANAGEMENT_HOST] },
-    { path: "audit/*", hosts: [XAI_MANAGEMENT_HOST] },
-    { path: "v1/billing/*", hosts: [XAI_MANAGEMENT_HOST] },
-  ],
+  // The key's own details. And every path on the management host, which
+  // manages the account: API keys, teams, management keys, audit logs and
+  // billing. Elsewhere, such as an xAI-compatible server, its paths may be
+  // ordinary ones.
+  refused: ["v1/api-key/*", { path: "*", hosts: [XAI_MANAGEMENT_HOST] }],
   // Short-lived secrets for live sessions, reached only by a listed path that
   // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
   liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],

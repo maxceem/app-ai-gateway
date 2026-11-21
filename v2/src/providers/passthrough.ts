@@ -224,7 +224,6 @@ function writeField(target: Record<string, unknown>, path: readonly string[], va
 
 function forcedValue(value: LiveTokenValue, now: number): unknown {
   if ("fixed" in value) return value.fixed;
-  if (value.window === "seconds") return LIVE_TOKEN_WINDOW_SECONDS;
   if (value.window === "expires_after") return { ...(value.anchor === true ? { anchor: "created_at" } : {}), seconds: LIVE_TOKEN_WINDOW_SECONDS };
   return new Date(now + LIVE_TOKEN_WINDOW_SECONDS * 1000).toISOString();
 }

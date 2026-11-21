@@ -6,8 +6,10 @@
  *
  * 1. Normalize the path. A path that could mean something else upstream is
  *    refused.
- * 2. The provider's refused paths, ignoring case. These win even over a path
- *    the customer listed. Its live-session token paths (`liveTokens`) are
+ * 2. Refused paths, ignoring case: the provider's own, and those of every
+ *    other provider the request reaches (`./destination.ts`: a base URL on
+ *    its host, or its Cloudflare AI Gateway endpoint). These win even over a
+ *    path the customer listed. Live-session token paths (`liveTokens`) are
  *    refused the same way, except to a listed path that opts in to them
  *    (plan D4).
  * 3. Passthrough paths the customer listed for this connection. They come
@@ -19,6 +21,13 @@
  *
  * Which operations an app allows is decided after this, by the app's settings.
  */
+import {
+  CLOUDFLARE_AI_GATEWAY_HOST,
+  CLOUDFLARE_ENDPOINT_SEGMENTS,
+  CLOUDFLARE_PROVIDERS,
+  cloudflarePrefixOf,
+  hostOwner,
+} from "./destination.ts";
 import type { HttpMethod, LiveTokenPath, OperationDescription, ProviderDescription } from "./operation.ts";
 import {
   fillTemplate,
@@ -177,24 +186,27 @@ export interface UpstreamRoute {
   /**
    * A base URL on Cloudflare AI Gateway's host
    * (`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/openai/`):
-   * Cloudflare reads what follows its provider endpoint as the
-   * `cloudflareGateway` setting does, so that reading is a target too. The
-   * path after the endpoint, and the prefix Cloudflare adds back
-   * (`cloudflarePrefix`'s rule). Absent otherwise.
+   * Cloudflare reads the base URL's path and the request's together, and the
+   * fourth segment names the provider endpoint, wherever the base URL ends.
+   * What follows it is read as the `cloudflareGateway` setting reads it, by
+   * the provider that endpoint reaches (`upstreamTargets`). The connection's
+   * own type, endpoint and prefix are kept here. Absent otherwise.
    */
-  readonly cloudflareBase?: { readonly after: readonly string[]; readonly prefix: readonly string[] };
+  readonly cloudflareBase?: { readonly type: string; readonly slug: string | null; readonly prefix: readonly string[] };
   /**
    * The lower-cased host name of the connection's base URL, when it has one.
    * Refused paths that name hosts (`RefusedPath.hosts`) apply only there.
    */
   readonly baseHost?: string | null;
+  /**
+   * The built-in provider that owns the base URL's host
+   * (`./destination.ts`), when it is not the connection's own: its rules
+   * judge the connection's requests too, since they reach it.
+   */
+  readonly owner?: ProviderDescription;
 }
 
-/** Cloudflare AI Gateway's host: a base URL on it is read as its provider endpoint reads paths. */
-export const CLOUDFLARE_AI_GATEWAY_HOST = "gateway.ai.cloudflare.com";
-
-/** Segments of Cloudflare AI Gateway's path before a provider's endpoint takes over: `v1`, the account, the gateway, the endpoint. */
-const CLOUDFLARE_ENDPOINT_SEGMENTS = 4;
+export { CLOUDFLARE_AI_GATEWAY_HOST } from "./destination.ts";
 
 /** The provider's own hosts, with no base URL or Cloudflare. */
 export const DIRECT_ROUTE: UpstreamRoute = { basePath: null, cloudflarePrefix: null };
@@ -218,7 +230,7 @@ export function upstreamRoute(
   connection: { readonly baseUrl: string | null; readonly cloudflareGateway: object | null },
 ): UpstreamRoute {
   // Cloudflare's provider endpoint adds this back: the one mapping, for the setting and for a base URL on its host.
-  const cloudflarePrefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+  const cloudflarePrefix = cloudflarePrefixOf(description);
   if (connection.cloudflareGateway !== null) return { basePath: null, cloudflarePrefix };
   if (connection.baseUrl !== null) {
     let url: URL | null = null;
@@ -234,13 +246,18 @@ export function upstreamRoute(
       .find((host) => host.name === url?.host.toLowerCase() && host.prefix.length > 0);
     const baseHost = url?.hostname.toLowerCase() ?? null;
     const cloudflareBase =
-      baseHost === CLOUDFLARE_AI_GATEWAY_HOST ? { after: basePath.slice(CLOUDFLARE_ENDPOINT_SEGMENTS), prefix: cloudflarePrefix } : undefined;
+      baseHost === CLOUDFLARE_AI_GATEWAY_HOST
+        ? { type: description.type, slug: description.cloudflareGateway?.slug ?? null, prefix: cloudflarePrefix }
+        : undefined;
+    // Another provider's host: its rules judge where these requests go.
+    const owner = baseHost === null ? null : hostOwner(baseHost);
     return {
       basePath,
       cloudflarePrefix: null,
       baseHost,
       ...(own !== undefined ? { hostPrefix: own.prefix } : {}),
       ...(cloudflareBase !== undefined ? { cloudflareBase } : {}),
+      ...(owner !== null && owner.type !== description.type ? { owner } : {}),
     };
   }
   return DIRECT_ROUTE;
@@ -253,11 +270,32 @@ export interface UpstreamTargets {
   readonly paths: readonly (readonly TemplateSegment[])[];
   /** The base URL's host name on the main host (`UpstreamRoute.baseHost`), for refused paths that name hosts. */
   readonly baseHost?: string | null;
+  /**
+   * Built-in providers besides the connection's own that these paths reach
+   * (`./destination.ts`): the base URL host's owner, and the provider of a
+   * Cloudflare AI Gateway endpoint the path names. Their refused and
+   * live-session token paths judge the paths too.
+   */
+  readonly owners?: readonly ProviderDescription[];
 }
 
-/** The targets of `paths` on the main host of `route`, with its base URL's host. */
-const mainTargets = (route: UpstreamRoute, paths: readonly (readonly TemplateSegment[])[]): UpstreamTargets =>
-  route.baseHost === undefined || route.baseHost === null ? { host: "main", paths } : { host: "main", paths, baseHost: route.baseHost };
+/** The targets of `paths` on the main host of `route`, with its base URL's host and the providers they reach. */
+function mainTargets(route: UpstreamRoute, paths: readonly (readonly TemplateSegment[])[], reached: readonly ProviderDescription[] = []): UpstreamTargets {
+  const owners = route.owner === undefined ? reached : [route.owner, ...reached];
+  return {
+    host: "main",
+    paths,
+    ...(route.baseHost === undefined || route.baseHost === null ? {} : { baseHost: route.baseHost }),
+    ...(owners.length > 0 ? { owners } : {}),
+  };
+}
+
+/** Whether a path segment can name Cloudflare AI Gateway's endpoint `slug`. */
+function namesEndpoint(segment: TemplateSegment, slug: string): boolean {
+  if (segment.kind === "literal") return segment.value.toLowerCase() === slug.toLowerCase();
+  if (segment.kind === "part") return segmentsMeet({ ...segment, prefix: segment.prefix.toLowerCase(), suffix: segment.suffix.toLowerCase() }, { kind: "literal", value: slug.toLowerCase() });
+  return true;
+}
 
 /**
  * How Cloudflare AI Gateway's provider endpoint reads `path`: it adds back
@@ -312,10 +350,26 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
       head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: own[index]! }));
     if (may) paths.push(whole.slice(own.length));
   }
-  // A base URL on Cloudflare AI Gateway's host: read as the setting reads it.
+  // A base URL on Cloudflare AI Gateway's host: Cloudflare reads the base URL
+  // and the path as one, whose fourth segment names the endpoint, wherever the
+  // base URL ends. What follows it is read as the setting reads it, by each
+  // provider whose endpoint that segment can name.
   const cloudflare = route.cloudflareBase;
-  if (cloudflare !== undefined) paths.push(...cloudflareReadings(cloudflare.prefix, [...cloudflare.after.map(literal), ...path]));
-  return mainTargets(route, paths);
+  const reached: ProviderDescription[] = [];
+  if (cloudflare !== undefined) {
+    const whole = [...base.map(literal), ...path];
+    const endpoint = whole[CLOUDFLARE_ENDPOINT_SEGMENTS - 1];
+    const after = whole.slice(CLOUDFLARE_ENDPOINT_SEGMENTS);
+    if (endpoint !== undefined && after.length > 0) {
+      if (cloudflare.slug !== null && namesEndpoint(endpoint, cloudflare.slug)) paths.push(...cloudflareReadings(cloudflare.prefix, after));
+      for (const other of CLOUDFLARE_PROVIDERS) {
+        if (other.type === cloudflare.type || !namesEndpoint(endpoint, other.cloudflareGateway!.slug)) continue;
+        paths.push(...cloudflareReadings(cloudflarePrefixOf(other), after));
+        reached.push(other);
+      }
+    }
+  }
+  return mainTargets(route, paths, reached);
 }
 
 export interface MatchContext {
@@ -339,19 +393,22 @@ function ruleSource(rule: CompiledRule<unknown>): string {
   return rule.methods === null ? rule.template.source : `${[...rule.methods].join(",")} ${rule.template.source}`;
 }
 
-export class ProviderMatcher {
-  readonly provider: ProviderDescription;
-  private readonly refused: readonly CompiledRule<null>[];
-  private readonly liveTokens: readonly CompiledLiveToken[];
-  private readonly operations: readonly CompiledOperation[];
+/** A provider's refused and live-session token paths, compiled. */
+interface RuleSet {
+  readonly type: string;
+  readonly refused: readonly CompiledRule<null>[];
+  readonly liveTokens: readonly CompiledLiveToken[];
+}
 
-  /**
-   * Compiles every template once. Throws on a broken description, so a test
-   * that builds every provider's matcher catches it before deploy.
-   */
-  constructor(provider: ProviderDescription) {
-    this.provider = provider;
-    this.refused = provider.refused.map((entry) =>
+const RULE_SETS = new WeakMap<ProviderDescription, RuleSet>();
+
+/** A provider's rules, compiled once per description. */
+function rulesOf(provider: ProviderDescription): RuleSet {
+  const cached = RULE_SETS.get(provider);
+  if (cached !== undefined) return cached;
+  const set: RuleSet = {
+    type: provider.type,
+    refused: provider.refused.map((entry) =>
       typeof entry === "string"
         ? { template: parseTemplate(entry, { rest: true }), methods: null, entry: null }
         : {
@@ -360,14 +417,31 @@ export class ProviderMatcher {
             hosts: entry.hosts === undefined ? null : new Set(entry.hosts.map((host) => host.toLowerCase())),
             entry: null,
           },
-    );
+    ),
     // Every method under the path is refused; the opt-in reaches only the mint.
-    this.liveTokens = (provider.liveTokens ?? []).map((entry) => ({
+    liveTokens: (provider.liveTokens ?? []).map((entry) => ({
       template: parseTemplate(entry.path, { rest: true }),
       methods: null,
       entry,
       mint: parseTemplate(entry.mint ?? (entry.path.endsWith("/*") ? entry.path.slice(0, -2) : entry.path)),
-    }));
+    })),
+  };
+  RULE_SETS.set(provider, set);
+  return set;
+}
+
+export class ProviderMatcher {
+  readonly provider: ProviderDescription;
+  private readonly own: RuleSet;
+  private readonly operations: readonly CompiledOperation[];
+
+  /**
+   * Compiles every template once. Throws on a broken description, so a test
+   * that builds every provider's matcher catches it before deploy.
+   */
+  constructor(provider: ProviderDescription) {
+    this.provider = provider;
+    this.own = rulesOf(provider);
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
       if (names.has(operation.name)) {
@@ -427,7 +501,7 @@ export class ProviderMatcher {
     const gateway = this.refusedAt(method, atGateway);
     if (gateway !== null) return { kind: "refused", reason: "refused_path", pattern: gateway };
     // A live-session token path is refused like the others unless a listed path that opts in takes the request.
-    const gatewayToken = firstRule(this.liveTokens, method, atGateway);
+    const gatewayToken = firstRule(this.tokensFor(atGateway), method, atGateway);
 
     // A token path a listing reached without opting in to its mint: refused,
     // unless a later listing that opts in takes the request.
@@ -480,12 +554,34 @@ export class ProviderMatcher {
   }
 
   /**
+   * The rules that judge `targets`: this provider's, then those of every
+   * other provider they reach (`UpstreamTargets.owners`), each once.
+   */
+  private setsFor(...all: readonly (UpstreamTargets | null)[]): readonly RuleSet[] {
+    const sets: RuleSet[] = [this.own];
+    const seen = new Set([this.own.type]);
+    for (const targets of all) {
+      for (const owner of targets?.owners ?? []) {
+        if (seen.has(owner.type)) continue;
+        seen.add(owner.type);
+        sets.push(rulesOf(owner));
+      }
+    }
+    return sets;
+  }
+
+  /** Every live-session token path that judges `targets` (`setsFor`). */
+  private tokensFor(...all: readonly (UpstreamTargets | null)[]): readonly CompiledLiveToken[] {
+    return this.setsFor(...all).flatMap((set) => set.liveTokens);
+  }
+
+  /**
    * The first refused path that takes every path of one of `targets` (a
    * `{name}` part stands for any value), or null. Only the main host has
    * refused paths: the others serve declared operations only.
    */
   private refusedAt(method: string, targets: UpstreamTargets | null): string | null {
-    const rule = firstRule(this.refused, method, targets);
+    const rule = firstRule(this.setsFor(targets).flatMap((set) => set.refused), method, targets);
     return rule === null ? null : ruleSource(rule);
   }
 
@@ -500,16 +596,18 @@ export class ProviderMatcher {
    * paths may share one namespace, each with its own mint.
    */
   private tokenRule(method: string, atGateway: UpstreamTargets | null, sent: UpstreamTargets | null): { readonly rule: CompiledLiveToken; readonly mint: boolean } | null {
+    const tokens = this.tokensFor(atGateway, sent);
     let first: CompiledLiveToken | null = null;
     let minted: CompiledLiveToken | null = null;
     let every = true;
     for (const targets of [atGateway, sent]) {
       if (targets === null || targets.host !== "main") continue;
       for (const path of targets.paths) {
-        const taking = [...everyRule(this.liveTokens, method, { host: "main", paths: [path] })];
+        const reading: UpstreamTargets = { ...targets, paths: [path] };
+        const taking = [...everyRule(tokens, method, reading)];
         if (taking.length === 0) continue;
         first ??= taking[0]!;
-        const mintOf = taking.find((rule) => mints(rule, method, { host: "main", paths: [path] }));
+        const mintOf = taking.find((rule) => mints(rule, method, reading));
         if (mintOf === undefined) every = false;
         else minted ??= mintOf;
       }
@@ -520,7 +618,7 @@ export class ProviderMatcher {
 
   /** The first live-session token path that takes every path of one of `targets`, as `refusedAt`, or null. */
   private liveTokenAt(method: string, targets: UpstreamTargets | null): string | null {
-    const rule = firstRule(this.liveTokens, method, targets);
+    const rule = firstRule(this.tokensFor(targets), method, targets);
     return rule === null ? null : ruleSource(rule);
   }
 
@@ -556,16 +654,45 @@ export class ProviderMatcher {
     // Nor may any request it matches, for some value of its parts, land
     // under a token path elsewhere than that path's mint: serving refuses
     // those (`tokenRule`), so the listing would save and then not work.
+    const tokens = this.tokensFor(atGateway, sent);
     for (const targets of [atGateway, sent]) {
       if (targets === null || targets.host !== "main") continue;
       for (const path of targets.paths) {
-        const reading: UpstreamTargets = { host: "main", paths: [path] };
-        const meets = this.liveTokens.some((rule) => (rule.methods === null || rule.methods.has(method)) && ruleMeets(path, rule.template));
+        const reading: UpstreamTargets = { ...targets, paths: [path] };
+        const meets = tokens.some((rule) => (rule.methods === null || rule.methods.has(method)) && appliesOn(rule, reading) && ruleMeets(path, rule.template));
         // Token paths may share a namespace, each with its own mint.
-        if (meets && !this.liveTokens.some((rule) => mints(rule, method, reading))) return null;
+        if (meets && !tokens.some((rule) => mints(rule, method, reading))) return null;
       }
     }
     return token.rule.entry;
+  }
+
+  /**
+   * What saving makes of a listed path on `route`, whether or not it opts in:
+   *
+   * - `refused`: a key, admin or account path takes every request it could
+   *   match; no opt-in reaches it.
+   * - `token_non_mint`: a live-session token path takes them all, but it is
+   *   not that path's mint (cancelling a session, another token type); no
+   *   opt-in reaches it either.
+   * - `token_mint`: it is exactly a live-session token mint; it is served
+   *   only when the listing opts in.
+   * - `free`: none of these.
+   */
+  listingVerdict(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE):
+    | { readonly kind: "refused"; readonly pattern: string }
+    | { readonly kind: "token_non_mint"; readonly pattern: string }
+    | { readonly kind: "token_mint"; readonly token: LiveTokenPath }
+    | { readonly kind: "free" } {
+    const { method } = listed.listed;
+    const atGateway = mainTargets(route, [listed.template.segments]);
+    const sent = upstreamTargets(route, "main", listed.template.segments);
+    const refused = this.refusedAt(method, atGateway) ?? this.refusedAt(method, sent);
+    if (refused !== null) return { kind: "refused", pattern: refused };
+    const token = this.liveTokenCovering(listed, route);
+    if (token !== null) return { kind: "token_mint", token };
+    const covered = this.liveTokenAt(method, atGateway) ?? this.liveTokenAt(method, sent);
+    return covered === null ? { kind: "free" } : { kind: "token_non_mint", pattern: covered };
   }
 
   /**
@@ -632,12 +759,6 @@ export class ProviderMatcher {
   }
 }
 
-/**
- * The first rule that takes every path of one of `targets` (a `{name}` part
- * stands for any value), ignoring case, or null. Only the main host has
- * refused and live-session token paths: the others serve declared operations
- * only.
- */
 /** A live-session token path, with its mint: its method on exactly its path, without the trailing `*`. */
 interface CompiledLiveToken extends CompiledRule<LiveTokenPath> {
   readonly mint: Template;
@@ -692,6 +813,7 @@ function* everyRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], 
     const segments = targetSegments(path);
     for (const rule of rules) {
       if (rule.methods !== null && !rule.methods.has(method)) continue;
+      if (!appliesOn(rule, targets)) continue;
       if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) yield rule;
     }
   }
@@ -703,6 +825,12 @@ function appliesOn(rule: CompiledRule<unknown>, targets: UpstreamTargets): boole
   return targets.baseHost !== undefined && targets.baseHost !== null && rule.hosts.has(targets.baseHost);
 }
 
+/**
+ * The first rule that takes every path of one of `targets` (a `{name}` part
+ * stands for any value), ignoring case, or null. Only the main host has
+ * refused and live-session token paths: the others serve declared operations
+ * only.
+ */
 function firstRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Rule | null {
   if (targets === null || targets.host !== "main") return null;
   for (const path of targets.paths) {

@@ -550,14 +550,12 @@ export const LIVE_TOKEN_WINDOW_SECONDS = 60;
 
 /**
  * The value the gateway writes into one forced field of a mint's body.
- * - `{ window: "seconds" }`: the window, as a number of seconds.
  * - `{ window: "expires_after" }`: `{ seconds }` holding the window, with
  *   `anchor: "created_at"` when `anchor` is set.
  * - `{ window: "time" }`: an RFC 3339 time, the window from now.
  * - `{ fixed }`: that value as it is, such as `uses: 1`.
  */
 export type LiveTokenValue =
-  | { readonly window: "seconds" }
   | { readonly window: "expires_after"; readonly anchor?: true }
   | { readonly window: "time" }
   | { readonly fixed: number | string | boolean };
@@ -615,7 +613,6 @@ export interface LiveTokenPath {
 }
 
 /** How the provider's key is sent. */
-
 export interface ProviderAuth {
   readonly header: string;
   /** `{key}` is replaced with the key, such as `Bearer {key}`. */

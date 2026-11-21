@@ -59,8 +59,8 @@ import {
   customOperationName,
   customStyleProblem,
   isCustomStyle,
-  knownHostOwner,
 } from "../providers/custom.ts";
+import { baseUrlOwnerProblem } from "../providers/destination.ts";
 import { builtInProvider } from "../providers/index.ts";
 import {
   compilePassthrough,
@@ -337,29 +337,23 @@ function passthroughJson(
   const matcher = new ProviderMatcher(description);
   // A new API-style path is an operation the plain listings could now overlap: they are judged against it again.
   const styleAdded = checked.some((one) => one.listed.style !== undefined && one.isNew);
-  // A custom provider on a known provider's host: that provider's declared operations, where its paths are read.
-  const owner = subject.kind === "custom" ? knownHostOwner(subject.baseUrl) : null;
+  // A base URL on another known provider's host (a custom provider's, or a stored one): that provider's declared operations, where its paths are read.
+  const owner = route.owner ?? null;
   const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
-  const ownerRoute = owner === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
+  const ownerRoute = owner === null || subject.baseUrl === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
   for (const { where, key, listed, compiled, isNew } of checked) {
     if (isNew) {
-      // Key, admin and account paths first: no opt-in reaches them.
-      const optedIn: CompiledPassthrough = { ...compiled, listed: { ...listed, liveToken: true } };
-      if (matcher.refusedCovering(optedIn, route) !== null) {
+      // One verdict, whether or not the listing opts in (`listingVerdict`).
+      const verdict = matcher.listingVerdict(compiled, route);
+      // Key, admin and account paths, and anything under a token path but its mint
+      // (cancelling a session): no opt-in reaches them.
+      if (verdict.kind === "refused" || verdict.kind === "token_non_mint") {
         throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
       }
-      // Under a token path but not its mint, such as cancelling a session: no opt-in reaches it,
-      // so it is always refused, whether or not this listing opts in.
-      const { liveToken: _optIn, ...plainListed } = listed;
-      const plain: CompiledPassthrough = { ...compiled, listed: plainListed };
-      if (matcher.refusedCovering(plain, route) !== null && matcher.liveTokenCovering(compiled, route) === null) {
-        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
-      }
-      if (listed.liveToken === true && matcher.liveTokenCovering(compiled, route) === null) {
+      if (listed.liveToken === true && verdict.kind !== "token_mint") {
         throw new GatewayError(400, "invalid_request", `${where}.live_token: ${key} is not one of ${description.label}'s live-session token paths; only those can opt in`);
       }
-      if (matcher.refusedCovering(compiled, route) !== null) {
-        // Refused only because it mints a live-session secret: the opt-in would reach it.
+      if (listed.liveToken !== true && verdict.kind === "token_mint") {
         throw new GatewayError(
           400,
           "invalid_request",
@@ -472,11 +466,21 @@ function listingShape(compiled: CompiledPassthrough): string {
   return [compiled.listed.method, ...segments].join("/");
 }
 
-/** Whether two routes send every path to the same provider path (`upstreamTargets`). */
+/**
+ * Whether two routes send every path to the same provider path, judged by
+ * the same providers' rules (`upstreamTargets`): the same path mapping, the
+ * same owner of the base URL's host, and Cloudflare's host or not.
+ */
 function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
   const same = (x: readonly string[] | null, y: readonly string[] | null) =>
     x === null || y === null ? x === y : x.length === y.length && x.every((piece, index) => piece === y[index]);
-  return same(a.basePath, b.basePath) && same(a.cloudflarePrefix, b.cloudflarePrefix) && same(a.hostPrefix ?? null, b.hostPrefix ?? null);
+  return (
+    same(a.basePath, b.basePath) &&
+    same(a.cloudflarePrefix, b.cloudflarePrefix) &&
+    same(a.hostPrefix ?? null, b.hostPrefix ?? null) &&
+    (a.owner?.type ?? null) === (b.owner?.type ?? null) &&
+    (a.cloudflareBase === undefined) === (b.cloudflareBase === undefined)
+  );
 }
 
 export function providerView(row: ConnectionRow) {
@@ -538,6 +542,17 @@ function checkRoute(
   if (baseUrl !== null) {
     throw new GatewayError(400, "invalid_request", "cloudflareGateway: a connection goes through a base URL or Cloudflare AI Gateway, not both");
   }
+}
+
+/**
+ * A built-in connection's base URL may not be another provider's host, or
+ * another provider's Cloudflare AI Gateway endpoint (`baseUrlOwnerProblem`):
+ * its requests would reach that provider. Judged when the base URL is new or
+ * changed.
+ */
+function checkBaseUrlOwner(description: ProviderDescription, baseUrl: string): void {
+  const problem = baseUrlOwnerProblem(description, baseUrl);
+  if (problem !== null) throw new GatewayError(400, "invalid_request", `baseUrl: ${problem}`);
 }
 
 /** Pinned serving providers, for a provider type that has the field (`servingProvidersField`) only. */
@@ -667,6 +682,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const cloudflare = body.cloudflareGateway ?? null;
   const customSetting = custom ? checkedCustom(baseUrl, body.auth) : null;
   if (builtIn !== null) checkRoute(builtIn, baseUrl, cloudflare);
+  if (builtIn !== null && baseUrl !== null) checkBaseUrlOwner(builtIn, baseUrl);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   const id = newConnectionId();
   const origin = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
@@ -762,6 +778,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
         ? null
         : { accountId: asked.accountId, gatewayId: asked.gatewayId };
   if (description !== null) checkRoute(description, baseUrl, cloudflare);
+  // A base URL is judged when new or changed: one stored before keeps working.
+  if (description !== null && baseUrl !== null && baseUrl !== current.base_url) checkBaseUrlOwner(description, baseUrl);
   const cloudflareJson =
     asked === undefined
       ? current.cloudflare_gateway_json
@@ -836,11 +854,10 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   const routeMoved =
     oldDescription !== null &&
     newDescription !== null &&
-    (!sameRoute(
+    !sameRoute(
       upstreamRoute(oldDescription, { baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting }),
       upstreamRoute(newDescription, { baseUrl, cloudflareGateway: cloudflare }),
-    ) ||
-      (custom && current.base_url !== null && baseUrl !== null && knownHostOwner(current.base_url)?.type !== knownHostOwner(baseUrl)?.type));
+    );
   const authMoved = customSetting !== null && (storedAuth?.header !== customSetting.auth.header || storedAuth?.format !== customSetting.auth.format);
   const kept = body.passthrough === undefined && (routeMoved || authMoved) ? (passthroughView(current.passthrough_json) ?? []) : undefined;
   const askedPaths = body.passthrough === null ? (custom ? [] : null) : (body.passthrough ?? kept);
@@ -944,6 +961,7 @@ export async function testProvider(c: AdminContext): Promise<Response> {
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
   checkRoute(description, baseUrl, cloudflare);
+  if (baseUrl !== null) checkBaseUrlOwner(description, baseUrl);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   // The probe is built as a live request would be: same host, same credentials.
   const probe =

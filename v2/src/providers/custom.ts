@@ -13,7 +13,8 @@
  * - **Its host.** The base URL is its only host. It passed the origin guard
  *   when saved (`../core/origin-guard.ts`).
  * - **A known host.** A base URL on a built-in provider's host gets that
- *   provider's hosts and refused paths, so a custom provider cannot reach
+ *   provider's hosts, and its refused paths judge the requests, since they
+ *   reach it (`./destination.ts`), so a custom provider cannot reach
  *   the key, admin or account paths a built-in connection never can.
  *   Cloudflare AI Gateway's host is refused when saved: it reaches every
  *   provider, and a built-in connection's own setting goes there instead.
@@ -31,6 +32,7 @@ import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
 import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
 import type { PassthroughPath } from "./matcher.ts";
+import { knownHostOwner } from "./destination.ts";
 import { meterCases } from "../pricing/units.ts";
 import { hasMeasure } from "../usage/observation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
@@ -233,45 +235,8 @@ function hostOf(baseUrl: string): string | null {
   }
 }
 
-/**
- * A known provider's refused paths on `host`: one that names hosts applies
- * only when `host` is one of them, and then on every request.
- */
-function refusedOn(refused: ProviderDescription["refused"], host: string): ProviderDescription["refused"] {
-  if (refused.every((entry) => typeof entry === "string" || entry.hosts === undefined)) return refused;
-  return refused.flatMap((entry) => {
-    if (typeof entry === "string" || entry.hosts === undefined) return [entry];
-    if (!entry.hosts.includes(host)) return [];
-    return [entry.methods === undefined ? entry.path : { path: entry.path, methods: entry.methods }];
-  });
-}
-
-/** Cloudflare AI Gateway's host: it reaches every provider it serves, so no custom provider may use it. */
-export { CLOUDFLARE_AI_GATEWAY_HOST } from "./matcher.ts";
-
-/** A provider's declared host names, lower-cased: its `hosts` and its `otherHosts`. */
-export function declaredHostNames(description: ProviderDescription): readonly string[] {
-  return [
-    ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
-    ...(description.otherHosts ?? []).map((value) => value.toLowerCase()),
-  ];
-}
-
-/**
- * The built-in provider whose host a base URL is on, or null: any host it
- * declares (`declaredHostNames`). Compared on the host name alone, so a base
- * URL with its own path on that host is still that provider's.
- */
-export function knownHostOwner(baseUrl: string): ProviderDescription | null {
-  const host = hostOf(baseUrl);
-  if (host === null) return null;
-  return Object.values(BUILT_IN_PROVIDERS).find((description) => declaredHostNames(description).some((name) => hostMatches(name, host))) ?? null;
-}
-
-/** Whether `host` is the declared `name`, or under it for a `*.` name. */
-function hostMatches(name: string, host: string): boolean {
-  return name.startsWith("*.") ? host.endsWith(name.slice(1)) : host === name;
-}
+/** Cloudflare AI Gateway's host, and who owns a base URL's host: decided in one place (`./destination.ts`). */
+export { CLOUDFLARE_AI_GATEWAY_HOST, declaredHostNames, knownHostOwner } from "./destination.ts";
 
 /** What a custom provider connection stores, as its description is built from. */
 export interface CustomSetting {
@@ -282,7 +247,7 @@ export interface CustomSetting {
 
 /**
  * A custom connection's description: its API-style paths as operations, and
- * its base URL's host, or a known provider's hosts and refused paths when the
+ * its base URL's host, or a known provider's hosts when the
  * base URL is on one. Its plain listed paths are passthrough paths, which the
  * description does not hold, as for a built-in provider.
  */
@@ -299,9 +264,8 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     hosts: owner === null ? { main: host } : owner.hosts,
     auth: setting.auth,
     serviceModes: NO_SERVICE_TIERS,
-    // The owner's refused paths; one that names hosts applies here only when this base URL is on one of them.
-    refused: owner === null ? [] : refusedOn(owner.refused, host),
-    ...(owner?.liveTokens === undefined ? {} : { liveTokens: owner.liveTokens }),
+    // None of its own: a known provider's refused and live-session token paths judge it where its requests go (`upstreamRoute`).
+    refused: [],
     // Its reporting headers, as its own connections send them.
     ...(owner?.attributionHeaders !== undefined ? { attributionHeaders: owner.attributionHeaders } : {}),
     // A known provider's regional hosts serve at its regional prices, as for its own connections.
