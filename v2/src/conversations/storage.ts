@@ -8,6 +8,7 @@
  *
  * A batch sits under the UTC day of its earliest record, and media under the
  * day of the record that carried it, which is that batch's day or a later one.
+ * Every batch holds one UTC day's records only.
  * So a listing by day is a listing by prefix, and retention deletes whole days
  * and never removes media a kept record names.
  */
@@ -32,18 +33,6 @@ function instant(createdAt: string): string {
 /** The UTC day, `YYYY-MM-DD`, a record belongs to. */
 export function recordDay(createdAt: string): string {
   return instant(createdAt).slice(0, 10);
-}
-
-/**
- * How the id of a batch that holds one UTC day only ends: every batch v2 writes.
- * Retention deletes such a batch without reading it. v1's batch ids are 16 hex
- * characters, so never end with it.
- */
-export const ONE_DAY_BATCH = "day";
-
-/** Whether `key` names a batch that holds one UTC day only (`ONE_DAY_BATCH`). */
-export function isOneDayBatch(key: string): boolean {
-  return key.endsWith(`${ONE_DAY_BATCH}.jsonl.gz`);
 }
 
 /** The key of one batch, named from the UTC instant of its earliest record. */
