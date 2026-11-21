@@ -1169,12 +1169,8 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
 async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Promise<Response> {
   const { operation, attempt, connection } = prepared;
   const spec = operation.job!;
-  let body: unknown = null;
-  try {
-    body = await upstream.json();
-  } catch {
-    body = null;
-  }
+  // The provider has accepted the job by now, so a body that stalls must not hold the app or the estimate.
+  const body = await jsonWithin(upstream, JOB_SUBMIT_BODY_TIMEOUT_MS);
   const requestId = providerRequestId(spec, body);
   if (requestId === null) {
     recordLostSubmission(c, prepared, "ok", latencyMs, "no_request_id", upstream.status);
@@ -1203,6 +1199,29 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
   headers.set("content-type", "application/json");
   return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
 }
+
+/** How long the body of an accepted job submission may take to arrive. */
+export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
+
+/** A response's JSON body, or null when it does not parse, fails, or does not arrive in time (the body is then cancelled). */
+async function jsonWithin(response: Response, ms: number): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<typeof LATE>((resolve) => {
+    timer = setTimeout(() => resolve(LATE), ms);
+  });
+  try {
+    const answer = await Promise.race([response.json().catch(() => null), late]);
+    if (answer === LATE) {
+      response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    return answer as unknown;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const LATE = Symbol("late");
 
 /**
  * A job submission whose answer was lost, or came with no request id: the

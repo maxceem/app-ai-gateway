@@ -21,9 +21,10 @@
  * The digest is of the id's JSON text, which keeps every UTF-16 code unit, so
  * two different ids never share one.
  *
- * The id is also bound to the connection's upstream route (`routeDigest`):
- * once the connection points somewhere else, its old job ids name a job that
- * may not exist there, so they stop resolving.
+ * The id is also bound to the connection's upstream route and key
+ * (`routeDigest`): once the connection points somewhere else, or holds another
+ * key (another provider account may have a job with the same id), its old job
+ * ids stop resolving.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -139,17 +140,24 @@ export async function userDigest(userId: string | null): Promise<string | null> 
   return userId === null ? null : digest(JSON.stringify(userId));
 }
 
-/** Where a connection sends its requests: the parts that choose the upstream. */
+/** Where a connection sends its requests, and with which key: the parts that choose the upstream job. */
 export interface UpstreamRoute {
   readonly type: string;
   readonly baseUrl: string | null;
   readonly cloudflareGateway: { readonly accountId: string; readonly gatewayId: string } | null;
+  /** The sealed key. A new key is sealed afresh, so this changes whenever the key is replaced. */
+  readonly secretBlob: string | null;
 }
 
-/** A short digest of a connection's upstream route. It changes when the base URL or the Cloudflare gateway does. */
+/**
+ * A short digest of a connection's upstream route and key. It changes when the
+ * base URL, the Cloudflare gateway or the key does. Only a digest of the
+ * sealed key is used, so the id reveals nothing about it.
+ */
 export async function routeDigest(route: UpstreamRoute): Promise<string> {
   const gateway = route.cloudflareGateway === null ? null : [route.cloudflareGateway.accountId, route.cloudflareGateway.gatewayId];
-  return (await digest(JSON.stringify([route.type, route.baseUrl, gateway]))).slice(0, 16);
+  const key = route.secretBlob === null ? null : await digest(route.secretBlob);
+  return (await digest(JSON.stringify([route.type, route.baseUrl, gateway, key]))).slice(0, 16);
 }
 
 /** A signed job id for `claims`. Throws when `JWT_SECRET` cannot sign. */
