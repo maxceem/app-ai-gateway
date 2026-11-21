@@ -51,20 +51,27 @@ shows the same.
 
 ## Cancelling
 
-- **A job cancelled while it is still queued** costs nothing. Its charge is
-  corrected to zero once the provider confirms the cancel.
-- **A job that is already running** is charged in full, by the units the
-  provider billed. fal's own docs say a running job may still complete after
-  a cancel.
-- Both hold whether you cancel through the gateway or at the provider
-  directly: the charge follows the provider's final answer.
+A cancelled job ends in one of three ways. The charge follows the
+provider's final answer, whether you cancel through the gateway or at the
+provider directly.
+
+- **The provider confirms the cancel and reports no billed units.** This is
+  a job cancelled while it was still queued. It costs nothing.
+- **The provider reports billed units.** This is usually a job that was
+  already running. It is charged by those units. fal's own docs say a
+  running job may still complete after a cancel.
+- **The provider's billed units cannot be read.** The estimate stays, and
+  the charge is marked as an estimate.
 
 ## How long results stay readable
 
-The provider keeps a job's result for a limited time. fal keeps results for
-about an hour, and large results for less. Read the result soon after the
-job finishes. The gateway reads it in the background too, so the charge
-settles even if your app never reads it.
+The provider keeps a job's result for a limited time:
+
+- fal keeps a large result (10 KB or more) for only about 6 minutes;
+- it keeps other results for about an hour.
+
+Read the result soon after the job finishes. The gateway reads it in the
+background too, so the charge settles even if your app never reads it.
 
 ## Models that are not on our price list
 

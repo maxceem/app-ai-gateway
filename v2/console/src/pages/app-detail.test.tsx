@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
-import { AppDetailPage, routingOf, scopeOf } from "./app-detail";
+import { AppDetailPage, JOB_CHECK_OVERDUE_MS, jobCheckOverdue, routingOf, scopeOf } from "./app-detail";
 import { testApp } from "@/test/fixtures";
 import { renderAuthenticated, settled } from "@/test/render";
 
@@ -171,6 +171,37 @@ describe("AppDetailPage", () => {
     const checkingRow = screen.getByText("fal-ai/ltx-video").closest("tr")!;
     expect(within(checkingRow).getByText("Checking")).toBeTruthy();
     expect(within(checkingRow).getByText("—")).toBeTruthy();
+  });
+
+  it("flags a job check that is well past its due time as overdue", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: {
+          app_id: "my-app",
+          total: 2,
+          limit: 50,
+          offset: 0,
+          jobs: [
+            { id: "late", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2020-01-01T00:00:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2020-01-01T00:02:00.000Z" },
+            { id: "on-time", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/ltx-video", end_user_id: "u", submitted_at: "2020-01-01T00:00:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2999-01-01T00:00:00.000Z" },
+          ],
+        },
+      },
+    });
+    renderTab("jobs");
+    const lateRow = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+    expect(within(lateRow).getByText(/overdue/i)).toBeTruthy();
+    const onTimeRow = screen.getByText("fal-ai/ltx-video").closest("tr")!;
+    expect(within(onTimeRow).queryByText(/overdue/i)).toBeNull();
+  });
+
+  it("calls a check overdue only once it is more than five minutes late", () => {
+    const due = Date.parse("2026-11-01T00:00:00.000Z");
+    const job = { state: "checking" as const, next_check_at: new Date(due).toISOString() };
+    expect(jobCheckOverdue(job, due + JOB_CHECK_OVERDUE_MS)).toBe(false);
+    expect(jobCheckOverdue(job, due + JOB_CHECK_OVERDUE_MS + 1)).toBe(true);
+    expect(jobCheckOverdue({ ...job, state: "settled" }, due + 10 * JOB_CHECK_OVERDUE_MS)).toBe(false);
+    expect(jobCheckOverdue({ state: "checking", next_check_at: undefined }, due)).toBe(false);
   });
 
   it("creates an app key and shows it once", async () => {

@@ -1788,7 +1788,7 @@
           },
           "measured": {
             "type": "string",
-            "description": "How complete the estimate's usage is: `estimated` until the provider's final figure settles it."
+            "description": "How complete the usage is: the estimate's label until the job settles, then the settlement's."
           },
           "price_source": {
             "type": "string"
@@ -1809,6 +1809,13 @@
               "null"
             ],
             "description": "When the job was settled, ISO 8601."
+          },
+          "next_check_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "While `checking`: when the gateway next checks the job, ISO 8601. A time well in the past means the check is overdue."
           }
         },
         "required": [

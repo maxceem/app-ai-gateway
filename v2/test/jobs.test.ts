@@ -2177,10 +2177,16 @@ describe("cancels, unlisted and video models (step 6b)", () => {
       estimate_nano: 50_000_000,
       correction_nano: 50_000_000,
       total_nano: 100_000_000,
-      measured: "estimated",
     });
+    // Once settled, the label is the settlement row's, not the estimate's.
+    const settlement = await env.DB.prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${settled.jobId}`).first<{ measured: string }>();
+    expect(settlement!.measured).not.toBe("estimated");
+    expect(byState.settled!.measured).toBe(settlement!.measured);
     expect(byState.settled!.settled_at).not.toBeNull();
-    expect(byState.checking).toMatchObject({ estimate_nano: 25_000_000, correction_nano: null, total_nano: 25_000_000, settled_at: null });
+    expect(byState.settled).not.toHaveProperty("next_check_at");
+    expect(byState.checking).toMatchObject({ estimate_nano: 25_000_000, correction_nano: null, total_nano: 25_000_000, settled_at: null, measured: "estimated" });
+    // A job still being checked says when its next check is due.
+    expect(Number.isFinite(Date.parse(String(byState.checking!.next_check_at)))).toBe(true);
   });
 
   it("lists only the caller's account's jobs when another account's deleted app left rows under the same app id", async () => {
@@ -2246,6 +2252,19 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
     falAnswers({
       result: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(await total(appId)).toBe(20_000_000);
+  });
+
+  it("settles a failure fal billed at a flat price per job as one job", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    falAnswers({
+      result: () => new Response(JSON.stringify({ detail: "bad input" }), { status: 422, headers: { "x-fal-billable-units": "3" } }),
     });
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     const rows = await charges(appId);

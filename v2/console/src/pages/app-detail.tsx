@@ -680,6 +680,16 @@ const JOB_STATE_TEXT: Record<JobSummary["state"], string> = {
   gave_up: "Gave up",
 };
 
+/** How late a check may run before the Jobs tab calls it overdue (plan section 4.2). */
+export const JOB_CHECK_OVERDUE_MS = 5 * 60_000;
+
+/** Whether a job's next check is well past its due time. */
+export function jobCheckOverdue(job: Pick<JobSummary, "state" | "next_check_at">, now: number): boolean {
+  if (job.state !== "checking" || job.next_check_at === undefined || job.next_check_at === null) return false;
+  const due = Date.parse(job.next_check_at);
+  return Number.isFinite(due) && now - due > JOB_CHECK_OVERDUE_MS;
+}
+
 /** A cost in nano-dollars, or a dash when there is none. */
 function jobCost(nano: number | null): string {
   return nano === null ? "—" : formatCost(nanoToDollars(nano));
@@ -738,7 +748,11 @@ function JobsTab({ app }: { app: App }) {
                   </TableCell>
                   <TableCell>
                     {JOB_STATE_TEXT[job.state]}
-                    {job.state === "settled" ? null : <span className="block text-xs text-muted-foreground">Estimate</span>}
+                    {jobCheckOverdue(job, Date.now()) ? (
+                      <span className="block text-xs text-destructive">Overdue: the check is late</span>
+                    ) : job.state === "settled" ? null : (
+                      <span className="block text-xs text-muted-foreground">Estimate</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{jobCost(job.estimate_nano)}</TableCell>
                   <TableCell className="text-right tabular-nums">{jobCost(job.correction_nano)}</TableCell>

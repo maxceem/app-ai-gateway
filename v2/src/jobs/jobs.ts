@@ -546,9 +546,10 @@ function savedOutputs(value: unknown, legacyUnit: unknown): OutputCounts | null 
 
 /**
  * The counts a result gives, by unit. A success is one job (a price per
- * request), with its outputs in their unit. A failure is free only when the
- * provider reports 0 billed units, and a confirmed cancel when it reports
- * none: then every count is 0.
+ * request), with its outputs in their unit. Any other final result the
+ * provider billed (positive units) is one job too. A failure is free only
+ * when the provider reports 0 billed units, and a confirmed cancel when it
+ * reports none: then every count is 0.
  */
 function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   const counts: Partial<Record<Unit, number>> = {};
@@ -559,8 +560,8 @@ function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   if (succeeded(facts)) {
     counts.requests = 1;
     for (const [unit, count] of Object.entries(facts.outputs ?? {})) counts[unit as Unit] = count;
-  } else if (facts.cancelled === true && facts.units !== null && facts.units > 0) {
-    // A cancel the provider billed is one billable job, for a price per request.
+  } else if (facts.units !== null && facts.units > 0) {
+    // A final result the provider billed (a failure or a cancel) is one billable job, for a price per request.
     counts.requests = 1;
   } else if (facts.units === 0 || facts.cancelled === true) {
     // Free: the provider reported 0 billed units, or confirmed a cancel and billed none.

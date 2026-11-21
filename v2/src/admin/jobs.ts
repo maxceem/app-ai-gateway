@@ -30,12 +30,14 @@ interface CorrectionRow {
   owner_id: string;
   cost_nano: number | null;
   settled_at: number | null;
+  settled_measured: string | null;
 }
 
 interface WorkRow {
   owner_id: string;
   open: number;
   gave_up: number;
+  next_due_at: number | null;
 }
 
 type JobState = OperationResponse<"listAppJobs">["jobs"][number]["state"];
@@ -87,13 +89,15 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
     : await c.env.DB.batch([
         c.env.DB.prepare(
           `SELECT owner_id, SUM(cost_nano) AS cost_nano,
-                  MAX(CASE WHEN id = 'settle:job:' || owner_id THEN written_at END) AS settled_at
+                  MAX(CASE WHEN id = 'settle:job:' || owner_id THEN written_at END) AS settled_at,
+                  MAX(CASE WHEN id = 'settle:job:' || owner_id THEN measured END) AS settled_measured
              FROM charge
             WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'correction' AND owner_id IN (SELECT value FROM json_each(?))
             GROUP BY owner_id`,
         ).bind(actor.accountId, appId, ids),
         c.env.DB.prepare(
-          `SELECT owner_id, SUM(gave_up_at IS NULL) AS open, SUM(gave_up_at IS NOT NULL) AS gave_up
+          `SELECT owner_id, SUM(gave_up_at IS NULL) AS open, SUM(gave_up_at IS NOT NULL) AS gave_up,
+                  MIN(CASE WHEN gave_up_at IS NULL THEN due_at END) AS next_due_at
              FROM open_work
             WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND owner_id IN (SELECT value FROM json_each(?))
             GROUP BY owner_id`,
@@ -117,6 +121,8 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
       const settledAt = correction?.settled_at ?? null;
       const correctionNano = correction === undefined ? null : correction.cost_nano;
       const totalNano = row.cost_nano === null && correctionNano === null ? null : (row.cost_nano ?? 0) + (correctionNano ?? 0);
+      const work = workBy.get(row.owner_id);
+      const state = jobState(settledAt !== null, work);
       return {
         id: row.owner_id,
         provider_slug: row.provider_connection_id === null ? null : (slugBy.get(row.provider_connection_id) ?? null),
@@ -127,10 +133,12 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
         estimate_nano: row.cost_nano,
         correction_nano: correctionNano,
         total_nano: totalNano,
-        measured: row.measured,
+        // Once settled, the label is the settlement's, not the estimate's.
+        measured: settledAt !== null ? (correction?.settled_measured ?? row.measured) : row.measured,
         price_source: row.price_source,
-        state: jobState(settledAt !== null, workBy.get(row.owner_id)),
+        state,
         settled_at: iso(settledAt),
+        ...(state === "checking" ? { next_check_at: iso(work?.next_due_at ?? null) } : {}),
       };
     }),
   } satisfies OperationResponse<"listAppJobs">);
